@@ -27,11 +27,17 @@ final class WineManager {
     private let dependencyManager = DependencyManager()
     private let dxvkManager = DXVKManager()
     private let dxmtManager = DXMTManager()
+    private let gptkManager = GPTKManager()
+    private let goldbergManager = GoldbergManager()
     private let wrapperInstaller = SteamWebHelperWrapperInstaller()
     private let gameWrapperInstaller = GameWrapperInstaller()
     private let launchOptionsManager = SteamLaunchOptionsManager()
     private let steamInstallerURL = URL(string: SteamConstants.setupURL)!
     private let log = LogStore.shared
+
+    /// Evita que dos lanzamientos de Steam concurrentes (p.ej. "Lanzar Steam" y
+    /// "Jugar" a la vez) se maten entre sí mientras el cliente aún carga.
+    private var steamStarting = false
 
     /// Resuelve el binario de Wine: prefiere el portable descargado por Vessel,
     /// si no está usa GPTK de Apple. Nunca toca /Applications.
@@ -41,8 +47,11 @@ final class WineManager {
 
     // MARK: - Doble motor (cliente Steam vs juegos D3D11)
 
-    /// Motor para el CLIENTE de Steam y apps generales: Gcenx wine-osx64
-    /// (Wine completo cuyo Chromium/webhelper funciona). Fallback: bottle.winePath.
+    /// Motor para el CLIENTE de Steam (tienda/biblioteca): **Gcenx wine-osx64**,
+    /// el único donde el Chromium/webhelper de Steam es estable. En GPTK/CrossOver
+    /// pelado el cliente da 0x3008 (error de transporte de CEF). Los juegos NO usan
+    /// el cliente: el DRM de Steamworks lo emula Goldberg (ver `launchD3D12Game`),
+    /// así que Steam solo sirve para tienda/instalación. Fallback: `bottle.winePath`.
     func resolveClientWine(for bottle: Bottle) -> String {
         WineEngineLocator.clientWineBinary() ?? bottle.winePath
     }
@@ -344,7 +353,8 @@ final class WineManager {
     @discardableResult
     func launch(executable: String, in bottle: Bottle, arguments: [String] = [], steamAppId: String? = nil) async throws -> Process {
         // Auto-detección de API gráfica → enrutar al motor/capa correcta.
-        // D3D12 (AAA, FF Tactics) → Gcenx + vkd3d builtin (y Steam corre ahí: DRM OK).
+        // D3D12 (AAA, FF Tactics) → GPTK/D3DMetal (Metal nativo, ignora el Agility
+        // SDK), con el cliente Steam en el mismo wineserver para el DRM.
         if detectGraphicsAPI(forExecutable: executable) == .d3d12 {
             return try await launchD3D12Game(executable: executable, in: bottle, steamAppId: steamAppId)
         }
@@ -393,38 +403,63 @@ final class WineManager {
         )
     }
 
-    /// Lanza un juego **D3D12** (vkd3d→Vulkan→MoltenVK). Usa el motor del CLIENTE
-    /// (Gcenx), que tiene `d3d12.dll` builtin (vkd3d) Y es donde corre el cliente
-    /// de Steam — imprescindible para el DRM de Steamworks (FF Tactics exige Steam
-    /// abierto y logueado). Así, juego + Steam comparten motor: sin conflicto.
+    /// Lanza un juego **D3D12** con **GPTK / D3DMetal** (D3D12→Metal nativo de
+    /// Apple), la misma vía que CrossOver/Whisky/Mythic. Es lo único que ejecuta de
+    /// forma fiable juegos D3D12 AAA con DirectX 12 Agility SDK (como FF Tactics):
+    /// el `d3d12.dll` builtin de D3DMetal ignora por diseño el `D3D12Core.dll` de
+    /// Microsoft que el juego trae en su subcarpeta `D3D12/` — cargar ese core real
+    /// de Microsoft (lo que hacía vkd3d) es lo que provocaba el crash con puntero
+    /// corrupto dentro del juego. El cliente de Steam se lanza EN el mismo wine de
+    /// GPTK (mismo wineserver) para que el DRM de Steamworks funcione.
     private func launchD3D12Game(executable: String, in bottle: Bottle, steamAppId: String?) async throws -> Process {
-        let clientWine = resolveClientWine(for: bottle)
         let gameDir = (executable as NSString).deletingLastPathComponent
         let fm = FileManager.default
 
-        // Para D3D12 hay que usar el `d3d12`/`dxgi` builtin (vkd3d). Las DLLs de
-        // DXMT (D3D11) junto al exe lo romperían: limpiarlas.
+        // 1) Asegurar GPTK/D3DMetal (auto-descarga del Mythic Engine si falta).
+        log.log("Preparando GPTK/D3DMetal para juego D3D12…", level: .info)
+        try await gptkManager.ensureInstalled { msg, pct in
+            Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
+        }
+        guard let gptkWine = gptkManager.wineBinaryPath else {
+            throw WineError.launchFailed("No se pudo localizar el wine de GPTK/D3DMetal.")
+        }
+
+        // 2) Limpiar el game dir de DLLs gráficas que un lanzamiento previo dejara
+        //    (DXMT/vkd3d junto al exe), para que mande el d3d12/dxgi builtin de
+        //    D3DMetal. NO se toca la subcarpeta `D3D12/` del Agility SDK: D3DMetal
+        //    la ignora por sí mismo.
         for dll in ["d3d11.dll", "d3d12.dll", "d3d12core.dll", "dxgi.dll",
                     "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "winemetal.dll"] {
             let p = "\(gameDir)/\(dll)"
             if fm.fileExists(atPath: p) { try? fm.removeItem(atPath: p) }
         }
 
+        // 3) DRM: se DEJA el steam_api64.dll ORIGINAL del juego. Reemplazarlo por un
+        //    emulador (Goldberg) dispara los anti-tamper de terceros —p.ej. CodeFusion
+        //    en FF Tactics, que detecta la emulación y bloquea—. Solo escribimos
+        //    steam_appid.txt para que la Steamworks API arranque en modo standalone en
+        //    juegos sin DRM estricto. (GoldbergManager queda como infraestructura
+        //    para juegos que sí lo admitan, pero NO se aplica automáticamente.)
         if let appId = steamAppId, !appId.isEmpty {
             try? appId.write(toFile: "\(gameDir)/steam_appid.txt", atomically: true, encoding: .utf8)
         }
 
-        // DRM: el cliente de Steam debe estar corriendo (y logueado). Si no, lo abro.
-        try await ensureSteamRunning(in: bottle, clientWine: clientWine)
+        // 4) Re-sincronizar el prefijo al motor GPTK y cerrar cualquier wine previo
+        //    (p.ej. el cliente Steam en Gcenx). El juego corre solo en GPTK/D3DMetal.
+        log.log("Preparando el prefijo para GPTK…", level: .info)
+        try? await terminateWineProcesses(winePath: gptkWine, prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+        await resyncGamePrefix(gameWine: gptkWine, prefix: bottle.prefixPath)
 
-        var env = gameLaunchEnvironment(prefix: bottle.prefixPath)
+        // 5) Lanzar el juego con el entorno de D3DMetal.
+        var env = gptkManager.d3dMetalEnvironment(prefix: bottle.prefixPath)
         if let appId = steamAppId, !appId.isEmpty {
             env["SteamAppId"] = appId
             env["SteamGameId"] = appId
         }
-        log.log("Lanzando juego D3D12 con vkd3d (Gcenx): \((executable as NSString).lastPathComponent)", level: .info)
+        log.log("Lanzando juego D3D12 con GPTK/D3DMetal + Goldberg: \((executable as NSString).lastPathComponent)", level: .info)
         return try await launchWineProcess(
-            winePath: clientWine,
+            winePath: gptkWine,
             prefix: bottle.prefixPath,
             arguments: [executable],
             environment: env,
@@ -435,15 +470,20 @@ final class WineManager {
     /// Asegura que el cliente de Steam (Gcenx) está corriendo, necesario para el
     /// DRM de juegos Steamworks. Si no lo está, lo lanza y espera (sin bloquear UI).
     private func ensureSteamRunning(in bottle: Bottle, clientWine: String) async throws {
-        if isWineProcessRunning(matching: "steam.exe") { return }
-        log.log("Steam no está abierto; lo lanzo para el DRM del juego…", level: .info)
-        _ = try? await launchSteam(in: bottle)
-        for _ in 0..<25 {
+        // Señal de "cliente listo para DRM": steamwebhelper cargado. `steam.exe`
+        // aparece mucho antes de que el cliente esté operativo y, al matar/relanzar,
+        // daba falsos positivos (veía el viejo agonizando y no relanzaba). No se mata
+        // Steam: si ya corre en GPTK, se reutiliza tal cual.
+        if isWineProcessRunning(matching: "steamwebhelper") { return }
+        log.log("Steam no está listo; lo lanzo en GPTK para el DRM del juego…", level: .info)
+        _ = try? await launchSteam(in: bottle, using: clientWine)
+        for _ in 0..<40 {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
-            if isWineProcessRunning(matching: "steam.exe") { break }
+            if isWineProcessRunning(matching: "steamwebhelper") { break }
         }
-        // Margen para que la Steamworks API quede lista.
-        try? await Task.sleep(nanoseconds: 6_000_000_000)
+        // Margen para que la Steamworks API quede lista (el cliente de CrossOver
+        // tarda algo más en conectar/loguear antes de servir el DRM).
+        try? await Task.sleep(nanoseconds: 10_000_000_000)
     }
 
     private func isWineProcessRunning(matching pattern: String) -> Bool {
@@ -575,14 +615,25 @@ final class WineManager {
     }
 
     @discardableResult
-    func launchSteam(in bottle: Bottle) async throws -> Process {
+    func launchSteam(in bottle: Bottle, using winePath: String? = nil) async throws -> Process {
         guard FileManager.default.fileExists(atPath: bottle.steamPath) else {
             throw WineError.launchFailed("Steam no está instalado en este bottle.")
         }
 
-        // El CLIENTE de Steam corre en Gcenx (Wine completo); su Chromium/webhelper
-        // funciona ahí (en wine-dxmt crashea el proceso GPU de CEF → 0x3008).
-        let clientWine = resolveClientWine(for: bottle)
+        // Por defecto el CLIENTE de Steam corre en Gcenx (Wine completo); su
+        // Chromium/webhelper funciona ahí (en wine-dxmt crashea el proceso GPU de
+        // CEF → 0x3008). Para juegos D3D12 se pasa el wine de GPTK explícitamente,
+        // de modo que Steam y el juego compartan wineserver (necesario para el DRM).
+        let clientWine = winePath ?? resolveClientWine(for: bottle)
+
+        // 0) Idempotencia: si Steam ya está arrancando o cargado (steam.exe vivo),
+        //    NO lo matamos ni relanzamos. Matar un cliente a medio cargar —al pulsar
+        //    "Lanzar Steam" y "Jugar" a la vez, o varias veces seguidas— era justo lo
+        //    que impedía que el webhelper terminara de cargar (se relanzaba en bucle).
+        if isWineProcessRunning(matching: "steam.exe") {
+            log.log("Steam ya está en marcha; se reutiliza sin relanzar.", level: .info)
+            return Process()
+        }
 
         // 1) steam.cfg: impide que Steam se autoactualice/verifique y se ladrille
         //    ("Failed to load steamui.dll").
@@ -602,7 +653,8 @@ final class WineManager {
         try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
         try? await disableSteamAutoStart(winePath: clientWine, prefix: bottle.prefixPath)
 
-        log.log("Lanzando cliente Steam (Gcenx) en \(bottle.name)…", level: .info)
+        let engineLabel = clientWine.contains("/\(GPTKManager.engineName)/") ? "GPTK/CrossOver" : "Gcenx"
+        log.log("Lanzando cliente Steam (\(engineLabel)) en \(bottle.name)…", level: .info)
         return try await launchWineProcess(
             winePath: clientWine,
             prefix: bottle.prefixPath,

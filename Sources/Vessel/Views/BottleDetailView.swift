@@ -7,6 +7,7 @@ struct BottleDetailView: View {
     @State private var showingInstaller = false
     @State private var wineManager = WineManager()
     @State private var importer = SteamLibraryImporter()
+    @State private var gamesWatcher = DirectoryWatcher()
     @State private var localBottle: Bottle
     @State private var dxvkInstalled: Bool = false
     @State private var reinstallingDXVK = false
@@ -47,6 +48,27 @@ struct BottleDetailView: View {
         .task {
             await refreshDXVKStatus()
             await autoImportGames()
+            startWatchingGames()
+        }
+        .onDisappear { gamesWatcher.stop() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            // Al volver a Vessel (p.ej. tras instalar un juego en Steam) re-escaneamos
+            // y reanudamos la vigilancia por si la carpeta steamapps acaba de aparecer.
+            Task {
+                await autoImportGames()
+                startWatchingGames()
+            }
+        }
+    }
+
+    /// Vigila en tiempo real la carpeta `steamapps` del bottle: cuando Steam instala
+    /// o desinstala un juego, re-escaneamos y la lista de Vessel se actualiza sola,
+    /// sin reiniciar la app.
+    private func startWatchingGames() {
+        let steamapps = "\(localBottle.prefixPath)/drive_c/Program Files (x86)/Steam/steamapps"
+        guard FileManager.default.fileExists(atPath: steamapps) else { return }
+        gamesWatcher.start(path: steamapps) {
+            Task { await autoImportGames() }
         }
     }
 

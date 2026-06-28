@@ -233,6 +233,114 @@ final class DependencyManager {
         progress5("✓ Wine \(release.tagName) listo", 1.0)
     }
 
+    /// Descarga e instala el **Mythic Engine** (GPTK/D3DMetal) en
+    /// `Engines/gptk-mythic`. Reutiliza el mismo flujo que el resto de motores:
+    /// descarga → quita cuarentena → extrae (.tar.xz) → firma adhoc. El tarball
+    /// trae `wine/`, `dxvk/` y `Properties.plist` en su raíz.
+    func installMythicEngine(
+        from downloadURL: URL,
+        version: String,
+        progress: @escaping @Sendable (String, Double) -> Void
+    ) async throws {
+        try FileManager.default.createDirectory(atPath: enginesDirectory, withIntermediateDirectories: true)
+
+        progress("Descargando GPTK/D3DMetal \(version) (~185 MB)…", 0.05)
+        let (tempURL, response) = try await URLSession.shared.download(from: downloadURL)
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw NSError(domain: "Vessel", code: http.statusCode,
+                          userInfo: [NSLocalizedDescriptionKey: "Descarga de GPTK falló: HTTP \(http.statusCode)"])
+        }
+
+        progress("Verificando descarga…", 0.45)
+        _ = await removeQuarantineIfPresent(at: tempURL.path)
+
+        let finalEngineDir = "\(enginesDirectory)/\(GPTKManager.engineName)"
+        let stagingDir = "\(enginesDirectory)/gptk-installing-\(UUID().uuidString)"
+        try? FileManager.default.removeItem(atPath: stagingDir)
+        try FileManager.default.createDirectory(atPath: stagingDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(atPath: stagingDir)
+            try? FileManager.default.removeItem(at: tempURL)
+        }
+
+        progress("Extrayendo D3DMetal…", 0.6)
+        try await extractTar(at: tempURL, to: URL(fileURLWithPath: stagingDir))
+
+        // El tarball extrae `wine/`, `dxvk/`, `Properties.plist` en la raíz del staging.
+        try? FileManager.default.removeItem(atPath: finalEngineDir)
+        try FileManager.default.moveItem(atPath: stagingDir, toPath: finalEngineDir)
+
+        progress("Quitando cuarentena…", 0.82)
+        await stripQuarantineRecursive(at: finalEngineDir)
+
+        progress("Firmando binarios D3DMetal…", 0.9)
+        await adhocSignBinaries(in: finalEngineDir)
+
+        guard FileManager.default.isExecutableFile(atPath: "\(finalEngineDir)/wine/bin/wine") else {
+            throw NSError(domain: "Vessel", code: 23,
+                          userInfo: [NSLocalizedDescriptionKey: "GPTK instalado pero wine/bin/wine no es ejecutable"])
+        }
+        progress("✓ GPTK/D3DMetal \(version) listo", 1.0)
+    }
+
+    /// Descarga e instala **Goldberg / gbe_fork** (emulador de la Steamworks API)
+    /// en `Cache/goldberg`. El asset es un `.7z` que `tar` (libarchive) extrae.
+    /// Copia los `steam_api(64).dll` de la build *experimental* (autodetecta
+    /// interfaces, sin necesitar `steam_interfaces.txt`).
+    func installGoldberg(
+        from downloadURL: URL,
+        progress: @escaping @Sendable (String, Double) -> Void
+    ) async throws {
+        let cacheDir = "\(VesselPaths.cacheDirectory)/goldberg"
+        try FileManager.default.createDirectory(atPath: cacheDir, withIntermediateDirectories: true)
+
+        progress("Descargando Goldberg (emulador de Steam, ~13 MB)…", 0.1)
+        let (tempURL, response) = try await URLSession.shared.download(from: downloadURL)
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw NSError(domain: "Vessel", code: http.statusCode,
+                          userInfo: [NSLocalizedDescriptionKey: "Descarga de Goldberg falló: HTTP \(http.statusCode)"])
+        }
+
+        let stagingDir = "\(cacheDir)/extract-\(UUID().uuidString)"
+        try? FileManager.default.removeItem(atPath: stagingDir)
+        try FileManager.default.createDirectory(atPath: stagingDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(atPath: stagingDir)
+            try? FileManager.default.removeItem(at: tempURL)
+        }
+
+        progress("Extrayendo Goldberg…", 0.5)
+        try await extractTar(at: tempURL, to: URL(fileURLWithPath: stagingDir))
+
+        let base = "\(stagingDir)/release/experimental"
+        let pairs = [
+            ("\(base)/x64/steam_api64.dll", "\(cacheDir)/steam_api64.dll"),
+            ("\(base)/x86/steam_api.dll", "\(cacheDir)/steam_api.dll")
+        ]
+        for (src, dst) in pairs where FileManager.default.fileExists(atPath: src) {
+            try? FileManager.default.removeItem(atPath: dst)
+            try FileManager.default.copyItem(atPath: src, toPath: dst)
+        }
+
+        guard FileManager.default.fileExists(atPath: "\(cacheDir)/steam_api64.dll") else {
+            throw NSError(domain: "Vessel", code: 31,
+                          userInfo: [NSLocalizedDescriptionKey: "Goldberg se descargó pero no se encontró steam_api64.dll en el paquete."])
+        }
+        progress("✓ Goldberg listo", 1.0)
+    }
+
+    /// Quita `com.apple.quarantine` recursivamente (necesario para que `dlopen`
+    /// cargue las dylibs de D3DMetal sin bloqueo de Gatekeeper).
+    private func stripQuarantineRecursive(at path: String) async {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
+        task.arguments = ["-dr", "com.apple.quarantine", path]
+        task.standardOutput = FileHandle(forWritingAtPath: "/dev/null")
+        task.standardError = FileHandle(forWritingAtPath: "/dev/null")
+        try? task.run()
+        task.waitUntilExit()
+    }
+
     nonisolated static func selectWineAsset(from release: WineRelease) -> WineReleaseAsset? {
         release.assets.first { $0.name.contains("wine-devel") && $0.name.hasSuffix(".tar.xz") }
             ?? release.assets.first { $0.name.contains("osx64") && $0.name.hasSuffix(".tar.xz") }
