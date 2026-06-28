@@ -35,6 +35,35 @@ final class WineManager {
     private let steamInstallerURL = URL(string: SteamConstants.setupURL)!
     private let log = LogStore.shared
 
+    /// Entorno COMPLETO de un login shell del usuario, capturado una sola vez. La app
+    /// la lanza launchd con un entorno MÍNIMO; con él, Wine no maneja bien las
+    /// excepciones y Steam crashea (NtRaiseException) y se cierra solo. Al lanzar los
+    /// procesos Wine con este entorno (como si fuera desde la terminal), Steam arranca
+    /// estable — igual que cuando se lanza a mano.
+    nonisolated static let userShellEnvironment: [String: String] = {
+        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: shell)
+        process.arguments = ["-lic", "env"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        var result: [String: String] = [:]
+        do {
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            let output = String(data: data, encoding: .utf8) ?? ""
+            for line in output.split(separator: "\n") {
+                guard let eq = line.firstIndex(of: "=") else { continue }
+                result[String(line[..<eq])] = String(line[line.index(after: eq)...])
+            }
+        } catch {
+            result = [:]
+        }
+        return result
+    }()
+
     /// Evita que dos lanzamientos de Steam concurrentes (p.ej. "Lanzar Steam" y
     /// "Jugar" a la vez) se maten entre sí mientras el cliente aún carga.
     private var steamStarting = false
@@ -1002,6 +1031,7 @@ final class WineManager {
         // "InitializeEngineGraphics failed" — por eso funcionaba lanzado a mano
         // (que hereda el entorno del shell) pero no desde la app.
         var fullEnv = ProcessInfo.processInfo.environment
+        for (key, value) in Self.userShellEnvironment { fullEnv[key] = value }
         for (key, value) in environment { fullEnv[key] = value }
         process.environment = fullEnv
 
