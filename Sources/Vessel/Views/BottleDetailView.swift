@@ -12,6 +12,8 @@ struct BottleDetailView: View {
     @State private var accountService = SteamAccountService()
     @State private var ownedGames: [SteamAccountService.OwnedGame] = []
     @State private var installingAppIds: Set<String> = []
+    @State private var apiKeyInput = ""
+    @State private var loadingLibrary = false
     @State private var localBottle: Bottle
     @State private var dxvkInstalled: Bool = false
     @State private var reinstallingDXVK = false
@@ -36,6 +38,7 @@ struct BottleDetailView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                 }
+                apiKeyPrompt
                 gamesSection
                 librarySection
             }
@@ -180,13 +183,52 @@ struct BottleDetailView: View {
         }
     }
 
+    /// Panel para pegar la clave Web API de Steam y cargar la biblioteca cuando el
+    /// perfil es privado y aún no hay juegos (ni instalados ni en biblioteca).
+    @ViewBuilder private var apiKeyPrompt: some View {
+        if localBottle.games.isEmpty && ownedGames.isEmpty && SteamAccountService.webAPIKey.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Carga tu biblioteca").font(.title2).fontWeight(.semibold)
+                Text("Tu perfil de Steam es privado, así que necesito tu clave Web API (gratis, se genera en 10 segundos y no comparte nada). Con ella, Vessel carga toda tu biblioteca para instalar y jugar desde aquí.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Link(destination: URL(string: "https://steamcommunity.com/dev/apikey")!) {
+                    Label("Obtener mi clave de Steam", systemImage: "key.fill")
+                }
+                HStack {
+                    TextField("Pega aquí tu clave (32 caracteres)", text: $apiKeyInput)
+                        .textFieldStyle(.roundedBorder)
+                    Button {
+                        SteamAccountService.webAPIKey = apiKeyInput
+                        Task { await loadSteamLibrary() }
+                    } label: {
+                        if loadingLibrary {
+                            HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Cargando…") }
+                        } else {
+                            Text("Cargar biblioteca")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(apiKeyInput.trimmingCharacters(in: .whitespaces).count < 16 || loadingLibrary)
+                }
+            }
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
+
     /// Carga la biblioteca completa (owned) de la cuenta logueada en el bottle.
     private func loadSteamLibrary() async {
         guard let account = accountService.detectAccount(bottle: localBottle) else { return }
+        loadingLibrary = true
+        defer { loadingLibrary = false }
         let owned = await accountService.fetchOwnedGames(steamID64: account.steamID64)
         if !owned.isEmpty {
             ownedGames = owned
             log.log("Biblioteca de Steam cargada: \(owned.count) juego(s) de \(account.personaName)", level: .info)
+        } else {
+            log.log("Biblioteca de \(account.personaName) vacía (perfil privado o sin clave API)", level: .warn)
         }
     }
 

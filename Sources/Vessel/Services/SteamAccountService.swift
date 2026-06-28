@@ -60,10 +60,44 @@ final class SteamAccountService {
         return nil
     }
 
-    /// Carga la biblioteca COMPLETA (owned) del usuario desde el endpoint público de
-    /// Steam Community. Requiere que el perfil/biblioteca sea público; si es privado
-    /// devuelve vacío (y la UI cae a mostrar solo los instalados).
+    /// Clave Web API de Steam del usuario (https://steamcommunity.com/dev/apikey).
+    /// Permite cargar la biblioteca completa AUNQUE el perfil sea privado.
+    static var webAPIKey: String {
+        get { UserDefaults.standard.string(forKey: "steam.webApiKey") ?? "" }
+        set { UserDefaults.standard.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "steam.webApiKey") }
+    }
+
+    /// Carga la biblioteca COMPLETA (owned) del usuario:
+    ///  1. Con la **Web API key** (GetOwnedGames) — funciona también con perfil privado.
+    ///  2. Si no hay key, cae al endpoint público de Steam Community (requiere perfil
+    ///     de juegos público).
     func fetchOwnedGames(steamID64: String) async -> [OwnedGame] {
+        let key = Self.webAPIKey
+        if !key.isEmpty, let viaAPI = await fetchViaWebAPI(steamID64: steamID64, key: key), !viaAPI.isEmpty {
+            return viaAPI
+        }
+        return await fetchViaPublicXML(steamID64: steamID64)
+    }
+
+    private func fetchViaWebAPI(steamID64: String, key: String) async -> [OwnedGame]? {
+        let urlStr = "https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/?key=\(key)&steamid=\(steamID64)&include_appinfo=1&include_played_free_games=1&format=json"
+        guard let url = URL(string: urlStr) else { return nil }
+        guard let (data, response) = try? await URLSession.shared.data(from: url),
+              let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            return nil
+        }
+        struct Payload: Decodable {
+            struct Inner: Decodable { let games: [Game]? }
+            struct Game: Decodable { let appid: Int; let name: String? }
+            let response: Inner
+        }
+        guard let decoded = try? JSONDecoder().decode(Payload.self, from: data) else { return nil }
+        return (decoded.response.games ?? []).map {
+            OwnedGame(appId: String($0.appid), name: $0.name ?? "App \($0.appid)")
+        }
+    }
+
+    private func fetchViaPublicXML(steamID64: String) async -> [OwnedGame] {
         guard let url = URL(string: "https://steamcommunity.com/profiles/\(steamID64)/games?tab=all&xml=1") else {
             return []
         }
