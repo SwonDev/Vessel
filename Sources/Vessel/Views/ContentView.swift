@@ -7,14 +7,6 @@ struct ContentView: View {
     @State private var showingAbout = false
     @State private var showingCreateSheet = false
 
-    private let store = BottleStore.shared
-
-    /// La bottle interna que representa la tienda Steam. El usuario nunca ve el
-    /// concepto de bottle: para él es simplemente "Steam".
-    private var steamBottle: Bottle? {
-        store.bottles.sorted { $0.lastUsedAt > $1.lastUsedAt }.first
-    }
-
     var body: some View {
         NavigationSplitView {
             StoreSidebar(selection: $selectedStore)
@@ -47,12 +39,7 @@ struct ContentView: View {
     @ViewBuilder private var detailView: some View {
         switch selectedStore {
         case .steam:
-            if let bottle = steamBottle {
-                BottleDetailView(bottle: bottle)
-                    .id(bottle.id)
-            } else {
-                EmptyStateView(onCreate: { showingCreateSheet = true })
-            }
+            SteamStoreView()
         default:
             StoreConnectView(store: selectedStore)
         }

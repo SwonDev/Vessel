@@ -36,7 +36,6 @@ struct BottleDetailView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                 }
-                quickActions
                 gamesSection
                 librarySection
             }
@@ -239,26 +238,14 @@ struct BottleDetailView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(localBottle.name)
-                    .font(.largeTitle)
-                    .fontWeight(.bold)
-                Spacer()
-                Text(localBottle.architecture.uppercased())
-                    .font(.caption)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(.purple.opacity(0.2), in: Capsule())
-                    .foregroundStyle(.purple)
-            }
-            HStack(spacing: 16) {
-                Label(localBottle.windowsVersion, systemImage: "windows")
-                Label(localBottle.winePath.split(separator: "/").last.map(String.init) ?? "wine", systemImage: "wineglass")
-                Label("\(localBottle.games.count) juegos", systemImage: "gamecontroller")
-            }
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Steam")
+                .font(.largeTitle)
+                .fontWeight(.bold)
+            let n = localBottle.games.count
+            Label("\(n) juego\(n == 1 ? "" : "s") instalado\(n == 1 ? "" : "s")", systemImage: "gamecontroller")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
         }
     }
 

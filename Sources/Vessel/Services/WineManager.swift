@@ -673,9 +673,34 @@ final class WineManager {
 
     /// True si Steam ya descargó su cliente completo (existe `steamui.dll`). En una
     /// instalación nueva no existe hasta que Steam hace su primer bootstrap.
-    private func isSteamBootstrapped(in bottle: Bottle) -> Bool {
+    func isSteamBootstrapped(in bottle: Bottle) -> Bool {
         let steamDir = "\(bottle.prefixPath)/drive_c/Program Files (x86)/Steam"
         return FileManager.default.fileExists(atPath: "\(steamDir)/steamui.dll")
+    }
+
+    /// Deja Steam LISTO para iniciar sesión (login visible, sin pantalla negra):
+    ///  1. Si es una instalación fresh, hace el primer bootstrap (descarga del cliente)
+    ///     en crudo y espera a que termine.
+    ///  2. Cierra ese Steam y lo relanza ya CON el wrapper de steamwebhelper, que es lo
+    ///     que evita la pantalla negra de CEF en el login.
+    func ensureSteamReadyForLogin(in bottle: Bottle, progress: @escaping @Sendable (String) -> Void) async throws {
+        let clientWine = resolveClientWine(for: bottle)
+        if !isSteamBootstrapped(in: bottle) {
+            progress("Descargando el cliente de Steam…")
+            _ = try await launchSteam(in: bottle)         // bootstrap en crudo
+            for _ in 0..<150 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if isSteamBootstrapped(in: bottle) { break }
+            }
+            // Cerrar el Steam del bootstrap para relanzarlo limpio con el wrapper.
+            try? await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
+            try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+        // Ya bootstrapped → este lanzamiento aplica wrapper + steam.cfg + caché limpia,
+        // así el login se ve (no pantalla negra).
+        progress("Abriendo Steam para iniciar sesión…")
+        _ = try await launchSteam(in: bottle)
     }
 
     /// Instala un juego de la biblioteca **desde Vessel**: asegura el cliente Steam

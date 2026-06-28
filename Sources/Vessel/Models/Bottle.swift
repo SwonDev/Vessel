@@ -148,7 +148,12 @@ final class BottleStore {
     func addGame(_ game: GameInstall, to bottleID: UUID) {
         if let i = bottles.firstIndex(where: { $0.id == bottleID }) {
             var newGame = game
-            newGame.installPath = bottles[i].prefixPath
+            // installPath debe ser la carpeta del JUEGO, nunca el prefijo del bottle
+            // (apuntarlo al prefijo causó borrar el prefijo entero al desinstalar). Si
+            // viene vacío, se deriva de la carpeta del ejecutable.
+            if newGame.installPath.isEmpty {
+                newGame.installPath = (newGame.executablePath as NSString).deletingLastPathComponent
+            }
             bottles[i].games.append(newGame)
             save()
         }
