@@ -114,6 +114,12 @@ final class DependencyManagerTests: XCTestCase {
         XCTAssertFalse(summary.contains("harmless line"))
     }
 
+    func testSteamLaunchUsesCompatibilityArguments() {
+        XCTAssertTrue(WineManager.steamLaunchArguments.contains("-cef-disable-gpu"))
+        XCTAssertTrue(WineManager.steamLaunchArguments.contains("-cef-disable-sandbox"))
+        XCTAssertTrue(WineManager.steamLaunchArguments.contains("-no-cef-sandbox"))
+    }
+
     @MainActor
     func testLiveWineAutoInstallWhenEnabled() async throws {
         guard ProcessInfo.processInfo.environment["VESSEL_RUN_LIVE_INSTALL_TEST"] == "1" else {

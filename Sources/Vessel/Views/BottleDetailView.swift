@@ -6,9 +6,13 @@ struct BottleDetailView: View {
     @State private var statusMessage: String?
     @State private var showingInstaller = false
     @State private var wineManager = WineManager()
+    @State private var importer = SteamLibraryImporter()
     @State private var localBottle: Bottle
+    @State private var dxvkInstalled: Bool = false
+    @State private var reinstallingDXVK = false
 
     private let store = BottleStore.shared
+    private let log = LogStore.shared
 
     init(bottle: Bottle) {
         self.bottle = bottle
@@ -19,6 +23,14 @@ struct BottleDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 header
+                if let statusMessage {
+                    Text(statusMessage)
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                        .padding()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                }
                 quickActions
                 gamesSection
                 configurationSection
@@ -29,7 +41,36 @@ struct BottleDetailView: View {
         .sheet(isPresented: $showingInstaller) {
             SteamInstallerView(bottle: localBottle, wineManager: wineManager) {
                 showingInstaller = false
+                Task { await refreshDXVKStatus() }
             }
+        }
+        .task {
+            await refreshDXVKStatus()
+            await autoImportGames()
+        }
+    }
+
+    /// Escanea el Steam del bottle y añade a la lista los juegos instalados que aún
+    /// no estén. Hace que aparezcan automáticamente con su botón "Jugar" (wine-dxmt).
+    private func autoImportGames() async {
+        let found = importer.scanBottleGames(bottle: localBottle)
+        var added = false
+        for g in found where !localBottle.games.contains(where: {
+            $0.steamAppId == g.appId || $0.executablePath == g.executablePath
+        }) {
+            let game = GameInstall(
+                name: g.name,
+                executablePath: g.executablePath,
+                steamAppId: g.appId,
+                installPath: g.installPath,
+                coverImageURL: g.coverURL
+            )
+            store.addGame(game, to: localBottle.id)
+            added = true
+        }
+        if added, let updated = store.bottles.first(where: { $0.id == localBottle.id }) {
+            localBottle = updated
+            log.log("Auto-importados \(found.count) juego(s) de Steam en \(localBottle.name)", level: .info)
         }
     }
 
@@ -115,6 +156,31 @@ struct BottleDetailView: View {
                 Toggle("DXVK (D3D → Vulkan)", isOn: bindingForBottle(\.dxvkEnabled))
                 Toggle("DXMT (D3D → Metal nativo)", isOn: bindingForBottle(\.dxmtEnabled))
                 Divider().padding(.vertical, 4)
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("DXVK").font(.callout).fontWeight(.medium)
+                        Text(dxvkStatusText)
+                            .font(.caption)
+                            .foregroundStyle(dxvkInstalled ? .green : .orange)
+                    }
+                    Spacer()
+                    if !dxvkInstalled {
+                        Button {
+                            Task { await reinstallDXVK() }
+                        } label: {
+                            if reinstallingDXVK {
+                                HStack { ProgressView().controlSize(.small); Text("Instalando…") }
+                            } else {
+                                Text("Instalar ahora")
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(reinstallingDXVK)
+                    }
+                }
+
+                Divider().padding(.vertical, 4)
                 LabeledContent("Ruta de Wine") {
                     Text(localBottle.winePath)
                         .font(.caption.monospaced())
@@ -145,10 +211,12 @@ struct BottleDetailView: View {
 
     private func launchSteam() async {
         isLaunching = true
+        statusMessage = nil
         defer { isLaunching = false }
         do {
-            _ = try await wineManager.launch(executable: localBottle.steamPath, in: localBottle)
+            _ = try await wineManager.launchSteam(in: localBottle)
             store.touch(localBottle.id)
+            await refreshDXVKStatus()
         } catch {
             statusMessage = error.localizedDescription
         }
@@ -156,8 +224,36 @@ struct BottleDetailView: View {
 
     private func launchGame(_ game: GameInstall) async {
         do {
-            _ = try await wineManager.launch(executable: game.executablePath, in: localBottle)
+            _ = try await wineManager.launch(
+                executable: game.executablePath,
+                in: localBottle,
+                steamAppId: game.steamAppId
+            )
             store.touchGame(game.id, in: localBottle.id)
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    private func refreshDXVKStatus() async {
+        dxvkInstalled = wineManager.isDXVKInstalled(in: localBottle)
+    }
+
+    private var dxvkStatusText: String {
+        if dxvkInstalled {
+            return "Integrado en el motor Wine-DXMT (3Shain)"
+        } else {
+            return "No instalado — Steam necesita DXVK para renderizar"
+        }
+    }
+
+    private func reinstallDXVK() async {
+        reinstallingDXVK = true
+        statusMessage = nil
+        defer { reinstallingDXVK = false }
+        do {
+            try await wineManager.reinstallDXVK(in: localBottle)
+            await refreshDXVKStatus()
         } catch {
             statusMessage = error.localizedDescription
         }
@@ -190,11 +286,24 @@ struct GameCard: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
                     .fill(.purple.opacity(0.15))
-                    .aspectRatio(1, contentMode: .fit)
-                Image(systemName: "gamecontroller.fill")
-                    .font(.system(size: 40))
-                    .foregroundStyle(.purple)
+                if let cover = game.coverImageURL, let url = URL(string: cover) {
+                    AsyncImage(url: url) { phase in
+                        if let image = phase.image {
+                            image.resizable().aspectRatio(contentMode: .fill)
+                        } else {
+                            Image(systemName: "gamecontroller.fill")
+                                .font(.system(size: 40))
+                                .foregroundStyle(.purple)
+                        }
+                    }
+                } else {
+                    Image(systemName: "gamecontroller.fill")
+                        .font(.system(size: 40))
+                        .foregroundStyle(.purple)
+                }
             }
+            .aspectRatio(2.0/3.0, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
             Text(game.name).font(.headline).lineLimit(1)
             if let last = game.lastPlayedAt {
                 Text("Última: \(last.formatted(date: .abbreviated, time: .shortened))")

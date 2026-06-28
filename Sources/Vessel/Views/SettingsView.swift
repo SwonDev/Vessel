@@ -4,7 +4,7 @@ import AppKit
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var dependencyManager = DependencyManager()
-    @State private var logStore = LogStore()
+    private var logStore = LogStore.shared
     @State private var checkResults: [DependencyManager.CheckResult] = []
     @State private var wineDownloading = false
     @State private var wineStatusText = ""

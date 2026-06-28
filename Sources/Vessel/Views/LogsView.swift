@@ -2,7 +2,7 @@ import SwiftUI
 
 struct LogsView: View {
     @Environment(\.dismiss) private var dismiss
-    @State private var logStore = LogStore()
+    private var logStore = LogStore.shared
     @State private var filter: LogStore.Level?
 
     var body: some View {

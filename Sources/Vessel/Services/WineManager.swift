@@ -12,23 +12,77 @@ final class WineManager {
         case noEngine
         case launchFailed(String)
         case installationFailed(String)
+        case dxvkFailed(String)
 
         var errorDescription: String? {
             switch self {
             case .noEngine: return "Wine no instalado. Vessel lo descargará automáticamente."
             case .launchFailed(let msg): return "Error al lanzar: \(msg)"
             case .installationFailed(let msg): return "Error en la instalación: \(msg)"
+            case .dxvkFailed(let msg): return "Error instalando DXVK: \(msg)"
             }
         }
     }
 
     private let dependencyManager = DependencyManager()
+    private let dxvkManager = DXVKManager()
+    private let dxmtManager = DXMTManager()
+    private let wrapperInstaller = SteamWebHelperWrapperInstaller()
+    private let gameWrapperInstaller = GameWrapperInstaller()
+    private let launchOptionsManager = SteamLaunchOptionsManager()
     private let steamInstallerURL = URL(string: SteamConstants.setupURL)!
+    private let log = LogStore.shared
 
     /// Resuelve el binario de Wine: prefiere el portable descargado por Vessel,
     /// si no está usa GPTK de Apple. Nunca toca /Applications.
     func resolveWineBinary() -> String? {
         detectWineInstallations().first?.path
+    }
+
+    // MARK: - Doble motor (cliente Steam vs juegos D3D11)
+
+    /// Motor para el CLIENTE de Steam y apps generales: Gcenx wine-osx64
+    /// (Wine completo cuyo Chromium/webhelper funciona). Fallback: bottle.winePath.
+    func resolveClientWine(for bottle: Bottle) -> String {
+        WineEngineLocator.clientWineBinary() ?? bottle.winePath
+    }
+
+    /// Motor para JUEGOS D3D11: wine-dxmt (DXMT builtin → Metal nativo, FL 11_0).
+    /// Fallback: motor cliente o bottle.winePath.
+    func resolveGameWine(for bottle: Bottle) -> String {
+        WineEngineLocator.gameWineBinary()
+            ?? WineEngineLocator.clientWineBinary()
+            ?? bottle.winePath
+    }
+
+    /// Escribe `steam.cfg` con `BootStrapperInhibitAll` para que Steam NO se
+    /// autoactualice/verifique. Sin esto, cuando Steam se relanza sin
+    /// `-noverifyfiles` detecta el wrapper como corrupto, intenta actualizar el
+    /// cliente, la descarga falla bajo Wine (http error 0) y queda ladrillado
+    /// con "Failed to load steamui.dll". Idempotente.
+    func ensureSteamConfig(in bottle: Bottle) {
+        let steamDir = "\(bottle.prefixPath)/drive_c/Program Files (x86)/Steam"
+        guard FileManager.default.fileExists(atPath: steamDir) else { return }
+        let cfg = "\(steamDir)/steam.cfg"
+        let contents = "BootStrapperInhibitAll=enable\nBootStrapperForceSelfUpdate=disable\n"
+        try? contents.write(toFile: cfg, atomically: true, encoding: .utf8)
+    }
+
+    /// Borra la caché de CEF/htmlcache del prefijo. Tras los crashes del proceso
+    /// GPU de Chromium la caché se corrompe y provoca el error de transporte
+    /// 0x3008. Limpiarla antes de lanzar el cliente evita ese estado.
+    func cleanCEFCache(in bottle: Bottle) {
+        let fm = FileManager.default
+        let usersDir = "\(bottle.prefixPath)/drive_c/users"
+        let users = (try? fm.contentsOfDirectory(atPath: usersDir)) ?? []
+        for user in users {
+            for sub in ["AppData/Local/Steam/htmlcache", "AppData/Local/CEF"] {
+                let path = "\(usersDir)/\(user)/\(sub)"
+                if fm.fileExists(atPath: path) { try? fm.removeItem(atPath: path) }
+            }
+        }
+        let cfgCache = "\(bottle.prefixPath)/drive_c/Program Files (x86)/Steam/config/htmlcache"
+        if fm.fileExists(atPath: cfgCache) { try? fm.removeItem(atPath: cfgCache) }
     }
 
     func detectWineInstallations() -> [(name: String, path: String, version: String)] {
@@ -44,6 +98,7 @@ final class WineManager {
             atPath: path,
             withIntermediateDirectories: true
         )
+        log.log("Inicializando prefix Wine en \(path)", level: .info)
         try await runWineTool(
             winePath: winePath,
             toolName: "wineboot",
@@ -51,11 +106,120 @@ final class WineManager {
             toolArguments: ["--init"],
             prefix: path
         )
+        log.log("Prefix inicializado", level: .info)
+    }
+
+    /// Configura un bottle recién creado. Con wine-dxmt (3Shain), DXMT+DXVK
+    /// ya están integrados en los builtin y no necesitan instalación externa.
+    /// Con wine-osx64 (Gcenx), instala DXMT y DXVK externos.
+    func configureBottle(_ bottle: Bottle) async throws {
+        if isUsingDXMTEngine() {
+            log.log("Usando wine-dxmt (3Shain): DXMT+DXVK integrados en builtin, sin instalación externa", level: .info)
+            return
+        }
+
+        // DXMT para D3D11/D3D10/DXGI (Metal nativo) — juegos modernos
+        if !dxmtManager.isInstalled(in: bottle) {
+            log.log("Instalando DXMT en \(bottle.name)…", level: .info)
+            do {
+                try await dxmtManager.install(in: bottle) { msg, pct in
+                    Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct*100))%)", level: .debug) }
+                }
+                log.log("DXMT instalado correctamente", level: .info)
+            } catch let error as DXMTManager.DXMTError {
+                log.log("Fallo DXMT: \(error.localizedDescription)", level: .error)
+                throw WineError.dxvkFailed("DXMT: \(error.localizedDescription)")
+            }
+        } else {
+            log.log("DXMT ya instalado en \(bottle.name)", level: .debug)
+        }
+
+        // DXVK para D3D8/D3D9 (Vulkan → MoltenVK) — juegos legacy
+        if bottle.dxvkEnabled, !dxvkManager.isInstalled(in: bottle) {
+            log.log("Instalando DXVK en \(bottle.name)…", level: .info)
+            do {
+                try await dxvkManager.install(in: bottle) { msg, pct in
+                    Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct*100))%)", level: .debug) }
+                }
+                log.log("DXVK instalado correctamente", level: .info)
+            } catch let error as DXVKManager.DXVKError {
+                log.log("Fallo DXVK: \(error.localizedDescription)", level: .error)
+                throw WineError.dxvkFailed(error.localizedDescription)
+            }
+        } else if bottle.dxvkEnabled {
+            log.log("DXVK ya instalado en \(bottle.name)", level: .debug)
+        }
+    }
+
+    /// Reinstala DXMT en un bottle existente (botón de la UI).
+    func reinstallDXMT(in bottle: Bottle) async throws {
+        log.log("Reinstalando DXMT en \(bottle.name)…", level: .info)
+        do {
+            try await dxmtManager.install(in: bottle) { msg, _ in
+                Task { @MainActor in LogStore.shared.log(msg, level: .debug) }
+            }
+            log.log("DXMT reinstalado", level: .info)
+        } catch let error as DXMTManager.DXMTError {
+            log.log("Fallo reinstalando DXMT: \(error.localizedDescription)", level: .error)
+            throw WineError.dxvkFailed("DXMT: \(error.localizedDescription)")
+        }
+    }
+
+    /// Asegura que DXMT está presente. Si no, lo instala. Idempotente.
+    /// Con wine-dxmt (3Shain), DXMT ya está integrado en los builtin.
+    func ensureDXMTInstalled(in bottle: Bottle) async throws {
+        if isUsingDXMTEngine() { return }
+        if dxmtManager.isInstalled(in: bottle) { return }
+        try await reinstallDXMT(in: bottle)
+    }
+
+    func isDXMTInstalled(in bottle: Bottle) -> Bool {
+        if isUsingDXMTEngine() { return true }
+        return dxmtManager.isInstalled(in: bottle)
+    }
+
+    /// Reinstala DXVK en un bottle existente (botón de la UI).
+    func reinstallDXVK(in bottle: Bottle) async throws {
+        log.log("Reinstalando DXVK en \(bottle.name)…", level: .info)
+        do {
+            try await dxvkManager.install(in: bottle) { msg, _ in
+                Task { @MainActor in LogStore.shared.log(msg, level: .debug) }
+            }
+            log.log("DXVK reinstalado", level: .info)
+        } catch let error as DXVKManager.DXVKError {
+            log.log("Fallo reinstalando DXVK: \(error.localizedDescription)", level: .error)
+            throw WineError.dxvkFailed(error.localizedDescription)
+        }
+    }
+
+    /// Asegura que DXVK está presente. Si no, lo instala. Idempotente.
+    /// Con wine-dxmt (3Shain), DXVK/DXMT ya están integrados en los builtin,
+    /// así que no hace nada.
+    func ensureDXVKInstalled(in bottle: Bottle) async throws {
+        if isUsingDXMTEngine() {
+            // wine-dxmt tiene DXMT+DXVK integrado en sus DLLs builtin.
+            // No necesita instalación externa.
+            return
+        }
+        if dxvkManager.isInstalled(in: bottle) { return }
+        try await reinstallDXVK(in: bottle)
+    }
+
+    func isDXVKInstalled(in bottle: Bottle) -> Bool {
+        // Con wine-dxmt, DXVK/DXMT están integrados en los builtin.
+        if isUsingDXMTEngine() { return true }
+        return dxvkManager.isInstalled(in: bottle)
     }
 
     func installSteam(bottle: Bottle) async throws {
+        let clientWine = resolveClientWine(for: bottle)
+
         if FileManager.default.fileExists(atPath: bottle.steamPath) {
-            try await terminateWineProcesses(winePath: bottle.winePath, prefix: bottle.prefixPath)
+            try await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
+            ensureSteamConfig(in: bottle)
+            try await ensureWrapperInstalled(in: bottle)
+            try? await launchOptionsManager.injectLaunchOptions(in: bottle)
+            try? await disableSteamAutoStart(winePath: clientWine, prefix: bottle.prefixPath)
             return
         }
 
@@ -65,6 +229,7 @@ final class WineManager {
             withIntermediateDirectories: true
         )
 
+        log.log("Descargando SteamSetup.exe…", level: .info)
         let (tempURL, response) = try await URLSession.shared.download(from: steamInstallerURL)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             throw WineError.installationFailed("Descarga de Steam falló con HTTP \(http.statusCode)")
@@ -74,16 +239,24 @@ final class WineManager {
         try? FileManager.default.removeItem(at: installerURL)
         try FileManager.default.moveItem(at: tempURL, to: installerURL)
 
+        log.log("Ejecutando instalador de Steam en el bottle (Gcenx)…", level: .info)
         let result = try await runWine(
-            winePath: bottle.winePath,
+            winePath: clientWine,
             arguments: [downloadPath, "/S"],
             prefix: bottle.prefixPath,
             environment: steamInstallEnvironment(prefix: bottle.prefixPath),
             allowNonZeroExit: true
         )
-        try await terminateWineProcesses(winePath: bottle.winePath, prefix: bottle.prefixPath)
+        try await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
 
         if FileManager.default.fileExists(atPath: bottle.steamPath) {
+            log.log("Steam instalado; configurando steam.cfg, wrapper y auto-start…", level: .info)
+            ensureSteamConfig(in: bottle)
+            try await ensureWrapperInstalled(in: bottle)
+            try? await launchOptionsManager.injectLaunchOptions(in: bottle)
+            // Steam se auto-registra en HKCU\...\Run para arrancar en silencio
+            // cada vez que Wine inicia cualquier proceso en el prefix. Lo eliminamos.
+            try? await disableSteamAutoStart(winePath: clientWine, prefix: bottle.prefixPath)
             return
         }
 
@@ -99,25 +272,298 @@ final class WineManager {
         )
     }
 
-    @discardableResult
-    func launch(executable: String, in bottle: Bottle, arguments: [String] = []) async throws -> Process {
-        let prefix = bottle.prefixPath
-        let env = [
+    /// Instala el wrapper de steamwebhelper si no está instalado.
+    /// El wrapper inyecta `--disable-gpu --single-process` en CEF para evitar
+    /// la pantalla negra causada por ANGLE/DXVK y el cross-process swapchain bug.
+    func ensureWrapperInstalled(in bottle: Bottle) async throws {
+        if wrapperInstaller.isInstalled(in: bottle) {
+            log.log("Wrapper steamwebhelper ya instalado", level: .debug)
+            return
+        }
+        log.log("Instalando wrapper steamwebhelper…", level: .info)
+        do {
+            try await wrapperInstaller.install(in: bottle)
+            log.log("Wrapper steamwebhelper instalado correctamente", level: .info)
+        } catch let error as SteamWebHelperWrapperInstaller.WrapperError {
+            log.log("Fallo instalando wrapper: \(error.localizedDescription)", level: .error)
+            // No abortar: Steam puede funcionar sin wrapper en algunos casos.
+            // El usuario verá el error en logs pero la app sigue.
+        }
+    }
+
+    /// Elimina la entrada `Steam` de `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+    /// Sin esto, Steam se auto-arranca cada vez que Wine ejecuta cualquier proceso en
+    /// el prefix (incluyendo las herramientas de DXVK), causando reaperturas incontrolables.
+    private func disableSteamAutoStart(winePath: String, prefix: String) async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: winePath)
+        process.arguments = [
+            "reg", "delete",
+            #"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"#,
+            "/v", "Steam",
+            "/f"
+        ]
+        process.environment = [
             "WINEPREFIX": prefix,
             "WINEDEBUG": "-all",
-            "DXVK_ASYNC": "1",
-            "MVK_CONFIG_LOG_LEVEL": "0"
+            "WINEDLLOVERRIDES": "winedbg.exe=d"
         ]
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: bottle.winePath)
-        process.arguments = [executable] + arguments
-        process.environment = env
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
         do {
             try process.run()
-            return process
+            process.waitUntilExit()
+            log.log("Auto-start de Steam deshabilitado en el registro", level: .info)
         } catch {
-            throw WineError.launchFailed(error.localizedDescription)
+            log.log("No se pudo quitar auto-start de Steam: \(error.localizedDescription)", level: .warn)
         }
+    }
+
+    @discardableResult
+    func launch(executable: String, in bottle: Bottle, arguments: [String] = [], steamAppId: String? = nil) async throws -> Process {
+        // Juegos D3D11 → motor wine-dxmt (DXMT→Metal, feature level 11_0).
+        // Aseguramos que el motor tiene DXMT integrado en su builtin; si no, los
+        // juegos usarían wined3d y fallarían con "InitializeEngineGraphics failed".
+        let gameWine = resolveGameWine(for: bottle)
+        try await ensureGameEngineDXMT(gameWine: gameWine)
+        // GARANTÍA de carga de DXMT: copiar las DLLs de DXMT JUNTO al ejecutable.
+        // Wine busca DLLs primero en la carpeta del exe; el builtin del motor NO se
+        // resuelve de forma fiable desde el contexto de la app (Wine da c0000135
+        // "DLL not found" al no encontrar d3d11). Con las DLLs junto al exe, siempre
+        // cargan.
+        ensureGameDXMTDLLs(gameExecutable: executable, gameWine: gameWine)
+        // Cerrar procesos previos (el cliente Steam corre en Gcenx y deja el prefix
+        // en su versión; hay que liberarlo antes de re-sincronizar a wine-dxmt).
+        log.log("Preparando prefijo para el juego…", level: .info)
+        try? await terminateWineProcesses(winePath: gameWine, prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+        // Re-sincronizar el prefix al motor de juegos. Imprescindible: tras lanzar
+        // el cliente Steam (Gcenx) el prefix queda desincronizado y DXMT no carga
+        // (el juego falla con InitializeEngineGraphics). `wineboot -u` lo restaura.
+        await resyncGamePrefix(gameWine: gameWine, prefix: bottle.prefixPath)
+        // Quitar DLLs nativas del prefix para que mande el DXMT builtin del motor.
+        cleanPrefixNativeGraphicsDLLs(in: bottle)
+
+        // Para juegos de Steam: `steam_appid.txt` + `SteamAppId` permiten que la
+        // Steamworks API arranque en modo standalone (sin el cliente Steam abierto,
+        // que además correría en otro motor). Sin esto algunos juegos no arrancan.
+        var env = gameLaunchEnvironment(prefix: bottle.prefixPath)
+        if let appId = steamAppId, !appId.isEmpty {
+            let gameDir = (executable as NSString).deletingLastPathComponent
+            try? appId.write(toFile: "\(gameDir)/steam_appid.txt", atomically: true, encoding: .utf8)
+            env["SteamAppId"] = appId
+            env["SteamGameId"] = appId
+        }
+
+        // Flags Unity (modo borderless fullscreen + DXMT). Solo se añaden a Unity.
+        let engineArgs = unityLaunchArguments(forExecutable: executable)
+        log.log("Lanzando juego con wine-dxmt (DXMT→Metal): \((executable as NSString).lastPathComponent)", level: .info)
+        return try await launchWineProcess(
+            winePath: gameWine,
+            prefix: bottle.prefixPath,
+            arguments: [executable] + engineArgs + arguments,
+            environment: env,
+            workingDirectory: (executable as NSString).deletingLastPathComponent
+        )
+    }
+
+    /// Detecta juegos Unity (tienen `UnityPlayer.dll` o carpeta `<exe>_Data` junto
+    /// al ejecutable) y devuelve los flags que DXMT necesita: modo ventana
+    /// (`-screen-fullscreen 0`) y `-force-d3d11-no-singlethreaded`. Para juegos no
+    /// Unity devuelve vacío.
+    func unityLaunchArguments(forExecutable executable: String) -> [String] {
+        let dir = (executable as NSString).deletingLastPathComponent
+        let exeName = ((executable as NSString).lastPathComponent as NSString).deletingPathExtension
+        let fm = FileManager.default
+        let isUnity = fm.fileExists(atPath: "\(dir)/UnityPlayer.dll")
+            || fm.fileExists(atPath: "\(dir)/\(exeName)_Data")
+        // Combinación validada para Unity + DXMT en Apple Silicon:
+        //  - `-force-d3d11-no-singlethreaded`: estabilidad de DXMT.
+        //  - `-screen-fullscreen 1 -window-mode borderless`: pantalla completa SIN
+        //    bordes. El fullscreen EXCLUSIVO (modo por defecto del juego) sí revienta
+        //    el swapchain de DXMT (InitializeEngineGraphics failed); el borderless se
+        //    ve a pantalla completa y funciona. Los avisos `unsupported swap effect`
+        //    / `DeviceTexture` de DXMT son inofensivos (el juego renderiza igual).
+        return isUnity
+            ? ["-force-d3d11-no-singlethreaded", "-screen-fullscreen", "1", "-window-mode", "borderless"]
+            : []
+    }
+
+    /// Garantiza que el motor de JUEGOS (wine-dxmt) tiene la `d3d11` de DXMT en su
+    /// builtin. Operación de motor, idempotente. Auto-repara motores ya instalados.
+    func ensureGameEngineDXMT(gameWine: String) async throws {
+        guard WineEngineLocator.isGameEngine(gameWine) else {
+            // El motor de juegos no es wine-dxmt; no hay DXMT integrable.
+            return
+        }
+        if dxmtManager.isInstalledInEngine(engineWinePath: gameWine) { return }
+        log.log("Integrando DXMT en el motor wine-dxmt (fix gráfico D3D11)…", level: .info)
+        do {
+            try await dxmtManager.installIntoEngine(engineWinePath: gameWine) { msg, pct in
+                Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct*100))%)", level: .debug) }
+            }
+            log.log("DXMT integrado en el motor", level: .info)
+        } catch let error as DXMTManager.DXMTError {
+            log.log("Fallo integrando DXMT en el motor: \(error.localizedDescription)", level: .error)
+            throw WineError.dxvkFailed("DXMT (motor): \(error.localizedDescription)")
+        }
+    }
+
+    /// Copia las DLLs de DXMT (d3d11/dxgi/d3d10*/winemetal) JUNTO al ejecutable del
+    /// juego, tomándolas del builtin del motor (donde `installIntoEngine` las puso).
+    /// Wine busca DLLs primero en la carpeta del exe, así que esto GARANTIZA que el
+    /// juego cargue DXMT sin depender de la resolución de builtin del prefijo (que
+    /// falla desde la app con c0000135). El `winemetal.so` (unix) se resuelve desde
+    /// el motor, no hace falta copiarlo.
+    func ensureGameDXMTDLLs(gameExecutable: String, gameWine: String) {
+        guard let engineRoot = WineEngineLocator.engineRoot(forWineExecutable: URL(fileURLWithPath: gameWine)) else { return }
+        let srcDir = engineRoot.appendingPathComponent("lib/wine/x86_64-windows").path
+        let gameDir = (gameExecutable as NSString).deletingLastPathComponent
+        let fm = FileManager.default
+        for dll in ["d3d11.dll", "dxgi.dll", "d3d10core.dll", "d3d10.dll", "d3d10_1.dll", "winemetal.dll"] {
+            let src = "\(srcDir)/\(dll)"
+            let dst = "\(gameDir)/\(dll)"
+            guard fm.fileExists(atPath: src) else { continue }
+            let srcSize = (try? fm.attributesOfItem(atPath: src)[.size] as? UInt64) ?? 0
+            let dstSize = (try? fm.attributesOfItem(atPath: dst)[.size] as? UInt64) ?? 0
+            if srcSize != dstSize {
+                try? fm.removeItem(atPath: dst)
+                try? fm.copyItem(atPath: src, toPath: dst)
+            }
+        }
+    }
+
+    /// Elimina del prefix las DLLs gráficas nativas (DXVK/DXMT) que un setup previo
+    /// dejó en system32/syswow64, para que se use el DXMT builtin del motor.
+    func cleanPrefixNativeGraphicsDLLs(in bottle: Bottle) {
+        let fm = FileManager.default
+        let dlls = ["d3d8", "d3d9", "d3d10", "d3d10_1", "d3d10core", "d3d11",
+                    "d3d12", "d3d12core", "dxgi", "winemetal", "nvapi64", "nvngx"]
+        for sub in ["system32", "syswow64"] {
+            let dir = "\(bottle.prefixPath)/drive_c/windows/\(sub)"
+            for dll in dlls {
+                let path = "\(dir)/\(dll).dll"
+                // Solo borrar si es una DLL "real" (>20 KB); respetar las fake de Wine.
+                if let size = try? fm.attributesOfItem(atPath: path)[.size] as? UInt64, size > 20_000 {
+                    try? fm.removeItem(atPath: path)
+                }
+            }
+        }
+    }
+
+    /// Entorno para JUEGOS en wine-dxmt: DXMT builtin (sin overrides d3d, así Wine
+    /// usa su d3d11→Metal builtin) + silenciar el instalador de Mono/Gecko que
+    /// aparece al actualizar el prefix con otro motor.
+    private func gameLaunchEnvironment(prefix: String) -> [String: String] {
+        [
+            "WINEPREFIX": prefix,
+            "WINEDEBUG": "-all",
+            "MVK_CONFIG_LOG_LEVEL": "0",
+            "WINEESYNC": "1",
+            "WINEFSYNC": "1",
+            "WINEDLLOVERRIDES": "mscoree,mshtml=d"
+        ]
+    }
+
+    /// Entorno para el CLIENTE de Steam en Gcenx. El render del webhelper lo hace
+    /// el wrapper (--disable-gpu, CPU), así que NO se pasan overrides d3d.
+    private func steamClientEnvironment(prefix: String) -> [String: String] {
+        [
+            "WINEPREFIX": prefix,
+            "WINEDEBUG": "-all",
+            "WINEESYNC": "1",
+            "WINEFSYNC": "1",
+            "SteamAppId": "753",
+            "SteamGameId": "753"
+        ]
+    }
+
+    @discardableResult
+    func launchSteam(in bottle: Bottle) async throws -> Process {
+        guard FileManager.default.fileExists(atPath: bottle.steamPath) else {
+            throw WineError.launchFailed("Steam no está instalado en este bottle.")
+        }
+
+        // El CLIENTE de Steam corre en Gcenx (Wine completo); su Chromium/webhelper
+        // funciona ahí (en wine-dxmt crashea el proceso GPU de CEF → 0x3008).
+        let clientWine = resolveClientWine(for: bottle)
+
+        // 1) steam.cfg: impide que Steam se autoactualice/verifique y se ladrille
+        //    ("Failed to load steamui.dll").
+        ensureSteamConfig(in: bottle)
+        // 2) Caché CEF limpia: evita el error de transporte 0x3008 por caché corrupta.
+        cleanCEFCache(in: bottle)
+        // 3) Wrapper de steamwebhelper (--disable-gpu --single-process → render CPU).
+        //    Imprescindible: el webhelper no puede usar GPU bajo Wine en macOS.
+        try await ensureWrapperInstalled(in: bottle)
+        // 4) Launch Options por juego (los juegos los lanza Vessel con wine-dxmt,
+        //    pero dejamos los flags Unity por si se lanzan desde el propio Steam).
+        try? await launchOptionsManager.injectLaunchOptions(in: bottle)
+
+        // Matar procesos Wine/Steam zombi previos (steam.exe, steamwebhelper…).
+        log.log("Terminando procesos Wine/Steam previos…", level: .info)
+        try await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+        try? await disableSteamAutoStart(winePath: clientWine, prefix: bottle.prefixPath)
+
+        log.log("Lanzando cliente Steam (Gcenx) en \(bottle.name)…", level: .info)
+        return try await launchWineProcess(
+            winePath: clientWine,
+            prefix: bottle.prefixPath,
+            arguments: [bottle.steamPath] + Self.steamLaunchArguments,
+            environment: steamClientEnvironment(prefix: bottle.prefixPath)
+        )
+    }
+
+    /// Mata procesos Wine huérfanos asociados a este prefix usando `pkill -f`
+    /// con la ruta del prefix. Más agresivo que `wineserver -k` cuando hay
+    /// procesos zombi de Steam CEF.
+    private func killOrphanWineProcesses(prefix: String) async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        process.arguments = ["-9", "-f", prefix]
+        process.standardOutput = FileHandle(forWritingAtPath: "/dev/null")
+        process.standardError = FileHandle(forWritingAtPath: "/dev/null")
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            // pkill devuelve non-zero si no hay procesos que matar: esperado.
+        }
+    }
+
+    /// Re-sincroniza el prefix al motor de JUEGOS (`wineboot -u`). Imprescindible:
+    /// el cliente Steam corre en Gcenx (wine 11) y deja el prefix en su versión;
+    /// al lanzar luego un juego con wine-dxmt (wine 9.9), DXMT no carga y el juego
+    /// falla con "InitializeEngineGraphics failed". `wineboot -u` restaura el estado
+    /// que DXMT necesita. Mono/Gecko silenciados para no mostrar su instalador.
+    private func resyncGamePrefix(gameWine: String, prefix: String) async {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: gameWine)
+        process.arguments = ["wineboot", "-u"]
+        process.environment = [
+            "WINEPREFIX": prefix,
+            "WINEDEBUG": "-all",
+            "WINEDLLOVERRIDES": "mscoree,mshtml=d"
+        ]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            log.log("No se pudo re-sincronizar el prefijo: \(error.localizedDescription)", level: .warn)
+        }
+        // CLAVE: matar el wineserver que deja `wineboot -u`, para que el juego
+        // arranque uno LIMPIO con el prefijo ya actualizado. Si el juego corre
+        // sobre el wineserver de wineboot, DXMT no engancha y falla con
+        // "InitializeEngineGraphics failed" (esta es la diferencia que hacía que
+        // funcionara lanzado a mano pero no desde Vessel).
+        try? await terminateWineProcesses(winePath: gameWine, prefix: prefix)
+        try? await killOrphanWineProcesses(prefix: prefix)
+        log.log("Prefijo re-sincronizado a wine-dxmt para el juego", level: .debug)
     }
 
     @discardableResult
@@ -211,6 +657,83 @@ final class WineManager {
         ]
     }
 
+    /// Para juegos lanzados directamente desde Vessel: si usa wine-dxmt (3Shain),
+    /// NO pasar WINEDLLOVERRIDES (sus builtin ya tienen DXMT). Si usa wine-osx64,
+    /// pasar DXMT+DXVK overrides.
+    private func defaultLaunchEnvironment(prefix: String, dxvkEnabled: Bool) -> [String: String] {
+        let isDXMTEngine = isUsingDXMTEngine()
+        var env: [String: String] = [
+            "WINEPREFIX": prefix,
+            "WINEDEBUG": "-all",
+            "MVK_CONFIG_LOG_LEVEL": "0",
+            "WINEESYNC": "1",
+            "WINEFSYNC": "1"
+        ]
+        if !isDXMTEngine {
+            env["WINEDLLOVERRIDES"] = Self.dxmtDllOverrides
+            env["DXVK_ASYNC"] = "1"
+        }
+        return env
+    }
+
+    /// Para Steam: si usa wine-dxmt (3Shain), NO pasar WINEDLLOVERRIDES porque
+    /// sus DLLs builtin ya tienen DXMT integrado. Forzar overrides nativos rompe.
+    /// Si usa wine-osx64 (Gcenx), pasar DXMT+DXVK overrides.
+    private func steamLaunchEnvironment(prefix: String, dxvkEnabled: Bool) -> [String: String] {
+        _ = dxvkEnabled
+        let isDXMTEngine = isUsingDXMTEngine()
+        var env: [String: String] = [
+            "WINEPREFIX": prefix,
+            "WINEDEBUG": "-all",
+            "MVK_CONFIG_LOG_LEVEL": "0",
+            "WINEESYNC": "1",
+            "WINEFSYNC": "1",
+            "SteamAppId": "753",
+            "SteamGameId": "753"
+        ]
+        if !isDXMTEngine {
+            env["WINEDLLOVERRIDES"] = Self.dxmtDllOverrides
+            env["DXVK_ASYNC"] = "1"
+        }
+        return env
+    }
+
+    /// Override de DLLs para forzar DXMT (D3D11→Metal) + DXVK (D3D8/D3D9→Vulkan).
+    /// `n` = native, `b` = builtin.
+    /// - D3D11/D3D10/DXGI/winemetal: DXMT (Metal nativo) — juegos modernos D3D11
+    /// - D3D8/D3D9: DXVK 1.10.3 (Vulkan → MoltenVK) — juegos legacy
+    /// - D3D12: builtin (VKD3D no configurado)
+    /// - nvapi64/nvngx: DXMT (NVIDIA API shim para que Unity no fallé)
+    nonisolated static let dxmtDllOverrides =
+        "d3d8=n,b; d3d9=n,b; d3d10=n,b; d3d10_1=n,b; d3d10core=n,b; d3d11=n,b; d3d12=b; d3d12core=b; dxgi=n,b; winemetal=n,b; nvapi64=n,b; nvngx=n,b; winedbg.exe=d"
+
+    /// Override de DLLs legacy (solo DXVK, sin DXMT). Se usa cuando el bottle
+    /// tiene DXVK pero no DXMT activado.
+    nonisolated static let dxvkDllOverrides =
+        "d3d8=n,b; d3d9=n,b; d3d10=n,b; d3d10_1=n,b; d3d10core=n,b; d3d11=n,b; d3d12=b; d3d12core=b; dxgi=n,b; winedbg.exe=d"
+
+    /// Flags de lanzamiento de Steam optimizados para Wine + DXVK en macOS.
+    /// NO usar `-cef-disable-gpu` ni `-noreactlogin`: producen pantalla negra
+    /// al forzar software compositing que Wine no hace bien en macOS.
+    /// `-no-cef-sandbox` es imprescindible para que CEF funcione en Wine.
+    /// `-skipinitialbootstrap` evita que Steam reinstale componentes al arrancar.
+    nonisolated static let steamLaunchArguments = [
+        "-no-cef-sandbox",
+        "-noverifyfiles",
+        "-skipinitialbootstrap",
+        "-skipstreamingdrivers",
+        "-vrdisable",
+        "-nobootstraperrorinprogress"
+    ]
+
+    /// Detecta si el motor Wine actual es wine-dxmt (3Shain) con DXMT integrado.
+    /// wine-dxmt tiene sus propios DLLs builtin con D3D11→Metal, por lo que NO
+    /// hay que pasar WINEDLLOVERRIDES (forzar native rompe la integración).
+    private func isUsingDXMTEngine() -> Bool {
+        let engineDir = WineEngineLocator.portableEngineDirectory()
+        return engineDir.lastPathComponent == WineEngineLocator.dxmtEngineName
+    }
+
     private func terminateWineProcesses(winePath: String, prefix: String) async throws {
         guard let wineserverPath = siblingTool(named: "wineserver", forWinePath: winePath) else {
             return
@@ -238,6 +761,53 @@ final class WineManager {
         process.waitUntilExit()
         let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         return ProcessResult(exitCode: process.terminationStatus, output: output)
+    }
+
+    private func launchWineProcess(
+        winePath: String,
+        prefix: String,
+        arguments: [String],
+        environment: [String: String],
+        workingDirectory: String? = nil
+    ) async throws -> Process {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: winePath)
+        process.arguments = arguments
+        // Directorio de trabajo = carpeta del juego (como hace Steam). CLAVE: con
+        // cwd en "/" (no escribible, que es lo que hereda un proceso lanzado por la
+        // app GUI) DXMT no puede crear su caché Metal y la carga de d3d11 falla
+        // (80029c4a → "failed to load directx dlls" → InitializeEngineGraphics).
+        if let wd = workingDirectory, FileManager.default.fileExists(atPath: wd) {
+            process.currentDirectoryURL = URL(fileURLWithPath: wd)
+        }
+        // HEREDAR el entorno base (HOME, PATH, TMPDIR, USER, DYLD_*…) y sobreponer
+        // las variables de Wine/DXMT. CLAVE: si se reemplaza el entorno entero (sin
+        // HOME/PATH), la inicialización de Metal/DXMT del juego falla con
+        // "InitializeEngineGraphics failed" — por eso funcionaba lanzado a mano
+        // (que hereda el entorno del shell) pero no desde la app.
+        var fullEnv = ProcessInfo.processInfo.environment
+        for (key, value) in environment { fullEnv[key] = value }
+        process.environment = fullEnv
+
+        // Capturar la salida del proceso a un log para diagnóstico real.
+        let logDir = "\(NSHomeDirectory())/Library/Logs/Vessel"
+        try? FileManager.default.createDirectory(atPath: logDir, withIntermediateDirectories: true)
+        let outPath = "\(logDir)/game-launch.log"
+        FileManager.default.createFile(atPath: outPath, contents: nil)
+        if let handle = FileHandle(forWritingAtPath: outPath) {
+            process.standardOutput = handle
+            process.standardError = handle
+        }
+
+        log.log("CMD: \((winePath as NSString).lastPathComponent) \(arguments.map { ($0 as NSString).lastPathComponent }.joined(separator: " "))", level: .debug)
+        do {
+            try process.run()
+            log.log("Proceso Wine lanzado (pid=\(process.processIdentifier))", level: .info)
+            return process
+        } catch {
+            try? await terminateWineProcesses(winePath: winePath, prefix: prefix)
+            throw WineError.launchFailed(error.localizedDescription)
+        }
     }
 
     nonisolated static func isRecoverableSteamServiceCrash(_ output: String) -> Bool {

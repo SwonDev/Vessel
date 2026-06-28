@@ -107,13 +107,80 @@ final class DependencyManager {
         )
     }
 
-    /// Descarga Wine portable desde el repo oficial de Gcenx, lo extrae,
-    /// lo firma con ad-hoc, y verifica que NO tiene quarantine.
-    /// 100% transparente para el usuario: no toca /Applications, no pide sudo.
+    /// Instala los DOS motores que Vessel necesita (arquitectura de doble motor):
+    ///  - **Gcenx wine-osx64** (Wine completo): motor del CLIENTE de Steam y apps.
+    ///  - **wine-dxmt** (3Shain, con símbolos macdrv): motor de JUEGOS D3D11, con
+    ///    la `d3d11` de DXMT integrada en su builtin (sin eso los juegos usarían
+    ///    wined3d y fallarían con "InitializeEngineGraphics failed").
+    ///
+    /// Idempotente: salta los motores ya presentes. Auto-descargable de cero.
     func installWinePortable(progress: @escaping @Sendable (String, Double) -> Void) async throws {
         try FileManager.default.createDirectory(atPath: enginesDirectory, withIntermediateDirectories: true)
 
-        progress("Buscando última versión de Wine…", 0.05)
+        // 1) Motor del CLIENTE de Steam: Gcenx wine-osx64.
+        let gcenxDir = "\(enginesDirectory)/\(WineEngineLocator.portableEngineName)"
+        if !FileManager.default.isExecutableFile(atPath: "\(gcenxDir)/bin/wine")
+            && !FileManager.default.isExecutableFile(atPath: "\(gcenxDir)/bin/wine64") {
+            progress("Instalando motor del cliente (Gcenx)…", 0.05)
+            try await installGcenxWine(progress: progress)
+        }
+
+        // 2) Motor de JUEGOS D3D11: wine-dxmt (3Shain).
+        let dxmtEngineDir = "\(enginesDirectory)/\(WineEngineLocator.dxmtEngineName)"
+        if !FileManager.default.isExecutableFile(atPath: "\(dxmtEngineDir)/bin/wine") {
+            progress("Instalando motor de juegos (wine-dxmt)…", 0.4)
+            try await installWineDXMT(progress: progress)
+        }
+
+        // 3) Integrar DXMT en el builtin del motor de juegos (fix gráfico D3D11).
+        if let gameWine = WineEngineLocator.gameWineBinary(enginesDirectory: enginesDirectory) {
+            progress("Integrando DXMT en el motor de juegos…", 0.85)
+            try? await DXMTManager().installIntoEngine(engineWinePath: gameWine, progress: progress)
+        }
+
+        progress("✓ Motores listos (cliente + juegos D3D11)", 1.0)
+    }
+
+    /// Descarga 3Shain/wine v9.9-mingw con soporte DXMT integrado.
+    private func installWineDXMT(progress: @escaping @Sendable (String, Double) -> Void) async throws {
+        progress("Descargando Wine-DXMT (3Shain v9.9, ~311 MB)…", 0.05)
+        let downloadURL = URL(string: "https://github.com/3Shain/wine/releases/download/v9.9-mingw/wine.tar.gz")!
+        let (tempURL, response) = try await URLSession.shared.download(from: downloadURL)
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw NSError(domain: "Vessel", code: http.statusCode,
+                          userInfo: [NSLocalizedDescriptionKey: "Descarga Wine-DXMT falló: HTTP \(http.statusCode)"])
+        }
+
+        progress("Extrayendo Wine-DXMT…", 0.50)
+        let finalEngineDir = "\(enginesDirectory)/\(WineEngineLocator.dxmtEngineName)"
+        let stagingDir = "\(enginesDirectory)/wine-dxmt-installing-\(UUID().uuidString)"
+        try? FileManager.default.removeItem(atPath: stagingDir)
+        try FileManager.default.createDirectory(atPath: stagingDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(atPath: stagingDir)
+            try? FileManager.default.removeItem(at: tempURL)
+        }
+
+        try await extractTar(at: tempURL, to: URL(fileURLWithPath: stagingDir))
+
+        // El tarball extrae como bin/, lib/, share/ directamente
+        try? FileManager.default.removeItem(atPath: finalEngineDir)
+        try FileManager.default.moveItem(atPath: stagingDir, toPath: finalEngineDir)
+
+        progress("Firmando binarios Wine-DXMT…", 0.90)
+        await adhocSignBinaries(in: finalEngineDir)
+
+        guard FileManager.default.isExecutableFile(atPath: "\(finalEngineDir)/bin/wine") else {
+            throw NSError(domain: "Vessel", code: 5,
+                          userInfo: [NSLocalizedDescriptionKey: "Wine-DXMT instalado pero bin/wine no es ejecutable"])
+        }
+
+        progress("✓ Wine-DXMT v9.9 listo", 1.0)
+    }
+
+    /// Descarga Wine portable desde el repo oficial de Gcenx (fallback).
+    private func installGcenxWine(progress: @escaping @Sendable (String, Double) -> Void) async throws {
+        progress("Buscando última versión de Wine (Gcenx)…", 0.05)
         let apiURL = URL(string: "https://api.github.com/repos/Gcenx/macOS_Wine_builds/releases/latest")!
         let (data, _) = try await URLSession.shared.data(from: apiURL)
 

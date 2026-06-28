@@ -208,6 +208,7 @@ struct CreateBottleView: View {
 
         do {
             try await wineManager.createBottle(at: bottle.prefixPath, winePath: bottle.winePath)
+            try await wineManager.configureBottle(bottle)
             store.add(bottle)
             dismiss()
         } catch {

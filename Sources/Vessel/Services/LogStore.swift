@@ -18,6 +18,8 @@ final class LogStore {
         let message: String
     }
 
+    static let shared = LogStore()
+
     private(set) var entries: [Entry] = []
     private let logger = Logger(subsystem: "com.swondev.vessel", category: "general")
     private let logFile: URL
