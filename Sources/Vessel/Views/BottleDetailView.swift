@@ -8,6 +8,7 @@ struct BottleDetailView: View {
     @State private var wineManager = WineManager()
     @State private var importer = SteamLibraryImporter()
     @State private var gamesWatcher = DirectoryWatcher()
+    @State private var gameToUninstall: GameInstall?
     @State private var localBottle: Bottle
     @State private var dxvkInstalled: Bool = false
     @State private var reinstallingDXVK = false
@@ -34,7 +35,6 @@ struct BottleDetailView: View {
                 }
                 quickActions
                 gamesSection
-                configurationSection
             }
             .padding(32)
         }
@@ -59,6 +59,44 @@ struct BottleDetailView: View {
                 startWatchingGames()
             }
         }
+        .alert("¿Desinstalar el juego?", isPresented: Binding(
+            get: { gameToUninstall != nil },
+            set: { if !$0 { gameToUninstall = nil } }
+        )) {
+            Button("Cancelar", role: .cancel) { gameToUninstall = nil }
+            Button("Desinstalar", role: .destructive) {
+                if let g = gameToUninstall { uninstallGame(g) }
+                gameToUninstall = nil
+            }
+        } message: {
+            Text(gameToUninstall.map { "Se borrarán del bottle los archivos de \u{201C}\($0.name)\u{201D}. Esta acción no se puede deshacer." } ?? "")
+        }
+    }
+
+    /// Quita el juego de la lista de Vessel (no borra archivos).
+    private func removeGameFromList(_ game: GameInstall) {
+        store.deleteGame(game.id, from: localBottle.id)
+        if let updated = store.bottles.first(where: { $0.id == localBottle.id }) {
+            localBottle = updated
+        }
+    }
+
+    /// Desinstala el juego: borra sus archivos del bottle (carpeta + appmanifest de
+    /// Steam) y lo quita de la lista. El watcher en tiempo real refleja el cambio.
+    private func uninstallGame(_ game: GameInstall) {
+        let fm = FileManager.default
+        if !game.installPath.isEmpty, fm.fileExists(atPath: game.installPath) {
+            try? fm.removeItem(atPath: game.installPath)
+        }
+        if let appId = game.steamAppId, !appId.isEmpty {
+            let manifest = "\(localBottle.prefixPath)/drive_c/Program Files (x86)/Steam/steamapps/appmanifest_\(appId).acf"
+            try? fm.removeItem(atPath: manifest)
+        }
+        store.deleteGame(game.id, from: localBottle.id)
+        if let updated = store.bottles.first(where: { $0.id == localBottle.id }) {
+            localBottle = updated
+        }
+        log.log("Juego desinstalado: \(game.name)", level: .info)
     }
 
     /// Vigila en tiempo real la carpeta `steamapps` del bottle: cuando Steam instala
@@ -163,6 +201,10 @@ struct BottleDetailView: View {
                     ForEach(localBottle.games) { game in
                         GameCard(game: game, prefixPath: localBottle.prefixPath) {
                             Task { await launchGame(game) }
+                        } onUninstall: {
+                            gameToUninstall = game
+                        } onRemove: {
+                            removeGameFromList(game)
                         }
                     }
                 }
@@ -303,6 +345,8 @@ struct GameCard: View {
     let game: GameInstall
     let prefixPath: String
     let onLaunch: () -> Void
+    var onUninstall: () -> Void = {}
+    var onRemove: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -315,15 +359,40 @@ struct GameCard: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            Button(action: onLaunch) {
-                Label("Jugar", systemImage: "play.fill").frame(maxWidth: .infinity)
+            HStack(spacing: 6) {
+                Button(action: onLaunch) {
+                    Label("Jugar", systemImage: "play.fill").frame(maxWidth: .infinity)
+                }
+                .controlSize(.small)
+                .buttonStyle(.borderedProminent)
+
+                Menu {
+                    Button(role: .destructive) { onUninstall() } label: {
+                        Label("Desinstalar juego", systemImage: "trash")
+                    }
+                    Button { onRemove() } label: {
+                        Label("Quitar de la lista", systemImage: "eye.slash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .controlSize(.small)
+                .fixedSize()
             }
-            .controlSize(.small)
-            .buttonStyle(.borderedProminent)
         }
         .padding(12)
         .background(.background, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator, lineWidth: 1))
+        .contextMenu {
+            Button(role: .destructive) { onUninstall() } label: {
+                Label("Desinstalar juego", systemImage: "trash")
+            }
+            Button { onRemove() } label: {
+                Label("Quitar de la lista", systemImage: "eye.slash")
+            }
+        }
     }
 }
 
