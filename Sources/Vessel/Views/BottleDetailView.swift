@@ -9,6 +9,9 @@ struct BottleDetailView: View {
     @State private var importer = SteamLibraryImporter()
     @State private var gamesWatcher = DirectoryWatcher()
     @State private var gameToUninstall: GameInstall?
+    @State private var accountService = SteamAccountService()
+    @State private var ownedGames: [SteamAccountService.OwnedGame] = []
+    @State private var installingAppIds: Set<String> = []
     @State private var localBottle: Bottle
     @State private var dxvkInstalled: Bool = false
     @State private var reinstallingDXVK = false
@@ -35,6 +38,7 @@ struct BottleDetailView: View {
                 }
                 quickActions
                 gamesSection
+                librarySection
             }
             .padding(32)
         }
@@ -49,6 +53,7 @@ struct BottleDetailView: View {
             await refreshDXVKStatus()
             await autoImportGames()
             startWatchingGames()
+            await loadSteamLibrary()
         }
         .onDisappear { gamesWatcher.stop() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -97,6 +102,58 @@ struct BottleDetailView: View {
             localBottle = updated
         }
         log.log("Juego desinstalado: \(game.name)", level: .info)
+    }
+
+    // MARK: - Biblioteca completa de Steam
+
+    /// Juegos de la biblioteca del usuario que aún NO están instalados.
+    private var notInstalledGames: [SteamAccountService.OwnedGame] {
+        let installedIds = Set(localBottle.games.compactMap { $0.steamAppId })
+        return ownedGames
+            .filter { !installedIds.contains($0.appId) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    @ViewBuilder private var librarySection: some View {
+        if !notInstalledGames.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Tu biblioteca · \(notInstalledGames.count) sin instalar")
+                    .font(.title2).fontWeight(.semibold)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 200))], spacing: 12) {
+                    ForEach(notInstalledGames) { game in
+                        LibraryGameCard(
+                            appId: game.appId,
+                            name: game.name,
+                            installing: installingAppIds.contains(game.appId)
+                        ) {
+                            Task { await installGame(game.appId) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Carga la biblioteca completa (owned) de la cuenta logueada en el bottle.
+    private func loadSteamLibrary() async {
+        guard let account = accountService.detectAccount(bottle: localBottle) else { return }
+        let owned = await accountService.fetchOwnedGames(steamID64: account.steamID64)
+        if !owned.isEmpty {
+            ownedGames = owned
+            log.log("Biblioteca de Steam cargada: \(owned.count) juego(s) de \(account.personaName)", level: .info)
+        }
+    }
+
+    /// Pide a Steam que instale el juego (desde Vessel). El watcher en tiempo real lo
+    /// moverá a "Juegos instalados" cuando termine la descarga.
+    private func installGame(_ appId: String) async {
+        installingAppIds.insert(appId)
+        defer { installingAppIds.remove(appId) }
+        do {
+            try await wineManager.installSteamGame(appId: appId, in: localBottle)
+        } catch {
+            statusMessage = "No se pudo iniciar la instalación: \(error.localizedDescription)"
+        }
     }
 
     /// Vigila en tiempo real la carpeta `steamapps` del bottle: cuando Steam instala
@@ -396,6 +453,42 @@ struct GameCard: View {
     }
 }
 
+/// Tarjeta de un juego de la biblioteca que aún NO está instalado: portada + botón
+/// "Instalar" (lo descarga Steam desde la propia vista de Vessel).
+struct LibraryGameCard: View {
+    let appId: String
+    let name: String
+    let installing: Bool
+    let onInstall: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            GameCoverView(appId: appId, title: name)
+                .aspectRatio(2.0/3.0, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .opacity(0.9)
+            Text(name).font(.headline).lineLimit(1)
+            Button(action: onInstall) {
+                if installing {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Abriendo Steam…")
+                    }
+                    .frame(maxWidth: .infinity)
+                } else {
+                    Label("Instalar", systemImage: "arrow.down.circle").frame(maxWidth: .infinity)
+                }
+            }
+            .controlSize(.small)
+            .buttonStyle(.bordered)
+            .disabled(installing)
+        }
+        .padding(12)
+        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator, lineWidth: 1))
+    }
+}
+
 /// Portada de juego: **portada vertical de alta resolución del CDN de Steam**
 /// (`library_600x900`) y, si no existe, un **placeholder limpio** (degradado +
 /// iniciales). Nunca un pixelado ni un hueco vacío. Recorte correcto (sin desbordar).
@@ -409,6 +502,11 @@ struct GameCoverView: View {
     init(game: GameInstall, prefixPath: String = "") {
         self.appId = game.steamAppId ?? ""
         self.title = game.name
+    }
+
+    init(appId: String, title: String) {
+        self.appId = appId
+        self.title = title
     }
 
     private var portraitURL: URL? {

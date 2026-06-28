@@ -663,6 +663,31 @@ final class WineManager {
         )
     }
 
+    /// Instala un juego de la biblioteca **desde Vessel**: asegura el cliente Steam
+    /// corriendo y le pasa `steam://install/<appid>` para que Steam lo descargue. El
+    /// watcher en tiempo real lo añadirá a la lista cuando termine la instalación.
+    func installSteamGame(appId: String, in bottle: Bottle) async throws {
+        guard FileManager.default.fileExists(atPath: bottle.steamPath) else {
+            throw WineError.launchFailed("Steam no está instalado en este bottle.")
+        }
+        let clientWine = resolveClientWine(for: bottle)
+        if !isWineProcessRunning(matching: "steamwebhelper") {
+            log.log("Abriendo Steam para instalar el juego…", level: .info)
+            _ = try? await launchSteam(in: bottle)
+            for _ in 0..<40 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if isWineProcessRunning(matching: "steamwebhelper") { break }
+            }
+        }
+        log.log("Solicitando a Steam la instalación del juego \(appId)…", level: .info)
+        _ = try await launchWineProcess(
+            winePath: clientWine,
+            prefix: bottle.prefixPath,
+            arguments: [bottle.steamPath, "steam://install/\(appId)"],
+            environment: steamClientEnvironment(prefix: bottle.prefixPath)
+        )
+    }
+
     /// Mata procesos Wine huérfanos asociados a este prefix usando `pkill -f`
     /// con la ruta del prefix. Más agresivo que `wineserver -k` cuando hay
     /// procesos zombi de Steam CEF.
