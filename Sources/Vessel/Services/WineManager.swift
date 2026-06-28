@@ -663,11 +663,14 @@ final class WineManager {
         log.log("Lanzando cliente Steam (\(engineLabel)) en \(bottle.name)…", level: .info)
         // En fresh, argumentos mínimos para no impedir el bootstrap inicial.
         let args = bootstrapped ? Self.steamLaunchArguments : ["-no-cef-sandbox"]
+        // CLAVE: cwd = carpeta de Steam (escribible). Con cwd en "/" (lo que hereda la
+        // app GUI) CEF no puede crear su caché y Steam se abre y se cierra solo.
         return try await launchWineProcess(
             winePath: clientWine,
             prefix: bottle.prefixPath,
             arguments: [bottle.steamPath] + args,
-            environment: steamClientEnvironment(prefix: bottle.prefixPath)
+            environment: steamClientEnvironment(prefix: bottle.prefixPath),
+            workingDirectory: (bottle.steamPath as NSString).deletingLastPathComponent
         )
     }
 
@@ -724,7 +727,8 @@ final class WineManager {
             winePath: clientWine,
             prefix: bottle.prefixPath,
             arguments: [bottle.steamPath, "steam://install/\(appId)"],
-            environment: steamClientEnvironment(prefix: bottle.prefixPath)
+            environment: steamClientEnvironment(prefix: bottle.prefixPath),
+            workingDirectory: (bottle.steamPath as NSString).deletingLastPathComponent
         )
     }
 
