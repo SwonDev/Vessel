@@ -86,22 +86,59 @@ struct BottleDetailView: View {
         }
     }
 
-    /// Desinstala el juego: borra sus archivos del bottle (carpeta + appmanifest de
-    /// Steam) y lo quita de la lista. El watcher en tiempo real refleja el cambio.
+    /// Desinstala el juego borrando SOLO su carpeta dentro de `steamapps/common`.
+    /// BLINDADO: la carpeta se deriva del `installdir` del appmanifest o del
+    /// `executablePath`, y se exige que sea una subcarpeta ESTRICTA de
+    /// `steamapps/common` (nunca el prefijo, ni `common`, ni rutas fuera de ahí).
+    /// `installPath` NO se usa: puede apuntar al prefijo entero.
     private func uninstallGame(_ game: GameInstall) {
         let fm = FileManager.default
-        if !game.installPath.isEmpty, fm.fileExists(atPath: game.installPath) {
-            try? fm.removeItem(atPath: game.installPath)
-        }
+        let steamCommon = "\(localBottle.prefixPath)/drive_c/Program Files (x86)/Steam/steamapps/common"
+        var folderToDelete: String?
+
         if let appId = game.steamAppId, !appId.isEmpty {
             let manifest = "\(localBottle.prefixPath)/drive_c/Program Files (x86)/Steam/steamapps/appmanifest_\(appId).acf"
+            if let content = try? String(contentsOfFile: manifest, encoding: .utf8),
+               let installdir = installDir(in: content), !installdir.isEmpty {
+                folderToDelete = "\(steamCommon)/\(installdir)"
+            }
             try? fm.removeItem(atPath: manifest)
         }
+        if folderToDelete == nil, let range = game.executablePath.range(of: "\(steamCommon)/") {
+            let rest = game.executablePath[range.upperBound...]
+            if let first = rest.split(separator: "/").first {
+                folderToDelete = "\(steamCommon)/\(first)"
+            }
+        }
+
+        // SEGURIDAD CRÍTICA: solo borrar una subcarpeta estricta de steamapps/common.
+        if let folder = folderToDelete,
+           folder.hasPrefix("\(steamCommon)/"),
+           folder != steamCommon,
+           (folder as NSString).lastPathComponent.count > 0,
+           fm.fileExists(atPath: folder) {
+            try? fm.removeItem(atPath: folder)
+            log.log("Juego desinstalado: \(game.name) (\(folder))", level: .info)
+        } else {
+            log.log("Desinstalar \(game.name): no se halló carpeta segura; solo se quita de la lista.", level: .warn)
+        }
+
         store.deleteGame(game.id, from: localBottle.id)
         if let updated = store.bottles.first(where: { $0.id == localBottle.id }) {
             localBottle = updated
         }
-        log.log("Juego desinstalado: \(game.name)", level: .info)
+    }
+
+    /// Extrae `"installdir" "X"` de un appmanifest .acf.
+    private func installDir(in manifest: String) -> String? {
+        for line in manifest.split(separator: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.lowercased().contains("\"installdir\"") {
+                let parts = t.components(separatedBy: "\"").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                if let last = parts.last, last.lowercased() != "installdir" { return last }
+            }
+        }
+        return nil
     }
 
     // MARK: - Biblioteca completa de Steam
