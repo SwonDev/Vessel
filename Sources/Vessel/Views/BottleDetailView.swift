@@ -14,6 +14,11 @@ struct BottleDetailView: View {
     @State private var installingAppIds: Set<String> = []
     @State private var apiKeyInput = ""
     @State private var loadingLibrary = false
+    @State private var steamCMD = SteamCMDManager()
+    @State private var showSteamCMDLogin = false
+    @State private var pendingInstallAppId: String?
+    @State private var installMessages: [String: String] = [:]
+    @AppStorage("steamcmd.user") private var steamCMDUser = ""
     @State private var localBottle: Bottle
     @State private var dxvkInstalled: Bool = false
     @State private var reinstallingDXVK = false
@@ -77,6 +82,15 @@ struct BottleDetailView: View {
             }
         } message: {
             Text(gameToUninstall.map { "Se borrarán del bottle los archivos de \u{201C}\($0.name)\u{201D}. Esta acción no se puede deshacer." } ?? "")
+        }
+        .sheet(isPresented: $showSteamCMDLogin) {
+            SteamCMDLoginView(suggestedUser: accountService.detectAccount(bottle: localBottle)?.accountName ?? "") { user in
+                steamCMDUser = user
+                if let appId = pendingInstallAppId {
+                    pendingInstallAppId = nil
+                    Task { await installGame(appId) }
+                }
+            }
         }
     }
 
@@ -173,7 +187,8 @@ struct BottleDetailView: View {
                         LibraryGameCard(
                             appId: game.appId,
                             name: game.name,
-                            installing: installingAppIds.contains(game.appId)
+                            installing: installingAppIds.contains(game.appId),
+                            statusText: installMessages[game.appId]
                         ) {
                             Task { await installGame(game.appId) }
                         }
@@ -235,13 +250,55 @@ struct BottleDetailView: View {
     /// Pide a Steam que instale el juego (desde Vessel). El watcher en tiempo real lo
     /// moverá a "Juegos instalados" cuando termine la descarga.
     private func installGame(_ appId: String) async {
-        installingAppIds.insert(appId)
-        defer { installingAppIds.remove(appId) }
-        do {
-            try await wineManager.installSteamGame(appId: appId, in: localBottle)
-        } catch {
-            statusMessage = "No se pudo iniciar la instalación: \(error.localizedDescription)"
+        let name = ownedGames.first(where: { $0.appId == appId })?.name ?? "App \(appId)"
+        // Requiere sesión de SteamCMD. Si no la hay, pedir login primero.
+        guard !steamCMDUser.isEmpty else {
+            pendingInstallAppId = appId
+            showSteamCMDLogin = true
+            return
         }
+        installingAppIds.insert(appId)
+        defer { installingAppIds.remove(appId); installMessages[appId] = nil }
+        do { try await steamCMD.ensureInstalled() } catch {
+            statusMessage = "No se pudo preparar SteamCMD."
+            return
+        }
+        let safeName = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "")
+        let installDir = "\(localBottle.prefixPath)/drive_c/Program Files (x86)/Steam/steamapps/common/\(safeName)"
+        installMessages[appId] = "Iniciando descarga…"
+        let ok = await steamCMD.installGame(appId: appId, user: steamCMDUser, installDir: installDir) { _, msg in
+            installMessages[appId] = msg
+        }
+        if ok, let exe = mainExecutable(in: installDir) {
+            let game = GameInstall(
+                name: name, executablePath: exe, steamAppId: appId, installPath: installDir,
+                coverImageURL: "https://cdn.akamai.steamstatic.com/steam/apps/\(appId)/library_600x900_2x.jpg"
+            )
+            store.addGame(game, to: localBottle.id)
+            if let updated = store.bottles.first(where: { $0.id == localBottle.id }) { localBottle = updated }
+            ownedGames.removeAll { $0.appId == appId }
+        } else if !ok {
+            statusMessage = "La instalación de \(name) no se completó. Revisa los logs."
+        }
+    }
+
+    /// Localiza el ejecutable principal del juego descargado (ignora redistribuibles).
+    private func mainExecutable(in dir: String) -> String? {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(atPath: dir) else { return nil }
+        var candidates: [String] = []
+        for case let path as String in enumerator where path.lowercased().hasSuffix(".exe") {
+            let lower = path.lowercased()
+            if lower.contains("redist") || lower.contains("vcredist") || lower.contains("crashpad")
+                || lower.contains("unitycrash") || lower.contains("dxsetup") || lower.contains("dotnet") {
+                continue
+            }
+            candidates.append("\(dir)/\(path)")
+        }
+        if let launcher = candidates.first(where: { $0.lowercased().contains("launcher") || $0.lowercased().contains((dir as NSString).lastPathComponent.lowercased()) }) {
+            return launcher
+        }
+        return candidates.min(by: { $0.count < $1.count })
     }
 
     /// Vigila en tiempo real la carpeta `steamapps` del bottle: cuando Steam instala
@@ -535,6 +592,7 @@ struct LibraryGameCard: View {
     let appId: String
     let name: String
     let installing: Bool
+    var statusText: String? = nil
     let onInstall: () -> Void
 
     var body: some View {
@@ -548,7 +606,7 @@ struct LibraryGameCard: View {
                 if installing {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
-                        Text("Abriendo Steam…")
+                        Text(statusText ?? "Descargando…").lineLimit(1)
                     }
                     .frame(maxWidth: .infinity)
                 } else {
