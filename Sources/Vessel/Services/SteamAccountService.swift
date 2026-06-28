@@ -19,12 +19,45 @@ final class SteamAccountService {
         let name: String
     }
 
-    /// Detecta la cuenta logueada en el Steam del bottle leyendo `loginusers.vdf`.
-    /// Prefiere la marcada como `MostRecent`.
+    /// Detecta la cuenta logueada en el Steam del bottle. Intenta varias fuentes,
+    /// porque según el estado de Steam puede faltar `loginusers.vdf`:
+    ///  1. `config/loginusers.vdf` (lo normal; trae también el nombre de usuario).
+    ///  2. cualquier SteamID64 dentro de `config/config.vdf`.
+    ///  3. la carpeta `userdata/<accountID>` (AccountID → SteamID64).
     func detectAccount(bottle: Bottle) -> Account? {
-        let path = "\(bottle.prefixPath)/drive_c/Program Files (x86)/Steam/config/loginusers.vdf"
-        guard let content = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
-        return Self.parseLoginUsers(content)
+        let steamRoot = "\(bottle.prefixPath)/drive_c/Program Files (x86)/Steam"
+
+        if let content = try? String(contentsOfFile: "\(steamRoot)/config/loginusers.vdf", encoding: .utf8),
+           let account = Self.parseLoginUsers(content) {
+            return account
+        }
+
+        if let content = try? String(contentsOfFile: "\(steamRoot)/config/config.vdf", encoding: .utf8),
+           let id = Self.firstSteamID64(in: content) {
+            return Account(steamID64: id, personaName: "Steam", accountName: "")
+        }
+
+        let userdata = "\(steamRoot)/userdata"
+        if let dirs = try? FileManager.default.contentsOfDirectory(atPath: userdata) {
+            for dir in dirs.sorted() {
+                if let accountID = UInt64(dir), accountID > 0 {
+                    let id64 = accountID + 76561197960265728
+                    return Account(steamID64: String(id64), personaName: "Steam", accountName: "")
+                }
+            }
+        }
+        return nil
+    }
+
+    nonisolated static func firstSteamID64(in content: String) -> String? {
+        let pattern = #"7656119[0-9]{10}"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(content.startIndex..., in: content)
+        if let match = regex.firstMatch(in: content, range: range),
+           let r = Range(match.range, in: content) {
+            return String(content[r])
+        }
+        return nil
     }
 
     /// Carga la biblioteca COMPLETA (owned) del usuario desde el endpoint público de
