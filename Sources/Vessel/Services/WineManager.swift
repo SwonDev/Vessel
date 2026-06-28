@@ -3,6 +3,11 @@ import Foundation
 @MainActor
 @Observable
 final class WineManager {
+    struct ProcessResult {
+        let exitCode: Int32
+        let output: String
+    }
+
     enum WineError: LocalizedError {
         case noEngine
         case launchFailed(String)
@@ -18,6 +23,7 @@ final class WineManager {
     }
 
     private let dependencyManager = DependencyManager()
+    private let steamInstallerURL = URL(string: SteamConstants.setupURL)!
 
     /// Resuelve el binario de Wine: prefiere el portable descargado por Vessel,
     /// si no está usa GPTK de Apple. Nunca toca /Applications.
@@ -48,21 +54,48 @@ final class WineManager {
     }
 
     func installSteam(bottle: Bottle) async throws {
-        let steamURL = "https://cdn.akamai.steamstatic.com/client/installer/SteamSetup.exe"
+        if FileManager.default.fileExists(atPath: bottle.steamPath) {
+            try await terminateWineProcesses(winePath: bottle.winePath, prefix: bottle.prefixPath)
+            return
+        }
+
         let downloadPath = "\(bottle.prefixPath)/drive_c/users/crossover/Downloads/SteamSetup.exe"
         try FileManager.default.createDirectory(
             atPath: "\(bottle.prefixPath)/drive_c/users/crossover/Downloads",
             withIntermediateDirectories: true
         )
-        guard let url = URL(string: steamURL) else {
-            throw WineError.installationFailed("URL inválida")
+
+        let (tempURL, response) = try await URLSession.shared.download(from: steamInstallerURL)
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw WineError.installationFailed("Descarga de Steam falló con HTTP \(http.statusCode)")
         }
-        let (tempURL, _) = try await URLSession.shared.download(from: url)
-        try FileManager.default.moveItem(at: tempURL, to: URL(fileURLWithPath: downloadPath))
-        try await runWine(
+
+        let installerURL = URL(fileURLWithPath: downloadPath)
+        try? FileManager.default.removeItem(at: installerURL)
+        try FileManager.default.moveItem(at: tempURL, to: installerURL)
+
+        let result = try await runWine(
             winePath: bottle.winePath,
             arguments: [downloadPath, "/S"],
-            prefix: bottle.prefixPath
+            prefix: bottle.prefixPath,
+            environment: steamInstallEnvironment(prefix: bottle.prefixPath),
+            allowNonZeroExit: true
+        )
+        try await terminateWineProcesses(winePath: bottle.winePath, prefix: bottle.prefixPath)
+
+        if FileManager.default.fileExists(atPath: bottle.steamPath) {
+            return
+        }
+
+        let detail = Self.summarizeWineOutput(result.output)
+        if Self.isRecoverableSteamServiceCrash(result.output) {
+            throw WineError.installationFailed(
+                "SteamService falló, pero Steam.exe no apareció en el bottle. \(detail)"
+            )
+        }
+
+        throw WineError.installationFailed(
+            "Steam no terminó de instalarse. Código \(result.exitCode). \(detail)"
         )
     }
 
@@ -87,11 +120,18 @@ final class WineManager {
         }
     }
 
-    private func runWine(winePath: String, arguments: [String], prefix: String) async throws {
+    @discardableResult
+    private func runWine(
+        winePath: String,
+        arguments: [String],
+        prefix: String,
+        environment: [String: String]? = nil,
+        allowNonZeroExit: Bool = false
+    ) async throws -> ProcessResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: winePath)
         process.arguments = arguments
-        process.environment = [
+        process.environment = environment ?? [
             "WINEPREFIX": prefix,
             "WINEDEBUG": "-all"
         ]
@@ -101,10 +141,15 @@ final class WineManager {
         do {
             try process.run()
             process.waitUntilExit()
+            let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
             if process.terminationStatus != 0 {
-                let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                if allowNonZeroExit {
+                    return ProcessResult(exitCode: process.terminationStatus, output: output)
+                }
+
                 throw WineError.launchFailed(output.isEmpty ? "Wine terminó con código \(process.terminationStatus)" : output)
             }
+            return ProcessResult(exitCode: process.terminationStatus, output: output)
         } catch let error as WineError {
             throw error
         } catch {
@@ -155,5 +200,66 @@ final class WineManager {
         } catch {
             throw WineError.launchFailed(error.localizedDescription)
         }
+    }
+
+    private func steamInstallEnvironment(prefix: String) -> [String: String] {
+        [
+            "WINEPREFIX": prefix,
+            "WINEDEBUG": "-all",
+            "WINEDLLOVERRIDES": "winedbg.exe=d",
+            "MVK_CONFIG_LOG_LEVEL": "0"
+        ]
+    }
+
+    private func terminateWineProcesses(winePath: String, prefix: String) async throws {
+        guard let wineserverPath = siblingTool(named: "wineserver", forWinePath: winePath) else {
+            return
+        }
+
+        _ = try? await runExecutableAllowingFailure(
+            path: wineserverPath,
+            arguments: ["-k"],
+            prefix: prefix
+        )
+    }
+
+    private func runExecutableAllowingFailure(path: String, arguments: [String], prefix: String) async throws -> ProcessResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = arguments
+        process.environment = [
+            "WINEPREFIX": prefix,
+            "WINEDEBUG": "-all"
+        ]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        process.waitUntilExit()
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return ProcessResult(exitCode: process.terminationStatus, output: output)
+    }
+
+    nonisolated static func isRecoverableSteamServiceCrash(_ output: String) -> Bool {
+        let lowercased = output.lowercased()
+        return lowercased.contains("steamservice")
+            && lowercased.contains("unhandled page fault")
+    }
+
+    nonisolated static func summarizeWineOutput(_ output: String) -> String {
+        let relevantLines = output
+            .split(separator: "\n")
+            .map(String.init)
+            .filter { line in
+                let lowercased = line.lowercased()
+                return lowercased.contains("error")
+                    || lowercased.contains("fail")
+                    || lowercased.contains("unhandled")
+                    || lowercased.contains("steamservice")
+            }
+            .prefix(4)
+
+        guard !relevantLines.isEmpty else { return "" }
+        return relevantLines.joined(separator: " ")
     }
 }

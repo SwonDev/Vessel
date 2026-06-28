@@ -90,6 +90,30 @@ final class DependencyManagerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: normalizedPath))
     }
 
+    func testDetectsRecoverableSteamServiceCrash() {
+        let output = """
+        wine: Unhandled page fault on read access to 00000000 at address 00461342
+        Backtrace:
+        0 0x00461342 in steamservice (+0x61342)
+        """
+
+        XCTAssertTrue(WineManager.isRecoverableSteamServiceCrash(output))
+    }
+
+    func testSummarizesRelevantWineOutput() {
+        let output = """
+        harmless line
+        wine: Unhandled page fault on read access to 00000000
+        0 0x00461342 in steamservice (+0x61342)
+        """
+
+        let summary = WineManager.summarizeWineOutput(output)
+
+        XCTAssertTrue(summary.contains("Unhandled page fault"))
+        XCTAssertTrue(summary.contains("steamservice"))
+        XCTAssertFalse(summary.contains("harmless line"))
+    }
+
     @MainActor
     func testLiveWineAutoInstallWhenEnabled() async throws {
         guard ProcessInfo.processInfo.environment["VESSEL_RUN_LIVE_INSTALL_TEST"] == "1" else {
@@ -101,5 +125,30 @@ final class DependencyManagerTests: XCTestCase {
 
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: winePath))
         XCTAssertEqual(WineEngineLocator.findPortableWineBinary(), winePath)
+    }
+
+    @MainActor
+    func testLiveSteamInstallWhenEnabled() async throws {
+        guard ProcessInfo.processInfo.environment["VESSEL_RUN_LIVE_STEAM_TEST"] == "1" else {
+            throw XCTSkip("La instalación real de Steam solo se ejecuta bajo demanda.")
+        }
+
+        guard let winePath = WineEngineLocator.findPortableWineBinary() else {
+            throw XCTSkip("Wine portable no está instalado.")
+        }
+
+        let bottle = Bottle(
+            id: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+            name: "Steam Integration Test",
+            winePath: winePath
+        )
+        try? FileManager.default.removeItem(atPath: bottle.prefixPath)
+        defer { try? FileManager.default.removeItem(atPath: bottle.prefixPath) }
+
+        let manager = WineManager()
+        try await manager.createBottle(at: bottle.prefixPath, winePath: bottle.winePath)
+        try await manager.installSteam(bottle: bottle)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: bottle.steamPath))
     }
 }
