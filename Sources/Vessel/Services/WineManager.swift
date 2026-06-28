@@ -635,16 +635,22 @@ final class WineManager {
             return Process()
         }
 
-        // 1) steam.cfg: impide que Steam se autoactualice/verifique y se ladrille
-        //    ("Failed to load steamui.dll").
-        ensureSteamConfig(in: bottle)
-        // 2) Caché CEF limpia: evita el error de transporte 0x3008 por caché corrupta.
-        cleanCEFCache(in: bottle)
-        // 3) Wrapper de steamwebhelper (--disable-gpu --single-process → render CPU).
-        //    Imprescindible: el webhelper no puede usar GPU bajo Wine en macOS.
-        try await ensureWrapperInstalled(in: bottle)
-        // 4) Launch Options por juego (los juegos los lanza Vessel con wine-dxmt,
-        //    pero dejamos los flags Unity por si se lanzan desde el propio Steam).
+        // ¿Steam ya descargó su cliente completo (steamui.dll)? En una instalación
+        // FRESH hay que DEJAR el primer bootstrap: sin steam.cfg restrictivo, sin el
+        // flag -skipinitialbootstrap y sin wrapper. Si no, Steam no descarga
+        // steamui.dll y da "Failed to load steamui.dll".
+        let bootstrapped = isSteamBootstrapped(in: bottle)
+        if bootstrapped {
+            ensureSteamConfig(in: bottle)              // inhibe el auto-update que ladrilla
+            cleanCEFCache(in: bottle)                  // evita el 0x3008
+            try await ensureWrapperInstalled(in: bottle)
+        } else {
+            // Primer arranque: quitar cualquier steam.cfg restrictivo para permitir que
+            // Steam descargue steamui.dll y el resto del cliente.
+            let steamDir = "\(bottle.prefixPath)/drive_c/Program Files (x86)/Steam"
+            try? FileManager.default.removeItem(atPath: "\(steamDir)/steam.cfg")
+            log.log("Primer arranque de Steam: descargando su cliente (deja que termine la ventana de actualización)…", level: .info)
+        }
         try? await launchOptionsManager.injectLaunchOptions(in: bottle)
 
         // Matar procesos Wine/Steam zombi previos (steam.exe, steamwebhelper…).
@@ -655,12 +661,21 @@ final class WineManager {
 
         let engineLabel = clientWine.contains("/\(GPTKManager.engineName)/") ? "GPTK/CrossOver" : "Gcenx"
         log.log("Lanzando cliente Steam (\(engineLabel)) en \(bottle.name)…", level: .info)
+        // En fresh, argumentos mínimos para no impedir el bootstrap inicial.
+        let args = bootstrapped ? Self.steamLaunchArguments : ["-no-cef-sandbox"]
         return try await launchWineProcess(
             winePath: clientWine,
             prefix: bottle.prefixPath,
-            arguments: [bottle.steamPath] + Self.steamLaunchArguments,
+            arguments: [bottle.steamPath] + args,
             environment: steamClientEnvironment(prefix: bottle.prefixPath)
         )
+    }
+
+    /// True si Steam ya descargó su cliente completo (existe `steamui.dll`). En una
+    /// instalación nueva no existe hasta que Steam hace su primer bootstrap.
+    private func isSteamBootstrapped(in bottle: Bottle) -> Bool {
+        let steamDir = "\(bottle.prefixPath)/drive_c/Program Files (x86)/Steam"
+        return FileManager.default.fileExists(atPath: "\(steamDir)/steamui.dll")
     }
 
     /// Instala un juego de la biblioteca **desde Vessel**: asegura el cliente Steam

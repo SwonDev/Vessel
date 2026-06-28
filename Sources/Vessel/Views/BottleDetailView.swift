@@ -111,14 +111,20 @@ struct BottleDetailView: View {
             }
         }
 
-        // SEGURIDAD CRÍTICA: solo borrar una subcarpeta estricta de steamapps/common.
-        if let folder = folderToDelete,
-           folder.hasPrefix("\(steamCommon)/"),
-           folder != steamCommon,
-           (folder as NSString).lastPathComponent.count > 0,
-           fm.fileExists(atPath: folder) {
-            try? fm.removeItem(atPath: folder)
-            log.log("Juego desinstalado: \(game.name) (\(folder))", level: .info)
+        // SEGURIDAD CRÍTICA: canonicalizar (resolver symlinks y `..`) y exigir que la
+        // ruta resultante siga siendo subcarpeta ESTRICTA de steamapps/common.
+        if let folder = folderToDelete {
+            let resolved = URL(fileURLWithPath: folder).resolvingSymlinksInPath().standardizedFileURL.path
+            let base = URL(fileURLWithPath: steamCommon).resolvingSymlinksInPath().standardizedFileURL.path
+            if resolved.hasPrefix(base + "/"),
+               resolved != base,
+               (resolved as NSString).lastPathComponent.count > 0,
+               fm.fileExists(atPath: resolved) {
+                try? fm.removeItem(atPath: resolved)
+                log.log("Juego desinstalado: \(game.name) (\(resolved))", level: .info)
+            } else {
+                log.log("Desinstalar \(game.name): ruta no segura tras canonicalizar; solo se quita de la lista.", level: .warn)
+            }
         } else {
             log.log("Desinstalar \(game.name): no se halló carpeta segura; solo se quita de la lista.", level: .warn)
         }
@@ -129,13 +135,17 @@ struct BottleDetailView: View {
         }
     }
 
-    /// Extrae `"installdir" "X"` de un appmanifest .acf.
+    /// Extrae `"installdir" "X"` de un appmanifest .acf, rechazando valores con
+    /// separadores de ruta o traversal (`..`) por seguridad.
     private func installDir(in manifest: String) -> String? {
         for line in manifest.split(separator: "\n") {
             let t = line.trimmingCharacters(in: .whitespaces)
             if t.lowercased().contains("\"installdir\"") {
                 let parts = t.components(separatedBy: "\"").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-                if let last = parts.last, last.lowercased() != "installdir" { return last }
+                if let last = parts.last, last.lowercased() != "installdir" {
+                    guard !last.contains("/"), !last.contains("\\"), !last.contains("..") else { return nil }
+                    return last
+                }
             }
         }
         return nil
