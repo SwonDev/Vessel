@@ -320,11 +320,36 @@ final class WineManager {
         }
     }
 
+    /// API gráfica detectada de un juego, para enrutar a la capa correcta.
+    enum GameGraphicsAPI { case d3d11, d3d12, other }
+
+    /// Auto-detecta la API gráfica del juego mirando su carpeta:
+    ///  - `D3D12/` o `D3D12Core.dll` junto al exe → D3D12 (vkd3d).
+    ///  - `UnityPlayer.dll` o `<exe>_Data` → D3D11 (DXMT) — Unity por defecto.
+    func detectGraphicsAPI(forExecutable executable: String) -> GameGraphicsAPI {
+        let dir = (executable as NSString).deletingLastPathComponent
+        let fm = FileManager.default
+        if fm.fileExists(atPath: "\(dir)/D3D12/D3D12Core.dll")
+            || fm.fileExists(atPath: "\(dir)/D3D12Core.dll") {
+            return .d3d12
+        }
+        let exeName = ((executable as NSString).lastPathComponent as NSString).deletingPathExtension
+        if fm.fileExists(atPath: "\(dir)/UnityPlayer.dll")
+            || fm.fileExists(atPath: "\(dir)/\(exeName)_Data") {
+            return .d3d11
+        }
+        return .other
+    }
+
     @discardableResult
     func launch(executable: String, in bottle: Bottle, arguments: [String] = [], steamAppId: String? = nil) async throws -> Process {
-        // Juegos D3D11 → motor wine-dxmt (DXMT→Metal, feature level 11_0).
-        // Aseguramos que el motor tiene DXMT integrado en su builtin; si no, los
-        // juegos usarían wined3d y fallarían con "InitializeEngineGraphics failed".
+        // Auto-detección de API gráfica → enrutar al motor/capa correcta.
+        // D3D12 (AAA, FF Tactics) → Gcenx + vkd3d builtin (y Steam corre ahí: DRM OK).
+        if detectGraphicsAPI(forExecutable: executable) == .d3d12 {
+            return try await launchD3D12Game(executable: executable, in: bottle, steamAppId: steamAppId)
+        }
+        // D3D11 → wine-dxmt (DXMT→Metal). Aseguramos DXMT en el builtin del motor; si
+        // no, los juegos usarían wined3d y fallarían con "InitializeEngineGraphics".
         let gameWine = resolveGameWine(for: bottle)
         try await ensureGameEngineDXMT(gameWine: gameWine)
         // GARANTÍA de carga de DXMT: copiar las DLLs de DXMT JUNTO al ejecutable.
@@ -366,6 +391,76 @@ final class WineManager {
             environment: env,
             workingDirectory: (executable as NSString).deletingLastPathComponent
         )
+    }
+
+    /// Lanza un juego **D3D12** (vkd3d→Vulkan→MoltenVK). Usa el motor del CLIENTE
+    /// (Gcenx), que tiene `d3d12.dll` builtin (vkd3d) Y es donde corre el cliente
+    /// de Steam — imprescindible para el DRM de Steamworks (FF Tactics exige Steam
+    /// abierto y logueado). Así, juego + Steam comparten motor: sin conflicto.
+    private func launchD3D12Game(executable: String, in bottle: Bottle, steamAppId: String?) async throws -> Process {
+        let clientWine = resolveClientWine(for: bottle)
+        let gameDir = (executable as NSString).deletingLastPathComponent
+        let fm = FileManager.default
+
+        // Para D3D12 hay que usar el `d3d12`/`dxgi` builtin (vkd3d). Las DLLs de
+        // DXMT (D3D11) junto al exe lo romperían: limpiarlas.
+        for dll in ["d3d11.dll", "d3d12.dll", "d3d12core.dll", "dxgi.dll",
+                    "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "winemetal.dll"] {
+            let p = "\(gameDir)/\(dll)"
+            if fm.fileExists(atPath: p) { try? fm.removeItem(atPath: p) }
+        }
+
+        if let appId = steamAppId, !appId.isEmpty {
+            try? appId.write(toFile: "\(gameDir)/steam_appid.txt", atomically: true, encoding: .utf8)
+        }
+
+        // DRM: el cliente de Steam debe estar corriendo (y logueado). Si no, lo abro.
+        try await ensureSteamRunning(in: bottle, clientWine: clientWine)
+
+        var env = gameLaunchEnvironment(prefix: bottle.prefixPath)
+        if let appId = steamAppId, !appId.isEmpty {
+            env["SteamAppId"] = appId
+            env["SteamGameId"] = appId
+        }
+        log.log("Lanzando juego D3D12 con vkd3d (Gcenx): \((executable as NSString).lastPathComponent)", level: .info)
+        return try await launchWineProcess(
+            winePath: clientWine,
+            prefix: bottle.prefixPath,
+            arguments: [executable],
+            environment: env,
+            workingDirectory: gameDir
+        )
+    }
+
+    /// Asegura que el cliente de Steam (Gcenx) está corriendo, necesario para el
+    /// DRM de juegos Steamworks. Si no lo está, lo lanza y espera (sin bloquear UI).
+    private func ensureSteamRunning(in bottle: Bottle, clientWine: String) async throws {
+        if isWineProcessRunning(matching: "steam.exe") { return }
+        log.log("Steam no está abierto; lo lanzo para el DRM del juego…", level: .info)
+        _ = try? await launchSteam(in: bottle)
+        for _ in 0..<25 {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            if isWineProcessRunning(matching: "steam.exe") { break }
+        }
+        // Margen para que la Steamworks API quede lista.
+        try? await Task.sleep(nanoseconds: 6_000_000_000)
+    }
+
+    private func isWineProcessRunning(matching pattern: String) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        process.arguments = ["-f", pattern]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle(forWritingAtPath: "/dev/null")
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            return process.terminationStatus == 0 && !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        } catch {
+            return false
+        }
     }
 
     /// Detecta juegos Unity (tienen `UnityPlayer.dll` o carpeta `<exe>_Data` junto

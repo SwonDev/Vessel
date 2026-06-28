@@ -139,7 +139,7 @@ struct BottleDetailView: View {
             } else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 200))], spacing: 12) {
                     ForEach(localBottle.games) { game in
-                        GameCard(game: game) {
+                        GameCard(game: game, prefixPath: localBottle.prefixPath) {
                             Task { await launchGame(game) }
                         }
                     }
@@ -279,31 +279,14 @@ struct BottleDetailView: View {
 
 struct GameCard: View {
     let game: GameInstall
+    let prefixPath: String
     let onLaunch: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(.purple.opacity(0.15))
-                if let cover = game.coverImageURL, let url = URL(string: cover) {
-                    AsyncImage(url: url) { phase in
-                        if let image = phase.image {
-                            image.resizable().aspectRatio(contentMode: .fill)
-                        } else {
-                            Image(systemName: "gamecontroller.fill")
-                                .font(.system(size: 40))
-                                .foregroundStyle(.purple)
-                        }
-                    }
-                } else {
-                    Image(systemName: "gamecontroller.fill")
-                        .font(.system(size: 40))
-                        .foregroundStyle(.purple)
-                }
-            }
-            .aspectRatio(2.0/3.0, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            GameCoverView(game: game, prefixPath: prefixPath)
+                .aspectRatio(2.0/3.0, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
             Text(game.name).font(.headline).lineLimit(1)
             if let last = game.lastPlayedAt {
                 Text("Última: \(last.formatted(date: .abbreviated, time: .shortened))")
@@ -319,6 +302,103 @@ struct GameCard: View {
         .padding(12)
         .background(.background, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator, lineWidth: 1))
+    }
+}
+
+/// Portada de juego: **portada vertical de alta resolución del CDN de Steam**
+/// (`library_600x900`) y, si no existe, un **placeholder limpio** (degradado +
+/// iniciales). Nunca un pixelado ni un hueco vacío. Recorte correcto (sin desbordar).
+struct GameCoverView: View {
+    private let appId: String
+    private let title: String
+    @State private var portraitFailed = false
+    @State private var storeHeader: URL?
+    @State private var triedStore = false
+
+    init(game: GameInstall, prefixPath: String = "") {
+        self.appId = game.steamAppId ?? ""
+        self.title = game.name
+    }
+
+    private var portraitURL: URL? {
+        appId.isEmpty ? nil : URL(string: "https://cdn.cloudflare.steamstatic.com/steam/apps/\(appId)/library_600x900_2x.jpg")
+    }
+
+    var body: some View {
+        placeholder
+            .overlay { cover }
+            .clipped()   // recorta al marco 2:3 de la tarjeta, sin desbordar
+    }
+
+    @ViewBuilder private var cover: some View {
+        if !portraitFailed, let url = portraitURL {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().scaledToFill()
+                case .failure:
+                    Color.clear.onAppear {
+                        portraitFailed = true
+                        Task { await loadStoreHeader() }
+                    }
+                default:
+                    Color.clear
+                }
+            }
+        } else if let header = storeHeader {
+            AsyncImage(url: header) { phase in
+                if let image = phase.image {
+                    image.resizable().scaledToFill()
+                } else {
+                    Color.clear
+                }
+            }
+        }
+        // Si nada carga, queda el placeholder de fondo (nunca un hueco vacío).
+    }
+
+    /// Sin portada vertical en el CDN → pedir el `header_image` a la Steam Store
+    /// API (tiene arte de casi todos los juegos, incluso sin portada de biblioteca
+    /// como FF Tactics). Es arte real, mejor que un placeholder.
+    @MainActor
+    private func loadStoreHeader() async {
+        guard !triedStore, !appId.isEmpty else { return }
+        triedStore = true
+        let api = "https://store.steampowered.com/api/appdetails?appids=\(appId)&filters=basic"
+        guard let url = URL(string: api),
+              let (data, _) = try? await URLSession.shared.data(from: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let app = json[appId] as? [String: Any],
+              (app["success"] as? Bool) == true,
+              let info = app["data"] as? [String: Any],
+              let header = info["header_image"] as? String,
+              let headerURL = URL(string: header) else { return }
+        storeHeader = headerURL
+    }
+
+    private var placeholder: some View {
+        ZStack {
+            LinearGradient(colors: GameCoverView.gradient(for: title),
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+            Text(GameCoverView.initials(from: title))
+                .font(.system(size: 40, weight: .bold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.92))
+        }
+    }
+
+    static func initials(from name: String) -> String {
+        let words = name.split(whereSeparator: { " :-_".contains($0) }).filter { !$0.isEmpty }
+        let letters = words.prefix(2).compactMap { $0.first }
+        return letters.isEmpty ? "?" : String(letters).uppercased()
+    }
+
+    static func gradient(for name: String) -> [Color] {
+        let palettes: [[Color]] = [
+            [.purple, .indigo], [.blue, .cyan], [.pink, .purple],
+            [.orange, .red], [.green, .teal], [.indigo, .blue]
+        ]
+        let hash = name.unicodeScalars.reduce(0) { $0 &+ Int($1.value) }
+        return palettes[abs(hash) % palettes.count]
     }
 }
 

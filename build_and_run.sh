@@ -75,6 +75,16 @@ EOF
 echo "==> Ad-hoc signing..."
 codesign --force --deep --sign - "$APP_BUNDLE"
 
-echo "==> App bundle: $APP_BUNDLE"
+# Instalar SIEMPRE la última versión en /Applications, para que Spotlight,
+# Launchpad y el Dock abran esta build (no una copia vieja).
+echo "==> Instalando en /Applications/$APP_NAME.app..."
+osascript -e "quit app \"$APP_NAME\"" 2>/dev/null || true
+pkill -x "$APP_NAME" 2>/dev/null || true
+sleep 1
+rm -rf "/Applications/$APP_NAME.app"
+cp -R "$APP_BUNDLE" "/Applications/$APP_NAME.app"
+codesign --force --deep --sign - "/Applications/$APP_NAME.app"
+
+echo "==> App instalada: /Applications/$APP_NAME.app"
 echo "==> Launching..."
-open "$APP_BUNDLE"
+open "/Applications/$APP_NAME.app"
