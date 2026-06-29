@@ -18,6 +18,7 @@ final class LegendaryManager {
         let appName: String
         let title: String
         var installed: Bool
+        var coverURL: String?
         var id: String { appName }
     }
 
@@ -174,8 +175,10 @@ final class LegendaryManager {
             installedNames = []
         }
 
-        // Todos los juegos en propiedad
-        let listResult = try await runBackground(bin, args: ["list", "--json"])
+        // Todos los juegos en propiedad. PLATAFORMA WINDOWS: Vessel ejecuta los juegos vía
+        // Wine, así que se listan los de Windows (el default de legendary es Mac → filtraba
+        // a ~136; con Windows aparecen los 550+ reales de la cuenta).
+        let listResult = try await runBackground(bin, args: ["list", "--json", "--platform", "Windows"])
         guard listResult.exitCode == 0 else {
             log.log("Error al listar biblioteca Epic (exit \(listResult.exitCode)): \(listResult.combined)", level: .error)
             throw NSError(
@@ -369,8 +372,25 @@ final class LegendaryManager {
                   let title = (obj["title"] as? String) ?? (obj["app_title"] as? String),
                   !title.isEmpty
             else { return nil }
-            return EpicGame(appName: appName, title: title, installed: installedNames.contains(appName))
+            return EpicGame(appName: appName, title: title,
+                            installed: installedNames.contains(appName),
+                            coverURL: Self.coverURL(from: obj))
         }
         .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    /// Extrae la URL de la portada vertical desde `metadata.keyImages`
+    /// (preferencia DieselGameBoxTall, igual arte que muestra Epic/Heroic).
+    private static func coverURL(from obj: [String: Any]) -> String? {
+        guard let metadata = obj["metadata"] as? [String: Any],
+              let keyImages = metadata["keyImages"] as? [[String: Any]] else { return nil }
+        let preference = ["DieselGameBoxTall", "OfferImageTall", "Thumbnail", "DieselGameBox", "OfferImageWide"]
+        for type in preference {
+            if let img = keyImages.first(where: { ($0["type"] as? String) == type }),
+               let url = img["url"] as? String, !url.isEmpty {
+                return url
+            }
+        }
+        return keyImages.first?["url"] as? String
     }
 }

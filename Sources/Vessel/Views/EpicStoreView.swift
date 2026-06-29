@@ -413,7 +413,6 @@ struct EpicLibraryView: View {
 /// (degradado + iniciales) hasta que se integre la API de imágenes de Epic.
 struct EpicGameCard: View {
     let game: LegendaryManager.EpicGame
-    @State private var hovering = false
 
     private var placeholderColor: Color {
         var h = 5381
@@ -431,55 +430,67 @@ struct EpicGameCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ZStack {
-                LinearGradient(
-                    colors: [placeholderColor, placeholderColor.opacity(0.50)],
-                    startPoint: .topLeading, endPoint: .bottomTrailing
-                )
-                Text(initials)
-                    .font(.system(size: 40, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.85))
-                    .shadow(color: .black.opacity(0.30), radius: 4, y: 2)
+        cover
+            .aspectRatio(2.0/3.0, contentMode: .fit)
+            .overlay(alignment: .bottom) {
+                LinearGradient(colors: [.clear, .black.opacity(0.55), .black.opacity(0.9)],
+                               startPoint: .center, endPoint: .bottom)
             }
-            .frame(height: 140)
-            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 4) {
+            .overlay(alignment: .bottomLeading) {
                 Text(game.title)
-                    .font(.callout.weight(.semibold))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white)
                     .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-
+                    .shadow(color: .black.opacity(0.6), radius: 3, y: 1)
+                    .padding(10)
+            }
+            .overlay(alignment: .topTrailing) {
                 if game.installed {
-                    Label("Instalado", systemImage: "checkmark.circle.fill")
-                        .font(.caption2.weight(.semibold))
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.callout)
                         .foregroundStyle(Color(red: 0.30, green: 0.85, blue: 0.55))
-                } else {
-                    Text("En tu biblioteca")
-                        .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.35))
+                        .padding(6)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .padding(7)
                 }
             }
-            .padding(.horizontal, 7)
-            .padding(.vertical, 9)
+            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous)
+                    .strokeBorder(.white.opacity(0.10), lineWidth: 0.5)
+            }
+            .shadow(color: .black.opacity(0.32), radius: 9, y: 5)
+            .hoverLift()
+    }
+
+    /// Portada: placeholder de fondo (degradado + iniciales) y, encima, la carátula real
+    /// de Epic (`keyImages`) cuando carga. Mismo patrón editorial que las tarjetas de Steam.
+    @ViewBuilder private var cover: some View {
+        placeholder
+            .overlay {
+                if let urlStr = game.coverURL, let url = URL(string: urlStr) {
+                    AsyncImage(url: url) { phase in
+                        if let image = phase.image {
+                            image.resizable().scaledToFill()
+                        } else {
+                            Color.clear
+                        }
+                    }
+                }
+            }
+            .clipped()
+    }
+
+    private var placeholder: some View {
+        ZStack {
+            LinearGradient(
+                colors: [placeholderColor, placeholderColor.opacity(0.50)],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+            Text(initials)
+                .font(.system(size: 40, weight: .bold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.85))
+                .shadow(color: .black.opacity(0.30), radius: 4, y: 2)
         }
-        .background(
-            .white.opacity(hovering ? 0.10 : 0.05),
-            in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-                .strokeBorder(.white.opacity(hovering ? 0.20 : 0.08), lineWidth: 0.5)
-        )
-        .shadow(
-            color: placeholderColor.opacity(hovering ? 0.45 : 0.15),
-            radius: hovering ? 18 : 6,
-            y: hovering ? 9 : 3
-        )
-        .scaleEffect(hovering ? 1.03 : 1.0)
-        .animation(.spring(response: 0.28, dampingFraction: 0.72), value: hovering)
-        .onHover { hovering = $0 }
     }
 }
