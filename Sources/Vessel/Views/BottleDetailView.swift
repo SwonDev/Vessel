@@ -27,6 +27,22 @@ struct BottleDetailView: View {
     @State private var dxvkInstalled: Bool = false
     @State private var reinstallingDXVK = false
 
+    // MARK: - Enums de ordenación y filtro
+
+    private enum SortOrder: String, CaseIterable {
+        case nombre   = "Nombre"
+        case recientes = "Recientes"
+    }
+
+    private enum LibraryFilter: String, CaseIterable {
+        case todos     = "Todos"
+        case instalados = "Instalados"
+        case porInstalar = "Por instalar"
+    }
+
+    @State private var sortOrder: SortOrder = .nombre
+    @State private var libraryFilter: LibraryFilter = .todos
+
     private let store = BottleStore.shared
     private let log = LogStore.shared
 
@@ -49,10 +65,14 @@ struct BottleDetailView: View {
                 }
                 apiKeyPrompt
                 if !localBottle.games.isEmpty || !ownedGames.isEmpty {
-                    searchBar
+                    controlsBar
                 }
-                gamesSection
-                librarySection
+                if libraryFilter != .porInstalar {
+                    gamesSection
+                }
+                if libraryFilter != .instalados {
+                    librarySection
+                }
             }
             .padding(32)
         }
@@ -192,10 +212,31 @@ struct BottleDetailView: View {
         return nil
     }
 
-    // MARK: - Búsqueda, filtros y favoritos
+    // MARK: - Barra de controles (búsqueda, ordenación, filtro, favoritos)
 
-    private var searchBar: some View {
-        HStack(spacing: 12) {
+    /// Total de juegos en el pool activo según el filtro de estado (sin búsqueda ni favoritos).
+    private var poolTotal: Int {
+        let installedIds = Set(localBottle.games.compactMap { $0.steamAppId })
+        let notInstalledCount = ownedGames.filter { !installedIds.contains($0.appId) }.count
+        switch libraryFilter {
+        case .todos:       return localBottle.games.count + notInstalledCount
+        case .instalados:  return localBottle.games.count
+        case .porInstalar: return notInstalledCount
+        }
+    }
+
+    /// Total de juegos visibles tras aplicar todos los filtros activos.
+    private var poolFiltered: Int {
+        switch libraryFilter {
+        case .todos:       return filteredInstalled.count + notInstalledGames.count
+        case .instalados:  return filteredInstalled.count
+        case .porInstalar: return notInstalledGames.count
+        }
+    }
+
+    private var controlsBar: some View {
+        HStack(spacing: 10) {
+            // Campo de búsqueda expandible
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("Buscar en tu biblioteca…", text: $searchText)
@@ -207,13 +248,69 @@ struct BottleDetailView: View {
                 }
             }
             .padding(10)
+            .frame(maxWidth: .infinity)
             .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
 
+            // Menú de ordenación
+            Menu {
+                Picker("Ordenar", selection: $sortOrder) {
+                    ForEach(SortOrder.allCases, id: \.self) { order in
+                        Text(order.rawValue).tag(order)
+                    }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                Image(systemName: "arrow.up.arrow.down")
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(sortOrder == .nombre ? Color.secondary : Theme.accent)
+                    .padding(9)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+
+            // Menú de filtro por estado
+            Menu {
+                Picker("Mostrar", selection: $libraryFilter) {
+                    ForEach(LibraryFilter.allCases, id: \.self) { filter in
+                        Text(filter.rawValue).tag(filter)
+                    }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: libraryFilter == .todos
+                          ? "line.3.horizontal.decrease.circle"
+                          : "line.3.horizontal.decrease.circle.fill")
+                        .font(.body.weight(.medium))
+                    Text(libraryFilter.rawValue)
+                        .font(.callout.weight(.medium))
+                }
+                .foregroundStyle(libraryFilter == .todos ? Color.secondary : Theme.accent)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+
+            // Toggle de favoritos
             Toggle(isOn: $showFavoritesOnly) {
                 Label("Favoritos", systemImage: showFavoritesOnly ? "star.fill" : "star")
             }
             .toggleStyle(.button)
             .tint(.yellow)
+
+            // Contador de resultados
+            if poolTotal > 0 {
+                Text(poolFiltered == poolTotal
+                     ? "\(poolFiltered) juego\(poolFiltered == 1 ? "" : "s")"
+                     : "\(poolFiltered) de \(poolTotal)")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .monospacedDigit()
+                    .fixedSize()
+            }
         }
     }
 
@@ -232,16 +329,30 @@ struct BottleDetailView: View {
         searchText.isEmpty || name.localizedCaseInsensitiveContains(searchText)
     }
 
-    /// Juegos instalados tras aplicar búsqueda y filtro de favoritos.
+    /// Juegos instalados tras aplicar búsqueda, filtro de favoritos y ordenación.
     private var filteredInstalled: [GameInstall] {
-        localBottle.games.filter {
+        let base = localBottle.games.filter {
             matchesSearch($0.name) && (!showFavoritesOnly || isFavorite($0.steamAppId))
+        }
+        switch sortOrder {
+        case .nombre:
+            return base.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        case .recientes:
+            return base.sorted {
+                switch ($0.lastPlayedAt, $1.lastPlayedAt) {
+                case let (l?, r?): return l > r
+                case (_?, nil):    return true
+                case (nil, _?):    return false
+                case (nil, nil):   return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                }
+            }
         }
     }
 
     // MARK: - Biblioteca completa de Steam
 
-    /// Juegos de la biblioteca del usuario que aún NO están instalados (tras filtros).
+    /// Juegos de la biblioteca del usuario que aún NO están instalados (tras filtros y ordenación).
+    /// OwnedGame no tiene fecha de última sesión, así que todos los modos colapsan a orden alfabético.
     private var notInstalledGames: [SteamAccountService.OwnedGame] {
         let installedIds = Set(localBottle.games.compactMap { $0.steamAppId })
         return ownedGames
