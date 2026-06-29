@@ -7,7 +7,8 @@ struct LogsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
+            // Barra de herramientas
+            HStack(spacing: 12) {
                 Text("Logs de Vessel")
                     .font(.title2)
                     .fontWeight(.semibold)
@@ -25,12 +26,19 @@ struct LogsView: View {
                 } label: {
                     Label("Limpiar", systemImage: "trash")
                 }
+                .buttonStyle(.premium(prominent: false))
                 Button {
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(logStore.entries.map { "[\($0.timestamp.formatted(.iso8601))] [\($0.level.rawValue)] \($0.message)" }.joined(separator: "\n"), forType: .string)
+                    NSPasteboard.general.setString(
+                        logStore.entries
+                            .map { "[\($0.timestamp.formatted(.iso8601))] [\($0.level.rawValue)] \($0.message)" }
+                            .joined(separator: "\n"),
+                        forType: .string
+                    )
                 } label: {
                     Label("Copiar", systemImage: "doc.on.doc")
                 }
+                .buttonStyle(.premium(prominent: false))
             }
             .padding(20)
 
@@ -45,7 +53,7 @@ struct LogsView: View {
                         }
                     }
                 }
-                .background(Color(NSColor.textBackgroundColor))
+                .background(Color.black.opacity(0.35))
                 .onChange(of: logStore.entries.count) { _, _ in
                     if let last = logStore.entries.last {
                         withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
@@ -61,11 +69,13 @@ struct LogsView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button("Cerrar") { dismiss() }
+                    .buttonStyle(.premium(prominent: false))
                     .keyboardShortcut(.cancelAction)
             }
             .padding(16)
         }
         .frame(width: 820, height: 540)
+        .vesselBackground()
     }
 
     private var filteredEntries: [LogStore.Entry] {
@@ -95,10 +105,10 @@ struct LogsView: View {
 
     private func color(for level: LogStore.Level) -> Color {
         switch level {
-        case .info: return .blue
-        case .warn: return .orange
+        case .info:  return .blue
+        case .warn:  return .orange
         case .error: return .red
-        case .debug: return .secondary
+        case .debug: return Color.secondary
         }
     }
 }

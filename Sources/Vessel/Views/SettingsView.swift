@@ -11,111 +11,172 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
-            Form {
-                dependenciesSection
-                enginesSection
-                aboutSection
+            // Cabecera
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Ajustes de Vessel")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                Text("Todos los motores se descargan y mantienen en segundo plano. No necesitas tocar nada del sistema.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
-            .formStyle(.grouped)
-            .frame(minHeight: 480)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+
             Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: Theme.Space.section) {
+                    dependenciesSection
+                    enginesSection
+                    aboutSection
+                }
+                .padding(Theme.Space.section)
+            }
+
+            Divider()
+
             HStack {
-                Button("Cerrar") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Cerrar") { dismiss() }
+                    .buttonStyle(.premium(prominent: false))
+                    .keyboardShortcut(.cancelAction)
                 Spacer()
             }
             .padding(16)
         }
         .frame(width: 640, height: 600)
+        .vesselBackground()
         .task { checkResults = await dependencyManager.checkAll() }
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Ajustes de Vessel")
-                .font(.title2)
-                .fontWeight(.semibold)
-            Text("Todos los motores se descargan y mantienen en segundo plano. No necesitas tocar nada del sistema.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(20)
+    // MARK: - Helpers de sección
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.caption)
+            .fontWeight(.semibold)
+            .foregroundStyle(.secondary)
+            .padding(.leading, 2)
     }
 
+    private func storageRow(label: String, path: String) -> some View {
+        HStack {
+            Text(label).font(.callout)
+            Spacer()
+            Text(path)
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .padding(.vertical, 6)
+    }
+
+    // MARK: - Secciones
+
     private var dependenciesSection: some View {
-        Section("Motores disponibles") {
-            ForEach(checkResults, id: \.dependency.id) { result in
-                HStack {
-                    Image(systemName: result.installed ? "checkmark.circle.fill" : "circle.dashed")
-                        .foregroundStyle(result.installed ? .green : .secondary)
-                    VStack(alignment: .leading) {
-                        Text(result.dependency.rawValue).font(.callout)
-                        if let note = result.note {
-                            Text(note).font(.caption).foregroundStyle(.secondary)
-                        } else if let p = result.path {
-                            Text(p).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                        }
-                    }
-                    Spacer()
-                    if !result.installed, result.dependency == .winePortable {
-                        Button {
-                            Task { await downloadWine() }
-                        } label: {
-                            if wineDownloading {
-                                ProgressView().controlSize(.small)
-                            } else {
-                                Text("Descargar")
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("Motores disponibles")
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(checkResults, id: \.dependency.id) { result in
+                    HStack(spacing: 10) {
+                        Image(systemName: result.installed ? "checkmark.circle.fill" : "circle.dashed")
+                            .foregroundStyle(result.installed ? .green : .secondary)
+                            .frame(width: 20)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(result.dependency.rawValue).font(.callout)
+                            if let note = result.note {
+                                Text(note).font(.caption).foregroundStyle(.secondary)
+                            } else if let p = result.path {
+                                Text(p)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
                             }
                         }
-                        .buttonStyle(.borderedProminent)
-                    } else if !result.installed, result.dependency == .rosetta {
-                        Button("Instalar") {
-                            Task { await installRosetta() }
+                        Spacer()
+                        if !result.installed, result.dependency == .winePortable {
+                            Button {
+                                Task { await downloadWine() }
+                            } label: {
+                                if wineDownloading {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Text("Descargar")
+                                }
+                            }
+                            .buttonStyle(.premium())
+                        } else if !result.installed, result.dependency == .rosetta {
+                            Button("Instalar") { Task { await installRosetta() } }
+                                .buttonStyle(.premium(prominent: false))
                         }
                     }
+                    .padding(.vertical, 8)
+                }
+                if !wineStatusText.isEmpty {
+                    Text(wineStatusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 6)
                 }
             }
-            if !wineStatusText.isEmpty {
-                Text(wineStatusText).font(.caption).foregroundStyle(.secondary)
-            }
+            .vesselCard(padding: 12)
         }
     }
 
     private var enginesSection: some View {
-        Section("Almacenamiento") {
-            LabeledContent("Engines") {
-                Text("~/Library/Application Support/Vessel/Engines/").font(.caption.monospaced()).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("Almacenamiento")
+            VStack(alignment: .leading, spacing: 0) {
+                storageRow(label: "Engines", path: "~/Library/Application Support/Vessel/Engines/")
+                storageRow(label: "Bottles", path: "~/Library/Application Support/Vessel/Bottles/")
+                storageRow(label: "Logs",    path: "~/Library/Application Support/Vessel/Logs/")
+                Button("Abrir carpeta de datos") {
+                    let path = "\(NSHomeDirectory())/Library/Application Support/Vessel"
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                }
+                .buttonStyle(.premium(prominent: false))
+                .padding(.top, 6)
             }
-            LabeledContent("Bottles") {
-                Text("~/Library/Application Support/Vessel/Bottles/").font(.caption.monospaced()).foregroundStyle(.secondary)
-            }
-            LabeledContent("Logs") {
-                Text("~/Library/Application Support/Vessel/Logs/").font(.caption.monospaced()).foregroundStyle(.secondary)
-            }
-            Button("Abrir carpeta de datos") {
-                let path = "\(NSHomeDirectory())/Library/Application Support/Vessel"
-                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
-            }
+            .vesselCard(padding: 12)
         }
     }
 
     private var aboutSection: some View {
-        Section("Vessel") {
-            LabeledContent("Versión", value: "0.1.0")
-            LabeledContent("Licencia", value: "GPL-3.0")
-            HStack {
-                Button("Ver logs en vivo") {
-                    NotificationCenter.default.post(name: .openLogs, object: nil)
-                    dismiss()
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("Vessel")
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text("Versión").font(.callout)
+                    Spacer()
+                    Text("0.1.0").foregroundStyle(.secondary)
                 }
-                Button("Diagnosticar sistema") {
-                    Task { checkResults = await dependencyManager.checkAll() }
+                .padding(.vertical, 6)
+                HStack {
+                    Text("Licencia").font(.callout)
+                    Spacer()
+                    Text("GPL-3.0").foregroundStyle(.secondary)
                 }
+                .padding(.vertical, 6)
+                HStack(spacing: 8) {
+                    Button("Ver logs en vivo") {
+                        NotificationCenter.default.post(name: .openLogs, object: nil)
+                        dismiss()
+                    }
+                    .buttonStyle(.premium(prominent: false))
+                    Button("Diagnosticar sistema") {
+                        Task { checkResults = await dependencyManager.checkAll() }
+                    }
+                    .buttonStyle(.premium(prominent: false))
+                }
+                .padding(.top, 6)
             }
+            .vesselCard(padding: 12)
         }
     }
+
+    // MARK: - Acciones
 
     private func downloadWine() async {
         wineDownloading = true

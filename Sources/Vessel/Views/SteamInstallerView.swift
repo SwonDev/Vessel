@@ -1,5 +1,4 @@
 import SwiftUI
-import SwiftData
 
 struct SteamInstallerView: View {
     @Environment(\.dismiss) private var dismiss
@@ -18,6 +17,8 @@ struct SteamInstallerView: View {
 
     var body: some View {
         VStack(spacing: 20) {
+            Spacer()
+
             Image(systemName: stageIcon)
                 .font(.system(size: 64))
                 .foregroundStyle(stageColor)
@@ -27,70 +28,78 @@ struct SteamInstallerView: View {
                 .font(.title3)
                 .fontWeight(.semibold)
 
-            Text(statusText)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 360)
-
-            if stage == .downloading || stage == .installing {
-                ProgressView(value: progress)
-                    .progressViewStyle(.linear)
-                    .frame(maxWidth: 360)
-            }
-
-            if let error = error {
-                Text(error)
-                    .foregroundStyle(.red)
-                    .font(.callout)
+            VStack(spacing: 12) {
+                Text(statusText)
+                    .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 360)
-            }
 
-            HStack {
+                if stage == .downloading || stage == .installing {
+                    ProgressView(value: progress)
+                        .progressViewStyle(.linear)
+                        .tint(Theme.accent)
+                        .frame(maxWidth: 360)
+                }
+
+                if let error = error {
+                    Text(error)
+                        .foregroundStyle(.red)
+                        .font(.callout)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 360)
+                }
+            }
+            .vesselCard(padding: 16, cornerRadius: Theme.Radius.card)
+
+            Spacer()
+
+            HStack(spacing: 10) {
                 if stage == .ready || stage == .failed {
                     Button("Cancelar") { dismiss() }
+                        .buttonStyle(.premium(prominent: false))
                 }
                 if stage == .ready {
                     Button("Instalar") {
                         Task { await run() }
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.premium())
                 }
                 if stage == .done {
                     Button("Cerrar") {
                         onComplete()
                         dismiss()
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.premium())
                 }
                 if stage == .failed {
                     Button("Reintentar") {
                         Task { await run() }
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.premium())
                 }
             }
         }
         .padding(32)
         .frame(width: 480, height: 340)
+        .vesselBackground()
     }
 
     private var stageIcon: String {
         switch stage {
-        case .ready: return "icloud.and.arrow.down"
+        case .ready:       return "icloud.and.arrow.down"
         case .downloading: return "arrow.down.circle"
-        case .installing: return "gearshape.2"
-        case .done: return "checkmark.circle.fill"
-        case .failed: return "xmark.octagon.fill"
+        case .installing:  return "gearshape.2"
+        case .done:        return "checkmark.circle.fill"
+        case .failed:      return "xmark.octagon.fill"
         }
     }
 
     private var stageColor: Color {
         switch stage {
-        case .ready: return .blue
+        case .ready:                    return Theme.accent
         case .downloading, .installing: return .orange
-        case .done: return .green
-        case .failed: return .red
+        case .done:                     return .green
+        case .failed:                   return .red
         }
     }
 

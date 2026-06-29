@@ -458,9 +458,9 @@ struct BottleDetailView: View {
                 Text("No hay juegos instalados. Lanza Steam para descargar tu biblioteca, o añade un ejecutable .exe manualmente.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                    .padding()
+                    .padding(16)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+                    .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
             } else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: Theme.Space.gameGrid)], spacing: Theme.Space.gameGrid) {
                     ForEach(filteredInstalled) { game in

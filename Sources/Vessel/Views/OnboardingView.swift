@@ -1,5 +1,4 @@
 import SwiftUI
-import SwiftData
 
 struct OnboardingView: View {
     @Environment(\.dismiss) private var dismiss
@@ -29,6 +28,7 @@ struct OnboardingView: View {
                 if isWorking {
                     ProgressView(value: progress)
                         .progressViewStyle(.linear)
+                        .tint(Theme.accent)
                         .frame(maxWidth: 320)
                         .padding(.top, 8)
                 }
@@ -52,13 +52,13 @@ struct OnboardingView: View {
                     Text(setupSucceeded ? "Empezar a usar Vessel" : "Reintentar instalación automática")
                         .frame(maxWidth: .infinity)
                 }
-                .controlSize(.large)
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.premium())
                 .keyboardShortcut(.defaultAction)
                 .padding(.horizontal, 32)
             }
         }
         .frame(width: 560, height: 520)
+        .vesselBackground()
         .task { await runOnboarding() }
     }
 
@@ -78,7 +78,7 @@ struct OnboardingView: View {
             }
         }
         .padding(16)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+        .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
         .padding(.horizontal, 32)
     }
 

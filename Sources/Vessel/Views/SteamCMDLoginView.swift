@@ -18,22 +18,25 @@ struct SteamCMDLoginView: View {
     @State private var errorText: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 16) {
             Text("Conectar Steam para instalar")
                 .font(.title2).fontWeight(.bold)
             Text(status)
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
-            TextField("Usuario de Steam (nombre de cuenta)", text: $user)
-                .textFieldStyle(.roundedBorder)
-                .textContentType(.username)
-            SecureField("Contraseña", text: $password)
-                .textFieldStyle(.roundedBorder)
-            if needsGuard {
-                TextField("Código de Steam Guard (de tu app/email)", text: $guardCode)
+            VStack(spacing: 10) {
+                TextField("Usuario de Steam (nombre de cuenta)", text: $user)
                     .textFieldStyle(.roundedBorder)
+                    .textContentType(.username)
+                SecureField("Contraseña", text: $password)
+                    .textFieldStyle(.roundedBorder)
+                if needsGuard {
+                    TextField("Código de Steam Guard (de tu app/email)", text: $guardCode)
+                        .textFieldStyle(.roundedBorder)
+                }
             }
+            .vesselCard(padding: 10, cornerRadius: Theme.Radius.control)
 
             if let errorText {
                 Text(errorText).font(.caption).foregroundStyle(.red)
@@ -42,6 +45,7 @@ struct SteamCMDLoginView: View {
             HStack {
                 Spacer()
                 Button("Cancelar") { dismiss() }
+                    .buttonStyle(.premium(prominent: false))
                 Button {
                     Task { await doLogin() }
                 } label: {
@@ -52,12 +56,13 @@ struct SteamCMDLoginView: View {
                     }
                 }
                 .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.premium())
                 .disabled(working || user.isEmpty || password.isEmpty || (needsGuard && guardCode.isEmpty))
             }
         }
         .padding(28)
         .frame(width: 460)
+        .vesselBackground()
         .onAppear { if user.isEmpty { user = suggestedUser } }
     }
 
