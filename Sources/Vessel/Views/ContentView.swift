@@ -46,6 +46,10 @@ struct ContentView: View {
             SteamStoreView()
         case .epic:
             EpicStoreView()
+        case .gog:
+            GogStoreView()
+        case .amazon:
+            AmazonStoreView()
         default:
             StoreConnectView(store: selectedStore)
         }

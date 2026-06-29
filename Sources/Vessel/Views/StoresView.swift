@@ -47,9 +47,9 @@ enum StoreKind: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Steam y Epic Games están completamente integradas. El resto están en camino
-    /// (integración gogdl/BattleNet/etc.), con su pantalla de conexión preparada.
-    var isAvailable: Bool { self == .steam || self == .epic }
+    /// Steam, Epic, GOG y Amazon están integradas (modelo Heroic). Battle.net queda
+    /// pendiente (no tiene CLI estándar), con su pantalla de conexión preparada.
+    var isAvailable: Bool { self != .battlenet }
 
     /// Nombre del PNG del **logo oficial** de la tienda (en el bundle, ver Resources/StoreLogos).
     var logoAsset: String {
