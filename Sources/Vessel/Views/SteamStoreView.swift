@@ -27,7 +27,8 @@ final class SteamStore {
     /// interrumpe una conexión en curso.
     func refresh() {
         if case .working = phase { return }
-        bottle = store.bottles.first
+        // El bottle de Steam por NOMBRE (no `first`: puede haber bottles de otras tiendas, p. ej. Epic).
+        bottle = store.bottles.first(where: { $0.name == "Steam" }) ?? store.bottles.first(where: { FileManager.default.fileExists(atPath: $0.steamPath) })
         if let b = bottle,
            FileManager.default.fileExists(atPath: b.steamPath),
            accountService.detectAccount(bottle: b) != nil {
@@ -48,7 +49,7 @@ final class SteamStore {
 
             // 2) Entorno (bottle) de Steam. Invisible para el usuario.
             let b: Bottle
-            if let existing = store.bottles.first {
+            if let existing = store.bottles.first(where: { $0.name == "Steam" }) {
                 b = existing
             } else {
                 let nb = Bottle(name: "Steam", winePath: gcenx)
