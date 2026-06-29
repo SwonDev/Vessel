@@ -12,6 +12,7 @@ struct StoreGame: Identifiable, Hashable {
     var installed: Bool = false
     var lastPlayed: Date? = nil
     var playtimeMinutes: Int? = nil
+    var installPath: String? = nil   // carpeta del juego (para "Abrir carpeta")
 }
 
 enum StoreSortOrder: String, CaseIterable, Identifiable {
@@ -379,6 +380,7 @@ struct GameDetailView: View {
     var onToggleFavorite: () -> Void = {}
     var onBack: () -> Void = {}
 
+    @State private var showingSettings = false
     private let steamGreen = Color(red: 0.34, green: 0.72, blue: 0.36)
 
     private var heroURL: URL? {
@@ -403,6 +405,11 @@ struct GameDetailView: View {
         }
         .vesselBackground(tint: tint)
         .overlay(alignment: .topLeading) { backButton }
+        .sheet(isPresented: $showingSettings) {
+            GameSettingsView(game: game, tint: tint, installPath: game.installPath) {
+                showingSettings = false
+            }
+        }
     }
 
     private var hero: some View {
@@ -452,6 +459,7 @@ struct GameDetailView: View {
             stat("hourglass", "Tiempo de juego", playtimeText)
             Spacer(minLength: 0)
             if game.installed { iconButton("trash", action: onUninstall) }
+            iconButton("gearshape.fill") { showingSettings = true }
             iconButton(isFavorite ? "heart.fill" : "heart", tinted: isFavorite, action: onToggleFavorite)
         }
         .padding(.horizontal, 32).padding(.vertical, 18)

@@ -380,11 +380,18 @@ final class WineManager {
     }
 
     @discardableResult
-    func launch(executable: String, in bottle: Bottle, arguments: [String] = [], steamAppId: String? = nil) async throws -> Process {
-        // Auto-detección de API gráfica → enrutar al motor/capa correcta.
+    func launch(executable: String, in bottle: Bottle, arguments: [String] = [], steamAppId: String? = nil, graphicsOverride: GameConfig.GraphicsLayer? = nil) async throws -> Process {
+        // Capa gráfica: override por juego (Ajustes) o auto-detección por API.
         // D3D12 (AAA, FF Tactics) → GPTK/D3DMetal (Metal nativo, ignora el Agility
         // SDK), con el cliente Steam en el mismo wineserver para el DRM.
-        if detectGraphicsAPI(forExecutable: executable) == .d3d12 {
+        let useD3D12: Bool
+        switch graphicsOverride {
+        case .gptk: useD3D12 = true                                  // forzado por el usuario
+        case .dxmt: useD3D12 = false                                 // forzado a DXMT
+        case .auto, .none: useD3D12 = detectGraphicsAPI(forExecutable: executable) == .d3d12
+        }
+        if useD3D12 {
+            log.log("Capa gráfica: GPTK/D3DMetal (D3D12→Metal)\(graphicsOverride == .gptk ? " [forzado]" : "")", level: .info)
             return try await launchD3D12Game(executable: executable, in: bottle, steamAppId: steamAppId)
         }
         // D3D11 → wine-dxmt (DXMT→Metal). Aseguramos DXMT en el builtin del motor; si

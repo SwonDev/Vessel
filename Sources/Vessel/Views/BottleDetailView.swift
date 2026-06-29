@@ -56,7 +56,8 @@ struct BottleDetailView: View {
     private var steamGames: [StoreGame] {
         let installed = localBottle.games.map { g in
             StoreGame(id: g.steamAppId ?? g.id.uuidString, title: g.name,
-                      steamAppId: g.steamAppId, installed: true, lastPlayed: g.lastPlayedAt)
+                      steamAppId: g.steamAppId, installed: true, lastPlayed: g.lastPlayedAt,
+                      installPath: (g.executablePath as NSString).deletingLastPathComponent)
         }
         let installedIds = Set(localBottle.games.compactMap { $0.steamAppId })
         let notInstalled = ownedGames
@@ -700,10 +701,13 @@ struct BottleDetailView: View {
 
     private func launchGame(_ game: GameInstall) async {
         do {
+            let cfg = GameConfigStore.load(game.steamAppId ?? game.id.uuidString)
             _ = try await wineManager.launch(
                 executable: game.executablePath,
                 in: localBottle,
-                steamAppId: game.steamAppId
+                arguments: cfg.launchArguments.split(separator: " ").map(String.init),
+                steamAppId: game.steamAppId,
+                graphicsOverride: cfg.graphicsLayer
             )
             store.touchGame(game.id, in: localBottle.id)
         } catch {

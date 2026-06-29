@@ -134,7 +134,12 @@ final class EpicStore {
         }
         do {
             let bottle = try await ensureBottle()
-            _ = try await wineManager.launch(executable: exe, in: bottle)
+            let cfg = GameConfigStore.load(game.appName)
+            _ = try await wineManager.launch(
+                executable: exe, in: bottle,
+                arguments: cfg.launchArguments.split(separator: " ").map(String.init),
+                graphicsOverride: cfg.graphicsLayer
+            )
         } catch {
             log.log("Error al lanzar \(game.title): \(error.localizedDescription)", level: .error)
         }
@@ -154,7 +159,7 @@ struct EpicStoreView: View {
             case .connected(let games):
                 StoreLibraryView(
                     store: .epic,
-                    games: games.map { StoreGame(id: $0.appName, title: $0.title, coverURL: $0.coverURL, installed: $0.installed) },
+                    games: games.map { StoreGame(id: $0.appName, title: $0.title, coverURL: $0.coverURL, installed: $0.installed, installPath: $0.installPath) },
                     installingIDs: epic.installingAppNames,
                     progressFor: { epic.progress($0) },
                     onInstall: { sg in if let g = games.first(where: { $0.appName == sg.id }) { Task { await epic.install(g) } } },
