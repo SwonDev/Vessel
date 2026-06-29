@@ -44,6 +44,8 @@ struct ContentView: View {
         switch selectedStore {
         case .steam:
             SteamStoreView()
+        case .epic:
+            EpicStoreView()
         default:
             StoreConnectView(store: selectedStore)
         }

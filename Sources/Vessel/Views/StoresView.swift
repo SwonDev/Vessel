@@ -47,9 +47,9 @@ enum StoreKind: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Por ahora Steam es la tienda totalmente funcional. El resto están en camino
-    /// (integración Legendary/gogdl/etc.), con su pantalla de conexión preparada.
-    var isAvailable: Bool { self == .steam }
+    /// Steam y Epic Games están completamente integradas. El resto están en camino
+    /// (integración gogdl/BattleNet/etc.), con su pantalla de conexión preparada.
+    var isAvailable: Bool { self == .steam || self == .epic }
 
     /// Nombre del PNG del **logo oficial** de la tienda (en el bundle, ver Resources/StoreLogos).
     var logoAsset: String {
