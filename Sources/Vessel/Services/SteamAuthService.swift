@@ -35,12 +35,12 @@ final class SteamAuthService {
         //   device_details (9, message) { device_friendly_name(1), platform_type(2), os_type(4) }
         var details = Data()
         details.append(ProtoWriter.string(field: 1, "Vessel"))
-        details.append(ProtoWriter.varint(field: 2, 3))           // EAuthTokenPlatformType_SteamClient
-        details.append(ProtoWriter.varint(field: 4, UInt64(bitPattern: -500)))  // os_type macOS (aprox)
+        details.append(ProtoWriter.varint(field: 2, 2))           // EAuthTokenPlatformType_WebBrowser
         var body = Data()
         body.append(ProtoWriter.string(field: 1, "Vessel"))
-        body.append(ProtoWriter.varint(field: 2, 3))
-        body.append(ProtoWriter.message(field: 9, details))
+        body.append(ProtoWriter.varint(field: 2, 2))
+        body.append(ProtoWriter.message(field: 3, details))       // device_details (campo 3)
+        body.append(ProtoWriter.string(field: 4, "Community"))    // website_id
 
         let data = try await post("IAuthenticationService/BeginAuthSessionViaQR/v1/", protobuf: body)
         let fields = ProtoReader.parse(data)
@@ -61,10 +61,11 @@ final class SteamAuthService {
         body.append(ProtoWriter.bytes(field: 2, session.requestID))   // request_id
         let data = try await post("IAuthenticationService/PollAuthSessionStatus/v1/", protobuf: body)
         let fields = ProtoReader.parse(data)
-        // refresh_token (4), access_token (5), account_name (3) aparecen al aprobar.
-        guard let refresh = fields.string(4), !refresh.isEmpty else { return nil }
-        let access = fields.string(5) ?? ""
-        let account = fields.string(3) ?? ""
+        // En PollAuthSessionStatus_Response: refresh_token=2, access_token=3,
+        // account_name=5 (validado contra Steam).
+        guard let refresh = fields.string(2), !refresh.isEmpty else { return nil }
+        let access = fields.string(3) ?? ""
+        let account = fields.string(5) ?? ""
         return Tokens(accountName: account, accessToken: access, refreshToken: refresh)
     }
 
