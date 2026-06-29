@@ -17,6 +17,14 @@ final class EpicStore {
     var phase: Phase = .disconnected
     private let legendary = LegendaryManager()
     private let log = LogStore.shared
+    private let wineManager = WineManager()
+    private let dependencyManager = DependencyManager()
+    private let store = BottleStore.shared
+    private var epicBottle: Bottle?
+
+    /// Estado de instalación en curso por juego (para los botones de las tarjetas).
+    var installingAppNames: Set<String> = []
+    var installProgress: [String: String] = [:]
 
     /// Re-evalúa el estado (al abrir la vista o al volver la app a primer plano).
     /// No interrumpe una operación en curso.
@@ -79,6 +87,58 @@ final class EpicStore {
             phase = .error(error.localizedDescription)
         }
     }
+
+    // MARK: - Instalar / Jugar
+
+    func isInstalling(_ appName: String) -> Bool { installingAppNames.contains(appName) }
+    func progress(_ appName: String) -> String? { installProgress[appName] }
+
+    /// Obtiene (o crea) el bottle dedicado de Epic, con el motor Wine portable instalado.
+    private func ensureBottle() async throws -> Bottle {
+        if let b = epicBottle { return b }
+        if let existing = store.bottles.first(where: { $0.name == "Epic Games" }) {
+            epicBottle = existing
+            return existing
+        }
+        let gcenx = try await dependencyManager.ensureWinePortableInstalled { _, _ in }
+        let nb = Bottle(name: "Epic Games", winePath: gcenx)
+        store.add(nb)
+        try await wineManager.createBottle(at: nb.prefixPath, winePath: gcenx)
+        epicBottle = nb
+        return nb
+    }
+
+    /// Instala un juego de Epic dentro del bottle de Vessel (con progreso en vivo).
+    func install(_ game: LegendaryManager.EpicGame) async {
+        installingAppNames.insert(game.appName)
+        installProgress[game.appName] = "Preparando…"
+        defer { installingAppNames.remove(game.appName); installProgress[game.appName] = nil }
+        do {
+            let bottle = try await ensureBottle()
+            let dir = "\(bottle.prefixPath)/drive_c/Games"
+            try await legendary.installGame(appName: game.appName, basePath: dir) { line in
+                Task { @MainActor in self.installProgress[game.appName] = line }
+            }
+            await reloadLibrary()
+        } catch {
+            log.log("Error instalando \(game.title): \(error.localizedDescription)", level: .error)
+            installProgress[game.appName] = "Error en la instalación"
+        }
+    }
+
+    /// Lanza un juego de Epic ya instalado con el motor de juegos (wine-dxmt), igual que Steam.
+    func play(_ game: LegendaryManager.EpicGame) async {
+        guard let exe = game.executablePath, !exe.isEmpty else {
+            log.log("Epic: \(game.title) sin ejecutable conocido (¿reinstalar?)", level: .warn)
+            return
+        }
+        do {
+            let bottle = try await ensureBottle()
+            _ = try await wineManager.launch(executable: exe, in: bottle)
+        } catch {
+            log.log("Error al lanzar \(game.title): \(error.localizedDescription)", level: .error)
+        }
+    }
 }
 
 // MARK: - Vista raíz
@@ -93,6 +153,7 @@ struct EpicStoreView: View {
             switch epic.phase {
             case .connected(let games):
                 EpicLibraryView(
+                    store: epic,
                     games: games,
                     onDisconnect:    { epic.disconnect() },
                     onReload:        { Task { await epic.reloadLibrary() } }
@@ -319,6 +380,7 @@ struct EpicWebLoginSheet: View {
 
 /// Grid de juegos de la cuenta Epic con búsqueda integrada.
 struct EpicLibraryView: View {
+    @Bindable var store: EpicStore
     let games: [LegendaryManager.EpicGame]
     let onDisconnect: () -> Void
     let onReload: () -> Void
@@ -396,7 +458,13 @@ struct EpicLibraryView: View {
                 } else {
                     LazyVGrid(columns: columns, spacing: Theme.Space.gameGrid) {
                         ForEach(filtered) { game in
-                            EpicGameCard(game: game)
+                            EpicGameCard(
+                                game: game,
+                                installing: store.isInstalling(game.appName),
+                                progress: store.progress(game.appName),
+                                onInstall: { Task { await store.install(game) } },
+                                onPlay: { Task { await store.play(game) } }
+                            )
                         }
                     }
                 }
@@ -413,6 +481,10 @@ struct EpicLibraryView: View {
 /// (degradado + iniciales) hasta que se integre la API de imágenes de Epic.
 struct EpicGameCard: View {
     let game: LegendaryManager.EpicGame
+    var installing: Bool = false
+    var progress: String? = nil
+    var onInstall: () -> Void = {}
+    var onPlay: () -> Void = {}
 
     private var placeholderColor: Color {
         var h = 5381
@@ -430,6 +502,14 @@ struct EpicGameCard: View {
     }
 
     var body: some View {
+        VStack(spacing: 8) {
+            coverArt
+            actionButton
+        }
+        .hoverLift()
+    }
+
+    private var coverArt: some View {
         cover
             .aspectRatio(2.0/3.0, contentMode: .fit)
             .overlay(alignment: .bottom) {
@@ -460,7 +540,29 @@ struct EpicGameCard: View {
                     .strokeBorder(.white.opacity(0.10), lineWidth: 0.5)
             }
             .shadow(color: .black.opacity(0.32), radius: 9, y: 5)
-            .hoverLift()
+    }
+
+    @ViewBuilder private var actionButton: some View {
+        if installing {
+            VStack(spacing: 4) {
+                ProgressView().controlSize(.small).tint(.white)
+                Text(progress ?? "Instalando…")
+                    .font(.caption2).foregroundStyle(.white.opacity(0.7))
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
+        } else if game.installed {
+            Button(action: onPlay) {
+                Label("Jugar", systemImage: "play.fill").frame(maxWidth: .infinity)
+            }
+            .vesselButton(tint: StoreKind.epic.tint)
+        } else {
+            Button(action: onInstall) {
+                Label("Instalar", systemImage: "arrow.down.circle.fill").frame(maxWidth: .infinity)
+            }
+            .vesselButton(false)
+        }
     }
 
     /// Portada: placeholder de fondo (degradado + iniciales) y, encima, la carátula real

@@ -19,6 +19,8 @@ final class LegendaryManager {
         let title: String
         var installed: Bool
         var coverURL: String?
+        var installPath: String?     // carpeta de instalación (si está instalado)
+        var executablePath: String?  // .exe principal en macOS (ruta del prefijo)
         var id: String { appName }
     }
 
@@ -165,14 +167,17 @@ final class LegendaryManager {
     func ownedGames() async throws -> [EpicGame] {
         let bin = Self.binaryPath
 
-        // Juegos instalados localmente
+        // Juegos instalados localmente (con su ruta de instalación y ejecutable).
         let installedResult = try await runBackground(bin, args: ["list-installed", "--json"])
-        let installedNames: Set<String>
+        var installed: [String: (installPath: String, executable: String)] = [:]
         if installedResult.exitCode == 0,
-           let data = installedResult.stdout.data(using: .utf8) {
-            installedNames = Set(extractAppNames(from: data))
-        } else {
-            installedNames = []
+           let data = installedResult.stdout.data(using: .utf8),
+           let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            for obj in arr {
+                guard let name = obj["app_name"] as? String else { continue }
+                installed[name] = ((obj["install_path"] as? String) ?? "",
+                                   (obj["executable"] as? String) ?? "")
+            }
         }
 
         // Todos los juegos en propiedad. PLATAFORMA WINDOWS: Vessel ejecuta los juegos vía
@@ -189,19 +194,58 @@ final class LegendaryManager {
         }
 
         guard let data = listResult.stdout.data(using: .utf8) else { return [] }
-        let games = parseGames(from: data, installedNames: installedNames)
+        let games = parseGames(from: data, installed: installed)
         log.log("Biblioteca Epic: \(games.count) juego(s)", level: .info)
         return games
     }
 
     // MARK: - Instalación y lanzamiento (TODO)
 
-    /// TODO: Instalar un juego vía `legendary install <appName>`.
-    func installGame(appName: String, progress: @escaping @Sendable (String) -> Void) async throws {
-        throw NSError(
-            domain: "Vessel", code: 199,
-            userInfo: [NSLocalizedDescriptionKey: "Instalación de juegos de Epic Games: próximamente."]
+    /// Instala un juego de Epic en `basePath` (dentro del bottle de Vessel), reportando el
+    /// progreso por las líneas de salida de legendary. Operación larga (sin timeout corto).
+    func installGame(appName: String, basePath: String, onProgress: @escaping @Sendable (String) -> Void) async throws {
+        try FileManager.default.createDirectory(atPath: basePath, withIntermediateDirectories: true)
+        let code = try await runStreaming(
+            Self.binaryPath,
+            args: ["install", appName, "--base-path", basePath, "--platform", "Windows", "--yes"],
+            onLine: onProgress
         )
+        guard code == 0 else {
+            throw NSError(domain: "Vessel", code: 110, userInfo: [NSLocalizedDescriptionKey:
+                "La instalación de Epic falló (código \(code)). Revisa los logs."])
+        }
+        log.log("✓ Epic: \(appName) instalado en \(basePath)", level: .info)
+    }
+
+    /// Ejecuta legendary para una operación LARGA (instalación), drenando la salida en vivo
+    /// y reportando cada línea de progreso. Sin timeout: las descargas pueden durar mucho.
+    private func runStreaming(_ binary: String, args: [String], onLine: @escaping @Sendable (String) -> Void) async throws -> Int32 {
+        let configDir = Self.configDir
+        let shellEnv  = WineManager.userShellEnvironment
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Int32, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                var env = shellEnv
+                env["LEGENDARY_CONFIG_PATH"] = configDir
+                let task = Process()
+                task.executableURL = URL(fileURLWithPath: binary)
+                task.arguments = args
+                task.environment = env
+                let pipe = Pipe()
+                task.standardOutput = pipe
+                task.standardError  = pipe
+                pipe.fileHandleForReading.readabilityHandler = { fh in
+                    let d = fh.availableData
+                    guard !d.isEmpty, let s = String(data: d, encoding: .utf8) else { return }
+                    for line in s.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) where !line.isEmpty {
+                        onLine(String(line))
+                    }
+                }
+                do { try task.run() } catch { cont.resume(throwing: error); return }
+                task.waitUntilExit()
+                pipe.fileHandleForReading.readabilityHandler = nil
+                cont.resume(returning: task.terminationStatus)
+            }
+        }
     }
 
     /// TODO: Lanzar un juego con `legendary launch <appName>` usando el motor wine-dxmt.
@@ -363,7 +407,7 @@ final class LegendaryManager {
 
     /// Parsea el array JSON de `legendary list --json`.
     /// Admite tanto `title` como `app_title` por compatibilidad entre versiones de Legendary.
-    private func parseGames(from data: Data, installedNames: Set<String>) -> [EpicGame] {
+    private func parseGames(from data: Data, installed: [String: (installPath: String, executable: String)]) -> [EpicGame] {
         guard let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             return []
         }
@@ -372,9 +416,18 @@ final class LegendaryManager {
                   let title = (obj["title"] as? String) ?? (obj["app_title"] as? String),
                   !title.isEmpty
             else { return nil }
+            let info = installed[appName]
+            // executable de legendary es relativo a install_path (salvo que sea absoluto).
+            let exePath: String? = info.flatMap { i in
+                guard !i.executable.isEmpty else { return nil }
+                if i.executable.hasPrefix("/") { return i.executable }
+                return i.installPath.isEmpty ? i.executable : "\(i.installPath)/\(i.executable)"
+            }
             return EpicGame(appName: appName, title: title,
-                            installed: installedNames.contains(appName),
-                            coverURL: Self.coverURL(from: obj))
+                            installed: info != nil,
+                            coverURL: Self.coverURL(from: obj),
+                            installPath: info?.installPath,
+                            executablePath: exePath)
         }
         .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
     }
