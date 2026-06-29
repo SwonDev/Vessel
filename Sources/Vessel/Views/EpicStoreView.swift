@@ -152,11 +152,15 @@ struct EpicStoreView: View {
         Group {
             switch epic.phase {
             case .connected(let games):
-                EpicLibraryView(
-                    store: epic,
-                    games: games,
-                    onDisconnect:    { epic.disconnect() },
-                    onReload:        { Task { await epic.reloadLibrary() } }
+                StoreLibraryView(
+                    store: .epic,
+                    games: games.map { StoreGame(id: $0.appName, title: $0.title, coverURL: $0.coverURL, installed: $0.installed) },
+                    installingIDs: epic.installingAppNames,
+                    progressFor: { epic.progress($0) },
+                    onInstall: { sg in if let g = games.first(where: { $0.appName == sg.id }) { Task { await epic.install(g) } } },
+                    onPlay:    { sg in if let g = games.first(where: { $0.appName == sg.id }) { Task { await epic.play(g) } } },
+                    onReload:  { Task { await epic.reloadLibrary() } },
+                    onLogout:  { epic.disconnect() }
                 )
             case .working(let msg):
                 ConnectEpicView(working: msg, errorMessage: nil,
