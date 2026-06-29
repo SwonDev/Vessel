@@ -624,30 +624,26 @@ struct GameCard: View {
         VStack(alignment: .leading, spacing: 8) {
             GameCoverView(game: game, prefixPath: prefixPath)
                 .aspectRatio(2.0/3.0, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(alignment: .topTrailing) {
-                    Button(action: onToggleFavorite) {
-                        Image(systemName: isFavorite ? "star.fill" : "star")
-                            .font(.callout)
-                            .foregroundStyle(isFavorite ? .yellow : .white)
-                            .padding(6)
-                            .background(.black.opacity(0.45), in: Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(6)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous)
+                        .strokeBorder(.white.opacity(0.08), lineWidth: 0.5)
                 }
+                .overlay(alignment: .topTrailing) { favoriteButton }
+                .shadow(color: .black.opacity(0.28), radius: 7, y: 4)
+
             Text(game.name).font(.headline).lineLimit(1)
             if let last = game.lastPlayedAt {
-                Text("Última: \(last.formatted(date: .abbreviated, time: .shortened))")
+                Text("Última vez: \(last.formatted(date: .abbreviated, time: .shortened))")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+
             HStack(spacing: 6) {
                 Button(action: onLaunch) {
                     Label("Jugar", systemImage: "play.fill").frame(maxWidth: .infinity)
                 }
-                .controlSize(.small)
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.premium(tint: Theme.accent))
 
                 Menu {
                     Button(role: .destructive) { onUninstall() } label: {
@@ -658,16 +654,18 @@ struct GameCard: View {
                     }
                 } label: {
                     Image(systemName: "ellipsis")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 32, height: 32)
+                        .background(.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
-                .controlSize(.small)
                 .fixedSize()
             }
         }
-        .padding(12)
-        .background(.background, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator, lineWidth: 1))
+        .vesselCard(padding: 12)
+        .hoverLift()
         .contextMenu {
             Button(role: .destructive) { onUninstall() } label: {
                 Label("Desinstalar juego", systemImage: "trash")
@@ -676,6 +674,19 @@ struct GameCard: View {
                 Label("Quitar de la lista", systemImage: "eye.slash")
             }
         }
+    }
+
+    private var favoriteButton: some View {
+        Button(action: onToggleFavorite) {
+            Image(systemName: isFavorite ? "star.fill" : "star")
+                .font(.callout)
+                .foregroundStyle(isFavorite ? .yellow : .white)
+                .padding(7)
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(Circle().strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .padding(7)
     }
 }
 
@@ -694,19 +705,26 @@ struct LibraryGameCard: View {
         VStack(alignment: .leading, spacing: 8) {
             GameCoverView(appId: appId, title: name)
                 .aspectRatio(2.0/3.0, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .opacity(0.9)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous)
+                        .strokeBorder(.white.opacity(0.08), lineWidth: 0.5)
+                }
+                .saturation(installing ? 1 : 0.9)
                 .overlay(alignment: .topTrailing) {
                     Button(action: onToggleFavorite) {
                         Image(systemName: isFavorite ? "star.fill" : "star")
                             .font(.callout)
                             .foregroundStyle(isFavorite ? .yellow : .white)
-                            .padding(6)
-                            .background(.black.opacity(0.45), in: Circle())
+                            .padding(7)
+                            .background(.ultraThinMaterial, in: Circle())
+                            .overlay(Circle().strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
                     }
                     .buttonStyle(.plain)
-                    .padding(6)
+                    .padding(7)
                 }
+                .shadow(color: .black.opacity(0.28), radius: 7, y: 4)
+
             Text(name).font(.headline).lineLimit(1)
             Button(action: onInstall) {
                 if installing {
@@ -716,16 +734,14 @@ struct LibraryGameCard: View {
                     }
                     .frame(maxWidth: .infinity)
                 } else {
-                    Label("Instalar", systemImage: "arrow.down.circle").frame(maxWidth: .infinity)
+                    Label("Instalar", systemImage: "arrow.down.circle.fill").frame(maxWidth: .infinity)
                 }
             }
-            .controlSize(.small)
-            .buttonStyle(.bordered)
+            .buttonStyle(.premium(tint: Theme.accent, prominent: false))
             .disabled(installing)
         }
-        .padding(12)
-        .background(.background, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator, lineWidth: 1))
+        .vesselCard(padding: 12)
+        .hoverLift()
     }
 }
 
