@@ -16,6 +16,7 @@ struct BottleDetailView: View {
     @State private var loadingLibrary = false
     @State private var steamCMD = SteamCMDManager()
     @State private var showSteamCMDLogin = false
+    @State private var showOfficialLogin = false
     @State private var pendingInstallAppId: String?
     @State private var installMessages: [String: String] = [:]
     @AppStorage("steamcmd.user") private var steamCMDUser = ""
@@ -98,8 +99,14 @@ struct BottleDetailView: View {
                 }
             }
         }
+        .sheet(isPresented: $showOfficialLogin) {
+            SteamOfficialLoginView { tokens in
+                if !tokens.accountName.isEmpty { steamCMDUser = tokens.accountName }
+                Task { await loadSteamLibrary() }
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .steamLogin)) { _ in
-            showSteamCMDLogin = true
+            showOfficialLogin = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .steamRefresh)) { _ in
             Task { await loadSteamLibrary() }

@@ -72,15 +72,22 @@ final class SteamAccountService {
     ///  2. Si no hay key, cae al endpoint público de Steam Community (requiere perfil
     ///     de juegos público).
     func fetchOwnedGames(steamID64: String) async -> [OwnedGame] {
+        // 1) Con el access_token del login oficial (QR) — sin que el usuario pegue clave.
+        let token = UserDefaults.standard.string(forKey: "steam.accessToken") ?? ""
+        if !token.isEmpty, let viaToken = await fetchViaWebAPI(steamID64: steamID64, auth: "access_token=\(token)"), !viaToken.isEmpty {
+            return viaToken
+        }
+        // 2) Con la clave Web API que el usuario haya introducido.
         let key = Self.webAPIKey
-        if !key.isEmpty, let viaAPI = await fetchViaWebAPI(steamID64: steamID64, key: key), !viaAPI.isEmpty {
+        if !key.isEmpty, let viaAPI = await fetchViaWebAPI(steamID64: steamID64, auth: "key=\(key)"), !viaAPI.isEmpty {
             return viaAPI
         }
+        // 3) Endpoint público (requiere perfil de juegos público).
         return await fetchViaPublicXML(steamID64: steamID64)
     }
 
-    private func fetchViaWebAPI(steamID64: String, key: String) async -> [OwnedGame]? {
-        let urlStr = "https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/?key=\(key)&steamid=\(steamID64)&include_appinfo=1&include_played_free_games=1&format=json"
+    private func fetchViaWebAPI(steamID64: String, auth: String) async -> [OwnedGame]? {
+        let urlStr = "https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/?\(auth)&steamid=\(steamID64)&include_appinfo=1&include_played_free_games=1&format=json"
         guard let url = URL(string: urlStr) else { return nil }
         guard let (data, response) = try? await URLSession.shared.data(from: url),
               let http = response as? HTTPURLResponse, http.statusCode == 200 else {

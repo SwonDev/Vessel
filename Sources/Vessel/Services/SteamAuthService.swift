@@ -66,6 +66,10 @@ final class SteamAuthService {
         guard let refresh = fields.string(2), !refresh.isEmpty else { return nil }
         let access = fields.string(3) ?? ""
         let account = fields.string(5) ?? ""
+        // Persistir: access_token → biblioteca; account_name/refresh_token → SteamCMD.
+        UserDefaults.standard.set(access, forKey: "steam.accessToken")
+        UserDefaults.standard.set(account, forKey: "steam.accountName")
+        UserDefaults.standard.set(refresh, forKey: "steam.refreshToken")
         return Tokens(accountName: account, accessToken: access, refreshToken: refresh)
     }
 
