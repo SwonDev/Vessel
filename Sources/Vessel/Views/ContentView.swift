@@ -14,6 +14,7 @@ struct ContentView: View {
             detailView
         }
         .navigationTitle("Vessel")
+        .preferredColorScheme(.dark)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {

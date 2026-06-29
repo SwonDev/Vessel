@@ -57,22 +57,9 @@ struct StoreSidebar: View {
 
     var body: some View {
         List(StoreKind.allCases, selection: $selection) { store in
-            HStack(spacing: 10) {
-                Image(systemName: store.symbol)
-                    .font(.title3)
-                    .foregroundStyle(.white)
-                    .frame(width: 30, height: 30)
-                    .background(store.tint.gradient, in: RoundedRectangle(cornerRadius: 7))
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(store.displayName).font(.headline)
-                    Text(store.isAvailable ? "Tienda" : "Próximamente")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(.vertical, 3)
-            .tag(store)
-            .contextMenu {
+            StoreRow(store: store, isSelected: selection == store)
+                .tag(store)
+                .contextMenu {
                 if store == .steam {
                     Button { NotificationCenter.default.post(name: .steamLogin, object: nil) } label: {
                         Label("Iniciar sesión", systemImage: "person.crop.circle")
@@ -91,7 +78,42 @@ struct StoreSidebar: View {
         }
         .navigationTitle("Vessel")
         .listStyle(.sidebar)
-        .frame(minWidth: 240)
+        .frame(minWidth: 248)
+    }
+}
+
+/// Fila de tienda en la sidebar: icono con gradiente de marca + sombra, con realce
+/// suave al pasar el cursor o estar seleccionada (microinteracción premium).
+private struct StoreRow: View {
+    let store: StoreKind
+    let isSelected: Bool
+    @State private var hovering = false
+
+    private var highlighted: Bool { isSelected || hovering }
+
+    var body: some View {
+        HStack(spacing: 11) {
+            Image(systemName: store.symbol)
+                .font(.title3)
+                .foregroundStyle(.white)
+                .frame(width: 32, height: 32)
+                .background(store.tint.gradient, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
+                .shadow(color: store.tint.opacity(highlighted ? 0.55 : 0.28), radius: highlighted ? 9 : 4, y: 2)
+                .scaleEffect(hovering ? 1.06 : 1)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(store.displayName).font(.headline)
+                Text(store.isAvailable ? "Tienda" : "Próximamente")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: hovering)
+        .onHover { hovering = $0 }
     }
 }
 
@@ -101,22 +123,24 @@ struct StoreConnectView: View {
     let store: StoreKind
 
     var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 22) {
             Image(systemName: store.symbol)
-                .font(.system(size: 64))
+                .font(.system(size: 60, weight: .medium))
                 .foregroundStyle(.white)
-                .frame(width: 120, height: 120)
-                .background(store.tint.gradient, in: RoundedRectangle(cornerRadius: 28))
-                .shadow(color: store.tint.opacity(0.4), radius: 20, y: 8)
+                .frame(width: 128, height: 128)
+                .background(store.tint.gradient, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 30, style: .continuous).strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
+                .shadow(color: store.tint.opacity(0.5), radius: 26, y: 12)
 
             Text(store.displayName)
                 .font(.largeTitle.bold())
+                .foregroundStyle(.white)
 
             Text("Inicia sesión para ver y jugar toda tu biblioteca de \(store.displayName) desde Vessel.")
                 .font(.title3)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.white.opacity(0.7))
                 .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
+                .frame(maxWidth: 440)
 
             Button {
                 // La integración (Legendary/gogdl/…) se conecta aquí.
@@ -125,17 +149,16 @@ struct StoreConnectView: View {
                     .frame(maxWidth: 320)
                     .padding(.vertical, 4)
             }
-            .controlSize(.large)
-            .buttonStyle(.borderedProminent)
-            .tint(store.tint)
+            .buttonStyle(.premium(tint: store.tint))
             .disabled(true)
+            .padding(.top, 4)
 
             Text("Integración en camino — Steam ya está disponible.")
                 .font(.footnote)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.white.opacity(0.45))
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(NSColor.windowBackgroundColor))
+        .vesselBackground()
     }
 }

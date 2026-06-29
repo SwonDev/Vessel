@@ -125,27 +125,29 @@ struct ConnectSteamView: View {
     var body: some View {
         VStack(spacing: 22) {
             Image(systemName: StoreKind.steam.symbol)
-                .font(.system(size: 60))
+                .font(.system(size: 60, weight: .medium))
                 .foregroundStyle(.white)
-                .frame(width: 120, height: 120)
-                .background(tint.gradient, in: RoundedRectangle(cornerRadius: 28))
-                .shadow(color: tint.opacity(0.4), radius: 20, y: 8)
+                .frame(width: 128, height: 128)
+                .background(tint.gradient, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 30, style: .continuous).strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
+                .shadow(color: tint.opacity(0.5), radius: 26, y: 12)
 
-            Text("Steam").font(.largeTitle.bold())
+            Text("Steam").font(.largeTitle.bold()).foregroundStyle(.white)
 
             if let working {
                 ProgressView()
                     .controlSize(.large)
+                    .tint(.white)
                     .padding(.top, 4)
                 Text(working)
                     .font(.title3)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.7))
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 440)
             } else {
                 Text("Conecta tu cuenta para ver y jugar toda tu biblioteca de Steam desde Vessel. Se instalará Steam si hace falta y se abrirá el inicio de sesión por ti.")
                     .font(.title3)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.7))
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 440)
 
@@ -154,13 +156,12 @@ struct ConnectSteamView: View {
                         .frame(maxWidth: 320)
                         .padding(.vertical, 4)
                 }
-                .controlSize(.large)
-                .buttonStyle(.borderedProminent)
-                .tint(tint)
+                .buttonStyle(.premium(tint: tint))
+                .padding(.top, 4)
             }
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(NSColor.windowBackgroundColor))
+        .vesselBackground()
     }
 }

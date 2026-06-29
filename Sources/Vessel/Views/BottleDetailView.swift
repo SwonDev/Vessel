@@ -56,7 +56,7 @@ struct BottleDetailView: View {
             }
             .padding(32)
         }
-        .background(Color(NSColor.windowBackgroundColor))
+        .vesselBackground()
         .sheet(isPresented: $showingInstaller) {
             SteamInstallerView(bottle: localBottle, wineManager: wineManager) {
                 showingInstaller = false
@@ -206,8 +206,8 @@ struct BottleDetailView: View {
                     }.buttonStyle(.plain)
                 }
             }
-            .padding(8)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+            .padding(10)
+            .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
 
             Toggle(isOn: $showFavoritesOnly) {
                 Label("Favoritos", systemImage: showFavoritesOnly ? "star.fill" : "star")
@@ -255,7 +255,7 @@ struct BottleDetailView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Tu biblioteca · \(notInstalledGames.count) sin instalar")
                     .font(.title2).fontWeight(.semibold)
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 200))], spacing: 12) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: Theme.Space.gameGrid)], spacing: Theme.Space.gameGrid) {
                     ForEach(notInstalledGames) { game in
                         LibraryGameCard(
                             appId: game.appId,
@@ -298,13 +298,13 @@ struct BottleDetailView: View {
                             Text("Cargar biblioteca")
                         }
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.premium())
                     .disabled(apiKeyInput.trimmingCharacters(in: .whitespaces).count < 16 || loadingLibrary)
                 }
             }
-            .padding()
+            .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+            .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
         }
     }
 
@@ -462,7 +462,7 @@ struct BottleDetailView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
             } else {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 200))], spacing: 12) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: Theme.Space.gameGrid)], spacing: Theme.Space.gameGrid) {
                     ForEach(filteredInstalled) { game in
                         GameCard(
                             game: game,
