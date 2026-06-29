@@ -359,11 +359,15 @@ final class WineManager {
     }
 
     /// API gráfica detectada de un juego, para enrutar a la capa correcta.
-    enum GameGraphicsAPI { case d3d11, d3d12, other }
+    enum GameGraphicsAPI { case d3d9, d3d11, d3d12, other }
 
-    /// Auto-detecta la API gráfica del juego mirando su carpeta:
-    ///  - `D3D12/` o `D3D12Core.dll` junto al exe → D3D12 (vkd3d).
-    ///  - `UnityPlayer.dll` o `<exe>_Data` → D3D11 (DXMT) — Unity por defecto.
+    /// Auto-detecta la API gráfica del juego. Lo más fiable es mirar las DLL que
+    /// **importa el propio .exe** (tabla de imports del PE), con respaldo en la
+    /// estructura de carpetas:
+    ///  - `D3D12/` o `D3D12Core.dll` junto al exe, o importa `d3d12.dll` → D3D12 (GPTK).
+    ///  - importa `d3d11.dll`/`dxgi.dll`, o Unity (`UnityPlayer.dll`/`<exe>_Data`) → D3D11 (DXMT).
+    ///  - importa `d3d9.dll`/`d3d8.dll`/`ddraw.dll` → D3D9 (Gcenx, wined3d→Metal). wine-dxmt
+    ///    NO resuelve bien el d3d9 de 32-bit (c0000135 "d3d9.dll not found"); Gcenx sí.
     func detectGraphicsAPI(forExecutable executable: String) -> GameGraphicsAPI {
         let dir = (executable as NSString).deletingLastPathComponent
         let fm = FileManager.default
@@ -371,12 +375,30 @@ final class WineManager {
             || fm.fileExists(atPath: "\(dir)/D3D12Core.dll") {
             return .d3d12
         }
+        // Imports del PE (prioridad: 12 > 11 > 9). Un juego moderno que importe d3d11
+        // va a DXMT aunque traiga un d3d9 de respaldo; uno que SOLO importe d3d9 → Gcenx.
+        if exeImports(executable, anyOf: ["d3d12.dll"]) { return .d3d12 }
+        if exeImports(executable, anyOf: ["d3d11.dll", "dxgi.dll", "d3d10.dll", "d3d10core.dll"]) { return .d3d11 }
+        if exeImports(executable, anyOf: ["d3d9.dll", "d3d8.dll", "ddraw.dll"]) { return .d3d9 }
         let exeName = ((executable as NSString).lastPathComponent as NSString).deletingPathExtension
         if fm.fileExists(atPath: "\(dir)/UnityPlayer.dll")
             || fm.fileExists(atPath: "\(dir)/\(exeName)_Data") {
             return .d3d11
         }
         return .other
+    }
+
+    /// ¿El .exe importa alguna de estas DLL? Escanea el binario (mapeado en memoria)
+    /// buscando los nombres en la tabla de imports. Heurístico pero fiable: los nombres
+    /// de import aparecen como ASCII terminado en nulo. Comprueba minúsculas y mayúsculas.
+    private func exeImports(_ executable: String, anyOf names: [String]) -> Bool {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: executable), options: .mappedIfSafe)
+        else { return false }
+        for name in names {
+            if let lower = name.lowercased().data(using: .ascii), data.range(of: lower) != nil { return true }
+            if let upper = name.uppercased().data(using: .ascii), data.range(of: upper) != nil { return true }
+        }
+        return false
     }
 
     @discardableResult
@@ -393,6 +415,14 @@ final class WineManager {
         if useD3D12 {
             log.log("Capa gráfica: GPTK/D3DMetal (D3D12→Metal)\(graphicsOverride == .gptk ? " [forzado]" : "")", level: .info)
             return try await launchD3D12Game(executable: executable, in: bottle, steamAppId: steamAppId)
+        }
+        // Juegos D3D9/D3D8/DDraw → Gcenx (wine-osx64, Wine 11 completo, wined3d→Metal).
+        // wine-dxmt no resuelve el d3d9 de 32-bit (falla con c0000135 "d3d9.dll not
+        // found"); Gcenx sí lo ejecuta. Solo en automático/DXMT-no-forzado.
+        if graphicsOverride == nil || graphicsOverride == .auto,
+           detectGraphicsAPI(forExecutable: executable) == .d3d9 {
+            return try await launchD3D9Game(executable: executable, in: bottle,
+                                            arguments: arguments, steamAppId: steamAppId)
         }
         // D3D11 → wine-dxmt (DXMT→Metal). Aseguramos DXMT en el builtin del motor; si
         // no, los juegos usarían wined3d y fallarían con "InitializeEngineGraphics".
@@ -434,6 +464,39 @@ final class WineManager {
             winePath: gameWine,
             prefix: bottle.prefixPath,
             arguments: [executable] + engineArgs + arguments,
+            environment: env,
+            workingDirectory: (executable as NSString).deletingLastPathComponent
+        )
+    }
+
+    /// Lanza un juego **D3D9/D3D8/DDraw** con **Gcenx (wine-osx64)**, que es un Wine 11
+    /// completo cuyo `d3d9` builtin (wined3d→Vulkan/MoltenVK→Metal) sí funciona en
+    /// 32-bit. wine-dxmt está especializado en DXMT (D3D11) y su d3d9 de 32-bit falla
+    /// con c0000135. Mismo prefijo, distinto motor según la carga (filosofía de Vessel).
+    private func launchD3D9Game(executable: String, in bottle: Bottle, arguments: [String], steamAppId: String?) async throws -> Process {
+        let clientWine = resolveClientWine(for: bottle)
+        log.log("Capa gráfica: wined3d→Metal (juego D3D9/D3D8) con Gcenx", level: .info)
+        log.log("Preparando prefijo para el juego…", level: .info)
+        try? await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+        // Re-sincronizar el prefix al motor Gcenx (tras el cliente Steam o un juego
+        // D3D11 el prefix puede quedar en otro motor).
+        await resyncGamePrefix(gameWine: clientWine, prefix: bottle.prefixPath)
+        // Quitar DLLs nativas de gráficos del prefix para que mande el builtin (wined3d).
+        cleanPrefixNativeGraphicsDLLs(in: bottle)
+
+        var env = gameLaunchEnvironment(prefix: bottle.prefixPath)   // ya fija d3d9,d3d8,ddraw=b
+        if let appId = steamAppId, !appId.isEmpty {
+            let gameDir = (executable as NSString).deletingLastPathComponent
+            try? appId.write(toFile: "\(gameDir)/steam_appid.txt", atomically: true, encoding: .utf8)
+            env["SteamAppId"] = appId
+            env["SteamGameId"] = appId
+        }
+        log.log("Lanzando juego D3D9 con Gcenx: \((executable as NSString).lastPathComponent)", level: .info)
+        return try await launchWineProcess(
+            winePath: clientWine,
+            prefix: bottle.prefixPath,
+            arguments: [executable] + arguments,
             environment: env,
             workingDirectory: (executable as NSString).deletingLastPathComponent
         )

@@ -13,7 +13,7 @@ final class SteamAccountService {
         let accountName: String
     }
 
-    struct OwnedGame: Identifiable, Hashable {
+    struct OwnedGame: Identifiable, Hashable, Codable {
         var id: String { appId }
         let appId: String
         let name: String

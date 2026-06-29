@@ -437,13 +437,21 @@ struct BottleDetailView: View {
     /// Carga la biblioteca completa (owned) de la cuenta logueada en el bottle.
     private func loadSteamLibrary() async {
         guard let account = accountService.detectAccount(bottle: localBottle) else { return }
-        loadingLibrary = true
+        // Carga INSTANTÁNEA desde caché en disco; así no se ve "Cargando…" cada vez.
+        if ownedGames.isEmpty,
+           let cached = LibraryCache.load("steam-\(account.steamID64)", as: [SteamAccountService.OwnedGame].self) {
+            ownedGames = cached
+        }
+        // Solo mostrar el indicador si no hay nada que enseñar todavía.
+        loadingLibrary = ownedGames.isEmpty
         defer { loadingLibrary = false }
+        // Refresco real en 2º plano (la UI ya muestra la caché mientras tanto).
         let owned = await accountService.fetchOwnedGames(steamID64: account.steamID64)
         if !owned.isEmpty {
             ownedGames = owned
+            LibraryCache.save("steam-\(account.steamID64)", owned)
             log.log("Biblioteca de Steam cargada: \(owned.count) juego(s) de \(account.personaName)", level: .info)
-        } else {
+        } else if ownedGames.isEmpty {
             log.log("Biblioteca de \(account.personaName) vacía (perfil privado o sin clave API)", level: .warn)
         }
     }

@@ -32,7 +32,12 @@ final class EpicStore {
         if case .working = phase { return }
         if case .connected = phase { return }   // ya cargada: NO recargar al volver el foco (evita el bucle de "Cargando…")
         if legendary.isAuthenticated() {
-            phase = .working("Cargando biblioteca Epic…")
+            // Carga INSTANTÁNEA desde caché; el refresco real va en 2º plano.
+            if let cached = LibraryCache.load("epic", as: [LegendaryManager.EpicGame].self) {
+                phase = .connected(cached)
+            } else {
+                phase = .working("Cargando biblioteca Epic…")
+            }
             Task { await self.loadLibrary() }
         } else {
             phase = .disconnected
@@ -84,6 +89,8 @@ final class EpicStore {
             phase = .connected(games)
         } catch {
             log.log("Error cargando biblioteca Epic: \(error.localizedDescription)", level: .error)
+            // Si ya mostramos la caché, no romper la vista con un error.
+            if case .connected = phase { return }
             phase = .error(error.localizedDescription)
         }
     }

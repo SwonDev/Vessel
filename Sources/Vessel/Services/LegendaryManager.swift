@@ -14,7 +14,7 @@ final class LegendaryManager {
 
     // MARK: - Tipos públicos
 
-    struct EpicGame: Identifiable, Hashable {
+    struct EpicGame: Identifiable, Hashable, Codable {
         let appName: String
         let title: String
         var installed: Bool
@@ -196,6 +196,7 @@ final class LegendaryManager {
         guard let data = listResult.stdout.data(using: .utf8) else { return [] }
         let games = parseGames(from: data, installed: installed)
         log.log("Biblioteca Epic: \(games.count) juego(s)", level: .info)
+        LibraryCache.save("epic", games)   // para carga instantánea la próxima vez
         return games
     }
 
