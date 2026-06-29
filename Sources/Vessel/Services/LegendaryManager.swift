@@ -6,8 +6,8 @@ import Foundation
 /// La configuración se guarda en una carpeta PROPIA de Vessel para no interferir con la
 /// configuración global que el usuario pueda tener en `~/.config/legendary`.
 ///
-/// Modelo de uso (igual que Heroic): el usuario abre la página de Epic → inicia sesión →
-/// copia el authorization code → lo pega en Vessel → biblioteca disponible.
+/// Modelo de uso (igual que Heroic/Mythic): el usuario inicia sesión en un WebView embebido →
+/// el `authorizationCode` se captura automáticamente → biblioteca disponible.
 @MainActor
 @Observable
 final class LegendaryManager {
@@ -37,12 +37,18 @@ final class LegendaryManager {
     /// NO publica binario de macOS — Heroic mantiene un fork con binarios **nativos arm64**.
     private static let legendaryVersion = "0.20.43"
 
+    /// Tiempo máximo de espera para cualquier subproceso de Legendary (segundos).
+    /// Evita que la UI se quede colgada indefinidamente si legendary no responde.
+    private static let processTimeoutSeconds: Double = 90
+
     // MARK: - Instalación del binario
 
     /// Devuelve la ruta al binario de Legendary, descargándolo si aún no está.
     /// Idempotente: si ya existe, devuelve la ruta inmediatamente.
     func ensureInstalled(onProgress: @escaping @Sendable (String) -> Void) async throws -> String {
         if FileManager.default.isExecutableFile(atPath: Self.binaryPath) {
+            // Asegurar que el directorio de configuración también existe
+            try? FileManager.default.createDirectory(atPath: Self.configDir, withIntermediateDirectories: true)
             return Self.binaryPath
         }
 
@@ -97,11 +103,11 @@ final class LegendaryManager {
         FileManager.default.fileExists(atPath: Self.userJSONPath)
     }
 
-    /// URL de inicio de sesión de Epic Games (redirige al portal OAuth de Epic).
-    var authURL: URL { URL(string: "https://legendary.gl/epiclogin")! }
-
-    /// Autentica con el **authorization code** del portal de Epic.
+    /// Autentica con el **authorization code** capturado por el WebView de Epic.
     /// Ejecuta: `legendary auth --code <code>`.
+    ///
+    /// - Asegura que `configDir` existe antes de invocar el binario.
+    /// - Verifica que las credenciales quedaron guardadas tras la ejecución.
     func authenticate(code: String) async throws {
         let bin = Self.binaryPath
         guard FileManager.default.isExecutableFile(atPath: bin) else {
@@ -118,15 +124,31 @@ final class LegendaryManager {
             )
         }
 
+        // Garantizar que el directorio de configuración existe antes de ejecutar legendary
+        // (si legendary se instaló en una sesión anterior, configDir puede no existir todavía).
+        try? FileManager.default.createDirectory(atPath: Self.configDir, withIntermediateDirectories: true)
+
         let result = try await runBackground(bin, args: ["auth", "--code", trimmed])
         if result.exitCode != 0 {
-            log.log("Error al autenticar con Epic Games: \(result.output)", level: .error)
+            log.log("Error al autenticar con Epic Games (exit \(result.exitCode)): \(result.output)", level: .error)
             throw NSError(
                 domain: "Vessel", code: 104,
                 userInfo: [NSLocalizedDescriptionKey:
                     "Autenticación con Epic Games fallida. Comprueba que el código sea correcto y no haya caducado.\n\(result.output)"]
             )
         }
+
+        // Verificar que legendary guardó las credenciales correctamente.
+        // Si el proceso terminó con éxito pero no hay user.json, el código había caducado.
+        guard isAuthenticated() else {
+            log.log("Auth exit 0 pero sin user.json. Output: \(result.output)", level: .error)
+            throw NSError(
+                domain: "Vessel", code: 106,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "La autenticación completó pero no se guardaron las credenciales. El código puede haber caducado. Inténtalo de nuevo."]
+            )
+        }
+
         log.log("✓ Autenticación de Epic Games correcta", level: .info)
     }
 
@@ -155,7 +177,7 @@ final class LegendaryManager {
         // Todos los juegos en propiedad
         let listResult = try await runBackground(bin, args: ["list", "--json"])
         guard listResult.exitCode == 0 else {
-            log.log("Error al listar biblioteca Epic: \(listResult.output)", level: .error)
+            log.log("Error al listar biblioteca Epic (exit \(listResult.exitCode)): \(listResult.output)", level: .error)
             throw NSError(
                 domain: "Vessel", code: 105,
                 userInfo: [NSLocalizedDescriptionKey:
@@ -173,8 +195,6 @@ final class LegendaryManager {
 
     /// TODO: Instalar un juego vía `legendary install <appName>`.
     func installGame(appName: String, progress: @escaping @Sendable (String) -> Void) async throws {
-        // TODO: Implementar descarga e instalación de juegos de Epic Games vía Legendary.
-        //       Gestionar el bottle de Wine correcto, rutas de instalación en VesselPaths, etc.
         throw NSError(
             domain: "Vessel", code: 199,
             userInfo: [NSLocalizedDescriptionKey: "Instalación de juegos de Epic Games: próximamente."]
@@ -183,8 +203,6 @@ final class LegendaryManager {
 
     /// TODO: Lanzar un juego con `legendary launch <appName>` usando el motor wine-dxmt.
     func launchGame(appName: String) async throws {
-        // TODO: Implementar lanzamiento de juegos de Epic Games vía Legendary + wine-dxmt.
-        //       Reutilizar la arquitectura de doble motor: wine-dxmt para D3D11, igual que Steam.
         throw NSError(
             domain: "Vessel", code: 200,
             userInfo: [NSLocalizedDescriptionKey: "Lanzamiento de juegos de Epic Games: próximamente."]
@@ -199,14 +217,37 @@ final class LegendaryManager {
     }
 
     /// Ejecuta legendary en un hilo de fondo para no bloquear el actor principal.
+    ///
+    /// **Anti-deadlock**: drena stdout y stderr de forma CONCURRENTE mientras el proceso corre,
+    /// usando `readabilityHandler` de FileHandle. Si se leyese la pipe DESPUÉS de
+    /// `waitUntilExit()`, el proceso se bloquearía al llenarse el buffer del SO (~64 KB),
+    /// causando un deadlock permanente en bibliotecas grandes.
+    ///
+    /// **Timeout de 90 s**: si legendary no termina, el proceso se mata y se lanza un error
+    /// claro para que la UI nunca se quede en estado "cargando" para siempre.
+    ///
+    /// **Contexto no-async**: usa `DispatchQueue.global().async` (no `Task.detached`) para
+    /// poder usar `DispatchGroup.wait()` y `DispatchSemaphore`, que están prohibidos en
+    /// contextos async de Swift 6.
+    ///
     /// Inyecta `LEGENDARY_CONFIG_PATH` apuntando al directorio aislado de Vessel.
     private func runBackground(_ binary: String, args: [String]) async throws -> RunResult {
-        // Capturar los valores fuera del Task.detached para evitar capturar self
         let configDir = Self.configDir
         let shellEnv  = WineManager.userShellEnvironment
+        let timeout   = Self.processTimeoutSeconds
 
-        return try await withCheckedThrowingContinuation { cont in
-            Task.detached(priority: .userInitiated) {
+        // Envoltura @unchecked Sendable para acumular bytes de forma thread-safe
+        // desde los readabilityHandlers (que se ejecutan en una cola interna de FileHandle).
+        final class SafeBuffer: @unchecked Sendable {
+            private let lock = NSLock()
+            private var _data = Data()
+            func append(_ chunk: Data) { lock.withLock { _data.append(chunk) } }
+            var data: Data { lock.withLock { _data } }
+        }
+
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<RunResult, Error>) in
+            // DispatchQueue.global().async → closure NO es async → DispatchGroup.wait() es legal.
+            DispatchQueue.global(qos: .userInitiated).async {
                 var env = shellEnv
                 env["LEGENDARY_CONFIG_PATH"] = configDir
                 env["TERM"] = "xterm-256color"
@@ -218,19 +259,80 @@ final class LegendaryManager {
                 task.arguments = args
                 task.environment = env
 
-                let pipe = Pipe()
-                task.standardOutput = pipe
-                task.standardError  = pipe
+                let stdoutPipe = Pipe()
+                let stderrPipe = Pipe()
+                task.standardOutput = stdoutPipe
+                task.standardError  = stderrPipe
+
+                let stdoutBuf = SafeBuffer()
+                let stderrBuf = SafeBuffer()
+                let drainGroup = DispatchGroup()
+
+                // Registrar handlers ANTES de arrancar el proceso para no perder datos.
+                // readabilityHandler se invoca en una cola interna cada vez que hay datos
+                // disponibles, drenando el buffer del SO de forma continua → sin deadlock.
+                drainGroup.enter()
+                stdoutPipe.fileHandleForReading.readabilityHandler = { fh in
+                    let chunk = fh.availableData
+                    if chunk.isEmpty {
+                        // EOF: el proceso cerró stdout
+                        stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                        drainGroup.leave()
+                    } else {
+                        stdoutBuf.append(chunk)
+                    }
+                }
+
+                drainGroup.enter()
+                stderrPipe.fileHandleForReading.readabilityHandler = { fh in
+                    let chunk = fh.availableData
+                    if chunk.isEmpty {
+                        stderrPipe.fileHandleForReading.readabilityHandler = nil
+                        drainGroup.leave()
+                    } else {
+                        stderrBuf.append(chunk)
+                    }
+                }
 
                 do {
                     try task.run()
-                    task.waitUntilExit()
-                    let data   = pipe.fileHandleForReading.readDataToEndOfFile()
-                    let output = String(data: data, encoding: .utf8) ?? ""
-                    cont.resume(returning: RunResult(exitCode: task.terminationStatus, output: output))
                 } catch {
                     cont.resume(throwing: error)
+                    return
                 }
+
+                // Timeout: matar el proceso si tarda más de `timeout` segundos.
+                let timeoutWork = DispatchWorkItem {
+                    if task.isRunning { task.terminate() }
+                }
+                DispatchQueue.global(qos: .background).asyncAfter(
+                    deadline: .now() + timeout,
+                    execute: timeoutWork
+                )
+
+                task.waitUntilExit()
+                timeoutWork.cancel()
+                // Esperar a que ambos readabilityHandlers reciban el EOF y dejen el grupo.
+                drainGroup.wait()
+
+                let exitCode = task.terminationStatus
+
+                // Detectar si el proceso fue matado por nuestro timeout (SIGTERM = 15)
+                if task.terminationReason == .uncaughtSignal, exitCode == SIGTERM {
+                    cont.resume(throwing: NSError(
+                        domain: "Vessel", code: 108,
+                        userInfo: [NSLocalizedDescriptionKey:
+                            "Legendary no respondió en \(Int(timeout)) s. Comprueba tu conexión e inténtalo de nuevo."]
+                    ))
+                    return
+                }
+
+                // Combinar stdout + stderr en una sola cadena para el llamador
+                var combined = Data()
+                combined.append(stdoutBuf.data)
+                combined.append(stderrBuf.data)
+                let output = String(data: combined, encoding: .utf8) ?? ""
+                cont.resume(returning: RunResult(exitCode: exitCode, output: output))
             }
         }
     }

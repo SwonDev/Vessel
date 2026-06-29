@@ -2,8 +2,8 @@ import SwiftUI
 import AppKit
 
 /// Orquesta la conexión a **Epic Games vía Legendary** (modelo Heroic/Mythic):
-/// descarga Legendary si es necesario, guía al usuario por el flujo de auth code y,
-/// una vez autenticado, expone la biblioteca. Todo lo técnico va por detrás.
+/// descarga Legendary si es necesario, autentica al usuario mediante un WebView
+/// embebido y, una vez autenticado, expone la biblioteca. Todo lo técnico va por detrás.
 @MainActor
 @Observable
 final class EpicStore {
@@ -31,7 +31,7 @@ final class EpicStore {
     }
 
     /// Flujo completo de conexión Epic:
-    /// 1) Descarga Legendary si falta, 2) autentica con el código del portal, 3) carga la biblioteca.
+    /// 1) Descarga Legendary si falta, 2) autentica con el código del WebView, 3) carga la biblioteca.
     func connect(code: String) async {
         do {
             // Paso 1: Legendary
@@ -40,7 +40,7 @@ final class EpicStore {
                 Task { @MainActor in self.phase = .working(msg) }
             }
 
-            // Paso 2: Autenticación con el código de Epic
+            // Paso 2: Autenticación con el código capturado por el WebView
             phase = .working("Autenticando con Epic Games…")
             try await legendary.authenticate(code: code)
 
@@ -59,11 +59,6 @@ final class EpicStore {
         guard legendary.isAuthenticated() else { phase = .disconnected; return }
         phase = .working("Actualizando biblioteca Epic…")
         await loadLibrary()
-    }
-
-    /// Abre la página de login de Epic en el navegador predeterminado.
-    func openAuthPage() {
-        NSWorkspace.shared.open(legendary.authURL)
     }
 
     /// Cierra sesión eliminando la config de Legendary de Vessel.
@@ -102,15 +97,14 @@ struct EpicStoreView: View {
                     onReload:        { Task { await epic.reloadLibrary() } }
                 )
             case .working(let msg):
-                ConnectEpicView(working: msg, errorMessage: nil, onOpenAuth: {}, onConnect: { _ in })
+                ConnectEpicView(working: msg, errorMessage: nil,
+                                onConnect: { _ in })
             case .error(let msg):
                 ConnectEpicView(working: nil, errorMessage: msg,
-                                onOpenAuth: { epic.openAuthPage() },
-                                onConnect:  { code in Task { await epic.connect(code: code) } })
+                                onConnect: { code in Task { await epic.connect(code: code) } })
             case .disconnected:
                 ConnectEpicView(working: nil, errorMessage: nil,
-                                onOpenAuth: { epic.openAuthPage() },
-                                onConnect:  { code in Task { await epic.connect(code: code) } })
+                                onConnect: { code in Task { await epic.connect(code: code) } })
             }
         }
         .task { epic.refresh() }
@@ -122,17 +116,16 @@ struct EpicStoreView: View {
 
 // MARK: - Pantalla de conexión (disconnected / error / working)
 
-/// Pantalla "Conecta tu cuenta de Epic Games": guía al usuario en 2 pasos
-/// (abrir la web de Epic → pegar el authorization code).
+/// Pantalla "Conecta tu cuenta de Epic Games": muestra un único botón que abre
+/// el WebView embebido de login. El código de autorización se captura automáticamente.
 /// Muestra progreso con spinner cuando `working != nil`.
 struct ConnectEpicView: View {
     let working: String?
     let errorMessage: String?
-    let onOpenAuth: () -> Void
     let onConnect: (String) -> Void
 
     private let tint = StoreKind.epic.tint
-    @State private var authCode = ""
+    @State private var showingLogin = false
     @State private var pulse = false
 
     var body: some View {
@@ -165,7 +158,7 @@ struct ConnectEpicView: View {
                 }
                 .padding(.top, 4)
             } else {
-                // Pantalla de conexión con los 2 pasos
+                // Pantalla de conexión con un único botón
                 VStack(spacing: 20) {
                     Text("Conecta tu cuenta de Epic Games para ver y jugar toda tu biblioteca desde Vessel.")
                         .font(.title3)
@@ -188,67 +181,16 @@ struct ConnectEpicView: View {
                             )
                     }
 
-                    // Paso 1 — Abrir página de login
-                    VStack(alignment: .leading, spacing: 10) {
-                        Label("Paso 1 — Inicia sesión en Epic Games", systemImage: "1.circle.fill")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.55))
-
-                        Button(action: onOpenAuth) {
-                            Label("Abrir inicio de sesión de Epic", systemImage: "safari")
-                                .frame(maxWidth: 320)
-                                .padding(.vertical, 4)
-                        }
-                        .vesselButton(tint: tint)
-
-                        Text("Se abrirá el navegador. Tras iniciar sesión, Epic mostrará una página con un texto entre llaves { } (no es un error). Copia solo el valor que aparece después de \u{201C}authorizationCode\u{201D} —los 32 caracteres— y pégalo abajo.")
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.45))
-                            .fixedSize(horizontal: false, vertical: true)
+                    // Único botón: abre el WebView de login dentro de la app
+                    Button {
+                        showingLogin = true
+                    } label: {
+                        Label("Iniciar sesión con Epic Games", systemImage: "globe")
+                            .frame(maxWidth: 320)
+                            .padding(.vertical, 4)
                     }
-                    .frame(maxWidth: 440, alignment: .leading)
-
-                    // Paso 2 — Pegar el código
-                    VStack(alignment: .leading, spacing: 10) {
-                        Label("Paso 2 — Pega el código de autorización", systemImage: "2.circle.fill")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.55))
-
-                        HStack(spacing: 10) {
-                            TextField("Pega aquí el authorizationCode…", text: $authCode)
-                                .textFieldStyle(.plain)
-                                .font(.system(.callout, design: .monospaced))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 9)
-                                .background(
-                                    .white.opacity(0.10),
-                                    in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-                                        .strokeBorder(.white.opacity(0.15), lineWidth: 0.5)
-                                )
-                                .onSubmit {
-                                    let trimmed = authCode.trimmingCharacters(in: .whitespacesAndNewlines)
-                                    guard !trimmed.isEmpty else { return }
-                                    onConnect(trimmed)
-                                }
-
-                            Button {
-                                let trimmed = authCode.trimmingCharacters(in: .whitespacesAndNewlines)
-                                guard !trimmed.isEmpty else { return }
-                                onConnect(trimmed)
-                            } label: {
-                                Label("Conectar", systemImage: "person.crop.circle.badge.plus")
-                                    .padding(.vertical, 4)
-                            }
-                            .vesselButton(tint: tint)
-                            .disabled(authCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        }
-                        .frame(maxWidth: 440)
-                    }
-                    .frame(maxWidth: 440, alignment: .leading)
+                    .vesselButton(tint: tint)
+                    .padding(.top, 4)
                 }
             }
         }
@@ -257,6 +199,118 @@ struct ConnectEpicView: View {
         .vesselBackground(tint: tint)
         .onAppear { pulse = working != nil }
         .onChange(of: working) { _, new in pulse = new != nil }
+        // Sheet con el WebView embebido de Epic
+        .sheet(isPresented: $showingLogin) {
+            EpicWebLoginSheet { code in
+                showingLogin = false
+                onConnect(code)
+            }
+        }
+    }
+}
+
+// MARK: - Sheet de WebView (login de Epic)
+
+/// Sheet que presenta el portal de inicio de sesión de Epic dentro de un WKWebView.
+/// Captura el `authorizationCode` automáticamente al terminar el login y llama a
+/// `onCodeCaptured` — sin que el usuario vea JSON ni tenga que copiar nada.
+struct EpicWebLoginSheet: View {
+    let onCodeCaptured: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var isLoading     = true
+    @State private var webError: String?
+    private let tint = StoreKind.epic.tint
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Barra de cabecera
+            HStack(spacing: 12) {
+                StoreLogoTile(store: .epic, size: 28)
+                Text("Iniciar sesión — Epic Games")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(.white)
+                Spacer()
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.55))
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.escape, modifiers: [])
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+            .background(Theme.navyTop)
+
+            Divider().opacity(0.15)
+
+            ZStack {
+                // WebView con el portal de Epic
+                EpicLoginWebView(
+                    onCodeCaptured: { code in
+                        // Código capturado: cerrar sheet y notificar al padre
+                        dismiss()
+                        onCodeCaptured(code)
+                    },
+                    onError: { error in
+                        webError = error
+                        isLoading = false
+                    },
+                    onLoadingChanged: { loading in
+                        if loading { webError = nil }
+                        withAnimation(.easeOut(duration: 0.3)) { isLoading = loading }
+                    }
+                )
+
+                // Overlay de carga inicial
+                if isLoading {
+                    ZStack {
+                        Theme.navyDeep.opacity(0.88)
+                        VStack(spacing: 14) {
+                            ProgressView()
+                                .controlSize(.large)
+                                .tint(.white)
+                            Text("Cargando Epic Games…")
+                                .font(.callout.weight(.medium))
+                                .foregroundStyle(.white.opacity(0.75))
+                        }
+                        .padding(28)
+                        .background(.ultraThinMaterial,
+                                    in: RoundedRectangle(cornerRadius: Theme.Radius.panel, style: .continuous))
+                    }
+                    .transition(.opacity)
+                }
+
+                // Overlay de error
+                if let webError {
+                    ZStack {
+                        Theme.navyDeep.opacity(0.94)
+                        VStack(spacing: 20) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.system(size: 48))
+                                .foregroundStyle(tint.opacity(0.75))
+                            Text(webError)
+                                .font(.callout)
+                                .foregroundStyle(.white.opacity(0.8))
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: 360)
+                            HStack(spacing: 12) {
+                                Button("Cerrar") { dismiss() }
+                                    .vesselButton(false)
+                            }
+                        }
+                        .padding(36)
+                    }
+                    .transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.25), value: webError)
+        }
+        .frame(width: 820, height: 640)
+        .background(Theme.navyDeep)
     }
 }
 
@@ -356,20 +410,16 @@ struct EpicLibraryView: View {
 
 /// Tarjeta de juego de Epic Games con portada generada a partir del título
 /// (degradado + iniciales) hasta que se integre la API de imágenes de Epic.
-/// El color de fondo se genera deterministamente por hash del `appName` para que sea
-/// consistente entre sesiones y no cambie al actualizar la biblioteca.
 struct EpicGameCard: View {
     let game: LegendaryManager.EpicGame
     @State private var hovering = false
 
-    /// Color de fondo generado deterministamente por hash del appName del juego.
     private var placeholderColor: Color {
         var h = 5381
         for c in game.appName.unicodeScalars { h = ((h << 5) &+ h) &+ Int(c.value) }
         return Color(hue: Double(abs(h) % 360) / 360.0, saturation: 0.48, brightness: 0.42)
     }
 
-    /// Iniciales del título (máximo 2 palabras, 1 carácter cada una).
     private var initials: String {
         game.title
             .split(separator: " ")
@@ -381,7 +431,6 @@ struct EpicGameCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Portada placeholder: degradado de color + iniciales
             ZStack {
                 LinearGradient(
                     colors: [placeholderColor, placeholderColor.opacity(0.50)],
@@ -395,7 +444,6 @@ struct EpicGameCard: View {
             .frame(height: 140)
             .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous))
 
-            // Información del juego
             VStack(alignment: .leading, spacing: 4) {
                 Text(game.title)
                     .font(.callout.weight(.semibold))
