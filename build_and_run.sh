@@ -23,6 +23,8 @@ cp "$BIN_PATH" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 [ -f "Resources/game-wrapper.exe" ] && cp "Resources/game-wrapper.exe" "$APP_BUNDLE/Contents/Resources/game-wrapper.exe"
 # Logos oficiales de las tiendas (sidebar)
 [ -d "Resources/StoreLogos" ] && cp Resources/StoreLogos/*.png "$APP_BUNDLE/Contents/Resources/" 2>/dev/null || true
+# Logo de marca de Vessel (cabecera del sidebar)
+[ -f "Resources/vessel-logo.png" ] && cp "Resources/vessel-logo.png" "$APP_BUNDLE/Contents/Resources/vessel-logo.png"
 
 cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

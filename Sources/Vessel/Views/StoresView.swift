@@ -125,10 +125,15 @@ struct StoreSidebar: View {
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "sailboat.fill")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(Theme.accent.gradient)
+            HStack(spacing: 9) {
+                Group {
+                    if let logo = StoreLogo.image("vessel-logo") {
+                        Image(nsImage: logo).resizable().scaledToFit()
+                    } else {
+                        Image(systemName: "sailboat.fill").foregroundStyle(Theme.accent.gradient)
+                    }
+                }
+                .frame(width: 26, height: 26)
                 Text("Vessel")
                     .font(.title2.bold())
             }
