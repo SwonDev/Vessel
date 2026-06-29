@@ -124,13 +124,7 @@ struct ConnectSteamView: View {
 
     var body: some View {
         VStack(spacing: 22) {
-            Image(systemName: StoreKind.steam.symbol)
-                .font(.system(size: 60, weight: .medium))
-                .foregroundStyle(.white)
-                .frame(width: 128, height: 128)
-                .background(tint.gradient, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 30, style: .continuous).strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
-                .shadow(color: tint.opacity(0.5), radius: 26, y: 12)
+            StoreLogoTile(store: .steam)
 
             Text("Steam").font(.largeTitle.bold()).foregroundStyle(.white)
 
@@ -162,6 +156,6 @@ struct ConnectSteamView: View {
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .vesselBackground()
+        .vesselBackground(tint: tint)
     }
 }

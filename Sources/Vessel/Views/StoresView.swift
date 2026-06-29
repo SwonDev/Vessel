@@ -77,6 +77,28 @@ enum StoreLogo {
     }
 }
 
+/// Insignia grande de marca: **logo oficial** de la tienda sobre su gradiente, con borde
+/// y sombra de color. Es el icono "hero" de las pantallas de conexión y cabeceras de sección.
+struct StoreLogoTile: View {
+    let store: StoreKind
+    var size: CGFloat = 128
+
+    var body: some View {
+        Group {
+            if let logo = StoreLogo.image(store.logoAsset) {
+                Image(nsImage: logo).resizable().scaledToFit().padding(size * 0.24)
+            } else {
+                Image(systemName: store.symbol).font(.system(size: size * 0.46, weight: .medium))
+            }
+        }
+        .foregroundStyle(.white)
+        .frame(width: size, height: size)
+        .background(store.tint.gradient, in: RoundedRectangle(cornerRadius: size * 0.23, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: size * 0.23, style: .continuous).strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
+        .shadow(color: store.tint.opacity(0.5), radius: size * 0.2, y: size * 0.09)
+    }
+}
+
 /// Sidebar de tiendas (sustituye a la lista de bottles, que pasa a ser interna).
 struct StoreSidebar: View {
     @Binding var selection: StoreKind
@@ -162,13 +184,7 @@ struct StoreConnectView: View {
 
     var body: some View {
         VStack(spacing: 22) {
-            Image(systemName: store.symbol)
-                .font(.system(size: 60, weight: .medium))
-                .foregroundStyle(.white)
-                .frame(width: 128, height: 128)
-                .background(store.tint.gradient, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 30, style: .continuous).strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
-                .shadow(color: store.tint.opacity(0.5), radius: 26, y: 12)
+            StoreLogoTile(store: store)
 
             Text(store.displayName)
                 .font(.largeTitle.bold())
@@ -197,6 +213,6 @@ struct StoreConnectView: View {
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .vesselBackground()
+        .vesselBackground(tint: store.tint)
     }
 }

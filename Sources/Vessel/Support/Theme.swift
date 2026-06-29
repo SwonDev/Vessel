@@ -47,14 +47,15 @@ enum Theme {
 // MARK: - Fondo de la app (navy oceánico)
 
 private struct VesselBackground: ViewModifier {
+    var tint: Color = Theme.accent
     func body(content: Content) -> some View {
         content.background {
             ZStack {
                 LinearGradient(colors: [Theme.navyTop, Theme.navyDeep],
                                startPoint: .top, endPoint: .bottom)
-                // Resplandor azul sutil en la parte superior (luz sobre el océano).
-                RadialGradient(colors: [Theme.accent.opacity(0.12), .clear],
-                               center: .top, startRadius: 0, endRadius: 620)
+                // Resplandor superior con el color de la sección (branding por tienda).
+                RadialGradient(colors: [tint.opacity(0.16), .clear],
+                               center: .top, startRadius: 0, endRadius: 640)
             }
             .ignoresSafeArea()
         }
@@ -62,8 +63,9 @@ private struct VesselBackground: ViewModifier {
 }
 
 extension View {
-    /// Fondo navy oceánico de Vessel: degradado azul profundo + resplandor superior.
-    func vesselBackground() -> some View { modifier(VesselBackground()) }
+    /// Fondo navy oceánico de Vessel: degradado azul profundo + resplandor superior con
+    /// el color de la sección (branding por tienda).
+    func vesselBackground(tint: Color = Theme.accent) -> some View { modifier(VesselBackground(tint: tint)) }
 }
 
 // MARK: - Liquid Glass nativo (con degradado a materiales)
