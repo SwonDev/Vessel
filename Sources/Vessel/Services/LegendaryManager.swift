@@ -130,18 +130,18 @@ final class LegendaryManager {
 
         let result = try await runBackground(bin, args: ["auth", "--code", trimmed])
         if result.exitCode != 0 {
-            log.log("Error al autenticar con Epic Games (exit \(result.exitCode)): \(result.output)", level: .error)
+            log.log("Error al autenticar con Epic Games (exit \(result.exitCode)): \(result.combined)", level: .error)
             throw NSError(
                 domain: "Vessel", code: 104,
                 userInfo: [NSLocalizedDescriptionKey:
-                    "Autenticación con Epic Games fallida. Comprueba que el código sea correcto y no haya caducado.\n\(result.output)"]
+                    "Autenticación con Epic Games fallida. Comprueba que el código sea correcto y no haya caducado."]
             )
         }
 
         // Verificar que legendary guardó las credenciales correctamente.
         // Si el proceso terminó con éxito pero no hay user.json, el código había caducado.
         guard isAuthenticated() else {
-            log.log("Auth exit 0 pero sin user.json. Output: \(result.output)", level: .error)
+            log.log("Auth exit 0 pero sin user.json. Output: \(result.combined)", level: .error)
             throw NSError(
                 domain: "Vessel", code: 106,
                 userInfo: [NSLocalizedDescriptionKey:
@@ -168,7 +168,7 @@ final class LegendaryManager {
         let installedResult = try await runBackground(bin, args: ["list-installed", "--json"])
         let installedNames: Set<String>
         if installedResult.exitCode == 0,
-           let data = installedResult.output.data(using: .utf8) {
+           let data = installedResult.stdout.data(using: .utf8) {
             installedNames = Set(extractAppNames(from: data))
         } else {
             installedNames = []
@@ -177,15 +177,15 @@ final class LegendaryManager {
         // Todos los juegos en propiedad
         let listResult = try await runBackground(bin, args: ["list", "--json"])
         guard listResult.exitCode == 0 else {
-            log.log("Error al listar biblioteca Epic (exit \(listResult.exitCode)): \(listResult.output)", level: .error)
+            log.log("Error al listar biblioteca Epic (exit \(listResult.exitCode)): \(listResult.combined)", level: .error)
             throw NSError(
                 domain: "Vessel", code: 105,
                 userInfo: [NSLocalizedDescriptionKey:
-                    "No se pudo obtener la biblioteca de Epic Games. Comprueba tu conexión.\n\(listResult.output)"]
+                    "No se pudo obtener la biblioteca de Epic Games. Comprueba tu conexión."]
             )
         }
 
-        guard let data = listResult.output.data(using: .utf8) else { return [] }
+        guard let data = listResult.stdout.data(using: .utf8) else { return [] }
         let games = parseGames(from: data, installedNames: installedNames)
         log.log("Biblioteca Epic: \(games.count) juego(s)", level: .info)
         return games
@@ -213,7 +213,14 @@ final class LegendaryManager {
 
     private struct RunResult {
         let exitCode: Int32
-        let output: String
+        let stdout: String   // salida estándar (el JSON de `--json` va aquí, LIMPIO)
+        let stderr: String   // logs de legendary ([cli]/[Core] INFO…) — NUNCA mezclar con el JSON
+        /// Texto combinado, solo para mensajes de error legibles (no para parsear JSON).
+        var combined: String {
+            if stdout.isEmpty { return stderr }
+            if stderr.isEmpty { return stdout }
+            return "\(stderr)\n\(stdout)"
+        }
     }
 
     /// Ejecuta legendary en un hilo de fondo para no bloquear el actor principal.
@@ -266,33 +273,6 @@ final class LegendaryManager {
 
                 let stdoutBuf = SafeBuffer()
                 let stderrBuf = SafeBuffer()
-                let drainGroup = DispatchGroup()
-
-                // Registrar handlers ANTES de arrancar el proceso para no perder datos.
-                // readabilityHandler se invoca en una cola interna cada vez que hay datos
-                // disponibles, drenando el buffer del SO de forma continua → sin deadlock.
-                drainGroup.enter()
-                stdoutPipe.fileHandleForReading.readabilityHandler = { fh in
-                    let chunk = fh.availableData
-                    if chunk.isEmpty {
-                        // EOF: el proceso cerró stdout
-                        stdoutPipe.fileHandleForReading.readabilityHandler = nil
-                        drainGroup.leave()
-                    } else {
-                        stdoutBuf.append(chunk)
-                    }
-                }
-
-                drainGroup.enter()
-                stderrPipe.fileHandleForReading.readabilityHandler = { fh in
-                    let chunk = fh.availableData
-                    if chunk.isEmpty {
-                        stderrPipe.fileHandleForReading.readabilityHandler = nil
-                        drainGroup.leave()
-                    } else {
-                        stderrBuf.append(chunk)
-                    }
-                }
 
                 do {
                     try task.run()
@@ -310,10 +290,24 @@ final class LegendaryManager {
                     execute: timeoutWork
                 )
 
-                task.waitUntilExit()
+                // Drenar AMBAS tuberías en hilos CONCURRENTES con readDataToEndOfFile, que
+                // lee hasta EOF sin tope de buffer. Así nunca se llena el buffer del SO
+                // (~64 KB) → imposible el deadlock que colgaba bibliotecas grandes (1 MB+).
+                let drainGroup = DispatchGroup()
+                drainGroup.enter()
+                DispatchQueue.global(qos: .userInitiated).async {
+                    stdoutBuf.append(stdoutPipe.fileHandleForReading.readDataToEndOfFile())
+                    drainGroup.leave()
+                }
+                drainGroup.enter()
+                DispatchQueue.global(qos: .userInitiated).async {
+                    stderrBuf.append(stderrPipe.fileHandleForReading.readDataToEndOfFile())
+                    drainGroup.leave()
+                }
+
+                drainGroup.wait()        // ambas lecturas completas (EOF en los dos pipes)
+                task.waitUntilExit()     // proceso terminado
                 timeoutWork.cancel()
-                // Esperar a que ambos readabilityHandlers reciban el EOF y dejen el grupo.
-                drainGroup.wait()
 
                 let exitCode = task.terminationStatus
 
@@ -327,12 +321,9 @@ final class LegendaryManager {
                     return
                 }
 
-                // Combinar stdout + stderr en una sola cadena para el llamador
-                var combined = Data()
-                combined.append(stdoutBuf.data)
-                combined.append(stderrBuf.data)
-                let output = String(data: combined, encoding: .utf8) ?? ""
-                cont.resume(returning: RunResult(exitCode: exitCode, output: output))
+                let stdout = String(data: stdoutBuf.data, encoding: .utf8) ?? ""
+                let stderr = String(data: stderrBuf.data, encoding: .utf8) ?? ""
+                cont.resume(returning: RunResult(exitCode: exitCode, stdout: stdout, stderr: stderr))
             }
         }
     }
