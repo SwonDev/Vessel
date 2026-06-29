@@ -28,30 +28,27 @@ struct SteamOfficialLoginView: View {
     private let backdrop = Color(red: 0.06, green: 0.08, blue: 0.10)
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            backdrop.ignoresSafeArea()
-
-            VStack(alignment: .leading, spacing: 22) {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top) {
                 Text("Inicio de sesión")
-                    .font(.system(size: 30, weight: .bold))
+                    .font(.system(size: 28, weight: .bold))
                     .foregroundStyle(.white)
-
-                HStack(alignment: .top, spacing: 48) {
-                    credentialsColumn
-                    qrColumn
+                Spacer()
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark").font(.body.weight(.medium)).foregroundStyle(.white.opacity(0.5))
                 }
+                .buttonStyle(.plain)
             }
-            .padding(40)
-            .background(panelBG)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .padding(40)
+            .padding(.bottom, 26)
 
-            Button { dismiss() } label: {
-                Image(systemName: "xmark").foregroundStyle(.white.opacity(0.6)).padding(12)
+            HStack(alignment: .top, spacing: 56) {
+                credentialsColumn
+                qrColumn
             }
-            .buttonStyle(.plain)
         }
-        .frame(width: 820, height: 470)
+        .padding(40)
+        .frame(width: 780)
+        .background(panelBG)
         .task { await startQR() }
     }
 
@@ -157,7 +154,6 @@ struct SteamOfficialLoginView: View {
                 .multilineTextAlignment(.center).frame(width: 180)
         }
         .frame(width: 220)
-        .padding(.top, 14)
     }
 
     // MARK: - Lógica de autenticación
