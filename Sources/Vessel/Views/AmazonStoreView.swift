@@ -120,10 +120,11 @@ struct AmazonStoreView: View {
         Group {
             switch amazon.phase {
             case .connected(let games):
-                AmazonLibraryView(
-                    games: games,
-                    onDisconnect: { amazon.disconnect() },
-                    onReload:     { Task { await amazon.reloadLibrary() } }
+                StoreLibraryView(
+                    store: .amazon,
+                    games: games.map { StoreGame(id: $0.id, title: $0.title, installed: $0.installed) },
+                    onReload:  { Task { await amazon.reloadLibrary() } },
+                    onLogout:  { amazon.disconnect() }
                 )
 
             case .awaitingCode(let session):

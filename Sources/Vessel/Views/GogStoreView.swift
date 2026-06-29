@@ -97,10 +97,11 @@ struct GogStoreView: View {
         Group {
             switch gog.phase {
             case .connected(let games):
-                GogLibraryView(
-                    games: games,
-                    onDisconnect: { gog.disconnect() },
-                    onReload:     { Task { await gog.reloadLibrary() } }
+                StoreLibraryView(
+                    store: .gog,
+                    games: games.map { StoreGame(id: $0.appId, title: $0.title, installed: $0.installed) },
+                    onReload:  { Task { await gog.reloadLibrary() } },
+                    onLogout:  { gog.disconnect() }
                 )
             case .working(let msg):
                 ConnectGogView(working: msg, errorMessage: nil, onOpenAuth: {}, onConnect: { _ in })
