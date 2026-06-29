@@ -51,32 +51,38 @@ struct BottleDetailView: View {
         self._localBottle = State(initialValue: bottle)
     }
 
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                header
-                if let statusMessage {
-                    Text(statusMessage)
-                        .font(.callout)
-                        .foregroundStyle(.red)
-                        .padding()
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-                }
-                apiKeyPrompt
-                if !localBottle.games.isEmpty || !ownedGames.isEmpty {
-                    controlsBar
-                }
-                if libraryFilter != .porInstalar {
-                    gamesSection
-                }
-                if libraryFilter != .instalados {
-                    librarySection
-                }
-            }
-            .padding(32)
+    /// Mapeo de los juegos de Steam (instalados + biblioteca owned) al modelo genérico
+    /// `StoreGame`, para usar la biblioteca común (igual que Epic/GOG/Amazon).
+    private var steamGames: [StoreGame] {
+        let installed = localBottle.games.map { g in
+            StoreGame(id: g.steamAppId ?? g.id.uuidString, title: g.name,
+                      steamAppId: g.steamAppId, installed: true, lastPlayed: g.lastPlayedAt)
         }
-        .vesselBackground()
+        let installedIds = Set(localBottle.games.compactMap { $0.steamAppId })
+        let notInstalled = ownedGames
+            .filter { !installedIds.contains($0.appId) }
+            .map { StoreGame(id: $0.appId, title: $0.name, steamAppId: $0.appId, installed: false) }
+        return installed + notInstalled
+    }
+
+    var body: some View {
+        StoreLibraryView(
+            store: .steam,
+            games: steamGames,
+            installingIDs: installingAppIds,
+            progressFor: { installMessages[$0] },
+            onInstall: { sg in if sg.steamAppId != nil { Task { await installGame(sg.id) } } },
+            onPlay: { sg in
+                if let g = localBottle.games.first(where: { ($0.steamAppId ?? $0.id.uuidString) == sg.id }) {
+                    Task { await launchGame(g) }
+                }
+            },
+            onUninstall: { sg in
+                gameToUninstall = localBottle.games.first(where: { ($0.steamAppId ?? $0.id.uuidString) == sg.id })
+            },
+            onReload: { Task { await loadSteamLibrary() } },
+            onLogout: { NotificationCenter.default.post(name: .steamLogout, object: nil) }
+        )
         .sheet(isPresented: $showingInstaller) {
             SteamInstallerView(bottle: localBottle, wineManager: wineManager) {
                 showingInstaller = false
