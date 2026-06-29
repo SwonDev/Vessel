@@ -201,9 +201,10 @@ struct ConnectEpicView: View {
                         }
                         .vesselButton(tint: tint)
 
-                        Text("Se abrirá el navegador. Inicia sesión y copia el código que Epic te muestre.")
+                        Text("Se abrirá el navegador. Tras iniciar sesión, Epic mostrará una página con un texto entre llaves { } (no es un error). Copia solo el valor que aparece después de \u{201C}authorizationCode\u{201D} —los 32 caracteres— y pégalo abajo.")
                             .font(.caption)
-                            .foregroundStyle(.white.opacity(0.40))
+                            .foregroundStyle(.white.opacity(0.45))
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     .frame(maxWidth: 440, alignment: .leading)
 
@@ -214,7 +215,7 @@ struct ConnectEpicView: View {
                             .foregroundStyle(.white.opacity(0.55))
 
                         HStack(spacing: 10) {
-                            TextField("Código de autorización de Epic…", text: $authCode)
+                            TextField("Pega aquí el authorizationCode…", text: $authCode)
                                 .textFieldStyle(.plain)
                                 .font(.system(.callout, design: .monospaced))
                                 .foregroundStyle(.white)
