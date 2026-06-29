@@ -29,31 +29,17 @@ final class LegendaryManager {
 
     private static let userJSONPath = "\(configDir)/user.json"
 
-    // MARK: - Modelos GitHub API
-
-    private struct GHRelease: Decodable {
-        let tagName: String
-        let assets: [GHAsset]
-        enum CodingKeys: String, CodingKey {
-            case tagName = "tag_name"; case assets
-        }
-    }
-
-    private struct GHAsset: Decodable {
-        let name: String
-        let browserDownloadURL: String
-        enum CodingKeys: String, CodingKey {
-            case name; case browserDownloadURL = "browser_download_url"
-        }
-    }
-
     // MARK: - Estado
 
     private let log = LogStore.shared
 
+    /// Versión de Legendary fijada (la MISMA que usa Heroic). Nota clave: `derrod/legendary`
+    /// NO publica binario de macOS — Heroic mantiene un fork con binarios **nativos arm64**.
+    private static let legendaryVersion = "0.20.43"
+
     // MARK: - Instalación del binario
 
-    /// Devuelve la ruta al binario de Legendary, descargándolo de GitHub si aún no está.
+    /// Devuelve la ruta al binario de Legendary, descargándolo si aún no está.
     /// Idempotente: si ya existe, devuelve la ruta inmediatamente.
     func ensureInstalled(onProgress: @escaping @Sendable (String) -> Void) async throws -> String {
         if FileManager.default.isExecutableFile(atPath: Self.binaryPath) {
@@ -63,38 +49,26 @@ final class LegendaryManager {
         try FileManager.default.createDirectory(atPath: Self.legendaryDir, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: Self.configDir, withIntermediateDirectories: true)
 
-        onProgress("Buscando última versión de Legendary (Epic Games)…")
-        let apiURL = URL(string: "https://api.github.com/repos/derrod/legendary/releases/latest")!
-        var request = URLRequest(url: apiURL)
-        request.setValue("Vessel/1.0", forHTTPHeaderField: "User-Agent")
-        let (data, _) = try await URLSession.shared.data(for: request)
-        let release = try JSONDecoder().decode(GHRelease.self, from: data)
-
-        // Seleccionar asset macOS: legendary_macOS > cualquier asset con "mac" > "legendary" sin extensión
-        let asset = release.assets.first { $0.name.lowercased() == "legendary_macos" }
-            ?? release.assets.first { $0.name.lowercased().contains("macos") }
-            ?? release.assets.first { $0.name.lowercased().contains("mac") && !$0.name.contains(".") }
-            ?? release.assets.first { $0.name == "legendary" }
-
-        guard let asset, let downloadURL = URL(string: asset.browserDownloadURL) else {
-            throw NSError(
-                domain: "Vessel", code: 100,
-                userInfo: [NSLocalizedDescriptionKey:
-                    "No se encontró un binario de Legendary para macOS en la release \(release.tagName). "
-                    + "Puedes descargarlo manualmente desde https://github.com/derrod/legendary/releases"]
-            )
+        // Binario nativo de macOS del fork de Heroic (mismo origen y versión que usa Heroic).
+        #if arch(arm64)
+        let assetName = "legendary_macOS_arm64"
+        #else
+        let assetName = "legendary_macOS_x86_64"
+        #endif
+        let urlString = "https://github.com/Heroic-Games-Launcher/legendary/releases/download/\(Self.legendaryVersion)/\(assetName)"
+        guard let downloadURL = URL(string: urlString) else {
+            throw NSError(domain: "Vessel", code: 100,
+                userInfo: [NSLocalizedDescriptionKey: "URL de Legendary inválida."])
         }
 
-        onProgress("Descargando Legendary \(release.tagName) (~35 MB)…")
-        log.log("Legendary: descargando \(asset.name) desde \(release.tagName)", level: .info)
+        onProgress("Descargando Legendary \(Self.legendaryVersion) (Epic Games)…")
+        log.log("Legendary: descargando \(assetName) v\(Self.legendaryVersion) (fork Heroic)", level: .info)
 
         let (tempURL, response) = try await URLSession.shared.download(from: downloadURL)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             try? FileManager.default.removeItem(at: tempURL)
-            throw NSError(
-                domain: "Vessel", code: http.statusCode,
-                userInfo: [NSLocalizedDescriptionKey: "Descarga de Legendary falló: HTTP \(http.statusCode)"]
-            )
+            throw NSError(domain: "Vessel", code: http.statusCode,
+                userInfo: [NSLocalizedDescriptionKey: "Descarga de Legendary falló: HTTP \(http.statusCode)"])
         }
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
@@ -108,13 +82,11 @@ final class LegendaryManager {
         await adhocSign(Self.binaryPath)
 
         guard FileManager.default.isExecutableFile(atPath: Self.binaryPath) else {
-            throw NSError(
-                domain: "Vessel", code: 101,
-                userInfo: [NSLocalizedDescriptionKey: "Legendary se descargó pero no es ejecutable. Revisa los permisos de \(Self.binaryPath)"]
-            )
+            throw NSError(domain: "Vessel", code: 101,
+                userInfo: [NSLocalizedDescriptionKey: "Legendary se descargó pero no es ejecutable (\(Self.binaryPath))."])
         }
 
-        log.log("✓ Legendary \(release.tagName) listo en \(Self.binaryPath)", level: .info)
+        log.log("✓ Legendary \(Self.legendaryVersion) listo en \(Self.binaryPath)", level: .info)
         return Self.binaryPath
     }
 

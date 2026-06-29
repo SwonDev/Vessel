@@ -75,29 +75,13 @@ final class NileManager {
 
     private let log = LogStore.shared
 
-    // MARK: - Modelos GitHub API (internos)
-
-    private struct GHRelease: Decodable {
-        let tagName: String
-        let assets: [GHAsset]
-        enum CodingKeys: String, CodingKey {
-            case tagName = "tag_name"; case assets
-        }
-    }
-
-    private struct GHAsset: Decodable {
-        let name: String
-        let browserDownloadURL: String
-        enum CodingKeys: String, CodingKey {
-            case name; case browserDownloadURL = "browser_download_url"
-        }
-    }
+    /// Versión de nile pinneada (la misma que usa Heroic). Repo: `imLinguin/nile`.
+    private static let nileVersion = "v1.1.2"
 
     // MARK: - Instalación del binario
 
     /// Devuelve la ruta al binario de nile, descargándolo de GitHub si aún no está.
     /// Idempotente: si ya existe y es ejecutable, vuelve directamente.
-    /// Vessel prefiere el binario `nile_macOS_arm64` (Apple Silicon, único target de Vessel).
     func ensureInstalled(onProgress: @escaping @Sendable (String) -> Void) async throws -> String {
         if FileManager.default.isExecutableFile(atPath: Self.binaryPath) {
             return Self.binaryPath
@@ -106,30 +90,22 @@ final class NileManager {
         try FileManager.default.createDirectory(atPath: Self.nileDir,   withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: Self.configDir, withIntermediateDirectories: true)
 
-        onProgress("Buscando última versión de nile (Amazon Games)…")
-        let apiURL = URL(string: "https://api.github.com/repos/imLinguin/nile/releases/latest")!
-        var request = URLRequest(url: apiURL)
-        request.setValue("Vessel/1.0", forHTTPHeaderField: "User-Agent")
-        let (releaseData, _) = try await URLSession.shared.data(for: request)
-        let release = try JSONDecoder().decode(GHRelease.self, from: releaseData)
-
-        // Preferencia: arm64 exacto → cualquier macos_arm64 → macos_x86_64 → cualquier macos
-        let asset = release.assets.first { $0.name.lowercased() == "nile_macos_arm64" }
-            ?? release.assets.first { $0.name.lowercased().contains("macos_arm64") }
-            ?? release.assets.first { $0.name.lowercased().contains("macos_x86_64") }
-            ?? release.assets.first { $0.name.lowercased().contains("macos") }
-
-        guard let asset, let downloadURL = URL(string: asset.browserDownloadURL) else {
+        // Binario nativo de macOS de imLinguin/nile (mismo origen y versión que usa Heroic).
+        #if arch(arm64)
+        let assetName = "nile_macOS_arm64"
+        #else
+        let assetName = "nile_macOS_x86_64"
+        #endif
+        let urlString = "https://github.com/imLinguin/nile/releases/download/\(Self.nileVersion)/\(assetName)"
+        guard let downloadURL = URL(string: urlString) else {
             throw NSError(
                 domain: "Vessel", code: 110,
-                userInfo: [NSLocalizedDescriptionKey:
-                    "No se encontró un binario de nile para macOS en la release \(release.tagName). "
-                    + "Descárgalo manualmente desde https://github.com/imLinguin/nile/releases"]
+                userInfo: [NSLocalizedDescriptionKey: "URL de nile inválida."]
             )
         }
 
-        onProgress("Descargando nile \(release.tagName) para Amazon Games…")
-        log.log("nile: descargando \(asset.name) desde \(release.tagName)", level: .info)
+        onProgress("Descargando nile \(Self.nileVersion) (Amazon Games)…")
+        log.log("nile: descargando \(assetName) v\(Self.nileVersion)", level: .info)
 
         let (tempURL, httpResponse) = try await URLSession.shared.download(from: downloadURL)
         if let http = httpResponse as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
@@ -154,11 +130,11 @@ final class NileManager {
             throw NSError(
                 domain: "Vessel", code: 111,
                 userInfo: [NSLocalizedDescriptionKey:
-                    "nile se descargó pero no es ejecutable. Revisa los permisos de \(Self.binaryPath)"]
+                    "nile se descargó pero no es ejecutable (\(Self.binaryPath))."]
             )
         }
 
-        log.log("✓ nile \(release.tagName) listo en \(Self.binaryPath)", level: .info)
+        log.log("✓ nile \(Self.nileVersion) listo en \(Self.binaryPath)", level: .info)
         return Self.binaryPath
     }
 
