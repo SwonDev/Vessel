@@ -71,14 +71,42 @@ struct StoreLibraryView: View {
         if !search.isEmpty {
             list = list.filter { $0.title.localizedCaseInsensitiveContains(search) }
         }
-        switch sortOrder {
-        case .nombre:    list.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-        case .recientes: list.sort { ($0.lastPlayed ?? .distantPast) > ($1.lastPlayed ?? .distantPast) }
+        list.sort { a, b in
+            if a.installed != b.installed { return a.installed }   // instalados primero (como Steam)
+            switch sortOrder {
+            case .nombre:    return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+            case .recientes: return (a.lastPlayed ?? .distantPast) > (b.lastPlayed ?? .distantPast)
+            }
         }
         return list
     }
 
     var body: some View {
+        ZStack {
+            if let game = selectedGame {
+                GameDetailView(
+                    game: game, tint: tint,
+                    installing: installingIDs.contains(game.id),
+                    progress: progressFor(game.id),
+                    isFavorite: isFav(game.id),
+                    onInstall: { onInstall(game) },
+                    onPlay: { onPlay(game) },
+                    onUninstall: { onUninstall(game) },
+                    onToggleFavorite: { toggleFav(game.id) },
+                    onBack: { selectedGame = nil }
+                )
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+                .zIndex(1)
+            } else {
+                libraryContent
+                    .transition(.opacity)
+            }
+        }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.32), value: selectedGame)
+        .onAppear { favorites = Set(UserDefaults.standard.stringArray(forKey: favKey) ?? []) }
+    }
+
+    private var libraryContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.section) {
                 header
@@ -88,17 +116,6 @@ struct StoreLibraryView: View {
             .padding(Theme.Space.page)
         }
         .vesselBackground(tint: tint)
-        .onAppear { favorites = Set(UserDefaults.standard.stringArray(forKey: favKey) ?? []) }
-        .sheet(item: $selectedGame) { game in
-            GameDetailView(
-                game: game, tint: tint,
-                installing: installingIDs.contains(game.id),
-                progress: progressFor(game.id),
-                onInstall: { onInstall(game) },
-                onPlay: { onPlay(game) },
-                onUninstall: { onUninstall(game) }
-            )
-        }
     }
 
     // MARK: - Cabecera
@@ -355,10 +372,14 @@ struct GameDetailView: View {
     let tint: Color
     var installing: Bool = false
     var progress: String? = nil
+    var isFavorite: Bool = false
     var onInstall: () -> Void = {}
     var onPlay: () -> Void = {}
     var onUninstall: () -> Void = {}
-    @Environment(\.dismiss) private var dismiss
+    var onToggleFavorite: () -> Void = {}
+    var onBack: () -> Void = {}
+
+    private let steamGreen = Color(red: 0.34, green: 0.72, blue: 0.36)
 
     private var heroURL: URL? {
         if let s = game.heroURL, let u = URL(string: s) { return u }
@@ -368,7 +389,6 @@ struct GameDetailView: View {
         if let s = game.coverURL, let u = URL(string: s) { return u }
         return nil
     }
-
     private var playtimeText: String {
         guard let m = game.playtimeMinutes, m > 0 else { return "—" }
         return m >= 60 ? "\(m / 60) h \(m % 60) min" : "\(m) min"
@@ -377,69 +397,128 @@ struct GameDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                ZStack(alignment: .bottomLeading) {
-                    Group {
-                        if let url = heroURL {
-                            AsyncImage(url: url) { phase in
-                                if let image = phase.image { image.resizable().scaledToFill() }
-                                else { tint.opacity(0.25) }
-                            }
-                        } else { tint.opacity(0.25) }
-                    }
-                    .frame(height: 340).frame(maxWidth: .infinity).clipped()
-                    LinearGradient(colors: [.clear, Theme.navyDeep.opacity(0.96)],
-                                   startPoint: .center, endPoint: .bottom)
-                    Text(game.title)
-                        .font(.system(size: 34, weight: .bold)).foregroundStyle(.white)
-                        .shadow(color: .black.opacity(0.6), radius: 6, y: 2)
-                        .padding(24)
-                }
-                .frame(height: 340)
-
-                HStack(spacing: 28) {
-                    if installing {
-                        HStack(spacing: 8) {
-                            ProgressView().tint(.white)
-                            Text(progress ?? "Instalando…").foregroundStyle(.white)
-                        }
-                    } else if game.installed {
-                        Button(action: onPlay) {
-                            Label("Jugar", systemImage: "play.fill").font(.title3.weight(.bold)).frame(width: 190)
-                        }
-                        .vesselButton(tint: tint)
-                    } else {
-                        Button(action: onInstall) {
-                            Label("Instalar", systemImage: "arrow.down.circle.fill").font(.title3.weight(.bold)).frame(width: 190)
-                        }
-                        .vesselButton(tint: tint)
-                    }
-                    stat("Última sesión", game.lastPlayed.map { $0.formatted(date: .abbreviated, time: .omitted) } ?? "—")
-                    stat("Tiempo de juego", playtimeText)
-                    Spacer()
-                    if game.installed {
-                        Button(role: .destructive, action: onUninstall) {
-                            Label("Desinstalar", systemImage: "trash")
-                        }
-                        .vesselButton(false)
-                    }
-                }
-                .padding(24)
+                hero
+                actionBar
+                tabsBar
+                content
             }
         }
-        .frame(minWidth: 860, minHeight: 580)
         .vesselBackground(tint: tint)
-        .overlay(alignment: .topTrailing) {
-            Button { dismiss() } label: {
-                Image(systemName: "xmark").font(.body.weight(.semibold)).foregroundStyle(.white.opacity(0.7)).padding(10)
+        .overlay(alignment: .topLeading) { backButton }
+    }
+
+    private var hero: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .bottomLeading) {
+                Group {
+                    if let url = heroURL {
+                        AsyncImage(url: url) { phase in
+                            if let image = phase.image { image.resizable().scaledToFill() }
+                            else { LinearGradient(colors: [tint.opacity(0.35), Theme.navyDeep], startPoint: .top, endPoint: .bottom) }
+                        }
+                    } else {
+                        LinearGradient(colors: [tint.opacity(0.35), Theme.navyDeep], startPoint: .top, endPoint: .bottom)
+                    }
+                }
+                .frame(width: geo.size.width, height: 380)
+                .clipped()
+                LinearGradient(colors: [.clear, .clear, Theme.navyDeep], startPoint: .top, endPoint: .bottom)
+                Text(game.title)
+                    .font(.system(size: 36, weight: .heavy)).foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.7), radius: 8, y: 3)
+                    .padding(.horizontal, 32).padding(.bottom, 18)
             }
-            .buttonStyle(.plain).padding(14)
+        }
+        .frame(height: 380)
+    }
+
+    private var actionBar: some View {
+        HStack(spacing: 28) {
+            if installing {
+                HStack(spacing: 10) {
+                    ProgressView().tint(.white)
+                    Text(progress ?? "Instalando…").font(.callout).foregroundStyle(.white)
+                }.frame(height: 30)
+            } else if game.installed {
+                Button(action: onPlay) {
+                    Label("Jugar", systemImage: "play.fill").font(.title2.weight(.bold)).frame(minWidth: 170).frame(height: 28)
+                }
+                .vesselButton(tint: steamGreen)
+            } else {
+                Button(action: onInstall) {
+                    Label("Instalar", systemImage: "arrow.down.circle.fill").font(.title2.weight(.bold)).frame(minWidth: 170).frame(height: 28)
+                }
+                .vesselButton(tint: tint)
+            }
+            stat("clock", "Última sesión", game.lastPlayed.map { $0.formatted(date: .abbreviated, time: .omitted) } ?? "—")
+            stat("hourglass", "Tiempo de juego", playtimeText)
+            Spacer(minLength: 0)
+            if game.installed { iconButton("trash", action: onUninstall) }
+            iconButton("gearshape.fill") {}
+            iconButton(isFavorite ? "heart.fill" : "heart", tinted: isFavorite, action: onToggleFavorite)
+        }
+        .padding(.horizontal, 32).padding(.vertical, 18)
+    }
+
+    private var tabsBar: some View {
+        HStack(spacing: 28) {
+            ForEach(["Página de la tienda", "Centro de la comunidad", "Discusiones", "Guías", "Soporte"], id: \.self) { t in
+                Text(t).font(.callout).foregroundStyle(.white.opacity(0.5))
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 32).padding(.vertical, 12)
+        .background(.white.opacity(0.04))
+    }
+
+    private var content: some View {
+        HStack(alignment: .top, spacing: 24) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("ACTIVIDAD").font(.caption.weight(.bold)).foregroundStyle(.white.opacity(0.5))
+                Text("Aún no hay actividad reciente de este juego.")
+                    .font(.callout).foregroundStyle(.white.opacity(0.6))
+                    .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                    .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                Text("LOGROS").font(.caption.weight(.bold)).foregroundStyle(.white.opacity(0.5))
+                Text("Los logros aparecerán aquí cuando estén disponibles.")
+                    .font(.caption).foregroundStyle(.white.opacity(0.55))
+                    .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                    .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+            }
+            .frame(width: 320)
+        }
+        .padding(32)
+    }
+
+    private var backButton: some View {
+        Button(action: onBack) {
+            Image(systemName: "chevron.left").font(.body.weight(.bold)).foregroundStyle(.white)
+                .frame(width: 38, height: 38)
+                .liquidGlass(in: Circle())
+        }
+        .buttonStyle(.plain).padding(16)
+        .accessibilityLabel("Volver a la biblioteca")
+    }
+
+    private func stat(_ icon: String, _ label: String, _ value: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon).foregroundStyle(.white.opacity(0.4))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label.uppercased()).font(.caption2).foregroundStyle(.white.opacity(0.5))
+                Text(value).font(.callout.weight(.medium)).foregroundStyle(.white)
+            }
         }
     }
 
-    private func stat(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label.uppercased()).font(.caption2).foregroundStyle(.white.opacity(0.5))
-            Text(value).font(.callout.weight(.medium)).foregroundStyle(.white)
+    private func iconButton(_ icon: String, tinted: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon).font(.body)
+                .foregroundStyle(tinted ? Color.pink : .white.opacity(0.7))
+                .frame(width: 38, height: 38)
+                .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
         }
+        .buttonStyle(.plain)
     }
 }
