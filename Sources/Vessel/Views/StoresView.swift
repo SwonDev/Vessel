@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 extension Notification.Name {
     static let steamLogin = Notification.Name("vessel.steamLogin")
@@ -49,6 +50,31 @@ enum StoreKind: String, CaseIterable, Identifiable {
     /// Por ahora Steam es la tienda totalmente funcional. El resto están en camino
     /// (integración Legendary/gogdl/etc.), con su pantalla de conexión preparada.
     var isAvailable: Bool { self == .steam }
+
+    /// Nombre del PNG del **logo oficial** de la tienda (en el bundle, ver Resources/StoreLogos).
+    var logoAsset: String {
+        switch self {
+        case .steam: return "store-steam"
+        case .epic: return "store-epic"
+        case .gog: return "store-gog"
+        case .battlenet: return "store-battlenet"
+        case .amazon: return "store-amazon"
+        }
+    }
+}
+
+/// Caché de los logos oficiales de tienda cargados del bundle (evita releer disco
+/// en cada redibujado/hover de la sidebar).
+@MainActor
+enum StoreLogo {
+    private static var cache: [String: NSImage] = [:]
+    static func image(_ name: String) -> NSImage? {
+        if let cached = cache[name] { return cached }
+        guard let url = Bundle.main.url(forResource: name, withExtension: "png"),
+              let image = NSImage(contentsOf: url) else { return nil }
+        cache[name] = image
+        return image
+    }
 }
 
 /// Sidebar de tiendas (sustituye a la lista de bottles, que pasa a ser interna).
@@ -78,6 +104,7 @@ struct StoreSidebar: View {
         }
         .navigationTitle("Vessel")
         .listStyle(.sidebar)
+        .tint(Theme.accent)
         .frame(minWidth: 248)
     }
 }
@@ -93,27 +120,38 @@ private struct StoreRow: View {
 
     var body: some View {
         HStack(spacing: 11) {
-            Image(systemName: store.symbol)
-                .font(.title3)
+            storeIcon
                 .foregroundStyle(.white)
-                .frame(width: 32, height: 32)
-                .background(store.tint.gradient, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
-                .shadow(color: store.tint.opacity(highlighted ? 0.55 : 0.28), radius: highlighted ? 9 : 4, y: 2)
+                .frame(width: 38, height: 38)
+                .background(store.tint.gradient, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(.white.opacity(0.22), lineWidth: 0.5))
+                .shadow(color: store.tint.opacity(highlighted ? 0.6 : 0.30), radius: highlighted ? 10 : 5, y: 2)
                 .scaleEffect(hovering ? 1.06 : 1)
 
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(store.displayName).font(.headline)
-                Text(store.isAvailable ? "Tienda" : "Próximamente")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text(store.isAvailable ? "Disponible" : "Próximamente")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(store.isAvailable ? Color(red: 0.30, green: 0.85, blue: 0.55) : .secondary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background((store.isAvailable ? Color(red: 0.30, green: 0.85, blue: 0.55) : Color.white).opacity(0.14), in: Capsule())
             }
             Spacer(minLength: 0)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 5)
         .contentShape(Rectangle())
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: hovering)
         .onHover { hovering = $0 }
+    }
+
+    /// Logo oficial de la tienda (blanco) o, si no está en el bundle, su SF Symbol.
+    @ViewBuilder private var storeIcon: some View {
+        if let logo = StoreLogo.image(store.logoAsset) {
+            Image(nsImage: logo).resizable().scaledToFit().padding(9)
+        } else {
+            Image(systemName: store.symbol).font(.title3)
+        }
     }
 }
 
