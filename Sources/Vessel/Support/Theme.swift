@@ -147,6 +147,25 @@ extension ButtonStyle where Self == PremiumButtonStyle {
     }
 }
 
+extension View {
+    /// Botón con **Liquid Glass nativo** de Apple (`.glassProminent` / `.glass`) en macOS 26+;
+    /// en macOS 15 cae al `PremiumButtonStyle`. `prominent` = acción principal (cristal tintado);
+    /// `prominent: false` = acción secundaria (cristal claro). Es el estilo de botón canónico
+    /// de Vessel — usar SIEMPRE este en vez de `.borderedProminent`/`.premium` sueltos.
+    @ViewBuilder
+    func vesselButton(_ prominent: Bool = true, tint: Color = Theme.accent) -> some View {
+        if #available(macOS 26.0, *) {
+            if prominent {
+                buttonStyle(.glassProminent).tint(tint)
+            } else {
+                buttonStyle(.glass)
+            }
+        } else {
+            buttonStyle(.premium(tint: tint, prominent: prominent))
+        }
+    }
+}
+
 // MARK: - Elevación en hover
 
 private struct HoverLift: ViewModifier {

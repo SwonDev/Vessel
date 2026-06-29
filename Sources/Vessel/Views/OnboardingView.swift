@@ -76,7 +76,7 @@ struct OnboardingView: View {
                     Text(setupSucceeded ? "Empezar a usar Vessel" : "Reintentar instalación automática")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.premium())
+                .vesselButton()
                 .keyboardShortcut(.defaultAction)
                 .padding(.horizontal, 32)
             }

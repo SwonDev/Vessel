@@ -45,7 +45,7 @@ struct SteamCMDLoginView: View {
             HStack {
                 Spacer()
                 Button("Cancelar") { dismiss() }
-                    .buttonStyle(.premium(prominent: false))
+                    .vesselButton(false)
                 Button {
                     Task { await doLogin() }
                 } label: {
@@ -56,7 +56,7 @@ struct SteamCMDLoginView: View {
                     }
                 }
                 .keyboardShortcut(.defaultAction)
-                .buttonStyle(.premium())
+                .vesselButton()
                 .disabled(working || user.isEmpty || password.isEmpty || (needsGuard && guardCode.isEmpty))
             }
         }

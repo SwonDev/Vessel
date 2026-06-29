@@ -221,7 +221,7 @@ struct StoreConnectView: View {
                     .frame(maxWidth: 320)
                     .padding(.vertical, 4)
             }
-            .buttonStyle(.premium(tint: store.tint))
+            .vesselButton(tint: store.tint)
             .disabled(true)
             .padding(.top, 4)
 

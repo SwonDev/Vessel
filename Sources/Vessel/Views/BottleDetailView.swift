@@ -300,6 +300,7 @@ struct BottleDetailView: View {
             }
             .toggleStyle(.button)
             .tint(.yellow)
+            .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
 
             // Contador de resultados
             if poolTotal > 0 {
@@ -416,7 +417,7 @@ struct BottleDetailView: View {
                             Text("Cargar biblioteca")
                         }
                     }
-                    .buttonStyle(.premium())
+                    .vesselButton()
                     .disabled(apiKeyInput.trimmingCharacters(in: .whitespaces).count < 16 || loadingLibrary)
                 }
             }
@@ -580,7 +581,7 @@ struct BottleDetailView: View {
                 }
                 Spacer()
                 Button { pickGame() } label: { Label("Añadir .exe", systemImage: "plus") }
-                    .buttonStyle(.premium(prominent: false))
+                    .vesselButton(false)
             }
 
             if localBottle.games.isEmpty {
@@ -779,11 +780,11 @@ struct GameCard: View {
                 }
                 .shadow(color: .black.opacity(0.32), radius: 9, y: 5)
 
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Button(action: onLaunch) {
                     Label("Jugar", systemImage: "play.fill").frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.premium(tint: Theme.accent))
+                .vesselButton(tint: Theme.accent)
 
                 Menu {
                     Button(role: .destructive) { onUninstall() } label: {
@@ -797,11 +798,11 @@ struct GameCard: View {
                         .font(.body.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .frame(width: 32, height: 32)
-                        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
+                .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
             }
         }
         .hoverLift()
@@ -887,7 +888,7 @@ struct LibraryGameCard: View {
                     Label("Instalar", systemImage: "arrow.down.circle.fill").frame(maxWidth: .infinity)
                 }
             }
-            .buttonStyle(.premium(tint: Theme.accent, prominent: false))
+            .vesselButton(false, tint: Theme.accent)
             .disabled(installing)
         }
         .hoverLift()
@@ -1036,7 +1037,7 @@ struct EmptyStateView: View {
                     .padding(.horizontal, 16)
             }
             .controlSize(.large)
-            .buttonStyle(.premium())
+            .vesselButton()
         }
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

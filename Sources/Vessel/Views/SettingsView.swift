@@ -38,7 +38,7 @@ struct SettingsView: View {
 
             HStack {
                 Button("Cerrar") { dismiss() }
-                    .buttonStyle(.premium(prominent: false))
+                    .vesselButton(false)
                     .keyboardShortcut(.cancelAction)
                 Spacer()
             }
@@ -106,10 +106,10 @@ struct SettingsView: View {
                                     Text("Descargar")
                                 }
                             }
-                            .buttonStyle(.premium())
+                            .vesselButton()
                         } else if !result.installed, result.dependency == .rosetta {
                             Button("Instalar") { Task { await installRosetta() } }
-                                .buttonStyle(.premium(prominent: false))
+                                .vesselButton(false)
                         }
                     }
                     .padding(.vertical, 8)
@@ -136,7 +136,7 @@ struct SettingsView: View {
                     let path = "\(NSHomeDirectory())/Library/Application Support/Vessel"
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
                 }
-                .buttonStyle(.premium(prominent: false))
+                .vesselButton(false)
                 .padding(.top, 6)
             }
             .vesselCard(padding: 12)
@@ -164,11 +164,11 @@ struct SettingsView: View {
                         NotificationCenter.default.post(name: .openLogs, object: nil)
                         dismiss()
                     }
-                    .buttonStyle(.premium(prominent: false))
+                    .vesselButton(false)
                     Button("Diagnosticar sistema") {
                         Task { checkResults = await dependencyManager.checkAll() }
                     }
-                    .buttonStyle(.premium(prominent: false))
+                    .vesselButton(false)
                 }
                 .padding(.top, 6)
             }

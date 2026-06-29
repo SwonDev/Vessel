@@ -26,7 +26,7 @@ struct LogsView: View {
                 } label: {
                     Label("Limpiar", systemImage: "trash")
                 }
-                .buttonStyle(.premium(prominent: false))
+                .vesselButton(false)
                 Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(
@@ -38,7 +38,7 @@ struct LogsView: View {
                 } label: {
                     Label("Copiar", systemImage: "doc.on.doc")
                 }
-                .buttonStyle(.premium(prominent: false))
+                .vesselButton(false)
             }
             .padding(20)
 
@@ -69,7 +69,7 @@ struct LogsView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button("Cerrar") { dismiss() }
-                    .buttonStyle(.premium(prominent: false))
+                    .vesselButton(false)
                     .keyboardShortcut(.cancelAction)
             }
             .padding(16)

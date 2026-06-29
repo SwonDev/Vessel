@@ -158,7 +158,7 @@ struct ConnectSteamView: View {
                         .frame(maxWidth: 320)
                         .padding(.vertical, 4)
                 }
-                .buttonStyle(.premium(tint: tint))
+                .vesselButton(tint: tint)
                 .padding(.top, 4)
             }
         }

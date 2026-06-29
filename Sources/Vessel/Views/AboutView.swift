@@ -34,13 +34,13 @@ struct AboutView: View {
                         NSWorkspace.shared.open(url)
                     }
                 }
-                .buttonStyle(.premium())
+                .vesselButton()
                 Button("Reportar bug") {
                     if let url = URL(string: "https://github.com/Ja1zme/vessel-mac/issues") {
                         NSWorkspace.shared.open(url)
                     }
                 }
-                .buttonStyle(.premium(prominent: false))
+                .vesselButton(false)
             }
 
             Spacer()
@@ -52,7 +52,7 @@ struct AboutView: View {
                 .frame(maxWidth: 360)
 
             Button("Cerrar") { dismiss() }
-                .buttonStyle(.premium(prominent: false))
+                .vesselButton(false)
                 .keyboardShortcut(.cancelAction)
                 .padding(.top, 8)
         }

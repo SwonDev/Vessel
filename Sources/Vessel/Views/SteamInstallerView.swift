@@ -56,26 +56,26 @@ struct SteamInstallerView: View {
             HStack(spacing: 10) {
                 if stage == .ready || stage == .failed {
                     Button("Cancelar") { dismiss() }
-                        .buttonStyle(.premium(prominent: false))
+                        .vesselButton(false)
                 }
                 if stage == .ready {
                     Button("Instalar") {
                         Task { await run() }
                     }
-                    .buttonStyle(.premium())
+                    .vesselButton()
                 }
                 if stage == .done {
                     Button("Cerrar") {
                         onComplete()
                         dismiss()
                     }
-                    .buttonStyle(.premium())
+                    .vesselButton()
                 }
                 if stage == .failed {
                     Button("Reintentar") {
                         Task { await run() }
                     }
-                    .buttonStyle(.premium())
+                    .vesselButton()
                 }
             }
         }
