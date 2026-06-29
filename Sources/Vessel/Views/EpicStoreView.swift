@@ -22,6 +22,7 @@ final class EpicStore {
     /// No interrumpe una operación en curso.
     func refresh() {
         if case .working = phase { return }
+        if case .connected = phase { return }   // ya cargada: NO recargar al volver el foco (evita el bucle de "Cargando…")
         if legendary.isAuthenticated() {
             phase = .working("Cargando biblioteca Epic…")
             Task { await self.loadLibrary() }

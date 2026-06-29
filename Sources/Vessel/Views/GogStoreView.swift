@@ -22,6 +22,7 @@ final class GogStore {
     /// No interrumpe una operación en curso.
     func refresh() {
         if case .working = phase { return }
+        if case .connected = phase { return }   // ya cargada: NO recargar al volver el foco
         if gogdl.isAuthenticated() {
             phase = .working("Cargando biblioteca GOG…")
             Task { await self.loadLibrary() }

@@ -119,7 +119,7 @@ struct StoreSidebar: View {
                     Button(role: .destructive) { NotificationCenter.default.post(name: .steamLogout, object: nil) } label: {
                         Label("Cerrar sesión", systemImage: "rectangle.portrait.and.arrow.right")
                     }
-                } else {
+                } else if !store.isAvailable {
                     Text("\(store.displayName) — próximamente")
                 }
             }

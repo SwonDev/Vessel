@@ -32,6 +32,7 @@ final class AmazonStore {
     func refresh() {
         if case .working = phase     { return }
         if case .awaitingCode = phase { return }
+        if case .connected = phase   { return }   // ya cargada: NO recargar al volver el foco
 
         if nile.isAuthenticated() {
             phase = .working("Cargando biblioteca de Amazon Games…")
