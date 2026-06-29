@@ -626,7 +626,7 @@ final class WineManager {
             "MVK_CONFIG_LOG_LEVEL": "0",
             "WINEESYNC": "1",
             "WINEFSYNC": "1",
-            "WINEDLLOVERRIDES": "mscoree,mshtml=d"
+            "WINEDLLOVERRIDES": "mscoree,mshtml=d;d3d9,d3d8,ddraw=b"
         ]
     }
 
@@ -790,7 +790,7 @@ final class WineManager {
         process.environment = [
             "WINEPREFIX": prefix,
             "WINEDEBUG": "-all",
-            "WINEDLLOVERRIDES": "mscoree,mshtml=d"
+            "WINEDLLOVERRIDES": "mscoree,mshtml=d;d3d9,d3d8,ddraw=b"
         ]
         let pipe = Pipe()
         process.standardOutput = pipe
