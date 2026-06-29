@@ -412,14 +412,18 @@ struct BottleDetailView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Steam")
-                .font(.largeTitle)
-                .fontWeight(.bold)
-            let n = localBottle.games.count
-            Label("\(n) juego\(n == 1 ? "" : "s") instalado\(n == 1 ? "" : "s")", systemImage: "gamecontroller")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+        HStack(spacing: 16) {
+            StoreLogoTile(store: .steam, size: 60)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Steam")
+                    .font(.largeTitle)
+                    .fontWeight(.bold)
+                let n = localBottle.games.count
+                Label("\(n) juego\(n == 1 ? "" : "s") instalado\(n == 1 ? "" : "s")", systemImage: "gamecontroller.fill")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
         }
     }
 
@@ -621,23 +625,28 @@ struct GameCard: View {
     var onRemove: () -> Void = {}
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(spacing: 8) {
             GameCoverView(game: game, prefixPath: prefixPath)
                 .aspectRatio(2.0/3.0, contentMode: .fit)
+                .overlay(alignment: .bottom) {
+                    LinearGradient(colors: [.clear, .black.opacity(0.55), .black.opacity(0.9)],
+                                   startPoint: .center, endPoint: .bottom)
+                }
+                .overlay(alignment: .bottomLeading) {
+                    Text(game.name)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                        .shadow(color: .black.opacity(0.6), radius: 3, y: 1)
+                        .padding(10)
+                }
+                .overlay(alignment: .topTrailing) { favoriteButton }
                 .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous)
-                        .strokeBorder(.white.opacity(0.08), lineWidth: 0.5)
+                        .strokeBorder(.white.opacity(0.10), lineWidth: 0.5)
                 }
-                .overlay(alignment: .topTrailing) { favoriteButton }
-                .shadow(color: .black.opacity(0.28), radius: 7, y: 4)
-
-            Text(game.name).font(.headline).lineLimit(1)
-            if let last = game.lastPlayedAt {
-                Text("Última vez: \(last.formatted(date: .abbreviated, time: .shortened))")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
+                .shadow(color: .black.opacity(0.32), radius: 9, y: 5)
 
             HStack(spacing: 6) {
                 Button(action: onLaunch) {
@@ -657,14 +666,13 @@ struct GameCard: View {
                         .font(.body.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .frame(width: 32, height: 32)
-                        .background(.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
             }
         }
-        .vesselCard(padding: 12)
         .hoverLift()
         .contextMenu {
             Button(role: .destructive) { onUninstall() } label: {
@@ -702,15 +710,22 @@ struct LibraryGameCard: View {
     let onInstall: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(spacing: 8) {
             GameCoverView(appId: appId, title: name)
                 .aspectRatio(2.0/3.0, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous)
-                        .strokeBorder(.white.opacity(0.08), lineWidth: 0.5)
+                .saturation(installing ? 1 : 0.85)
+                .overlay(alignment: .bottom) {
+                    LinearGradient(colors: [.clear, .black.opacity(0.55), .black.opacity(0.9)],
+                                   startPoint: .center, endPoint: .bottom)
                 }
-                .saturation(installing ? 1 : 0.9)
+                .overlay(alignment: .bottomLeading) {
+                    Text(name)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                        .shadow(color: .black.opacity(0.6), radius: 3, y: 1)
+                        .padding(10)
+                }
                 .overlay(alignment: .topTrailing) {
                     Button(action: onToggleFavorite) {
                         Image(systemName: isFavorite ? "star.fill" : "star")
@@ -723,9 +738,13 @@ struct LibraryGameCard: View {
                     .buttonStyle(.plain)
                     .padding(7)
                 }
-                .shadow(color: .black.opacity(0.28), radius: 7, y: 4)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous)
+                        .strokeBorder(.white.opacity(0.10), lineWidth: 0.5)
+                }
+                .shadow(color: .black.opacity(0.32), radius: 9, y: 5)
 
-            Text(name).font(.headline).lineLimit(1)
             Button(action: onInstall) {
                 if installing {
                     HStack(spacing: 6) {
@@ -740,7 +759,6 @@ struct LibraryGameCard: View {
             .buttonStyle(.premium(tint: Theme.accent, prominent: false))
             .disabled(installing)
         }
-        .vesselCard(padding: 12)
         .hoverLift()
     }
 }

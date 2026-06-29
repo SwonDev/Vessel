@@ -12,9 +12,12 @@ struct ContentView: View {
             StoreSidebar(selection: $selectedStore)
         } detail: {
             detailView
+                .id(selectedStore)
+                .transition(.opacity)
         }
         .navigationTitle("Vessel")
         .preferredColorScheme(.dark)
+        .animation(.easeInOut(duration: 0.28), value: selectedStore)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
