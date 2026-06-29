@@ -399,8 +399,6 @@ struct GameDetailView: View {
             VStack(alignment: .leading, spacing: 0) {
                 hero
                 actionBar
-                tabsBar
-                content
             }
         }
         .vesselBackground(tint: tint)
@@ -454,42 +452,9 @@ struct GameDetailView: View {
             stat("hourglass", "Tiempo de juego", playtimeText)
             Spacer(minLength: 0)
             if game.installed { iconButton("trash", action: onUninstall) }
-            iconButton("gearshape.fill") {}
             iconButton(isFavorite ? "heart.fill" : "heart", tinted: isFavorite, action: onToggleFavorite)
         }
         .padding(.horizontal, 32).padding(.vertical, 18)
-    }
-
-    private var tabsBar: some View {
-        HStack(spacing: 28) {
-            ForEach(["Página de la tienda", "Centro de la comunidad", "Discusiones", "Guías", "Soporte"], id: \.self) { t in
-                Text(t).font(.callout).foregroundStyle(.white.opacity(0.5))
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 32).padding(.vertical, 12)
-        .background(.white.opacity(0.04))
-    }
-
-    private var content: some View {
-        HStack(alignment: .top, spacing: 24) {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("ACTIVIDAD").font(.caption.weight(.bold)).foregroundStyle(.white.opacity(0.5))
-                Text("Aún no hay actividad reciente de este juego.")
-                    .font(.callout).foregroundStyle(.white.opacity(0.6))
-                    .padding(16).frame(maxWidth: .infinity, alignment: .leading)
-                    .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-            }
-            VStack(alignment: .leading, spacing: 10) {
-                Text("LOGROS").font(.caption.weight(.bold)).foregroundStyle(.white.opacity(0.5))
-                Text("Los logros aparecerán aquí cuando estén disponibles.")
-                    .font(.caption).foregroundStyle(.white.opacity(0.55))
-                    .padding(16).frame(maxWidth: .infinity, alignment: .leading)
-                    .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-            }
-            .frame(width: 320)
-        }
-        .padding(32)
     }
 
     private var backButton: some View {
