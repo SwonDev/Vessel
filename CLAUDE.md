@@ -2,6 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## ⭐ Reglas PRINCIPALES del proyecto (inviolables)
+
+1. **Stack tecnológico SIEMPRE a la última versión.** Revisar y mantener actualizado todo el stack (Package.swift y dependencias, motores Wine, capas DXVK/DXMT/GPTK/Goldberg/SteamCMD/Mythic Engine, Swift/SDK), **sin romper nada** y **validando que funciona** tras cada actualización. EXCEPCIÓN: versiones fijadas a propósito por compatibilidad (DXVK `1.10.3`, DXMT `0.80` — ver más abajo); no actualizarlas a ciegas.
+2. **Estética PREMIUM, nada simple.** La UI debe inspirarse en [MythicApp/Mythic](https://github.com/MythicApp/Mythic): materiales/blur, gradientes, sombras, animaciones y transiciones suaves, estados hover, microinteracciones. Nada de botones/efectos simples. Objetivo: premium, optimizado, amigable y perfecto — pero minimalista y sin fricción para el usuario (el concepto de bottle/Wine es invisible; la sidebar son TIENDAS, no bottles).
+
 ## Qué es Vessel
 
 App nativa de macOS (SwiftUI, Apple Silicon) que **envuelve Wine** para ejecutar juegos de Windows y Steam. No reimplementa Wine: gestiona *bottles* (prefijos de Wine), descarga motores Wine portables, configura las capas de traducción gráfica (DXMT/DXVK) y lanza ejecutables. El paralelo conceptual es CrossOver / Whisky / Mythic, escrito en Swift moderno.
