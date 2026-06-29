@@ -6,10 +6,12 @@ import SwiftUI
 struct StoreGame: Identifiable, Hashable {
     let id: String
     let title: String
-    var coverURL: String? = nil      // URL directa de carátula (Epic/GOG/Amazon)
+    var coverURL: String? = nil      // URL directa de carátula vertical (Epic/GOG/Amazon)
+    var heroURL: String? = nil       // banner horizontal para la ficha del juego
     var steamAppId: String? = nil    // para la portada del CDN de Steam
     var installed: Bool = false
     var lastPlayed: Date? = nil
+    var playtimeMinutes: Int? = nil
 }
 
 enum StoreSortOrder: String, CaseIterable, Identifiable {
@@ -36,6 +38,7 @@ struct StoreLibraryView: View {
     var progressFor: (String) -> String? = { _ in nil }
     var onInstall: (StoreGame) -> Void = { _ in }
     var onPlay: (StoreGame) -> Void = { _ in }
+    var onUninstall: (StoreGame) -> Void = { _ in }
     var onReload: () -> Void = {}
     var onLogout: () -> Void = {}
 
@@ -44,6 +47,7 @@ struct StoreLibraryView: View {
     @State private var filter: StoreLibraryFilter = .todos
     @State private var showFavoritesOnly = false
     @State private var favorites: Set<String> = []
+    @State private var selectedGame: StoreGame?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var tint: Color { store.tint }
@@ -85,6 +89,16 @@ struct StoreLibraryView: View {
         }
         .vesselBackground(tint: tint)
         .onAppear { favorites = Set(UserDefaults.standard.stringArray(forKey: favKey) ?? []) }
+        .sheet(item: $selectedGame) { game in
+            GameDetailView(
+                game: game, tint: tint,
+                installing: installingIDs.contains(game.id),
+                progress: progressFor(game.id),
+                onInstall: { onInstall(game) },
+                onPlay: { onPlay(game) },
+                onUninstall: { onUninstall(game) }
+            )
+        }
     }
 
     // MARK: - Cabecera
@@ -190,7 +204,9 @@ struct StoreLibraryView: View {
                         progress: progressFor(game.id),
                         onInstall: { onInstall(game) },
                         onPlay: { onPlay(game) },
-                        onToggleFavorite: { toggleFav(game.id) }
+                        onToggleFavorite: { toggleFav(game.id) },
+                        onUninstall: { onUninstall(game) },
+                        onOpen: { selectedGame = game }
                     )
                     .transition(.opacity.combined(with: .scale(scale: 0.97)))
                 }
@@ -213,6 +229,8 @@ struct StoreGameCard: View {
     var onInstall: () -> Void = {}
     var onPlay: () -> Void = {}
     var onToggleFavorite: () -> Void = {}
+    var onUninstall: () -> Void = {}
+    var onOpen: () -> Void = {}
 
     private var coverURL: URL? {
         if let s = game.coverURL, let u = URL(string: s) { return u }
@@ -233,11 +251,41 @@ struct StoreGameCard: View {
     }
 
     var body: some View {
-        VStack(spacing: 8) {
-            coverArt
-            actionButton
-        }
-        .hoverLift()
+        coverArt
+            .overlay {
+                if installing {
+                    ZStack {
+                        Color.black.opacity(0.55)
+                        VStack(spacing: 6) {
+                            ProgressView().controlSize(.small).tint(.white)
+                            Text(progress ?? "Instalando…")
+                                .font(.caption2).foregroundStyle(.white)
+                                .lineLimit(1).truncationMode(.middle).padding(.horizontal, 6)
+                        }
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous))
+                }
+            }
+            .hoverLift()
+            .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous))
+            .onTapGesture { onOpen() }
+            .help(game.title)
+            .contextMenu {
+                if game.installed {
+                    Button { onPlay() } label: { Label("Jugar", systemImage: "play.fill") }
+                    Button { onOpen() } label: { Label("Ver detalles", systemImage: "info.circle") }
+                    Divider()
+                    Button(role: .destructive) { onUninstall() } label: { Label("Desinstalar", systemImage: "trash") }
+                } else if !installing {
+                    Button { onInstall() } label: { Label("Instalar", systemImage: "arrow.down.circle") }
+                    Button { onOpen() } label: { Label("Ver detalles", systemImage: "info.circle") }
+                }
+                Divider()
+                Button { onToggleFavorite() } label: {
+                    Label(isFavorite ? "Quitar de favoritos" : "Añadir a favoritos",
+                          systemImage: isFavorite ? "star.slash" : "star")
+                }
+            }
     }
 
     private var coverArt: some View {
@@ -296,25 +344,102 @@ struct StoreGameCard: View {
         }
     }
 
-    @ViewBuilder private var actionButton: some View {
-        if installing {
-            VStack(spacing: 4) {
-                ProgressView().controlSize(.small).tint(.white)
-                Text(progress ?? "Instalando…")
-                    .font(.caption2).foregroundStyle(.white.opacity(0.7))
-                    .lineLimit(1).truncationMode(.middle)
+}
+
+// MARK: - Ficha de juego (estilo Steam)
+
+/// Ficha de juego al estilo Steam: banner hero + botón Jugar/Instalar + tiempo jugado y
+/// última sesión. Genérica para todas las tiendas (cada una pasa su color y sus datos).
+struct GameDetailView: View {
+    let game: StoreGame
+    let tint: Color
+    var installing: Bool = false
+    var progress: String? = nil
+    var onInstall: () -> Void = {}
+    var onPlay: () -> Void = {}
+    var onUninstall: () -> Void = {}
+    @Environment(\.dismiss) private var dismiss
+
+    private var heroURL: URL? {
+        if let s = game.heroURL, let u = URL(string: s) { return u }
+        if let appId = game.steamAppId, !appId.isEmpty {
+            return URL(string: "https://cdn.cloudflare.steamstatic.com/steam/apps/\(appId)/library_hero.jpg")
+        }
+        if let s = game.coverURL, let u = URL(string: s) { return u }
+        return nil
+    }
+
+    private var playtimeText: String {
+        guard let m = game.playtimeMinutes, m > 0 else { return "—" }
+        return m >= 60 ? "\(m / 60) h \(m % 60) min" : "\(m) min"
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ZStack(alignment: .bottomLeading) {
+                    Group {
+                        if let url = heroURL {
+                            AsyncImage(url: url) { phase in
+                                if let image = phase.image { image.resizable().scaledToFill() }
+                                else { tint.opacity(0.25) }
+                            }
+                        } else { tint.opacity(0.25) }
+                    }
+                    .frame(height: 340).frame(maxWidth: .infinity).clipped()
+                    LinearGradient(colors: [.clear, Theme.navyDeep.opacity(0.96)],
+                                   startPoint: .center, endPoint: .bottom)
+                    Text(game.title)
+                        .font(.system(size: 34, weight: .bold)).foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.6), radius: 6, y: 2)
+                        .padding(24)
+                }
+                .frame(height: 340)
+
+                HStack(spacing: 28) {
+                    if installing {
+                        HStack(spacing: 8) {
+                            ProgressView().tint(.white)
+                            Text(progress ?? "Instalando…").foregroundStyle(.white)
+                        }
+                    } else if game.installed {
+                        Button(action: onPlay) {
+                            Label("Jugar", systemImage: "play.fill").font(.title3.weight(.bold)).frame(width: 190)
+                        }
+                        .vesselButton(tint: tint)
+                    } else {
+                        Button(action: onInstall) {
+                            Label("Instalar", systemImage: "arrow.down.circle.fill").font(.title3.weight(.bold)).frame(width: 190)
+                        }
+                        .vesselButton(tint: tint)
+                    }
+                    stat("Última sesión", game.lastPlayed.map { $0.formatted(date: .abbreviated, time: .omitted) } ?? "—")
+                    stat("Tiempo de juego", playtimeText)
+                    Spacer()
+                    if game.installed {
+                        Button(role: .destructive, action: onUninstall) {
+                            Label("Desinstalar", systemImage: "trash")
+                        }
+                        .vesselButton(false)
+                    }
+                }
+                .padding(24)
             }
-            .frame(maxWidth: .infinity).padding(.vertical, 6)
-        } else if game.installed {
-            Button(action: onPlay) {
-                Label("Jugar", systemImage: "play.fill").frame(maxWidth: .infinity)
+        }
+        .frame(minWidth: 860, minHeight: 580)
+        .vesselBackground(tint: tint)
+        .overlay(alignment: .topTrailing) {
+            Button { dismiss() } label: {
+                Image(systemName: "xmark").font(.body.weight(.semibold)).foregroundStyle(.white.opacity(0.7)).padding(10)
             }
-            .vesselButton(tint: tint)
-        } else {
-            Button(action: onInstall) {
-                Label("Instalar", systemImage: "arrow.down.circle.fill").frame(maxWidth: .infinity)
-            }
-            .vesselButton(false)
+            .buttonStyle(.plain).padding(14)
+        }
+    }
+
+    private func stat(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label.uppercased()).font(.caption2).foregroundStyle(.white.opacity(0.5))
+            Text(value).font(.callout.weight(.medium)).foregroundStyle(.white)
         }
     }
 }
