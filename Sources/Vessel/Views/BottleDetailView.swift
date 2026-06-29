@@ -253,8 +253,13 @@ struct BottleDetailView: View {
     @ViewBuilder private var librarySection: some View {
         if !notInstalledGames.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Tu biblioteca · \(notInstalledGames.count) sin instalar")
-                    .font(.title2).fontWeight(.semibold)
+                HStack(spacing: 10) {
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(Theme.accent)
+                        .frame(width: 3, height: 22)
+                    Text("Tu biblioteca · \(notInstalledGames.count) sin instalar")
+                        .font(.title2.weight(.bold))
+                }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: Theme.Space.gameGrid)], spacing: Theme.Space.gameGrid) {
                     ForEach(notInstalledGames) { game in
                         LibraryGameCard(
@@ -267,8 +272,10 @@ struct BottleDetailView: View {
                         ) {
                             Task { await installGame(game.appId) }
                         }
+                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
                     }
                 }
+                .animation(.snappy(duration: 0.28), value: notInstalledGames.count)
             }
         }
     }
@@ -453,18 +460,29 @@ struct BottleDetailView: View {
     private var gamesSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Juegos instalados").font(.title2).fontWeight(.semibold)
+                HStack(spacing: 10) {
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(Theme.accent)
+                        .frame(width: 3, height: 22)
+                    Text("Juegos instalados")
+                        .font(.title2.weight(.bold))
+                }
                 Spacer()
                 Button { pickGame() } label: { Label("Añadir .exe", systemImage: "plus") }
+                    .buttonStyle(.premium(prominent: false))
             }
 
             if localBottle.games.isEmpty {
-                Text("No hay juegos instalados. Lanza Steam para descargar tu biblioteca, o añade un ejecutable .exe manualmente.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+                VStack(alignment: .center, spacing: 16) {
+                    StoreLogoTile(store: .steam, size: 72)
+                    Text("No hay juegos instalados. Lanza Steam para descargar tu biblioteca, o añade un ejecutable .exe manualmente.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity)
+                .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
             } else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: Theme.Space.gameGrid)], spacing: Theme.Space.gameGrid) {
                     ForEach(filteredInstalled) { game in
@@ -480,8 +498,10 @@ struct BottleDetailView: View {
                         } onRemove: {
                             removeGameFromList(game)
                         }
+                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
                     }
                 }
+                .animation(.snappy(duration: 0.28), value: filteredInstalled.count)
             }
         }
     }
@@ -869,12 +889,31 @@ struct EmptyStateView: View {
     let onCreate: () -> Void
 
     var body: some View {
-        VStack(spacing: 24) {
-            Image(systemName: "wineglass")
-                .font(.system(size: 80))
-                .foregroundStyle(.purple.opacity(0.6))
-            VStack(spacing: 8) {
-                Text("Bienvenido a Vessel").font(.largeTitle).fontWeight(.bold)
+        VStack(spacing: 32) {
+            ZStack {
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [Theme.accent.opacity(0.28), Theme.accent.opacity(0.0)],
+                            center: .center,
+                            startRadius: 20,
+                            endRadius: 72
+                        )
+                    )
+                    .frame(width: 144, height: 144)
+                Image(systemName: "wineglass")
+                    .font(.system(size: 62, weight: .light))
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [Theme.accent, Theme.accent.opacity(0.5)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+            }
+            VStack(spacing: 10) {
+                Text("Bienvenido a Vessel")
+                    .font(.largeTitle.weight(.bold))
                 Text("Crea tu primer bottle para empezar a ejecutar juegos Windows en tu Mac con chip Apple Silicon.")
                     .font(.body)
                     .foregroundStyle(.secondary)
@@ -882,12 +921,14 @@ struct EmptyStateView: View {
                     .frame(maxWidth: 400)
             }
             Button(action: onCreate) {
-                Label("Crear primer bottle", systemImage: "plus").padding(.horizontal, 16)
+                Label("Crear primer bottle", systemImage: "plus")
+                    .padding(.horizontal, 16)
             }
             .controlSize(.large)
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.premium())
         }
-        .padding()
+        .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .vesselBackground()
     }
 }

@@ -30,9 +30,12 @@ struct SteamOfficialLoginView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top) {
-                Text("Inicio de sesión")
-                    .font(.system(size: 28, weight: .bold))
-                    .foregroundStyle(.white)
+                HStack(alignment: .center, spacing: 10) {
+                    StoreLogoTile(store: .steam, size: 30)
+                    Text("Inicio de sesión")
+                        .font(.system(size: 28, weight: .bold))
+                        .foregroundStyle(.white)
+                }
                 Spacer()
                 Button { dismiss() } label: {
                     Image(systemName: "xmark").font(.body.weight(.medium)).foregroundStyle(.white.opacity(0.5))

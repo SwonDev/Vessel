@@ -121,23 +121,31 @@ struct ConnectSteamView: View {
     let onConnect: () -> Void
 
     private let tint = StoreKind.steam.tint
+    @State private var pulse = false
 
     var body: some View {
         VStack(spacing: 22) {
             StoreLogoTile(store: .steam)
+                .scaleEffect(pulse ? 1.08 : 1.0)
+                .animation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true), value: pulse)
 
             Text("Steam").font(.largeTitle.bold()).foregroundStyle(.white)
 
             if let working {
-                ProgressView()
-                    .controlSize(.large)
-                    .tint(.white)
-                    .padding(.top, 4)
-                Text(working)
-                    .font(.title3)
-                    .foregroundStyle(.white.opacity(0.7))
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 440)
+                VStack(spacing: 14) {
+                    ProgressView()
+                        .controlSize(.large)
+                        .tint(.white)
+                    Text(working)
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 440)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(.white.opacity(0.10), in: Capsule())
+                }
+                .padding(.top, 4)
             } else {
                 Text("Conecta tu cuenta para ver y jugar toda tu biblioteca de Steam desde Vessel. Se instalará Steam si hace falta y se abrirá el inicio de sesión por ti.")
                     .font(.title3)
@@ -157,5 +165,7 @@ struct ConnectSteamView: View {
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .vesselBackground(tint: tint)
+        .onAppear { pulse = working != nil }
+        .onChange(of: working) { _, new in pulse = new != nil }
     }
 }

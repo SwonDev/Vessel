@@ -15,11 +15,31 @@ struct OnboardingView: View {
     var body: some View {
         VStack(spacing: 24) {
             Spacer()
-            VesselIconView(size: 110)
-                .symbolEffect(.pulse, options: .repeating, isActive: isWorking)
+            ZStack {
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [Theme.accent.opacity(0.35), Color.clear],
+                            center: .center,
+                            startRadius: 30,
+                            endRadius: 80
+                        )
+                    )
+                    .frame(width: 190, height: 190)
+                    .blur(radius: 14)
+                VesselIconView(size: 110)
+                    .symbolEffect(.pulse, options: .repeating, isActive: isWorking)
+            }
 
             Text("Vessel")
                 .font(.system(size: 32, weight: .bold))
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [.white, Theme.accent.opacity(0.85)],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
 
             VStack(spacing: 4) {
                 Text(statusText)
@@ -33,6 +53,10 @@ struct OnboardingView: View {
                         .padding(.top, 8)
                 }
             }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+            .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+            .padding(.horizontal, 32)
 
             if !isWorking {
                 statusList

@@ -124,6 +124,19 @@ struct StoreSidebar: View {
                 }
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "sailboat.fill")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(Theme.accent.gradient)
+                Text("Vessel")
+                    .font(.title2.bold())
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
+        }
         .navigationTitle("Vessel")
         .listStyle(.sidebar)
         .tint(Theme.accent)
