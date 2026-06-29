@@ -19,6 +19,9 @@ struct BottleDetailView: View {
     @State private var pendingInstallAppId: String?
     @State private var installMessages: [String: String] = [:]
     @AppStorage("steamcmd.user") private var steamCMDUser = ""
+    @State private var searchText = ""
+    @State private var showFavoritesOnly = false
+    @State private var favorites: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "steam.favorites") ?? [])
     @State private var localBottle: Bottle
     @State private var dxvkInstalled: Bool = false
     @State private var reinstallingDXVK = false
@@ -44,6 +47,9 @@ struct BottleDetailView: View {
                         .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                 }
                 apiKeyPrompt
+                if !localBottle.games.isEmpty || !ownedGames.isEmpty {
+                    searchBar
+                }
                 gamesSection
                 librarySection
             }
@@ -91,6 +97,18 @@ struct BottleDetailView: View {
                     Task { await installGame(appId) }
                 }
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .steamLogin)) { _ in
+            showSteamCMDLogin = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .steamRefresh)) { _ in
+            Task { await loadSteamLibrary() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .steamLogout)) { _ in
+            steamCMDUser = ""
+            SteamAccountService.webAPIKey = ""
+            ownedGames = []
+            statusMessage = "Sesión cerrada. Usa clic derecho en Steam para volver a iniciar sesión."
         }
     }
 
@@ -167,13 +185,61 @@ struct BottleDetailView: View {
         return nil
     }
 
+    // MARK: - Búsqueda, filtros y favoritos
+
+    private var searchBar: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Buscar en tu biblioteca…", text: $searchText)
+                    .textFieldStyle(.plain)
+                if !searchText.isEmpty {
+                    Button { searchText = "" } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    }.buttonStyle(.plain)
+                }
+            }
+            .padding(8)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+
+            Toggle(isOn: $showFavoritesOnly) {
+                Label("Favoritos", systemImage: showFavoritesOnly ? "star.fill" : "star")
+            }
+            .toggleStyle(.button)
+            .tint(.yellow)
+        }
+    }
+
+    private func isFavorite(_ appId: String?) -> Bool {
+        guard let appId else { return false }
+        return favorites.contains(appId)
+    }
+
+    private func toggleFavorite(_ appId: String?) {
+        guard let appId else { return }
+        if favorites.contains(appId) { favorites.remove(appId) } else { favorites.insert(appId) }
+        UserDefaults.standard.set(Array(favorites), forKey: "steam.favorites")
+    }
+
+    private func matchesSearch(_ name: String) -> Bool {
+        searchText.isEmpty || name.localizedCaseInsensitiveContains(searchText)
+    }
+
+    /// Juegos instalados tras aplicar búsqueda y filtro de favoritos.
+    private var filteredInstalled: [GameInstall] {
+        localBottle.games.filter {
+            matchesSearch($0.name) && (!showFavoritesOnly || isFavorite($0.steamAppId))
+        }
+    }
+
     // MARK: - Biblioteca completa de Steam
 
-    /// Juegos de la biblioteca del usuario que aún NO están instalados.
+    /// Juegos de la biblioteca del usuario que aún NO están instalados (tras filtros).
     private var notInstalledGames: [SteamAccountService.OwnedGame] {
         let installedIds = Set(localBottle.games.compactMap { $0.steamAppId })
         return ownedGames
             .filter { !installedIds.contains($0.appId) }
+            .filter { matchesSearch($0.name) && (!showFavoritesOnly || isFavorite($0.appId)) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
@@ -188,7 +254,9 @@ struct BottleDetailView: View {
                             appId: game.appId,
                             name: game.name,
                             installing: installingAppIds.contains(game.appId),
-                            statusText: installMessages[game.appId]
+                            statusText: installMessages[game.appId],
+                            isFavorite: isFavorite(game.appId),
+                            onToggleFavorite: { toggleFavorite(game.appId) }
                         ) {
                             Task { await installGame(game.appId) }
                         }
@@ -388,8 +456,13 @@ struct BottleDetailView: View {
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
             } else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 200))], spacing: 12) {
-                    ForEach(localBottle.games) { game in
-                        GameCard(game: game, prefixPath: localBottle.prefixPath) {
+                    ForEach(filteredInstalled) { game in
+                        GameCard(
+                            game: game,
+                            prefixPath: localBottle.prefixPath,
+                            isFavorite: isFavorite(game.steamAppId),
+                            onToggleFavorite: { toggleFavorite(game.steamAppId) }
+                        ) {
                             Task { await launchGame(game) }
                         } onUninstall: {
                             gameToUninstall = game
@@ -534,6 +607,8 @@ struct BottleDetailView: View {
 struct GameCard: View {
     let game: GameInstall
     let prefixPath: String
+    var isFavorite: Bool = false
+    var onToggleFavorite: () -> Void = {}
     let onLaunch: () -> Void
     var onUninstall: () -> Void = {}
     var onRemove: () -> Void = {}
@@ -543,6 +618,17 @@ struct GameCard: View {
             GameCoverView(game: game, prefixPath: prefixPath)
                 .aspectRatio(2.0/3.0, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(alignment: .topTrailing) {
+                    Button(action: onToggleFavorite) {
+                        Image(systemName: isFavorite ? "star.fill" : "star")
+                            .font(.callout)
+                            .foregroundStyle(isFavorite ? .yellow : .white)
+                            .padding(6)
+                            .background(.black.opacity(0.45), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(6)
+                }
             Text(game.name).font(.headline).lineLimit(1)
             if let last = game.lastPlayedAt {
                 Text("Última: \(last.formatted(date: .abbreviated, time: .shortened))")
@@ -593,6 +679,8 @@ struct LibraryGameCard: View {
     let name: String
     let installing: Bool
     var statusText: String? = nil
+    var isFavorite: Bool = false
+    var onToggleFavorite: () -> Void = {}
     let onInstall: () -> Void
 
     var body: some View {
@@ -601,6 +689,17 @@ struct LibraryGameCard: View {
                 .aspectRatio(2.0/3.0, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .opacity(0.9)
+                .overlay(alignment: .topTrailing) {
+                    Button(action: onToggleFavorite) {
+                        Image(systemName: isFavorite ? "star.fill" : "star")
+                            .font(.callout)
+                            .foregroundStyle(isFavorite ? .yellow : .white)
+                            .padding(6)
+                            .background(.black.opacity(0.45), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(6)
+                }
             Text(name).font(.headline).lineLimit(1)
             Button(action: onInstall) {
                 if installing {

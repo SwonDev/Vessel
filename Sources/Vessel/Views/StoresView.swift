@@ -1,5 +1,11 @@
 import SwiftUI
 
+extension Notification.Name {
+    static let steamLogin = Notification.Name("vessel.steamLogin")
+    static let steamLogout = Notification.Name("vessel.steamLogout")
+    static let steamRefresh = Notification.Name("vessel.steamRefresh")
+}
+
 /// Las **tiendas** que Vessel integra. La sidebar muestra estas (no "bottles"): el
 /// usuario entra en una tienda, inicia sesión y ve/gestiona su biblioteca. El
 /// concepto de bottle queda oculto (una automática por tienda). Modelo Heroic/Mythic,
@@ -66,6 +72,22 @@ struct StoreSidebar: View {
             }
             .padding(.vertical, 3)
             .tag(store)
+            .contextMenu {
+                if store == .steam {
+                    Button { NotificationCenter.default.post(name: .steamLogin, object: nil) } label: {
+                        Label("Iniciar sesión", systemImage: "person.crop.circle")
+                    }
+                    Button { NotificationCenter.default.post(name: .steamRefresh, object: nil) } label: {
+                        Label("Actualizar biblioteca", systemImage: "arrow.clockwise")
+                    }
+                    Divider()
+                    Button(role: .destructive) { NotificationCenter.default.post(name: .steamLogout, object: nil) } label: {
+                        Label("Cerrar sesión", systemImage: "rectangle.portrait.and.arrow.right")
+                    }
+                } else {
+                    Text("\(store.displayName) — próximamente")
+                }
+            }
         }
         .navigationTitle("Vessel")
         .listStyle(.sidebar)
