@@ -1,23 +1,17 @@
 import SwiftUI
 import CoreImage.CIFilterBuiltins
 
-/// Cuadro de login con la estética de Steam: pestañas **QR** (Steam Guard desde el
-/// móvil) y **usuario/contraseña** (con cifrado RSA oficial), opción de **recordar
-/// sesión** y campo de Steam Guard cuando Steam lo pide. Devuelve los tokens al
-/// completar. Es el flujo de autenticación oficial de Steam. Ver
-/// [[vessel-seccion-tienda-plan]].
+/// Réplica del **cuadro de login oficial de Steam**: a la izquierda usuario/contraseña
+/// (con cifrado RSA real) + "Recordarme", a la derecha el **código QR** (Steam Guard
+/// desde el móvil) — ambos a la vez, con la estética de Steam. Flujo de autenticación
+/// oficial (`IAuthenticationService`). Ver [[vessel-seccion-tienda-plan]].
 struct SteamOfficialLoginView: View {
     let onLoggedIn: (SteamAuthService.Tokens) -> Void
     @Environment(\.dismiss) private var dismiss
 
     @State private var auth = SteamAuthService()
-    @State private var mode = 0   // 0 = QR, 1 = credenciales
-
-    // QR
     @State private var qrImage: NSImage?
-    @State private var qrStatus = "Generando código…"
 
-    // Credenciales
     @State private var user = ""
     @State private var password = ""
     @State private var rememberLogin = true
@@ -28,134 +22,170 @@ struct SteamOfficialLoginView: View {
     @State private var working = false
     @State private var errorText: String?
 
-    private let steamBG = Color(red: 0.10, green: 0.12, blue: 0.16)
-    private let steamBlue = Color(red: 0.10, green: 0.55, blue: 0.85)
+    private let steamBlue = Color(red: 0.10, green: 0.62, blue: 1.0)
+    private let fieldBG = Color(red: 0.19, green: 0.23, blue: 0.28)
+    private let panelBG = Color(red: 0.094, green: 0.118, blue: 0.149)
+    private let backdrop = Color(red: 0.06, green: 0.08, blue: 0.10)
 
     var body: some View {
-        VStack(spacing: 16) {
-            Text("Iniciar sesión en Steam")
-                .font(.title2).fontWeight(.bold).foregroundStyle(.white)
+        ZStack(alignment: .topTrailing) {
+            backdrop.ignoresSafeArea()
 
-            Picker("", selection: $mode) {
-                Text("Código QR").tag(0)
-                Text("Usuario y contraseña").tag(1)
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 300)
+            VStack(alignment: .leading, spacing: 22) {
+                Text("Inicio de sesión")
+                    .font(.system(size: 30, weight: .bold))
+                    .foregroundStyle(.white)
 
-            if mode == 0 { qrView } else { credentialsView }
-
-            Button("Cancelar") { dismiss() }
-                .buttonStyle(.plain)
-                .foregroundStyle(.white.opacity(0.8))
-        }
-        .padding(28)
-        .frame(width: 420)
-        .background(steamBG)
-        .task(id: mode) { if mode == 0 { await startQR() } }
-    }
-
-    // MARK: - QR
-
-    private var qrView: some View {
-        VStack(spacing: 12) {
-            Text("Escanea con la app de Steam en tu móvil para iniciar sesión con Steam Guard.")
-                .font(.callout).foregroundStyle(.white.opacity(0.7))
-                .multilineTextAlignment(.center).frame(maxWidth: 320)
-            Group {
-                if let qrImage {
-                    Image(nsImage: qrImage).interpolation(.none).resizable().frame(width: 200, height: 200)
-                } else {
-                    ProgressView().frame(width: 200, height: 200)
+                HStack(alignment: .top, spacing: 48) {
+                    credentialsColumn
+                    qrColumn
                 }
             }
-            .padding(10).background(.white, in: RoundedRectangle(cornerRadius: 12))
-            Text(qrStatus).font(.footnote).foregroundStyle(.white.opacity(0.6))
-        }
-    }
+            .padding(40)
+            .background(panelBG)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .padding(40)
 
-    private func startQR() async {
-        qrImage = nil
-        qrStatus = "Generando código…"
-        do {
-            let session = try await auth.beginQR()
-            qrImage = makeQR(session.challengeURL)
-            qrStatus = "Esperando aprobación en tu móvil…"
-            for _ in 0..<120 {
-                try? await Task.sleep(nanoseconds: UInt64(max(2.0, session.handle.interval) * 1_000_000_000))
-                if mode != 0 { return }
-                if let tokens = try await auth.poll(handle: session.handle) {
-                    onLoggedIn(tokens); dismiss(); return
-                }
+            Button { dismiss() } label: {
+                Image(systemName: "xmark").foregroundStyle(.white.opacity(0.6)).padding(12)
             }
-            qrStatus = "El código ha caducado. Cambia de pestaña y vuelve para refrescar."
-        } catch {
-            qrStatus = "No se pudo generar el código: \(error.localizedDescription)"
+            .buttonStyle(.plain)
         }
+        .frame(width: 820, height: 470)
+        .task { await startQR() }
     }
 
-    // MARK: - Credenciales
+    // MARK: - Columna izquierda (usuario/contraseña)
 
-    private var credentialsView: some View {
-        VStack(spacing: 12) {
-            TextField("Usuario de Steam", text: $user)
-                .textFieldStyle(.roundedBorder).textContentType(.username)
-                .disabled(guardHandle != nil)
-            SecureField("Contraseña", text: $password)
-                .textFieldStyle(.roundedBorder)
-                .disabled(guardHandle != nil)
+    private var credentialsColumn: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("INICIA SESIÓN CON TU NOMBRE DE CUENTA")
+                .font(.caption.weight(.bold)).foregroundStyle(steamBlue)
+
+            field(text: $user, secure: false)
+
+            Text("CONTRASEÑA")
+                .font(.caption).foregroundStyle(.white.opacity(0.6)).padding(.top, 6)
+            field(text: $password, secure: true)
 
             if guardHandle != nil {
-                TextField("Código de Steam Guard", text: $guardCode)
-                    .textFieldStyle(.roundedBorder)
+                Text("CÓDIGO DE STEAM GUARD")
+                    .font(.caption).foregroundStyle(.white.opacity(0.6)).padding(.top, 6)
+                field(text: $guardCode, secure: false)
             }
 
-            Toggle("Recordar inicio de sesión", isOn: $rememberLogin)
-                .toggleStyle(.checkbox)
-                .foregroundStyle(.white.opacity(0.85))
-                .frame(maxWidth: .infinity, alignment: .leading)
+            Toggle(isOn: $rememberLogin) {
+                Text("Recordarme").foregroundStyle(.white.opacity(0.85))
+            }
+            .toggleStyle(.checkbox)
+            .padding(.vertical, 4)
 
             if let errorText {
-                Text(errorText).font(.caption).foregroundStyle(.red)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text(errorText).font(.caption).foregroundStyle(Color(red: 1, green: 0.4, blue: 0.4))
             }
 
             Button {
                 Task { guardHandle == nil ? await doCredentials() : await submitGuard() }
             } label: {
-                if working {
-                    HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Conectando…") }
-                        .frame(maxWidth: .infinity)
+                Group {
+                    if working {
+                        HStack(spacing: 6) { ProgressView().controlSize(.small).tint(.white); Text("Conectando…") }
+                    } else {
+                        Text(guardHandle == nil ? "Iniciar sesión" : "Verificar código")
+                    }
+                }
+                .font(.headline)
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(
+                    LinearGradient(colors: [Color(red: 0.0, green: 0.75, blue: 1.0), Color(red: 0.20, green: 0.46, blue: 0.95)],
+                                   startPoint: .leading, endPoint: .trailing)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .opacity((working || (guardHandle == nil && (user.isEmpty || password.isEmpty))) ? 0.5 : 1)
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(.defaultAction)
+            .disabled(working || (guardHandle == nil && (user.isEmpty || password.isEmpty)) || (guardHandle != nil && guardCode.isEmpty))
+            .padding(.top, 6)
+
+            Text("Tu contraseña se cifra (RSA) y se envía a Steam; no se guarda.")
+                .font(.caption2).foregroundStyle(.white.opacity(0.4))
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.top, 4)
+        }
+        .frame(width: 340)
+    }
+
+    @ViewBuilder
+    private func field(text: Binding<String>, secure: Bool) -> some View {
+        Group {
+            if secure {
+                SecureField("", text: text)
+            } else {
+                TextField("", text: text)
+            }
+        }
+        .textFieldStyle(.plain)
+        .foregroundStyle(.white)
+        .padding(10)
+        .background(fieldBG)
+        .clipShape(RoundedRectangle(cornerRadius: 3))
+    }
+
+    // MARK: - Columna derecha (QR)
+
+    private var qrColumn: some View {
+        VStack(spacing: 14) {
+            Text("O BIEN CON UN CÓDIGO QR")
+                .font(.caption.weight(.bold)).foregroundStyle(steamBlue)
+
+            Group {
+                if let qrImage {
+                    Image(nsImage: qrImage).interpolation(.none).resizable().frame(width: 180, height: 180)
                 } else {
-                    Text(guardHandle == nil ? "Iniciar sesión" : "Verificar código")
-                        .frame(maxWidth: .infinity)
+                    ProgressView().frame(width: 180, height: 180)
                 }
             }
-            .keyboardShortcut(.defaultAction)
-            .buttonStyle(.borderedProminent)
-            .tint(steamBlue)
-            .disabled(working || (guardHandle == nil && (user.isEmpty || password.isEmpty)) || (guardHandle != nil && guardCode.isEmpty))
+            .padding(10)
+            .background(.white)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            Text("Usa la aplicación Steam Mobile para iniciar sesión con un código QR")
+                .font(.caption).foregroundStyle(.white.opacity(0.6))
+                .multilineTextAlignment(.center).frame(width: 180)
         }
-        .frame(width: 300)
+        .frame(width: 220)
+        .padding(.top, 14)
+    }
+
+    // MARK: - Lógica de autenticación
+
+    private func startQR() async {
+        do {
+            let session = try await auth.beginQR()
+            qrImage = makeQR(session.challengeURL)
+            for _ in 0..<120 {
+                try? await Task.sleep(nanoseconds: UInt64(max(2.0, session.handle.interval) * 1_000_000_000))
+                if let tokens = try await auth.poll(handle: session.handle) {
+                    onLoggedIn(tokens); dismiss(); return
+                }
+            }
+        } catch { /* el usuario puede usar la columna de credenciales */ }
     }
 
     private func doCredentials() async {
         working = true; errorText = nil
         do {
             switch try await auth.loginWithCredentials(accountName: user, password: password, rememberLogin: rememberLogin) {
-            case .session(let handle):
-                await pollUntilTokens(handle)
+            case .session(let handle): await pollUntilTokens(handle)
             case .needsGuard(let handle, let sid, let type):
-                guardHandle = handle; guardSteamID = sid; guardCodeType = type
-                working = false
-            case .badPassword:
-                working = false; errorText = "Usuario o contraseña incorrectos."
-            case .failed(let message):
-                working = false; errorText = message
+                guardHandle = handle; guardSteamID = sid; guardCodeType = type; working = false
+            case .badPassword: working = false; errorText = "Usuario o contraseña incorrectos."
+            case .failed(let message): working = false; errorText = message
             }
-        } catch {
-            working = false; errorText = error.localizedDescription
-        }
+        } catch { working = false; errorText = error.localizedDescription }
     }
 
     private func submitGuard() async {
@@ -164,9 +194,7 @@ struct SteamOfficialLoginView: View {
         do {
             try await auth.submitSteamGuard(handle: handle, steamID: guardSteamID, code: guardCode, codeType: guardCodeType)
             await pollUntilTokens(handle)
-        } catch {
-            working = false; errorText = "El código no es válido. Inténtalo de nuevo."
-        }
+        } catch { working = false; errorText = "El código no es válido. Inténtalo de nuevo." }
     }
 
     private func pollUntilTokens(_ handle: SteamAuthService.PollHandle) async {
@@ -178,8 +206,6 @@ struct SteamOfficialLoginView: View {
         }
         working = false; errorText = "No se pudo completar el inicio de sesión."
     }
-
-    // MARK: - QR image
 
     private func makeQR(_ string: String) -> NSImage? {
         let filter = CIFilter.qrCodeGenerator()
