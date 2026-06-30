@@ -73,9 +73,11 @@ struct SteamImportView: View {
         HStack {
             Text("\(selectedGames.count) seleccionados").font(.callout).foregroundStyle(.secondary)
             Spacer()
-            Button("Cancelar") { dismiss() }.keyboardShortcut(.cancelAction)
+            Button("Cancelar") { dismiss() }
+                .vesselButton(false)
+                .keyboardShortcut(.cancelAction)
             Button { doImport() } label: { Text("Importar") }
-                .buttonStyle(.borderedProminent)
+                .vesselButton()
                 .keyboardShortcut(.defaultAction)
                 .disabled(selectedGames.isEmpty)
         }

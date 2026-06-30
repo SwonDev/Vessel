@@ -95,17 +95,9 @@ struct SteamOfficialLoginView: View {
                     }
                 }
                 .font(.headline)
-                .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
-                .background(
-                    LinearGradient(colors: [Color(red: 0.0, green: 0.75, blue: 1.0), Color(red: 0.20, green: 0.46, blue: 0.95)],
-                                   startPoint: .leading, endPoint: .trailing)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-                .opacity((working || (guardHandle == nil && (user.isEmpty || password.isEmpty))) ? 0.5 : 1)
             }
-            .buttonStyle(.plain)
+            .vesselButton()
             .keyboardShortcut(.defaultAction)
             .disabled(working || (guardHandle == nil && (user.isEmpty || password.isEmpty)) || (guardHandle != nil && guardCode.isEmpty))
             .padding(.top, 6)

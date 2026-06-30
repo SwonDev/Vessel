@@ -267,7 +267,7 @@ struct ConnectGogView: View {
                         .frame(maxWidth: 440)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
-                        .background(.white.opacity(0.10), in: Capsule())
+                        .liquidGlass(in: Capsule())
                 }
                 .padding(.top, 4)
             } else {

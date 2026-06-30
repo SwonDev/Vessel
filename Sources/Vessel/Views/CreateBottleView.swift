@@ -138,13 +138,15 @@ struct CreateBottleView: View {
     private var footer: some View {
         HStack {
             Spacer()
-            Button("Cancelar") { dismiss() }.keyboardShortcut(.cancelAction)
+            Button("Cancelar") { dismiss() }
+                .vesselButton(false)
+                .keyboardShortcut(.cancelAction)
             Button {
                 Task { await create() }
             } label: {
                 if isCreating { ProgressView().controlSize(.small) } else { Text("Crear") }
             }
-            .buttonStyle(.borderedProminent)
+            .vesselButton()
             .keyboardShortcut(.defaultAction)
             .disabled(name.isEmpty || selectedWinePath.isEmpty || isCreating)
         }

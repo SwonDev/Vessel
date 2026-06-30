@@ -570,21 +570,20 @@ struct BottleDetailView: View {
             Button { Task { await launchSteam() } } label: {
                 Label("Lanzar Steam", systemImage: "play.fill").frame(maxWidth: .infinity)
             }
-            .controlSize(.large)
-            .buttonStyle(.borderedProminent)
+            .vesselButton()
             .disabled(isLaunching || !FileManager.default.fileExists(atPath: localBottle.steamPath))
 
             Button { showingInstaller = true } label: {
                 Label("Instalar Steam", systemImage: "arrow.down.app").frame(maxWidth: .infinity)
             }
-            .controlSize(.large).buttonStyle(.bordered)
+            .vesselButton(false)
 
             Button {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: localBottle.prefixPath)])
             } label: {
                 Label("Ver carpeta", systemImage: "folder").frame(maxWidth: .infinity)
             }
-            .controlSize(.large).buttonStyle(.bordered)
+            .vesselButton(false)
         }
     }
 
@@ -664,7 +663,7 @@ struct BottleDetailView: View {
                                 Text("Instalar ahora")
                             }
                         }
-                        .buttonStyle(.bordered)
+                        .vesselButton(false)
                         .disabled(reinstallingDXVK)
                     }
                 }
@@ -844,8 +843,7 @@ struct GameCard: View {
                 .font(.callout)
                 .foregroundStyle(isFavorite ? .yellow : .white)
                 .padding(7)
-                .background(.ultraThinMaterial, in: Circle())
-                .overlay(Circle().strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
+                .liquidGlass(in: Circle())
         }
         .buttonStyle(.plain)
         .padding(7)
@@ -886,8 +884,7 @@ struct LibraryGameCard: View {
                             .font(.callout)
                             .foregroundStyle(isFavorite ? .yellow : .white)
                             .padding(7)
-                            .background(.ultraThinMaterial, in: Circle())
-                            .overlay(Circle().strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
+                            .liquidGlass(in: Circle())
                     }
                     .buttonStyle(.plain)
                     .padding(7)

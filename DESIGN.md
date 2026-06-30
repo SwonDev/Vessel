@@ -80,10 +80,15 @@ Prohibido `.ultraThinMaterial`/`Capsule().fill(.white.opacity(...))` sueltos com
     sin nada más (mismo cristal limpio que el header);
   - **acciones/CTA** (Jugar, Instalar) → `vesselButton(tint:)` = `GlassButtonStyle`: cristal **neutro**
     `.interactive()` + velo mínimo del color (`tint.opacity(0.10→0.16)` en hover) + **borde** tintado
-    (`strokeBorder(tint.opacity(0.45))`) + glow de color en la sombra;
+    (`strokeBorder(tint.opacity(0.45))`). La **sombra es NEUTRA** (`.black.opacity`), nunca tintada:
+    el glow de color "cantaba" como un aura → prohibido. El color queda solo en velo + borde;
   - **selección** de fila (`StoreGameRow`) → idéntico patrón: cristal neutro + `tint.opacity(0.12)` +
     borde `tint.opacity(0.45)`. NUNCA `List(selection:)` (da el resaltado sólido del sistema): lista
     plana + `.onTapGesture` + fondo glass por fila según `isSelected`.
+- **Cobertura TOTAL (sin excepciones):** cero `.borderedProminent`/`.bordered` en la app — TODO botón
+  (footers de sheets Crear/Importar, "Cancelar", acciones del bottle, login oficial, "Instalar ahora")
+  usa `vesselButton(_:tint:)`; los icon-buttons (estrella favorito) y pills de estado usan
+  `liquidGlass(in:)`. Si añades una vista nueva, hereda este lenguaje desde el primer commit.
 - **Nunca cristal sobre cristal:** un chip/insignia DENTRO de un panel ya `liquidGlass` (p. ej.
   "sin verificar" dentro de una `cardSection`) NO lleva glass (se degrada) → fill sutil.
 - **Refracción:** el efecto luce de verdad cuando hay contenido detrás (carátulas tras el header);
