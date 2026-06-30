@@ -115,9 +115,15 @@ final class DependencyManagerTests: XCTestCase {
     }
 
     func testSteamLaunchUsesCompatibilityArguments() {
-        XCTAssertTrue(WineManager.steamLaunchArguments.contains("-cef-disable-gpu"))
-        XCTAssertTrue(WineManager.steamLaunchArguments.contains("-cef-disable-sandbox"))
+        // Flags imprescindibles para que CEF/Steam arranquen bajo Wine en macOS.
         XCTAssertTrue(WineManager.steamLaunchArguments.contains("-no-cef-sandbox"))
+        XCTAssertTrue(WineManager.steamLaunchArguments.contains("-noverifyfiles"))
+        XCTAssertTrue(WineManager.steamLaunchArguments.contains("-skipinitialbootstrap"))
+        // GUARD DE REGRESIÓN: `-cef-disable-gpu` y `-noreactlogin` fuerzan software
+        // compositing que Wine no hace bien en macOS → PANTALLA NEGRA. Nunca deben
+        // estar en los argumentos (ver WineManager.steamLaunchArguments).
+        XCTAssertFalse(WineManager.steamLaunchArguments.contains("-cef-disable-gpu"))
+        XCTAssertFalse(WineManager.steamLaunchArguments.contains("-noreactlogin"))
     }
 
     @MainActor
