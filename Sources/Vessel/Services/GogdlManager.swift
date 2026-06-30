@@ -25,7 +25,7 @@ final class GogdlManager {
 
     // MARK: - Tipos públicos
 
-    struct GogGame: Identifiable, Hashable {
+    struct GogGame: Identifiable, Hashable, Codable {
         /// Identificador numérico de GOG (appId).
         let appId: String
         let title: String
@@ -115,12 +115,16 @@ final class GogdlManager {
     /// `true` si hay una sesión GOG activa: el `auth.json` existe y contiene un `access_token`
     /// para el `client_id` de Galaxy.
     func isAuthenticated() -> Bool {
-        guard let data = FileManager.default.contents(atPath: Self.authConfigPath),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let entry = obj[Self.gogClientID] as? [String: Any],
-              let token = entry["access_token"] as? String, !token.isEmpty
-        else { return false }
+        guard let token = authEntry()?["access_token"] as? String, !token.isEmpty else { return false }
         return true
+    }
+
+    /// Entrada de tokens del `client_id` de Galaxy dentro del `auth.json` (o `nil`).
+    private func authEntry() -> [String: Any]? {
+        guard let data = FileManager.default.contents(atPath: Self.authConfigPath),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return obj[Self.gogClientID] as? [String: Any]
     }
 
     /// URL de inicio de sesión de GOG (la misma que usa Heroic Launcher).
@@ -190,19 +194,25 @@ final class GogdlManager {
             .filter { seen.insert($0.appId).inserted }
             .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         log.log("Biblioteca GOG: \(unique.count) juego(s)", level: .info)
+        LibraryCache.save("gog", unique)   // carga instantánea la próxima vez (patrón Heroic)
         return unique
     }
 
-    /// Obtiene un `access_token` válido: fuerza un refresco con `gogdl auth` (reescribe el
-    /// auth.json si caducó) y lee el token del archivo (fuente de verdad).
+    /// Obtiene un `access_token` válido. Si el token guardado aún no ha caducado lo devuelve
+    /// directo (evita los ~5 s de `gogdl auth`); solo si caducó refresca con `gogdl auth`.
     private func accessToken() async throws -> String {
+        // 1) Token guardado todavía válido (con margen de 5 min) → úsalo sin refrescar.
+        if let entry = authEntry(),
+           let token = entry["access_token"] as? String, !token.isEmpty,
+           let loginTime = entry["loginTime"] as? Double,
+           let expiresIn = entry["expires_in"] as? Double,
+           loginTime + expiresIn - 300 > Date().timeIntervalSince1970 {
+            return token
+        }
+        // 2) Caducado o ausente: refresca con `gogdl auth` (reescribe auth.json) y relee.
         let bin = try resolvedBinaryPath()
-        // Refresca si hace falta; si falla, intentamos leer el token existente igualmente.
         _ = try? await runBackground(bin, args: ["--auth-config-path", Self.authConfigPath, "auth"])
-        guard let data = FileManager.default.contents(atPath: Self.authConfigPath),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let entry = obj[Self.gogClientID] as? [String: Any],
-              let token = entry["access_token"] as? String, !token.isEmpty
+        guard let token = authEntry()?["access_token"] as? String, !token.isEmpty
         else { throw GogdlError.notAuthenticated }
         return token
     }

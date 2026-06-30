@@ -17,12 +17,21 @@ struct StoreGame: Identifiable, Hashable {
 
     /// Carátula vertical 2:3 resuelta: URL directa o, si no, la del CDN de Steam.
     /// Compartida por la tarjeta del grid y la fila de la lista (sin duplicar lógica).
-    var resolvedCoverURL: URL? {
-        if let s = coverURL, let u = URL(string: s) { return u }
+    var resolvedCoverURL: URL? { coverCandidates.first }
+
+    /// **Cascada** de URLs de carátula a probar en orden (la primera que cargue gana). Para
+    /// Steam evita los huecos de los juegos viejos sin `library_600x900_2x`: cae a la versión
+    /// 1x y, si tampoco, al `header.jpg` (que casi siempre existe). Así una carátula carga SIEMPRE.
+    var coverCandidates: [URL] {
+        var urls: [URL] = []
+        if let s = coverURL, let u = URL(string: s) { urls.append(u) }
         if let appId = steamAppId, !appId.isEmpty {
-            return URL(string: "https://cdn.cloudflare.steamstatic.com/steam/apps/\(appId)/library_600x900_2x.jpg")
+            let base = "https://cdn.cloudflare.steamstatic.com/steam/apps/\(appId)"
+            for path in ["/library_600x900_2x.jpg", "/library_600x900.jpg", "/header.jpg"] {
+                if let u = URL(string: base + path) { urls.append(u) }
+            }
         }
-        return nil
+        return urls
     }
 
     /// Iniciales para el placeholder cuando no hay carátula.
@@ -377,7 +386,6 @@ struct StoreGameCard: View {
     var onOpen: () -> Void = {}
 
     // Reutilizan la lógica del modelo (sin duplicar): ver `StoreGame`.
-    private var coverURL: URL? { game.resolvedCoverURL }
     private var placeholderColor: Color { game.placeholderColor }
     private var initials: String { game.initials }
 
@@ -469,15 +477,7 @@ struct StoreGameCard: View {
     }
 
     @ViewBuilder private var cover: some View {
-        placeholder
-            .overlay {
-                if let url = coverURL {
-                    AsyncImage(url: url) { phase in
-                        if let image = phase.image { image.resizable().scaledToFill() }
-                        else { Color.clear }
-                    }
-                }
-            }
+        GameCoverImage(cacheKey: game.id, candidates: game.coverCandidates) { placeholder }
             .clipped()
     }
 
@@ -527,15 +527,12 @@ struct StoreGameRow: View {
     }
 
     @ViewBuilder private var miniCover: some View {
-        ZStack {
-            game.placeholderColor
-            Text(game.initials)
-                .font(.system(size: 11, weight: .bold, design: .rounded))
-                .foregroundStyle(.white.opacity(0.85))
-            if let url = game.resolvedCoverURL {
-                AsyncImage(url: url) { phase in
-                    if let image = phase.image { image.resizable().scaledToFill() } else { Color.clear }
-                }
+        GameCoverImage(cacheKey: game.id, candidates: game.coverCandidates) {
+            ZStack {
+                game.placeholderColor
+                Text(game.initials)
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.85))
             }
         }
         .clipped()

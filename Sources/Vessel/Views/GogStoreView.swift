@@ -38,7 +38,12 @@ final class GogStore {
         if case .working = phase { return }
         if case .connected = phase { return }   // ya cargada: NO recargar al volver el foco
         if gogdl.isAuthenticated() {
-            phase = .working("Cargando biblioteca GOG…")
+            // Carga INSTANTÁNEA desde caché; el refresco real va en 2.º plano (patrón Heroic).
+            if let cached = LibraryCache.load("gog", as: [GogdlManager.GogGame].self) {
+                phase = .connected(withInstalledState(cached))
+            } else {
+                phase = .working("Cargando biblioteca GOG…")
+            }
             Task { await self.loadLibrary() }
         } else {
             phase = .disconnected
@@ -98,6 +103,8 @@ final class GogStore {
             phase = .connected(withInstalledState(games))
         } catch {
             log.log("Error cargando biblioteca GOG: \(error.localizedDescription)", level: .error)
+            // Si ya mostramos la caché, no romper la vista con un error.
+            if case .connected = phase { return }
             phase = .error(error.localizedDescription)
         }
     }
