@@ -8,6 +8,7 @@ struct SettingsView: View {
     @State private var checkResults: [DependencyManager.CheckResult] = []
     @State private var wineDownloading = false
     @State private var wineStatusText = ""
+    @AppStorage(CompatService.autoUpdateKey) private var compatAutoUpdate = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,6 +30,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: Theme.Space.section) {
                     dependenciesSection
                     enginesSection
+                    privacySection
                     aboutSection
                 }
                 .padding(Theme.Space.section)
@@ -138,6 +140,29 @@ struct SettingsView: View {
                 }
                 .vesselButton(false)
                 .padding(.top, 6)
+            }
+            .vesselCard(padding: 12)
+        }
+    }
+
+    private var privacySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("Privacidad y compatibilidad")
+            VStack(alignment: .leading, spacing: 12) {
+                Toggle(isOn: $compatAutoUpdate) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Actualizar la base de datos de compatibilidad").font(.callout)
+                        Text("Descarga (solo lectura) los perfiles de la comunidad una vez al día. Desactívalo para funcionar 100% local con la base de datos incluida en la app.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .tint(Theme.accent)
+                Divider().opacity(0.3)
+                Label("Vessel no envía telemetría ni datos personales. Los reportes de compatibilidad son anónimos y solo se publican si tú decides enviarlos manualmente.",
+                      systemImage: "lock.shield")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .vesselCard(padding: 12)
         }

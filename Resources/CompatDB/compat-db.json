@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "schemaVersion": 1,
+      "title": "20XX",
+      "stores": { "steam": "376520", "epic": "TwentyXX" },
+      "rating": "gold",
+      "engine": "gcenx",
+      "graphicsLayer": "wined3d",
+      "windowsArch": "win32",
+      "notes": "D3D9 de 32-bit con efectos .fx. Vessel usa Gcenx + wined3d→Vulkan→Metal + d3dx9 nativo de Microsoft (automático). No usar DXVK (MoltenVK del motor no tiene las features que pide su d3d9).",
+      "testedOn": { "macOS": "26.0", "chip": "M5 Pro", "vesselVersion": "0.1.0" },
+      "author": "vessel-team",
+      "date": "2026-06-30",
+      "verified": true
+    },
+    {
+      "schemaVersion": 1,
+      "title": "A Short Hike",
+      "stores": { "steam": "1055540", "epic": "d6407c9e6fd54cb492b8c6635480d792" },
+      "rating": "gold",
+      "engine": "gptk",
+      "graphicsLayer": "opengl",
+      "windowsArch": "win32",
+      "notes": "Unity 2019.4 de 32-bit. No hay D3D11 para 32-bit en Apple Silicon, así que Unity usa su renderer OpenGL (Apple GLD→Metal). El render multihilo crashea: Vessel fuerza render MONOHILO con -force-gfx-direct -force-glcore (automático para Unity 32-bit).",
+      "testedOn": { "macOS": "26.0", "chip": "M5 Pro", "vesselVersion": "0.1.0" },
+      "author": "vessel-team",
+      "date": "2026-06-30",
+      "verified": true
+    },
+    {
+      "schemaVersion": 1,
+      "title": "FINAL FANTASY TACTICS - The Ivalice Chronicles",
+      "stores": { "steam": "1004640" },
+      "rating": "bronze",
+      "engine": "gptk",
+      "graphicsLayer": "gptk",
+      "windowsArch": "win64",
+      "notes": "D3D12 vía GPTK/D3DMetal renderiza, pero el anti-tamper CodeFusion bloquea el arranque (error de transporte 0x3008). Pendiente de solución del DRM.",
+      "testedOn": { "macOS": "26.0", "chip": "M5 Pro", "vesselVersion": "0.1.0" },
+      "author": "vessel-team",
+      "date": "2026-06-30",
+      "verified": false
+    }
+  ]
+}

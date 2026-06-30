@@ -402,27 +402,44 @@ final class WineManager {
     }
 
     @discardableResult
-    func launch(executable: String, in bottle: Bottle, arguments: [String] = [], steamAppId: String? = nil, graphicsOverride: GameConfig.GraphicsLayer? = nil) async throws -> Process {
-        // Capa gráfica: override por juego (Ajustes) o auto-detección por API.
+    func launch(executable: String, in bottle: Bottle, arguments: [String] = [], steamAppId: String? = nil, graphicsOverride: GameConfig.GraphicsLayer? = nil, effective: EffectiveLaunchConfig? = nil) async throws -> Process {
+        // Config EFECTIVA: defaults base → perfil de compatibilidad → overrides del
+        // usuario. Si no se pasa (compat hacia atrás), se construye desde graphicsOverride.
+        // Aporta: capa gráfica, env extra, overrides de DLL, args, sync y versión Windows.
+        let eff = effective ?? EffectiveLaunchConfig(graphicsOverride: graphicsOverride ?? .auto, esync: true, fsync: true)
+        let go = eff.graphicsOverride
+        let allArgs = arguments + eff.launchArgs
+        if eff.fromProfile, let r = eff.rating {
+            log.log("Perfil de compatibilidad aplicado: \(r.label)\(eff.verified ? " ✓ verificado" : " (sin verificar)")", level: .info)
+        }
+        // Capa gráfica: override por juego (Ajustes/perfil) o auto-detección por API.
         // D3D12 (AAA, FF Tactics) → GPTK/D3DMetal (Metal nativo, ignora el Agility
         // SDK), con el cliente Steam en el mismo wineserver para el DRM.
         let useD3D12: Bool
-        switch graphicsOverride {
-        case .gptk: useD3D12 = true                                  // forzado por el usuario
+        switch go {
+        case .gptk: useD3D12 = true                                  // forzado por usuario/perfil
         case .dxmt: useD3D12 = false                                 // forzado a DXMT
-        case .auto, .none: useD3D12 = detectGraphicsAPI(forExecutable: executable) == .d3d12
+        case .auto: useD3D12 = detectGraphicsAPI(forExecutable: executable) == .d3d12
         }
         if useD3D12 {
-            log.log("Capa gráfica: GPTK/D3DMetal (D3D12→Metal)\(graphicsOverride == .gptk ? " [forzado]" : "")", level: .info)
-            return try await launchD3D12Game(executable: executable, in: bottle, steamAppId: steamAppId)
+            log.log("Capa gráfica: GPTK/D3DMetal (D3D12→Metal)\(go == .gptk ? " [forzado]" : "")", level: .info)
+            return try await launchD3D12Game(executable: executable, in: bottle, steamAppId: steamAppId, effective: eff)
         }
         // Juegos D3D9/D3D8/DDraw → Gcenx (wine-osx64, Wine 11 completo, wined3d→Metal).
         // wine-dxmt no resuelve el d3d9 de 32-bit (falla con c0000135 "d3d9.dll not
         // found"); Gcenx sí lo ejecuta. Solo en automático/DXMT-no-forzado.
-        if graphicsOverride == nil || graphicsOverride == .auto,
-           detectGraphicsAPI(forExecutable: executable) == .d3d9 {
+        if go == .auto, detectGraphicsAPI(forExecutable: executable) == .d3d9 {
             return try await launchD3D9Game(executable: executable, in: bottle,
-                                            arguments: arguments, steamAppId: steamAppId)
+                                            arguments: allArgs, steamAppId: steamAppId, effective: eff)
+        }
+        // Juegos de 32-bit que NO son D3D9 (típicamente Unity D3D11): el new-WoW64 de
+        // Gcenx/wine-dxmt CRASHEA su runtime (p.ej. el Mono de Unity → "Crash!!!" nada más
+        // arrancar). El Wine de CrossOver (gptk-mythic) sí los ejecuta; Unity cae a su
+        // OpenGL (Apple GLD→Metal) con render monohilo (ver `launch32BitGame`).
+        // Validado con "A Short Hike" (Unity 2019.4, 32-bit).
+        if go == .auto, isExecutable32Bit(executable) {
+            return try await launch32BitGame(executable: executable, in: bottle,
+                                             arguments: allArgs, steamAppId: steamAppId, effective: eff)
         }
         // D3D11 → wine-dxmt (DXMT→Metal). Aseguramos DXMT en el builtin del motor; si
         // no, los juegos usarían wined3d y fallarían con "InitializeEngineGraphics".
@@ -463,43 +480,201 @@ final class WineManager {
         return try await launchWineProcess(
             winePath: gameWine,
             prefix: bottle.prefixPath,
-            arguments: [executable] + engineArgs + arguments,
+            arguments: [executable] + engineArgs + allArgs,
             environment: env,
-            workingDirectory: (executable as NSString).deletingLastPathComponent
+            workingDirectory: (executable as NSString).deletingLastPathComponent,
+            effective: eff
         )
     }
 
-    /// Lanza un juego **D3D9/D3D8/DDraw** con **Gcenx (wine-osx64)**, que es un Wine 11
-    /// completo cuyo `d3d9` builtin (wined3d→Vulkan/MoltenVK→Metal) sí funciona en
-    /// 32-bit. wine-dxmt está especializado en DXMT (D3D11) y su d3d9 de 32-bit falla
-    /// con c0000135. Mismo prefijo, distinto motor según la carga (filosofía de Vessel).
-    private func launchD3D9Game(executable: String, in bottle: Bottle, arguments: [String], steamAppId: String?) async throws -> Process {
+    /// Lanza un juego **D3D9/D3D8 de 32-bit** con **Gcenx (wine-osx64)** vía
+    /// **wined3d → Vulkan → MoltenVK → Metal** + **d3dx9 nativo de Microsoft**.
+    ///
+    /// Validado empíricamente (20XX) tras descartar varias vías:
+    ///  - El `d3d9` builtin con su renderer por defecto cae al **OpenGL legacy** de
+    ///    Apple (`GL_VENDOR "Apple"` no reconocido) y crashea al crear el device
+    ///    (`d3d->createDevice failed`). Por eso forzamos `renderer=vulkan` en wined3d.
+    ///  - **DXVK d3d9 NO sirve aquí**: el MoltenVK 0.2.2209 del motor Gcenx es viejo y le
+    ///    faltan features que el DXVK d3d9 exige (`DxvkAdapter: Failed to create device`,
+    ///    `VK_ERROR_FEATURE_NOT_PRESENT`); además el repack DXVK-macOS de Gcenx ni siquiera
+    ///    incluye `d3d9`. wine-dxmt tampoco (DXMT solo trae d3d10/d3d11/dxgi → c0000135).
+    ///  - El `d3dx9` builtin de Wine **no compila los efectos `.fx` (fx_2_0)** que usan
+    ///    muchos juegos (`D3DXCreateEffectFromFile` → `E5017 not yet implemented`). Hay
+    ///    que usar el **`d3dx9_43`/`d3dcompiler_43` nativos de Microsoft** (igual que
+    ///    `winetricks d3dx9`).
+    ///
+    /// Todo lo prepara `ensureD3D9Support`. Mismo prefijo, distinto motor según la carga.
+    private func launchD3D9Game(executable: String, in bottle: Bottle, arguments: [String], steamAppId: String?, effective: EffectiveLaunchConfig = EffectiveLaunchConfig()) async throws -> Process {
         let clientWine = resolveClientWine(for: bottle)
-        log.log("Capa gráfica: wined3d→Metal (juego D3D9/D3D8) con Gcenx", level: .info)
+        log.log("Capa gráfica: wined3d → Vulkan → Metal (juego D3D9/D3D8) con Gcenx", level: .info)
         log.log("Preparando prefijo para el juego…", level: .info)
         try? await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
         try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
         // Re-sincronizar el prefix al motor Gcenx (tras el cliente Steam o un juego
         // D3D11 el prefix puede quedar en otro motor).
         await resyncGamePrefix(gameWine: clientWine, prefix: bottle.prefixPath)
-        // Quitar DLLs nativas de gráficos del prefix para que mande el builtin (wined3d).
-        cleanPrefixNativeGraphicsDLLs(in: bottle)
+        // Preparar d3d9/wined3d builtin (native files) + d3dx9 nativo de MS + renderer=vulkan.
+        await ensureD3D9Support(in: bottle, engineWine: clientWine)
 
-        var env = gameLaunchEnvironment(prefix: bottle.prefixPath)   // ya fija d3d9,d3d8,ddraw=b
+        var env = gameLaunchEnvironmentD3D9(prefix: bottle.prefixPath)
         if let appId = steamAppId, !appId.isEmpty {
             let gameDir = (executable as NSString).deletingLastPathComponent
             try? appId.write(toFile: "\(gameDir)/steam_appid.txt", atomically: true, encoding: .utf8)
             env["SteamAppId"] = appId
             env["SteamGameId"] = appId
         }
-        log.log("Lanzando juego D3D9 con Gcenx: \((executable as NSString).lastPathComponent)", level: .info)
+        log.log("Lanzando juego D3D9 con Gcenx (wined3d+Vulkan): \((executable as NSString).lastPathComponent)", level: .info)
         return try await launchWineProcess(
             winePath: clientWine,
             prefix: bottle.prefixPath,
             arguments: [executable] + arguments,
             environment: env,
-            workingDirectory: (executable as NSString).deletingLastPathComponent
+            workingDirectory: (executable as NSString).deletingLastPathComponent,
+            effective: effective
         )
+    }
+
+    /// Lanza un juego de **32-bit que NO es D3D9** (típicamente Unity D3D11) con el Wine de
+    /// **CrossOver (gptk-mythic)** + `renderer=vulkan`.
+    ///
+    /// Validado con "A Short Hike" (Unity 2019.4, 32-bit): con Gcenx/wine-dxmt (new-WoW64)
+    /// el juego CRASHEA nada más cargar Mono (`Crash!!!` en Player.log, antes de gráficos).
+    /// El Wine de CrossOver sí ejecuta su runtime de 32-bit. La ventana abría en NEGRO
+    /// hasta forzar `renderer=vulkan` (sin él wined3d usa el OpenGL legacy roto de Apple
+    /// Silicon); con Vulkan va por el MoltenVK de CrossOver → Metal y renderiza.
+    /// D3DMetal (GPTK) NO se usa: es de 64-bit. Se dejan los builtins de CrossOver
+    /// (`cleanPrefixNativeGraphicsDLLs` quita DLLs nativas de otros motores).
+    private func launch32BitGame(executable: String, in bottle: Bottle, arguments: [String], steamAppId: String?, effective: EffectiveLaunchConfig = EffectiveLaunchConfig()) async throws -> Process {
+        try await gptkManager.ensureInstalled { msg, pct in
+            Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
+        }
+        guard let gptkWine = gptkManager.wineBinaryPath else {
+            throw WineError.launchFailed("No se encontró el motor CrossOver (gptk-mythic) para juegos de 32-bit.")
+        }
+        let isUnity = isUnityGame(executable)
+        log.log(isUnity
+            ? "Capa gráfica: OpenGL → Metal (juego Unity 32-bit, render monohilo) con CrossOver"
+            : "Capa gráfica: wined3d → Metal (juego 32-bit) con CrossOver", level: .info)
+        log.log("Preparando prefijo para el juego…", level: .info)
+        try? await terminateWineProcesses(winePath: gptkWine, prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+        await resyncGamePrefix(gameWine: gptkWine, prefix: bottle.prefixPath)
+        // Que CrossOver use SUS builtins (d3d11/wined3d): quitar DLLs nativas de otros motores.
+        cleanPrefixNativeGraphicsDLLs(in: bottle)
+        await setWined3dRendererVulkan(prefix: bottle.prefixPath, wine: gptkWine)
+
+        var env: [String: String] = [
+            "WINEPREFIX": bottle.prefixPath,
+            "WINEDEBUG": "-all",
+            "WINEMSYNC": "1",
+            "WINEESYNC": "1",
+            "MVK_CONFIG_LOG_LEVEL": "0",
+            "WINEDLLOVERRIDES": "mscoree,mshtml=d;winemenubuilder.exe=d"
+        ]
+        if #available(macOS 15, *) { env["ROSETTA_ADVERTISE_AVX"] = "1" }
+        if let appId = steamAppId, !appId.isEmpty {
+            let gameDir = (executable as NSString).deletingLastPathComponent
+            try? appId.write(toFile: "\(gameDir)/steam_appid.txt", atomically: true, encoding: .utf8)
+            env["SteamAppId"] = appId
+            env["SteamGameId"] = appId
+        }
+        // Juegos Unity de 32-bit: forzar render MONOHILO en OpenGL (el multihilo sobre
+        // el GL legacy de Apple bajo Wine corrompe memoria → crash). Ver `unity32BitGLArguments`.
+        let extraArgs = unity32BitGLArguments(forExecutable: executable)
+        log.log("Lanzando juego de 32-bit con CrossOver: \((executable as NSString).lastPathComponent)", level: .info)
+        return try await launchWineProcess(
+            winePath: gptkWine,
+            prefix: bottle.prefixPath,
+            arguments: [executable] + arguments + extraArgs,
+            environment: env,
+            workingDirectory: (executable as NSString).deletingLastPathComponent,
+            effective: effective
+        )
+    }
+
+    /// `true` si el `.exe` es un PE de **32-bit** (campo machine = `0x14c`, IMAGE_FILE_MACHINE_I386).
+    /// Los juegos de 32-bit van por `launch32BitGame` (CrossOver), no por DXMT/GPTK (64-bit).
+    func isExecutable32Bit(_ executable: String) -> Bool {
+        guard let fh = FileHandle(forReadingAtPath: executable) else { return false }
+        defer { try? fh.close() }
+        guard let head = try? fh.read(upToCount: 0x40), head.count >= 0x40 else { return false }
+        let peOff = Int(head[0x3c]) | (Int(head[0x3d]) << 8) | (Int(head[0x3e]) << 16) | (Int(head[0x3f]) << 24)
+        guard peOff > 0, peOff < 0x1_000_000 else { return false }
+        try? fh.seek(toOffset: UInt64(peOff))
+        guard let pe = try? fh.read(upToCount: 6), pe.count >= 6, pe[0] == 0x50, pe[1] == 0x45 else { return false } // "PE\0\0"
+        let machine = Int(pe[4]) | (Int(pe[5]) << 8)
+        return machine == 0x14c
+    }
+
+    /// Fuerza `renderer=vulkan` en wined3d (HKCU\Software\Wine\Direct3D). Sin esto wined3d
+    /// cae al backend OpenGL legacy de Apple Silicon (roto → pantalla negra o crash al crear
+    /// el device); con Vulkan va por MoltenVK→Metal. Inocuo para DXMT/GPTK/Steam (no usan wined3d).
+    private func setWined3dRendererVulkan(prefix: String, wine: String) async {
+        _ = try? await runWine(
+            winePath: wine,
+            arguments: ["reg", "add", #"HKCU\Software\Wine\Direct3D"#, "/v", "renderer",
+                        "/t", "REG_SZ", "/d", "vulkan", "/f"],
+            prefix: prefix,
+            environment: ["WINEPREFIX": prefix, "WINEDEBUG": "-all", "WINEDLLOVERRIDES": "winedbg.exe=d"],
+            allowNonZeroExit: true
+        )
+    }
+
+    /// Prepara el prefijo para juegos **D3D9 de 32-bit** (ver `launchD3D9Game`):
+    ///  1. Copia `d3d9`/`d3d8`/`wined3d` *builtin* del motor como **archivos nativos** en
+    ///     syswow64/system32 (el override `=b` por sí solo no carga el d3d9 builtin de
+    ///     32-bit en el WoW64 de Gcenx → c0000135 "d3d9.dll not found").
+    ///  2. Instala `d3dx9_43`/`d3dx9_42`/`d3dcompiler_43` **nativos de Microsoft**
+    ///     (Resources/redist) para que compilen los efectos `.fx`.
+    ///  3. Fuerza `renderer=vulkan` en wined3d (el backend OpenGL legacy crashea en Apple
+    ///     Silicon; con Vulkan va por MoltenVK→Metal). Es inocuo para el resto: DXMT y el
+    ///     cliente Steam no usan wined3d.
+    /// Idempotente: sobrescribe siempre (barato) para auto-reparar prefijos previos.
+    private func ensureD3D9Support(in bottle: Bottle, engineWine: String) async {
+        let binDir = (engineWine as NSString).deletingLastPathComponent          // …/bin
+        let engineRoot = (binDir as NSString).deletingLastPathComponent          // …/wine-osx64
+        let i386 = "\(engineRoot)/lib/wine/i386-windows"
+        let x64w = "\(engineRoot)/lib/wine/x86_64-windows"
+        let syswow = "\(bottle.prefixPath)/drive_c/windows/syswow64"
+        let system32 = "\(bottle.prefixPath)/drive_c/windows/system32"
+        try? FileManager.default.createDirectory(atPath: syswow, withIntermediateDirectories: true)
+
+        // 1) d3d9/d3d8/wined3d builtin del motor como archivos nativos.
+        for dll in ["d3d9.dll", "d3d8.dll", "wined3d.dll"] {
+            copyDLLOverwrite(from: "\(i386)/\(dll)", to: "\(syswow)/\(dll)")
+            copyDLLOverwrite(from: "\(x64w)/\(dll)", to: "\(system32)/\(dll)")
+        }
+        // 2) d3dx9/d3dcompiler nativos de Microsoft (para efectos .fx).
+        if let redist = Self.d3dx9RedistDirectory() {
+            for dll in ["d3dx9_43.dll", "d3dx9_42.dll", "d3dcompiler_43.dll"] {
+                copyDLLOverwrite(from: "\(redist)/x32/\(dll)", to: "\(syswow)/\(dll)")
+                copyDLLOverwrite(from: "\(redist)/x64/\(dll)", to: "\(system32)/\(dll)")
+            }
+        } else {
+            log.log("d3dx9 nativo no encontrado en Resources/redist; los efectos .fx podrían fallar.", level: .warn)
+        }
+        // 3) Forzar renderer=vulkan en wined3d.
+        await setWined3dRendererVulkan(prefix: bottle.prefixPath, wine: engineWine)
+    }
+
+    /// Copia `src`→`dst` sobrescribiendo (si `src` existe). Para sembrar DLLs en el prefix.
+    private func copyDLLOverwrite(from src: String, to dst: String) {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: src) else { return }
+        try? fm.removeItem(atPath: dst)
+        try? fm.copyItem(atPath: src, toPath: dst)
+    }
+
+    /// Directorio con los d3dx9/d3dcompiler nativos de Microsoft (subcarpetas `x32`/`x64`).
+    /// Preferimos el bundle (`Contents/Resources/redist/d3dx9`); si no, la ruta del repo.
+    private static func d3dx9RedistDirectory() -> String? {
+        let fm = FileManager.default
+        if let res = Bundle.main.resourceURL?.appendingPathComponent("redist/d3dx9").path,
+           fm.fileExists(atPath: res) {
+            return res
+        }
+        let repo = "/Users/vesseldeveloper0000/Documents/vessel-mac/Resources/redist/d3dx9"
+        return fm.fileExists(atPath: repo) ? repo : nil
     }
 
     /// Lanza un juego **D3D12** con **GPTK / D3DMetal** (D3D12→Metal nativo de
@@ -510,7 +685,7 @@ final class WineManager {
     /// de Microsoft (lo que hacía vkd3d) es lo que provocaba el crash con puntero
     /// corrupto dentro del juego. El cliente de Steam se lanza EN el mismo wine de
     /// GPTK (mismo wineserver) para que el DRM de Steamworks funcione.
-    private func launchD3D12Game(executable: String, in bottle: Bottle, steamAppId: String?) async throws -> Process {
+    private func launchD3D12Game(executable: String, in bottle: Bottle, steamAppId: String?, effective: EffectiveLaunchConfig = EffectiveLaunchConfig()) async throws -> Process {
         let gameDir = (executable as NSString).deletingLastPathComponent
         let fm = FileManager.default
 
@@ -560,9 +735,10 @@ final class WineManager {
         return try await launchWineProcess(
             winePath: gptkWine,
             prefix: bottle.prefixPath,
-            arguments: [executable],
+            arguments: [executable] + effective.launchArgs,
             environment: env,
-            workingDirectory: gameDir
+            workingDirectory: gameDir,
+            effective: effective
         )
     }
 
@@ -602,16 +778,19 @@ final class WineManager {
         }
     }
 
-    /// Detecta juegos Unity (tienen `UnityPlayer.dll` o carpeta `<exe>_Data` junto
-    /// al ejecutable) y devuelve los flags que DXMT necesita: modo ventana
-    /// (`-screen-fullscreen 0`) y `-force-d3d11-no-singlethreaded`. Para juegos no
-    /// Unity devuelve vacío.
-    func unityLaunchArguments(forExecutable executable: String) -> [String] {
+    /// `true` si el ejecutable es un juego **Unity** (tiene `UnityPlayer.dll` o la
+    /// carpeta `<exe>_Data` junto al `.exe`). Sirve para aplicar los flags de motor
+    /// Unity correctos según la capa gráfica (DXMT en 64-bit, OpenGL en 32-bit).
+    func isUnityGame(_ executable: String) -> Bool {
         let dir = (executable as NSString).deletingLastPathComponent
         let exeName = ((executable as NSString).lastPathComponent as NSString).deletingPathExtension
         let fm = FileManager.default
-        let isUnity = fm.fileExists(atPath: "\(dir)/UnityPlayer.dll")
+        return fm.fileExists(atPath: "\(dir)/UnityPlayer.dll")
             || fm.fileExists(atPath: "\(dir)/\(exeName)_Data")
+    }
+
+    /// Flags de motor Unity para el path **DXMT (64-bit)**. Para juegos no Unity, vacío.
+    func unityLaunchArguments(forExecutable executable: String) -> [String] {
         // Combinación validada para Unity + DXMT en Apple Silicon:
         //  - `-force-d3d11-no-singlethreaded`: estabilidad de DXMT.
         //  - `-screen-fullscreen 1 -window-mode borderless`: pantalla completa SIN
@@ -619,8 +798,26 @@ final class WineManager {
         //    el swapchain de DXMT (InitializeEngineGraphics failed); el borderless se
         //    ve a pantalla completa y funciona. Los avisos `unsupported swap effect`
         //    / `DeviceTexture` de DXMT son inofensivos (el juego renderiza igual).
-        return isUnity
+        return isUnityGame(executable)
             ? ["-force-d3d11-no-singlethreaded", "-screen-fullscreen", "1", "-window-mode", "borderless"]
+            : []
+    }
+
+    /// Flags de motor Unity para el path **OpenGL de 32-bit** (CrossOver). En Apple
+    /// Silicon NO hay D3D11 para procesos de 32-bit: DXMT/D3DMetal son de 64-bit y los
+    /// builtins d3d11/dxgi de CrossOver no cargan en 32-bit (`c000007b`); wined3d-vulkan
+    /// choca con el MoltenVK sin `geometryShader`. Por eso Unity cae a SU renderer
+    /// OpenGL (Apple GLD→Metal), que SÍ renderiza. El problema: el render **MULTIHILO**
+    /// de Unity (`GfxDevice … threaded=1`) sobre ese GL legacy bajo Wine corrompe
+    /// memoria → page fault de escritura en `UnityPlayer.dll` (`Crash!!!` justo al
+    /// cargar el primer nivel, tras `Kinematic body …`). Validado con A Short Hike:
+    ///  - `-force-gfx-direct`: render MONOHILO → elimina el crash (el fix raíz).
+    ///  - `-force-glcore`: usa OpenGL Core directamente, evita el sondeo fallido de D3D11.
+    ///  - `-screen-fullscreen 1 -window-mode borderless`: fullscreen sin bordes (no
+    ///    exclusivo, seguro bajo Wine GL).
+    func unity32BitGLArguments(forExecutable executable: String) -> [String] {
+        return isUnityGame(executable)
+            ? ["-force-gfx-direct", "-force-glcore", "-screen-fullscreen", "1", "-window-mode", "borderless"]
             : []
     }
 
@@ -668,12 +865,16 @@ final class WineManager {
         }
     }
 
-    /// Elimina del prefix las DLLs gráficas nativas (DXVK/DXMT) que un setup previo
-    /// dejó en system32/syswow64, para que se use el DXMT builtin del motor.
+    /// Elimina del prefix las DLLs gráficas nativas (DXVK/DXMT/wined3d) que un setup
+    /// previo dejó en system32/syswow64, para que se usen los builtins del motor.
+    /// Incluye `wined3d`/`vulkan-1`/`winevulkan`: como archivos NATIVOS en el prefix
+    /// rompen el binding WoW64 de Vulkan (no enlazan con su `.so` unix de 64-bit), lo
+    /// que impide cargar d3d11 y deja el prefijo en un estado mixto frágil.
     func cleanPrefixNativeGraphicsDLLs(in bottle: Bottle) {
         let fm = FileManager.default
         let dlls = ["d3d8", "d3d9", "d3d10", "d3d10_1", "d3d10core", "d3d11",
-                    "d3d12", "d3d12core", "dxgi", "winemetal", "nvapi64", "nvngx"]
+                    "d3d12", "d3d12core", "dxgi", "winemetal", "nvapi64", "nvngx",
+                    "wined3d", "vulkan-1", "winevulkan"]
         for sub in ["system32", "syswow64"] {
             let dir = "\(bottle.prefixPath)/drive_c/windows/\(sub)"
             for dll in dlls {
@@ -697,6 +898,22 @@ final class WineManager {
             "WINEESYNC": "1",
             "WINEFSYNC": "1",
             "WINEDLLOVERRIDES": "mscoree,mshtml=d;d3d9,d3d8,ddraw=b"
+        ]
+    }
+
+    /// Entorno para juegos **D3D9 de 32-bit** en Gcenx (ver `ensureD3D9Support`):
+    /// `d3d9`/`d3d8`/`wined3d` se cargan como archivos nativos (el builtin del motor,
+    /// copiado al prefix) y renderizan por **Vulkan→MoltenVK→Metal** (renderer forzado en
+    /// el registro); `d3dx9_43`/`d3dx9_42`/`d3dcompiler_43` son los **nativos de Microsoft**
+    /// (efectos `.fx`). No se tocan d3d11/dxgi para no pisar el DXMT del builtin del motor.
+    private func gameLaunchEnvironmentD3D9(prefix: String) -> [String: String] {
+        [
+            "WINEPREFIX": prefix,
+            "WINEDEBUG": "-all",
+            "MVK_CONFIG_LOG_LEVEL": "0",
+            "WINEESYNC": "1",
+            "WINEFSYNC": "1",
+            "WINEDLLOVERRIDES": "mscoree,mshtml=d;d3d9=n,b;d3d8=n,b;wined3d=n,b;d3dx9_43=n;d3dx9_42=n;d3dcompiler_43=n"
         ]
     }
 
@@ -1083,7 +1300,8 @@ final class WineManager {
         prefix: String,
         arguments: [String],
         environment: [String: String],
-        workingDirectory: String? = nil
+        workingDirectory: String? = nil,
+        effective: EffectiveLaunchConfig? = nil
     ) async throws -> Process {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: winePath)
@@ -1103,6 +1321,22 @@ final class WineManager {
         var fullEnv = ProcessInfo.processInfo.environment
         for (key, value) in Self.userShellEnvironment { fullEnv[key] = value }
         for (key, value) in environment { fullEnv[key] = value }
+        // Overlay de la config EFECTIVA (perfil de compatibilidad + ajustes del usuario).
+        // Solo para lanzamientos de JUEGO (effective != nil); Steam pasa nil → intacto.
+        if let eff = effective {
+            // Sincronización (cableada de verdad). msync implica esync para engañar a D3DMetal.
+            fullEnv["WINEMSYNC"] = eff.msync ? "1" : "0"
+            fullEnv["WINEESYNC"] = (eff.esync || eff.msync) ? "1" : "0"
+            fullEnv["WINEFSYNC"] = eff.fsync ? "1" : "0"
+            // Overrides de DLL del perfil: se AÑADEN a los que ya trae el entorno base.
+            let extra = eff.dllOverridesString
+            if !extra.isEmpty {
+                let base = fullEnv["WINEDLLOVERRIDES"]
+                fullEnv["WINEDLLOVERRIDES"] = (base?.isEmpty == false) ? "\(base!);\(extra)" : extra
+            }
+            // Variables de entorno del perfil: ganan sobre todo (pueden ajustar DXVK, etc.).
+            for (k, v) in eff.extraEnv { fullEnv[k] = v }
+        }
         process.environment = fullEnv
 
         // Capturar la salida del proceso a un log para diagnóstico real.

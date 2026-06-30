@@ -19,6 +19,7 @@ struct BottleDetailView: View {
     @State private var showOfficialLogin = false
     @State private var pendingInstallAppId: String?
     @State private var installMessages: [String: String] = [:]
+    @State private var installPercents: [String: Double] = [:]
     @AppStorage("steamcmd.user") private var steamCMDUser = ""
     @State private var searchText = ""
     @State private var showFavoritesOnly = false
@@ -72,6 +73,7 @@ struct BottleDetailView: View {
             games: steamGames,
             installingIDs: installingAppIds,
             progressFor: { installMessages[$0] },
+            percentFor: { installPercents[$0] },
             onInstall: { sg in if sg.steamAppId != nil { Task { await installGame(sg.id) } } },
             onPlay: { sg in
                 if let g = localBottle.games.first(where: { ($0.steamAppId ?? $0.id.uuidString) == sg.id }) {
@@ -467,7 +469,7 @@ struct BottleDetailView: View {
             return
         }
         installingAppIds.insert(appId)
-        defer { installingAppIds.remove(appId); installMessages[appId] = nil }
+        defer { installingAppIds.remove(appId); installMessages[appId] = nil; installPercents[appId] = nil }
         do { try await steamCMD.ensureInstalled() } catch {
             statusMessage = "No se pudo preparar SteamCMD."
             return
@@ -475,8 +477,10 @@ struct BottleDetailView: View {
         let safeName = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "")
         let installDir = "\(localBottle.prefixPath)/drive_c/Program Files (x86)/Steam/steamapps/common/\(safeName)"
         installMessages[appId] = "Iniciando descarga…"
-        let ok = await steamCMD.installGame(appId: appId, user: steamCMDUser, installDir: installDir) { _, msg in
+        let ok = await steamCMD.installGame(appId: appId, user: steamCMDUser, installDir: installDir) { pct, msg in
             installMessages[appId] = msg
+            // Solo barra determinada cuando hay descarga real con %; verificación → indeterminado.
+            installPercents[appId] = msg.contains("Descargando") ? max(0, min(1, pct / 100)) : nil
         }
         if ok, let exe = mainExecutable(in: installDir) {
             let game = GameInstall(
@@ -708,18 +712,18 @@ struct BottleDetailView: View {
     }
 
     private func launchGame(_ game: GameInstall) async {
-        do {
-            let cfg = GameConfigStore.load(game.steamAppId ?? game.id.uuidString)
-            _ = try await wineManager.launch(
-                executable: game.executablePath,
-                in: localBottle,
-                arguments: cfg.launchArguments.split(separator: " ").map(String.init),
-                steamAppId: game.steamAppId,
-                graphicsOverride: cfg.graphicsLayer
-            )
+        // Mismo id que usa la UI (StoreGame.id) para que el feedback (Iniciando…/Ejecutándose)
+        // se refleje en la ficha y la tarjeta.
+        let trackId = game.steamAppId ?? game.id.uuidString
+        await GameLaunchTracker.shared.track(trackId) {
+            let cfg = GameConfigStore.load(trackId)
+            let profile = CompatService.shared.profile(steam: game.steamAppId, title: game.name)
+            let eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
+            let proc = try await wineManager.launch(
+                executable: game.executablePath, in: localBottle,
+                arguments: [], steamAppId: game.steamAppId, effective: eff)
             store.touchGame(game.id, in: localBottle.id)
-        } catch {
-            statusMessage = error.localizedDescription
+            return proc
         }
     }
 

@@ -52,6 +52,8 @@ struct GameSettingsView: View {
     var onClose: () -> Void = {}
 
     @State private var config = GameConfig()
+    @State private var profile: CompatProfile?
+    @State private var copied = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -71,6 +73,10 @@ struct GameSettingsView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
+                    if let p = profile {
+                        compatBadge(p)
+                    }
+
                     section("Capa gráfica") {
                         Text("Cómo se traduce el render del juego a Metal. En automático, Vessel elige la mejor según el juego.")
                             .font(.caption).foregroundStyle(.white.opacity(0.5)).fixedSize(horizontal: false, vertical: true)
@@ -103,14 +109,91 @@ struct GameSettingsView: View {
                         }
                         .vesselButton(false)
                     }
+
+                    HStack(spacing: 10) {
+                        Button {
+                            let store = game.steamAppId != nil ? "steam" : "otra"
+                            if let url = CompatService.reportIssueURL(
+                                gameTitle: game.title, store: store, storeId: game.steamAppId ?? game.id) {
+                                NSWorkspace.shared.open(url)
+                            }
+                        } label: {
+                            Label("Reportar en GitHub", systemImage: "exclamationmark.bubble")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .vesselButton(false)
+
+                        Button {
+                            let store = game.steamAppId != nil ? "steam" : "otra"
+                            let body = CompatService.reportBody(
+                                gameTitle: game.title, store: store, storeId: game.steamAppId ?? game.id)
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(body, forType: .string)
+                            withAnimation { copied = true }
+                        } label: {
+                            Label(copied ? "¡Copiado!" : "Copiar (anónimo)",
+                                  systemImage: copied ? "checkmark" : "doc.on.doc")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .vesselButton(false)
+                    }
+                    Label("Reporte anónimo: solo el juego, tu sistema (macOS/chip) y tus notas. No se envía ningún dato personal ni se sube nada automáticamente.",
+                          systemImage: "lock.shield")
+                        .font(.caption2).foregroundStyle(.white.opacity(0.45))
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
         .padding(28)
         .frame(width: 580, height: 560)
         .vesselBackground(tint: tint)
-        .onAppear { config = GameConfigStore.load(game.id) }
+        .onAppear {
+            config = GameConfigStore.load(game.id)
+            profile = CompatService.shared.profile(steam: game.steamAppId, title: game.title)
+        }
         .onChange(of: config) { _, new in GameConfigStore.save(game.id, new) }
+    }
+
+    /// Insignia de compatibilidad (rating de la comunidad) + notas del perfil.
+    @ViewBuilder
+    private func compatBadge(_ p: CompatProfile) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: p.rating.systemImage)
+                    .font(.title3).foregroundStyle(p.rating.color)
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 6) {
+                        Text("Compatibilidad: \(p.rating.label)")
+                            .font(.callout.bold()).foregroundStyle(.white)
+                        if p.verified {
+                            Image(systemName: "checkmark.seal.fill")
+                                .font(.caption2).foregroundStyle(p.rating.color)
+                        }
+                    }
+                    Text(p.rating.detail)
+                        .font(.caption2).foregroundStyle(.white.opacity(0.5))
+                }
+                Spacer()
+                if !p.verified {
+                    Text("sin verificar")
+                        .font(.caption2.weight(.semibold)).foregroundStyle(.white.opacity(0.55))
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(Capsule().fill(.white.opacity(0.08)))
+                }
+            }
+            if let notes = p.notes, !notes.isEmpty {
+                Text(notes)
+                    .font(.caption).foregroundStyle(.white.opacity(0.62))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                .strokeBorder(p.rating.color.opacity(0.35), lineWidth: 1)
+        )
     }
 
     @ViewBuilder

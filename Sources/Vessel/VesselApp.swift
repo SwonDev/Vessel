@@ -18,6 +18,10 @@ struct VesselApp: App {
                         showingOnboarding = true
                     }
                 }
+                .task {
+                    // Actualiza la BD de compatibilidad desde el repo comunitario (1×/día).
+                    await CompatService.shared.refreshRemoteIfNeeded()
+                }
                 .sheet(isPresented: $showingOnboarding) {
                     OnboardingView {
                         onboardingCompleted = true

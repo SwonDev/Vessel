@@ -139,16 +139,16 @@ final class EpicStore {
             log.log("Epic: \(game.title) sin ejecutable conocido (¿reinstalar?)", level: .warn)
             return
         }
-        do {
+        // Rastrear el estado para el feedback visual (Iniciando… → Ejecutándose).
+        await GameLaunchTracker.shared.track(game.appName) {
             let bottle = try await ensureBottle()
             let cfg = GameConfigStore.load(game.appName)
-            _ = try await wineManager.launch(
-                executable: exe, in: bottle,
-                arguments: cfg.launchArguments.split(separator: " ").map(String.init),
-                graphicsOverride: cfg.graphicsLayer
+            // Perfil de compatibilidad (comunidad) + overrides del usuario → config efectiva.
+            let profile = CompatService.shared.profile(epic: game.appName, title: game.title)
+            let eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
+            return try await wineManager.launch(
+                executable: exe, in: bottle, arguments: [], effective: eff
             )
-        } catch {
-            log.log("Error al lanzar \(game.title): \(error.localizedDescription)", level: .error)
         }
     }
 }

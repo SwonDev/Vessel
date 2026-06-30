@@ -25,6 +25,10 @@ cp "$BIN_PATH" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 [ -d "Resources/StoreLogos" ] && cp Resources/StoreLogos/*.png "$APP_BUNDLE/Contents/Resources/" 2>/dev/null || true
 # Logo de marca de Vessel (cabecera del sidebar)
 [ -f "Resources/vessel-logo.png" ] && cp "Resources/vessel-logo.png" "$APP_BUNDLE/Contents/Resources/vessel-logo.png"
+# Redistribuibles nativos (d3dx9/d3dcompiler de Microsoft) para juegos D3D9 con efectos .fx
+[ -d "Resources/redist" ] && cp -R "Resources/redist" "$APP_BUNDLE/Contents/Resources/redist"
+# Base de datos de compatibilidad por juego empaquetada (se actualiza desde el repo comunitario)
+[ -d "Resources/CompatDB" ] && cp -R "Resources/CompatDB" "$APP_BUNDLE/Contents/Resources/CompatDB"
 
 cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
