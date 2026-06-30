@@ -104,10 +104,14 @@ struct GogLoginWebView: NSViewRepresentable {
             onError("Error de conexión con GOG: \(error.localizedDescription)")
         }
 
-        /// Extrae el `code` del query si la URL es el redirect de éxito de GOG.
+        /// Extrae el `code` del query SOLO si la URL es exactamente el redirect de éxito de GOG
+        /// (`https://embed.gog.com/on_login_success`). Anclar scheme/host/path evita que un
+        /// redirect a un host atacante (`https://evil.com/on_login_success?code=…`) cuele un code ajeno.
         static func extractCode(from url: URL) -> String? {
-            guard url.absoluteString.contains("on_login_success"),
-                  let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+            guard let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                  comps.scheme?.lowercased() == "https",
+                  comps.host?.lowercased() == "embed.gog.com",
+                  comps.path == "/on_login_success",
                   let code = comps.queryItems?.first(where: { $0.name == "code" })?.value,
                   !code.isEmpty
             else { return nil }
