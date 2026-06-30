@@ -684,6 +684,10 @@ struct SteamGameDetails {
     var genres: [String] = []
     var metacritic: Int?
     var screenshots: [URL] = []
+    /// Características del juego (categorías de Steam): un jugador, mando, logros, nube, etc.
+    var categories: [String] = []
+    /// Número de reseñas de Steam (recommendations.total), para paridad con la tienda.
+    var reviewCount: Int?
 }
 
 /// Ficha de juego al estilo Steam: banner hero + botón Jugar/Instalar + tiempo jugado y
@@ -849,6 +853,7 @@ struct GameDetailView: View {
         HStack(alignment: .top, spacing: 24) {
             VStack(alignment: .leading, spacing: 20) {
                 aboutSection
+                featuresSection
                 if let p = profile { compatSection(p) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -923,6 +928,43 @@ struct GameDetailView: View {
         }
     }
 
+    /// Características del juego (categorías de Steam) con iconos — paridad con la tienda.
+    @ViewBuilder private var featuresSection: some View {
+        if let cats = details?.categories, !cats.isEmpty {
+            cardSection("Características") {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 280), spacing: 10, alignment: .leading)],
+                          alignment: .leading, spacing: 10) {
+                    ForEach(Array(cats.prefix(12)), id: \.self) { c in
+                        HStack(spacing: 9) {
+                            Image(systemName: Self.categoryIcon(c)).font(.callout)
+                                .foregroundStyle(tint).frame(width: 20)
+                            Text(c).font(.caption).foregroundStyle(.white.opacity(0.82))
+                                .lineLimit(1).truncationMode(.tail)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Mapea una característica de Steam a un SF Symbol (por palabras clave, tolerante a idioma).
+    private static func categoryIcon(_ desc: String) -> String {
+        let d = desc.lowercased()
+        if d.contains("un jugador") || d.contains("single") { return "person.fill" }
+        if d.contains("cooper") || d.contains("co-op") || d.contains("coop") { return "person.3.fill" }
+        if d.contains("multijugador") || d.contains("multi-player") || d.contains("multiplayer") || d.contains("pvp") { return "person.2.fill" }
+        if d.contains("logro") || d.contains("achiev") { return "trophy.fill" }
+        if d.contains("mando") || d.contains("controller") { return "gamecontroller.fill" }
+        if d.contains("nube") || d.contains("cloud") { return "icloud.fill" }
+        if d.contains("cromo") || d.contains("trading card") { return "rectangle.stack.fill" }
+        if d.contains("remote play") || d.contains("juego remoto") || d.contains("remota") { return "tv.fill" }
+        if d.contains("workshop") || d.contains("taller") { return "wrench.and.screwdriver.fill" }
+        if d.contains("subtítul") || d.contains("caption") { return "captions.bubble.fill" }
+        if d.contains("anti") && d.contains("cheat") { return "shield.fill" }
+        if d.contains("hdr") { return "sun.max.fill" }
+        return "checkmark.circle.fill"
+    }
+
     private func compatSection(_ p: CompatProfile) -> some View {
         cardSection("Compatibilidad en Mac") {
             VStack(alignment: .leading, spacing: 10) {
@@ -961,6 +1003,7 @@ struct GameDetailView: View {
                 if let pub = details?.publishers.first, !pub.isEmpty { detailRow("Editor", pub) }
                 if let rel = details?.releaseDate, !rel.isEmpty { detailRow("Lanzamiento", rel) }
                 if let mc = details?.metacritic { detailRow("Metacritic", "\(mc)", valueColor: metacriticColor(mc)) }
+                if let rc = details?.reviewCount, rc > 0 { detailRow("Reseñas en Steam", rc.formatted()) }
                 if let appId = game.steamAppId, !appId.isEmpty { detailRow("Steam AppID", appId) }
                 detailRow("Última sesión", game.lastPlayed.map { $0.formatted(date: .abbreviated, time: .omitted) } ?? "—")
                 detailRow("Tiempo de juego", playtimeText)
@@ -1032,7 +1075,9 @@ struct GameDetailView: View {
             det.publishers = (d["publishers"] as? [String]) ?? []
             det.releaseDate = (d["release_date"] as? [String: Any])?["date"] as? String
             det.genres = ((d["genres"] as? [[String: Any]]) ?? []).compactMap { $0["description"] as? String }
+            det.categories = ((d["categories"] as? [[String: Any]]) ?? []).compactMap { $0["description"] as? String }
             det.metacritic = (d["metacritic"] as? [String: Any])?["score"] as? Int
+            det.reviewCount = (d["recommendations"] as? [String: Any])?["total"] as? Int
             det.screenshots = ((d["screenshots"] as? [[String: Any]]) ?? []).prefix(8).compactMap {
                 ($0["path_thumbnail"] as? String).flatMap { URL(string: $0) }
             }
