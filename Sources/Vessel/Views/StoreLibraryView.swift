@@ -690,6 +690,18 @@ struct SteamGameDetails {
     var categories: [String] = []
     /// Número de reseñas de Steam (recommendations.total), para paridad con la tienda.
     var reviewCount: Int?
+    /// Logros del juego (número total) y los iconos destacados (datos públicos de appdetails).
+    var achievementsTotal: Int?
+    var achievementIcons: [URL] = []
+    /// AppIDs de DLC del juego (para mostrar la sección de DLC).
+    var dlcIds: [Int] = []
+}
+
+/// Un DLC resuelto (nombre + carátula) para mostrarlo en la ficha.
+struct StoreDLC: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let coverURL: URL?
 }
 
 /// Ficha de juego al estilo Steam: banner hero + botón Jugar/Instalar + tiempo jugado y
@@ -714,6 +726,8 @@ struct GameDetailView: View {
     @State private var loadingDetails = false
     /// Índice de la captura abierta en el visor ampliado (nil = cerrado).
     @State private var lightboxIndex: Int?
+    /// DLCs resueltos (nombre + carátula) del juego.
+    @State private var dlcs: [StoreDLC] = []
     private let steamGreen = Color(red: 0.34, green: 0.72, blue: 0.36)
     private let runningRed = Color(red: 0.85, green: 0.40, blue: 0.32)
 
@@ -910,6 +924,8 @@ struct GameDetailView: View {
             VStack(alignment: .leading, spacing: 20) {
                 aboutSection
                 featuresSection
+                achievementsSection
+                dlcSection
                 if let p = profile { compatSection(p) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1031,6 +1047,58 @@ struct GameDetailView: View {
         return "checkmark.circle.fill"
     }
 
+    /// Logros del juego (número + iconos destacados, datos públicos de Steam).
+    @ViewBuilder private var achievementsSection: some View {
+        if let total = details?.achievementsTotal, total > 0 {
+            cardSection("Logros") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "trophy.fill").foregroundStyle(tint)
+                        Text("\(total) logro\(total == 1 ? "" : "s")").font(.callout.weight(.semibold)).foregroundStyle(.white)
+                    }
+                    if let icons = details?.achievementIcons, !icons.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(icons, id: \.self) { url in
+                                    AsyncImage(url: url) { phase in
+                                        if let img = phase.image { img.resizable().scaledToFill() } else { Theme.surface }
+                                    }
+                                    .frame(width: 44, height: 44)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(.white.opacity(0.1), lineWidth: 0.5))
+                                }
+                            }.padding(.vertical, 2)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Contenido descargable (DLC) del juego, con carátula y nombre. Los DLC que el usuario
+    /// posee se descargan junto al juego (SteamCMD), por eso es informativo.
+    @ViewBuilder private var dlcSection: some View {
+        if !dlcs.isEmpty {
+            cardSection("Contenido descargable (\(dlcs.count))") {
+                VStack(spacing: 9) {
+                    ForEach(dlcs) { dlc in
+                        HStack(spacing: 10) {
+                            AsyncImage(url: dlc.coverURL) { phase in
+                                if let img = phase.image { img.resizable().scaledToFill() } else { Theme.surface }
+                            }
+                            .frame(width: 66, height: 25)
+                            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                            Text(dlc.title).font(.caption).foregroundStyle(.white.opacity(0.85)).lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                    }
+                    Text("Los DLC que tengas en tu cuenta se instalan junto al juego.")
+                        .font(.caption2).foregroundStyle(.white.opacity(0.45)).padding(.top, 2)
+                }
+            }
+        }
+    }
+
     private func compatSection(_ p: CompatProfile) -> some View {
         cardSection("Compatibilidad en Mac") {
             VStack(alignment: .leading, spacing: 10) {
@@ -1144,11 +1212,44 @@ struct GameDetailView: View {
             det.categories = ((d["categories"] as? [[String: Any]]) ?? []).compactMap { $0["description"] as? String }
             det.metacritic = (d["metacritic"] as? [String: Any])?["score"] as? Int
             det.reviewCount = (d["recommendations"] as? [String: Any])?["total"] as? Int
+            if let ach = d["achievements"] as? [String: Any] {
+                det.achievementsTotal = ach["total"] as? Int
+                det.achievementIcons = ((ach["highlighted"] as? [[String: Any]]) ?? []).prefix(10).compactMap {
+                    ($0["path"] as? String).flatMap { URL(string: $0) }
+                }
+            }
+            det.dlcIds = (d["dlc"] as? [Int]) ?? []
             let shots = ((d["screenshots"] as? [[String: Any]]) ?? []).prefix(12)
             det.screenshots = shots.compactMap { ($0["path_thumbnail"] as? String).flatMap { URL(string: $0) } }
             det.screenshotsFull = shots.compactMap { ($0["path_full"] as? String).flatMap { URL(string: $0) } }
             details = det
+            await loadDLCs(det.dlcIds)
         } catch { }
+    }
+
+    /// Resuelve nombre + carátula de los primeros DLC (datos públicos de Steam, en paralelo).
+    @MainActor private func loadDLCs(_ ids: [Int]) async {
+        dlcs = []
+        guard !ids.isEmpty else { return }
+        let resolved = await withTaskGroup(of: StoreDLC?.self) { group -> [StoreDLC] in
+            for id in ids.prefix(12) {
+                group.addTask {
+                    guard let url = URL(string: "https://store.steampowered.com/api/appdetails?appids=\(id)&filters=basic&l=spanish"),
+                          let (data, _) = try? await URLSession.shared.data(from: url),
+                          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          let entry = obj["\(id)"] as? [String: Any],
+                          (entry["success"] as? Bool) == true,
+                          let d = entry["data"] as? [String: Any],
+                          let name = d["name"] as? String else { return nil }
+                    let cover = URL(string: "https://cdn.cloudflare.steamstatic.com/steam/apps/\(id)/capsule_231x87.jpg")
+                    return StoreDLC(id: "\(id)", title: name, coverURL: cover)
+                }
+            }
+            var out: [StoreDLC] = []
+            for await dlc in group { if let dlc { out.append(dlc) } }
+            return out
+        }
+        dlcs = resolved.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
     }
 
     private static func stripHTML(_ s: String) -> String {
