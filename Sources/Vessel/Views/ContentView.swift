@@ -10,14 +10,13 @@ struct ContentView: View {
     @State private var showingLogs = false
     @State private var showingAbout = false
     @State private var showingCreateSheet = false
+    /// Alto de la zona del header (área segura superior), medido en runtime.
+    @State private var headerHeight: CGFloat = 52
 
     var body: some View {
         NavigationStack {
             activeStore
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                // Línea sutil en el borde inferior del header: lo diferencia del contenido
-                // (estilo Steam). El separador nativo no se ve con el titlebar transparente.
-                .overlay(alignment: .top) { headerSeparator }
                 .navigationTitle("Vessel")
                 .toolbar {
                     ToolbarItem(placement: .principal) {
@@ -34,15 +33,29 @@ struct ContentView: View {
                         }
                     }
                 }
-                // Header navy con efecto "scroll edge": el toolbar usa su material AUTOMÁTICO
-                // (transparente arriba del todo, cristal al hacer scroll). Sobre el fondo navy
-                // de la ventana queda como **cristal navy** (no gris). El blur del contenido que
-                // se mete por detrás = el glow Liquid Glass que buscamos. Ver DESIGN.md §7 (regla 6).
-                .toolbarBackgroundVisibility(.automatic, for: .windowToolbar)
+                // Ocultamos el material del toolbar del sistema: la barra de cristal la pone
+                // `glassHeader` (abajo), por la que el contenido se refracta al hacer scroll.
+                .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         }
-        // Titlebar transparente + contenido a tamaño completo: el navy de la app sube
-        // hasta arriba (estilo Mythic), en vez del gris del sistema. Ver DESIGN.md §7 (regla 6).
+        // Mide el alto de la zona del header (área segura superior = toolbar) para que la
+        // barra de cristal la cubra exactamente.
+        .background {
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear { headerHeight = proxy.safeAreaInsets.top }
+                    .onChange(of: proxy.safeAreaInsets.top) { _, new in headerHeight = new }
+            }
+        }
+        // Titlebar transparente + contenido a tamaño completo (navy hasta arriba, estilo Mythic).
         .background(VesselWindowStyler())
+        // Barra de Liquid Glass en la zona del header: el contenido pasa por DETRÁS (contenido a
+        // tamaño completo) y se difumina/refracta al meterse bajo el cristal, mientras el
+        // `StoreSwitcher` (toolbar del sistema) queda nítido por encima. Ver DESIGN.md §7 (regla 6).
+        .overlay(alignment: .top) {
+            glassHeader
+                .frame(height: max(headerHeight, 1))
+                .ignoresSafeArea(edges: .top)
+        }
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showingSettings) { SettingsView() }
         .sheet(isPresented: $showingLogs) { LogsView() }
@@ -54,12 +67,27 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .createBottle)) { _ in showingCreateSheet = true }
     }
 
-    /// Hairline que separa el header del contenido (borde inferior del toolbar). Un degradado
+    /// Barra de **Liquid Glass** en la zona del header. En macOS 26 usa `glassEffect` (refracta y
+    /// curva el contenido que pasa por detrás al hacer scroll); en macOS 15 cae a un material
+    /// translúcido (blur). No intercepta clics (el contenido y el toolbar siguen siendo usables).
+    @ViewBuilder private var glassHeader: some View {
+        Group {
+            if #available(macOS 26.0, *) {
+                Color.clear.glassEffect(.regular, in: Rectangle())
+            } else {
+                Rectangle().fill(.ultraThinMaterial)
+            }
+        }
+        .overlay(alignment: .bottom) { headerSeparator }
+        .allowsHitTesting(false)
+    }
+
+    /// Hairline que separa el header del contenido (borde inferior del cristal). Un degradado
     /// horizontal sutil (más visible en el centro) para un acabado premium, no una línea plana.
     private var headerSeparator: some View {
         Rectangle()
             .fill(LinearGradient(
-                colors: [.white.opacity(0.02), .white.opacity(0.14), .white.opacity(0.02)],
+                colors: [.white.opacity(0.02), .white.opacity(0.16), .white.opacity(0.02)],
                 startPoint: .leading, endPoint: .trailing))
             .frame(height: 1)
             .allowsHitTesting(false)
@@ -94,13 +122,14 @@ private struct VesselWindowStyler: NSViewRepresentable {
     }
     private static func apply(to window: NSWindow?) {
         guard let window else { return }
+        // Titlebar transparente + contenido a tamaño completo: el sistema no dibuja su propia
+        // barra (la pone `glassHeader`) y el contenido sube hasta el borde superior, pasando por
+        // DETRÁS del cristal del header al hacer scroll. Fondo navy de respaldo.
         window.titlebarAppearsTransparent = true
         window.styleMask.insert(.fullSizeContentView)
         window.backgroundColor = NSColor(Theme.navyDeep)
         window.isMovableByWindowBackground = true
-        // Línea sutil bajo el header para diferenciarlo del contenido (en vez de la sombra
-        // por defecto, que con titlebar transparente apenas se ve).
-        window.titlebarSeparatorStyle = .line
+        window.titlebarSeparatorStyle = .none
     }
 }
 

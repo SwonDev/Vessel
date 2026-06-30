@@ -123,24 +123,27 @@ Vessel se organiza **como la biblioteca de Steam**. Tres zonas:
    (navy oceánico + resplandor por tienda) debe **subir hasta el borde superior de la ventana**
    sin costura (estilo Mythic), de modo que el `StoreSwitcher`, el título y el menú "Más" floten
    sobre el navy. **Prohibido** dejar la franja gris por defecto del titlebar/toolbar.
-   - **Efecto "scroll edge" (Liquid Glass):** al hacer scroll, el contenido se funde por
-     detrás del header en un cristal navy (no gris) — es el material AUTOMÁTICO del toolbar
-     sobre el fondo navy. NO ocultarlo: es lo que da el glow premium.
+   - **Efecto "scroll edge" (Liquid Glass) — OBLIGATORIO y NOTORIO:** al hacer scroll, las
+     tarjetas **se meten por debajo del header y se difuminan/refractan** a través del cristal
+     (se "curvan" bajo el Liquid Glass), mientras el `StoreSwitcher` queda nítido por encima.
+     No vale un corte seco: el contenido tiene que verse pasar y deformarse bajo la barra.
    - **Línea separadora:** un hairline sutil (degradado horizontal, más visible en el centro)
-     marca el borde inferior del header para diferenciarlo del contenido (estilo Steam).
+     en el borde inferior del cristal, para diferenciar el header del contenido (estilo Steam).
 
-**Header navy (cómo se consigue — `ContentView`):**
-- `VesselWindowStyler` (`NSViewRepresentable` puesto como `.background`) sobre la `NSWindow`:
+**Header navy + scroll edge (cómo se consigue — `ContentView`):**
+- `VesselWindowStyler` (`NSViewRepresentable` como `.background`) sobre la `NSWindow`:
   `titlebarAppearsTransparent = true` + `styleMask.insert(.fullSizeContentView)` + `backgroundColor`
-  navy (`Theme.navyDeep`, respaldo) + `isMovableByWindowBackground = true` + `titlebarSeparatorStyle = .line`.
-- `.toolbarBackgroundVisibility(.automatic, for: .windowToolbar)` — el toolbar usa su material
-  automático (transparente arriba del todo, **cristal navy** al hacer scroll). **No** usar `.hidden`
-  (mataría el glow Liquid Glass del scroll edge).
-- `headerSeparator` — hairline (`overlay(alignment: .top)`) en el borde inferior del header; el
-  separador nativo de macOS no se ve con el titlebar transparente, por eso se dibuja a mano.
+  navy (`Theme.navyDeep`, respaldo) + `isMovableByWindowBackground = true`. El **contenido a tamaño
+  completo** es clave: las tarjetas suben hasta el borde de la ventana y pasan por DETRÁS del header.
+- `glassHeader` — barra de **Liquid Glass real** (`glassEffect` en macOS 26; `.ultraThinMaterial`
+  en 15) puesta como `overlay(alignment: .top)`, con alto = `headerHeight` (el inset superior,
+  medido con un `GeometryReader` en `.background`). El contenido se refracta/difumina al pasar por
+  detrás de ella; lleva el `headerSeparator` (hairline) en su borde inferior. `allowsHitTesting(false)`.
+- `.toolbarBackgroundVisibility(.hidden, for: .windowToolbar)` — se oculta el material del toolbar
+  del sistema: **la barra de cristal la pone `glassHeader`**, no el toolbar (el efecto nativo
+  `scrollEdgeEffectStyle` no se apreciaba con el `ScrollView` anidado en el `HSplitView`).
 - Se conserva `.windowStyle(.titleBar)` + `.windowToolbarStyle(.unified(showsTitle: true))` (mantiene
-  los semáforos y el título "Vessel"); el contenido a tamaño completo respeta el área segura, así que
-  la cabecera de la sidebar **no** queda tapada por el toolbar.
+  semáforos, título "Vessel" y el `StoreSwitcher` nítidos por encima del cristal).
 
 **Componentes (en `Views/StoreLibraryView.swift`, reutilizados por las 3 tiendas):**
 - `StoreGame` — modelo genérico de juego (id, title, coverURL, heroURL, steamAppId, installed,
