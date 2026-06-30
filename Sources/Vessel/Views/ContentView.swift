@@ -15,6 +15,9 @@ struct ContentView: View {
         NavigationStack {
             activeStore
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Línea sutil en el borde inferior del header: lo diferencia del contenido
+                // (estilo Steam). El separador nativo no se ve con el titlebar transparente.
+                .overlay(alignment: .top) { headerSeparator }
                 .navigationTitle("Vessel")
                 .toolbar {
                     ToolbarItem(placement: .principal) {
@@ -31,10 +34,11 @@ struct ContentView: View {
                         }
                     }
                 }
-                // Header navy: oculta el material gris nativo del toolbar para que el
-                // fondo `vesselBackground` (navy + resplandor por tienda) fluya por detrás
-                // sin costura. Ver DESIGN.md §7 (regla 6 — header navy).
-                .toolbarBackground(.hidden, for: .windowToolbar)
+                // Header navy con efecto "scroll edge": el toolbar usa su material AUTOMÁTICO
+                // (transparente arriba del todo, cristal al hacer scroll). Sobre el fondo navy
+                // de la ventana queda como **cristal navy** (no gris). El blur del contenido que
+                // se mete por detrás = el glow Liquid Glass que buscamos. Ver DESIGN.md §7 (regla 6).
+                .toolbarBackgroundVisibility(.automatic, for: .windowToolbar)
         }
         // Titlebar transparente + contenido a tamaño completo: el navy de la app sube
         // hasta arriba (estilo Mythic), en vez del gris del sistema. Ver DESIGN.md §7 (regla 6).
@@ -48,6 +52,17 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .openLogs)) { _ in showingLogs = true }
         .onReceive(NotificationCenter.default.publisher(for: .openAbout)) { _ in showingAbout = true }
         .onReceive(NotificationCenter.default.publisher(for: .createBottle)) { _ in showingCreateSheet = true }
+    }
+
+    /// Hairline que separa el header del contenido (borde inferior del toolbar). Un degradado
+    /// horizontal sutil (más visible en el centro) para un acabado premium, no una línea plana.
+    private var headerSeparator: some View {
+        Rectangle()
+            .fill(LinearGradient(
+                colors: [.white.opacity(0.02), .white.opacity(0.14), .white.opacity(0.02)],
+                startPoint: .leading, endPoint: .trailing))
+            .frame(height: 1)
+            .allowsHitTesting(false)
     }
 
     @ViewBuilder private var activeStore: some View {
@@ -83,6 +98,9 @@ private struct VesselWindowStyler: NSViewRepresentable {
         window.styleMask.insert(.fullSizeContentView)
         window.backgroundColor = NSColor(Theme.navyDeep)
         window.isMovableByWindowBackground = true
+        // Línea sutil bajo el header para diferenciarlo del contenido (en vez de la sombra
+        // por defecto, que con titlebar transparente apenas se ve).
+        window.titlebarSeparatorStyle = .line
     }
 }
 

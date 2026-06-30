@@ -123,13 +123,21 @@ Vessel se organiza **como la biblioteca de Steam**. Tres zonas:
    (navy oceánico + resplandor por tienda) debe **subir hasta el borde superior de la ventana**
    sin costura (estilo Mythic), de modo que el `StoreSwitcher`, el título y el menú "Más" floten
    sobre el navy. **Prohibido** dejar la franja gris por defecto del titlebar/toolbar.
+   - **Efecto "scroll edge" (Liquid Glass):** al hacer scroll, el contenido se funde por
+     detrás del header en un cristal navy (no gris) — es el material AUTOMÁTICO del toolbar
+     sobre el fondo navy. NO ocultarlo: es lo que da el glow premium.
+   - **Línea separadora:** un hairline sutil (degradado horizontal, más visible en el centro)
+     marca el borde inferior del header para diferenciarlo del contenido (estilo Steam).
 
 **Header navy (cómo se consigue — `ContentView`):**
 - `VesselWindowStyler` (`NSViewRepresentable` puesto como `.background`) sobre la `NSWindow`:
   `titlebarAppearsTransparent = true` + `styleMask.insert(.fullSizeContentView)` + `backgroundColor`
-  navy (`Theme.navyDeep`, respaldo) + `isMovableByWindowBackground = true`.
-- `.toolbarBackground(.hidden, for: .windowToolbar)` para quitar el material gris del toolbar
-  y dejar ver el navy del fondo por detrás.
+  navy (`Theme.navyDeep`, respaldo) + `isMovableByWindowBackground = true` + `titlebarSeparatorStyle = .line`.
+- `.toolbarBackgroundVisibility(.automatic, for: .windowToolbar)` — el toolbar usa su material
+  automático (transparente arriba del todo, **cristal navy** al hacer scroll). **No** usar `.hidden`
+  (mataría el glow Liquid Glass del scroll edge).
+- `headerSeparator` — hairline (`overlay(alignment: .top)`) en el borde inferior del header; el
+  separador nativo de macOS no se ve con el titlebar transparente, por eso se dibuja a mano.
 - Se conserva `.windowStyle(.titleBar)` + `.windowToolbarStyle(.unified(showsTitle: true))` (mantiene
   los semáforos y el título "Vessel"); el contenido a tamaño completo respeta el área segura, así que
   la cabecera de la sidebar **no** queda tapada por el toolbar.
