@@ -249,6 +249,15 @@ final class LegendaryManager {
         }
     }
 
+    /// Extrae el porcentaje de descarga (0–100) de una línea de salida de legendary.
+    /// Formato: `[DLManager] INFO: = Progress: 45.30% (1234/2722), Running for 00:01:23, ETA: …`.
+    nonisolated static func progressPercent(in line: String) -> Double? {
+        guard let r = line.range(of: "Progress:") else { return nil }
+        let tail = line[r.upperBound...].trimmingCharacters(in: .whitespaces)
+        let num = tail.prefix { $0.isNumber || $0 == "." }
+        return Double(num)
+    }
+
     /// TODO: Lanzar un juego con `legendary launch <appName>` usando el motor wine-dxmt.
     func launchGame(appName: String) async throws {
         throw NSError(

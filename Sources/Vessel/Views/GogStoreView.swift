@@ -17,6 +17,20 @@ final class GogStore {
     var phase: Phase = .disconnected
     private let gogdl = GogdlManager()
     private let log = LogStore.shared
+    private let wineManager = WineManager()
+    private let dependencyManager = DependencyManager()
+    private let store = BottleStore.shared
+    private var gogBottle: Bottle?
+
+    /// Estado de instalación en curso por juego (para los botones/tarjetas).
+    var installingAppIds: Set<String> = []
+    var installProgress: [String: String] = [:]
+    /// Progreso 0.0–1.0 si se conoce (parseado de gogdl) → barra determinada estilo Steam.
+    var installPercents: [String: Double] = [:]
+
+    func isInstalling(_ id: String) -> Bool { installingAppIds.contains(id) }
+    func progress(_ id: String) -> String? { installProgress[id] }
+    func percent(_ id: String) -> Double? { installPercents[id] }
 
     /// Re-evalúa el estado (al abrir la vista o al volver la app a primer plano).
     /// No interrumpe una operación en curso.
@@ -48,7 +62,7 @@ final class GogStore {
             // Paso 3: Biblioteca
             phase = .working("Cargando tu biblioteca de GOG…")
             let games = try await gogdl.ownedGames()
-            phase = .connected(games)
+            phase = .connected(withInstalledState(games))
         } catch {
             log.log("Error al conectar GOG: \(error.localizedDescription)", level: .error)
             phase = .error(error.localizedDescription)
@@ -78,10 +92,84 @@ final class GogStore {
     private func loadLibrary() async {
         do {
             let games = try await gogdl.ownedGames()
-            phase = .connected(games)
+            phase = .connected(withInstalledState(games))
         } catch {
             log.log("Error cargando biblioteca GOG: \(error.localizedDescription)", level: .error)
             phase = .error(error.localizedDescription)
+        }
+    }
+
+    // MARK: - Instalar / Jugar (modelo Heroic: descarga con gogdl, lanza con wine-dxmt)
+
+    /// Marca `installed` según el disco (existe el `goggame-<id>.info` en su carpeta del bottle).
+    private func withInstalledState(_ games: [GogdlManager.GogGame]) -> [GogdlManager.GogGame] {
+        guard let bottle = gogBottle ?? store.bottles.first(where: { $0.name == "GOG" }) else { return games }
+        return games.map { g in
+            var g = g
+            g.installed = gogdl.isInstalled(appId: g.appId, installDir: installDir(bottle, g.appId))
+            return g
+        }
+    }
+
+    /// Obtiene (o crea) el bottle dedicado de GOG, con el motor Wine portable instalado.
+    private func ensureBottle() async throws -> Bottle {
+        if let b = gogBottle { return b }
+        if let existing = store.bottles.first(where: { $0.name == "GOG" }) {
+            gogBottle = existing
+            return existing
+        }
+        let gcenx = try await dependencyManager.ensureWinePortableInstalled { _, _ in }
+        let nb = Bottle(name: "GOG", winePath: gcenx)
+        store.add(nb)
+        try await wineManager.createBottle(at: nb.prefixPath, winePath: gcenx)
+        gogBottle = nb
+        return nb
+    }
+
+    /// Carpeta de instalación del juego dentro del bottle de GOG.
+    private func installDir(_ bottle: Bottle, _ appId: String) -> String {
+        "\(bottle.prefixPath)/drive_c/Games/GOG/\(appId)"
+    }
+
+    /// Instala un juego de GOG dentro del bottle de Vessel (con progreso en vivo).
+    func install(_ game: GogdlManager.GogGame) async {
+        installingAppIds.insert(game.appId)
+        installProgress[game.appId] = "Preparando…"
+        defer {
+            installingAppIds.remove(game.appId)
+            installProgress[game.appId] = nil
+            installPercents[game.appId] = nil
+        }
+        do {
+            let bottle = try await ensureBottle()
+            let dir = installDir(bottle, game.appId)
+            try await gogdl.installGame(appId: game.appId, installDir: dir) { line in
+                if let pct = GogdlManager.progressPercent(in: line) {
+                    Task { @MainActor in
+                        self.installPercents[game.appId] = max(0, min(1, pct / 100))
+                        self.installProgress[game.appId] = "Descargando… \(Int(pct))%"
+                    }
+                }
+            }
+            await reloadLibrary()
+        } catch {
+            log.log("Error instalando \(game.title): \(error.localizedDescription)", level: .error)
+            installProgress[game.appId] = "Error en la instalación"
+        }
+    }
+
+    /// Lanza un juego de GOG ya instalado con el motor de juegos (wine-dxmt), igual que Steam/Epic.
+    func play(_ game: GogdlManager.GogGame) async {
+        await GameLaunchTracker.shared.track(game.appId) {
+            let bottle = try await self.ensureBottle()
+            let dir = self.installDir(bottle, game.appId)
+            guard let exe = self.gogdl.primaryExecutable(appId: game.appId, installDir: dir) else {
+                throw GogdlManager.GogdlError.notImplemented("No se encontró el ejecutable del juego. Reinstálalo.")
+            }
+            let cfg = GameConfigStore.load(game.appId)
+            let profile = CompatService.shared.profile(gog: game.appId, title: game.title)
+            let eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
+            return try await self.wineManager.launch(executable: exe, in: bottle, arguments: [], effective: eff)
         }
     }
 }
@@ -99,7 +187,15 @@ struct GogStoreView: View {
             case .connected(let games):
                 StoreLibraryView(
                     store: .gog,
-                    games: games.map { StoreGame(id: $0.appId, title: $0.title, installed: $0.installed) },
+                    games: games.map {
+                        StoreGame(id: $0.appId, title: $0.title,
+                                  coverURL: $0.coverURL, installed: $0.installed)
+                    },
+                    installingIDs: gog.installingAppIds,
+                    progressFor: { gog.progress($0) },
+                    percentFor: { gog.percent($0) },
+                    onInstall: { sg in if let g = games.first(where: { $0.appId == sg.id }) { Task { await gog.install(g) } } },
+                    onPlay:    { sg in if let g = games.first(where: { $0.appId == sg.id }) { Task { await gog.play(g) } } },
                     onReload:  { Task { await gog.reloadLibrary() } },
                     onLogout:  { gog.disconnect() }
                 )

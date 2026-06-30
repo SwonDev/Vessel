@@ -25,6 +25,8 @@ final class EpicStore {
     /// Estado de instalación en curso por juego (para los botones de las tarjetas).
     var installingAppNames: Set<String> = []
     var installProgress: [String: String] = [:]
+    /// Progreso 0.0–1.0 si se conoce (parseado de legendary) → barra determinada estilo Steam.
+    var installPercents: [String: Double] = [:]
 
     /// Re-evalúa el estado (al abrir la vista o al volver la app a primer plano).
     /// No interrumpe una operación en curso.
@@ -99,6 +101,7 @@ final class EpicStore {
 
     func isInstalling(_ appName: String) -> Bool { installingAppNames.contains(appName) }
     func progress(_ appName: String) -> String? { installProgress[appName] }
+    func percent(_ appName: String) -> Double? { installPercents[appName] }
 
     /// Obtiene (o crea) el bottle dedicado de Epic, con el motor Wine portable instalado.
     private func ensureBottle() async throws -> Bottle {
@@ -119,12 +122,22 @@ final class EpicStore {
     func install(_ game: LegendaryManager.EpicGame) async {
         installingAppNames.insert(game.appName)
         installProgress[game.appName] = "Preparando…"
-        defer { installingAppNames.remove(game.appName); installProgress[game.appName] = nil }
+        defer {
+            installingAppNames.remove(game.appName)
+            installProgress[game.appName] = nil
+            installPercents[game.appName] = nil
+        }
         do {
             let bottle = try await ensureBottle()
             let dir = "\(bottle.prefixPath)/drive_c/Games"
             try await legendary.installGame(appName: game.appName, basePath: dir) { line in
-                Task { @MainActor in self.installProgress[game.appName] = line }
+                // Parsea el % de las líneas de legendary → barra determinada estilo Steam.
+                if let pct = LegendaryManager.progressPercent(in: line) {
+                    Task { @MainActor in
+                        self.installPercents[game.appName] = max(0, min(1, pct / 100))
+                        self.installProgress[game.appName] = "Descargando… \(Int(pct))%"
+                    }
+                }
             }
             await reloadLibrary()
         } catch {
@@ -169,6 +182,7 @@ struct EpicStoreView: View {
                     games: games.map { StoreGame(id: $0.appName, title: $0.title, coverURL: $0.coverURL, installed: $0.installed, installPath: $0.installPath) },
                     installingIDs: epic.installingAppNames,
                     progressFor: { epic.progress($0) },
+                    percentFor: { epic.percent($0) },
                     onInstall: { sg in if let g = games.first(where: { $0.appName == sg.id }) { Task { await epic.install(g) } } },
                     onPlay:    { sg in if let g = games.first(where: { $0.appName == sg.id }) { Task { await epic.play(g) } } },
                     onReload:  { Task { await epic.reloadLibrary() } },

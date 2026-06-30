@@ -7,14 +7,18 @@ import Foundation
 /// La configuración se guarda en `~/Library/Application Support/Vessel/Gog` para no
 /// interferir con la instalación de Heroic que el usuario pueda tener en el sistema.
 ///
-/// ## Notas sobre la CLI de gogdl
+/// ## Notas sobre la CLI de gogdl (verificadas con `gogdl --help` v1.2.1)
 ///
-/// TODO: Verificar flags exactos con `gogdl --help` en la versión instalada. Los usados
-/// aquí son los habituales en el código fuente de Heroic (Python argparse):
-/// - Auth:         `gogdl auth --code <code> --auth-config-path <dir>`
-/// - Lista juegos: `gogdl games list --auth-config-path <dir>`
-/// - Descarga:     `gogdl download <appName> --auth-config-path <dir> --path <installPath>`
-/// - Lanzar:       mediante wine-dxmt desde Vessel (sin delegar en gogdl, igual que Steam/Epic).
+/// `--auth-config-path` es un argumento **GLOBAL** (va ANTES del subcomando) y apunta a un
+/// **archivo JSON** donde gogdl guarda los tokens (no a un directorio):
+/// - Auth:     `gogdl --auth-config-path <auth.json> auth --code <code>`
+/// - Refresco: `gogdl --auth-config-path <auth.json> auth`  (sin code; refresca y reescribe)
+/// - Descarga: `gogdl --auth-config-path <auth.json> download <appId> --path <installPath>`
+/// - Lanzar:   mediante wine-dxmt desde Vessel (sin delegar en gogdl, igual que Steam/Epic).
+///
+/// gogdl **no** lista la biblioteca; eso se obtiene de la **API web de GOG**
+/// (`embed.gog.com/account/getFilteredProducts`) con el `access_token` guardado en el auth.json,
+/// igual que hace Heroic.
 @MainActor
 @Observable
 final class GogdlManager {
@@ -26,6 +30,8 @@ final class GogdlManager {
         let appId: String
         let title: String
         var installed: Bool
+        /// Carátula del juego (API web de GOG); puede ser `nil` → placeholder.
+        var coverURL: String? = nil
         var id: String { appId }
     }
 
@@ -35,12 +41,14 @@ final class GogdlManager {
     static let gogdlDir    = "\(VesselPaths.enginesDirectory)/gogdl"
     /// Ruta del binario compilado descargado de GitHub.
     static let binaryPath  = "\(gogdlDir)/gogdl"
-    /// Directorio de configuración y credenciales aislado de Vessel.
+    /// Directorio de configuración aislado de Vessel.
     static let configDir   = "\(VesselPaths.appSupport)/Gog"
 
-    /// Archivo de credenciales que gogdl crea tras autenticarse correctamente.
-    /// (gogdl guarda tokens en `credentials` dentro del `--auth-config-path`.)
-    private static let credentialsPath = "\(configDir)/credentials"
+    /// Archivo JSON donde gogdl guarda los tokens (lo que se pasa a `--auth-config-path`).
+    static let authConfigPath = "\(configDir)/auth.json"
+
+    /// `client_id` de GOG Galaxy que gogdl usa por defecto (clave del objeto en `auth.json`).
+    private static let gogClientID = "46899977096215655"
 
     // MARK: - Estado
 
@@ -104,12 +112,15 @@ final class GogdlManager {
 
     // MARK: - Autenticación
 
-    /// `true` si hay una sesión GOG activa guardada en el configDir de Vessel.
+    /// `true` si hay una sesión GOG activa: el `auth.json` existe y contiene un `access_token`
+    /// para el `client_id` de Galaxy.
     func isAuthenticated() -> Bool {
-        // gogdl escribe el archivo `credentials` en el --auth-config-path tras auth correcto.
-        // También comprobamos `user.json` por si la versión cambia el nombre.
-        FileManager.default.fileExists(atPath: Self.credentialsPath)
-        || FileManager.default.fileExists(atPath: "\(Self.configDir)/user.json")
+        guard let data = FileManager.default.contents(atPath: Self.authConfigPath),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let entry = obj[Self.gogClientID] as? [String: Any],
+              let token = entry["access_token"] as? String, !token.isEmpty
+        else { return false }
+        return true
     }
 
     /// URL de inicio de sesión de GOG (la misma que usa Heroic Launcher).
@@ -126,69 +137,156 @@ final class GogdlManager {
     }
 
     /// Autentica con el **authorization code** obtenido de la URL de redirección de GOG.
-    /// Ejecuta: `gogdl auth --code <code> --auth-config-path <configDir>`.
-    ///
-    /// TODO: Verificar que el flag sea `--auth-config-path` con `gogdl auth --help`.
+    /// Ejecuta: `gogdl --auth-config-path <auth.json> auth --code <code>`.
+    /// (El flag es **global** → va antes del subcomando; apunta a un **archivo** JSON.)
     func authenticate(code: String) async throws {
         let bin = try resolvedBinaryPath()
         let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw GogdlError.emptyCode
         }
+        // gogdl escribe el auth.json dentro de configDir: garantízalo.
+        try? FileManager.default.createDirectory(atPath: Self.configDir, withIntermediateDirectories: true)
 
         let result = try await runBackground(
             bin,
-            args: ["auth", "--code", trimmed, "--auth-config-path", Self.configDir]
+            args: ["--auth-config-path", Self.authConfigPath, "auth", "--code", trimmed]
         )
-        if result.exitCode != 0 {
+        guard result.exitCode == 0, isAuthenticated() else {
             log.log("Error al autenticar con GOG: \(result.output)", level: .error)
             throw GogdlError.authFailed(result.output)
         }
         log.log("✓ Autenticación de GOG correcta", level: .info)
     }
 
-    /// Elimina las credenciales de la config de Vessel → cierra sesión de GOG.
+    /// Elimina el auth.json de Vessel → cierra sesión de GOG.
     func logout() {
-        try? FileManager.default.removeItem(atPath: Self.credentialsPath)
-        try? FileManager.default.removeItem(atPath: "\(Self.configDir)/user.json")
+        try? FileManager.default.removeItem(atPath: Self.authConfigPath)
         log.log("Sesión de GOG cerrada", level: .info)
     }
 
     // MARK: - Biblioteca de juegos
 
-    /// Devuelve la lista completa de juegos de la cuenta GOG (instalados y no instalados).
+    /// Devuelve la lista completa de juegos de la cuenta GOG.
     ///
-    /// Ejecuta: `gogdl games list --auth-config-path <configDir>`.
-    ///
-    /// TODO: Verificar el subcomando exacto con `gogdl games --help`.
+    /// gogdl no lista la biblioteca: se obtiene de la **API web de GOG**
+    /// (`embed.gog.com/account/getFilteredProducts`, paginada) con el `access_token`
+    /// guardado en el auth.json. Mismo enfoque que Heroic.
     func ownedGames() async throws -> [GogGame] {
+        let token = try await accessToken()
+
+        var collected: [GogGame] = []
+        var page = 1
+        var totalPages = 1
+        repeat {
+            let (pageGames, pages) = try await fetchProductsPage(page: page, token: token)
+            collected.append(contentsOf: pageGames)
+            totalPages = pages
+            page += 1
+        } while page <= totalPages && page <= 100   // tope de seguridad
+
+        var seen = Set<String>()
+        let unique = collected
+            .filter { seen.insert($0.appId).inserted }
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        log.log("Biblioteca GOG: \(unique.count) juego(s)", level: .info)
+        return unique
+    }
+
+    /// Obtiene un `access_token` válido: fuerza un refresco con `gogdl auth` (reescribe el
+    /// auth.json si caducó) y lee el token del archivo (fuente de verdad).
+    private func accessToken() async throws -> String {
         let bin = try resolvedBinaryPath()
+        // Refresca si hace falta; si falla, intentamos leer el token existente igualmente.
+        _ = try? await runBackground(bin, args: ["--auth-config-path", Self.authConfigPath, "auth"])
+        guard let data = FileManager.default.contents(atPath: Self.authConfigPath),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let entry = obj[Self.gogClientID] as? [String: Any],
+              let token = entry["access_token"] as? String, !token.isEmpty
+        else { throw GogdlError.notAuthenticated }
+        return token
+    }
 
-        let result = try await runBackground(
-            bin,
-            args: ["games", "list", "--auth-config-path", Self.configDir]
-        )
-        guard result.exitCode == 0 else {
-            log.log("Error al listar biblioteca GOG: \(result.output)", level: .error)
-            throw GogdlError.libraryFailed(result.output)
+    /// Descarga una página de la biblioteca de GOG. Devuelve `(juegos, totalPaginas)`.
+    private func fetchProductsPage(page: Int, token: String) async throws -> ([GogGame], Int) {
+        guard let url = URL(string:
+            "https://embed.gog.com/account/getFilteredProducts?mediaType=1&page=\(page)")
+        else { return ([], 1) }
+
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.timeoutInterval = 25
+
+        let (data, response) = try await URLSession.shared.data(for: req)
+        if let http = response as? HTTPURLResponse, http.statusCode == 401 {
+            throw GogdlError.notAuthenticated
         }
-
-        guard let data = result.output.data(using: .utf8) else { return [] }
-        let games = parseGames(from: data)
-        log.log("Biblioteca GOG: \(games.count) juego(s)", level: .info)
-        return games
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw GogdlError.libraryFailed("Respuesta de GOG no válida.")
+        }
+        let totalPages = (obj["totalPages"] as? Int) ?? 1
+        let products = (obj["products"] as? [[String: Any]]) ?? []
+        let games: [GogGame] = products.compactMap { p in
+            let appId: String? = (p["id"] as? Int).map(String.init) ?? (p["id"] as? String)
+            guard let appId, let title = p["title"] as? String, !title.isEmpty else { return nil }
+            return GogGame(appId: appId, title: title, installed: false,
+                           coverURL: Self.coverURL(from: p["image"] as? String))
+        }
+        return (games, totalPages)
     }
 
-    // MARK: - Instalación y lanzamiento (TODO)
-
-    /// TODO: Instalar un juego de GOG vía `gogdl download <appId>`.
-    func installGame(appId: String, progress: @escaping @Sendable (String) -> Void) async throws {
-        throw GogdlError.notImplemented("Instalación de juegos de GOG: próximamente.")
+    /// Construye la URL de carátula de GOG a partir del hash `image` de la API
+    /// (formato `//images-N.gog.com/<hash>` sin extensión → plantilla de tarjeta).
+    private static func coverURL(from image: String?) -> String? {
+        guard var img = image, !img.isEmpty else { return nil }
+        if img.hasPrefix("//") { img = "https:" + img }
+        else if !img.hasPrefix("http") { img = "https://images.gog.com/" + img }
+        return img + "_product_card_v2_mobile_slider_639.jpg"
     }
 
-    /// TODO: Lanzar un juego de GOG con wine-dxmt (mismo modelo que Steam/Epic).
-    func launchGame(appId: String) async throws {
-        throw GogdlError.notImplemented("Lanzamiento de juegos de GOG: próximamente.")
+    // MARK: - Instalación y lanzamiento
+
+    /// Instala un juego de GOG en `installDir` (dentro del bottle de Vessel) con progreso en vivo.
+    /// Ejecuta: `gogdl --auth-config-path <auth.json> download <id> --path <dir> --platform windows`.
+    func installGame(appId: String, installDir: String,
+                     onProgress: @escaping @Sendable (String) -> Void) async throws {
+        let bin = try resolvedBinaryPath()
+        try FileManager.default.createDirectory(atPath: installDir, withIntermediateDirectories: true)
+        let code = try await runStreaming(bin, args: [
+            "--auth-config-path", Self.authConfigPath,
+            "download", appId, "--path", installDir,
+            "--platform", "windows", "--lang", "en-US"
+        ], onLine: onProgress)
+        guard code == 0 else {
+            throw GogdlError.installFailed("La instalación de GOG falló (código \(code)). Revisa los logs.")
+        }
+        log.log("✓ GOG: \(appId) instalado en \(installDir)", level: .info)
+    }
+
+    /// `true` si el juego está instalado en `installDir` (existe su `goggame-<id>.info`).
+    func isInstalled(appId: String, installDir: String) -> Bool {
+        FileManager.default.fileExists(atPath: "\(installDir)/goggame-\(appId).info")
+    }
+
+    /// Ejecutable principal del juego (del `goggame-<id>.info` que instala GOG), ruta absoluta.
+    /// Se lanza luego con wine-dxmt desde Vessel (igual que Steam/Epic), no con `gogdl launch`.
+    func primaryExecutable(appId: String, installDir: String) -> String? {
+        let info = "\(installDir)/goggame-\(appId).info"
+        guard let data = FileManager.default.contents(atPath: info),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tasks = obj["playTasks"] as? [[String: Any]] else { return nil }
+        let primary = tasks.first { ($0["isPrimary"] as? Bool) == true } ?? tasks.first
+        guard let rel = primary?["path"] as? String, !rel.isEmpty else { return nil }
+        return "\(installDir)/\(rel)"
+    }
+
+    /// Extrae el porcentaje de descarga (0–100) de una línea de salida de gogdl
+    /// (formato `[…] = Progress: 45.30% (…)`, igual estilo que legendary).
+    nonisolated static func progressPercent(in line: String) -> Double? {
+        guard let r = line.range(of: "Progress:") else { return nil }
+        let tail = line[r.upperBound...].trimmingCharacters(in: .whitespaces)
+        let num = tail.prefix { $0.isNumber || $0 == "." }
+        return Double(num)
     }
 
     // MARK: - Errores del dominio
@@ -197,7 +295,9 @@ final class GogdlManager {
         case emptyCode
         case authFailed(String)
         case libraryFailed(String)
+        case installFailed(String)
         case notInstalled
+        case notAuthenticated
         case notImplemented(String)
 
         var errorDescription: String? {
@@ -208,8 +308,12 @@ final class GogdlManager {
                 return "Autenticación con GOG fallida. Comprueba que el código sea correcto y no haya caducado.\n\(output)"
             case .libraryFailed(let output):
                 return "No se pudo obtener la biblioteca de GOG. Comprueba tu conexión.\n\(output)"
+            case .installFailed(let msg):
+                return msg
             case .notInstalled:
                 return "gogdl no está instalado. Llama antes a ensureInstalled."
+            case .notAuthenticated:
+                return "No hay sesión de GOG. Vuelve a iniciar sesión."
             case .notImplemented(let msg):
                 return msg
             }
@@ -265,6 +369,37 @@ final class GogdlManager {
         }
     }
 
+    /// Ejecuta gogdl para una operación LARGA (descarga), drenando la salida en vivo y
+    /// reportando cada línea de progreso. Sin timeout: las descargas pueden durar mucho.
+    private func runStreaming(_ binary: String, args: [String],
+                              onLine: @escaping @Sendable (String) -> Void) async throws -> Int32 {
+        let shellEnv = WineManager.userShellEnvironment
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Int32, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                var env = shellEnv
+                env["TERM"] = "xterm-256color"
+                let task = Process()
+                task.executableURL = URL(fileURLWithPath: binary)
+                task.arguments = args
+                task.environment = env
+                let pipe = Pipe()
+                task.standardOutput = pipe
+                task.standardError  = pipe
+                pipe.fileHandleForReading.readabilityHandler = { fh in
+                    let d = fh.availableData
+                    guard !d.isEmpty, let s = String(data: d, encoding: .utf8) else { return }
+                    for line in s.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) where !line.isEmpty {
+                        onLine(String(line))
+                    }
+                }
+                do { try task.run() } catch { cont.resume(throwing: error); return }
+                task.waitUntilExit()
+                pipe.fileHandleForReading.readabilityHandler = nil
+                cont.resume(returning: task.terminationStatus)
+            }
+        }
+    }
+
     // MARK: - Cuarentena y firma
 
     private func stripQuarantine(_ path: String) async {
@@ -287,48 +422,4 @@ final class GogdlManager {
         task.waitUntilExit()
     }
 
-    // MARK: - Parseo JSON de gogdl
-
-    /// Parsea la salida JSON de `gogdl games list`.
-    ///
-    /// gogdl puede devolver:
-    /// - Un array directo: `[{"app_name": "...", "title": "...", ...}, ...]`
-    /// - Un objeto con clave "games" o "owned": `{"games": [...], ...}`
-    ///
-    /// TODO: Verificar el formato exacto con:
-    ///       `gogdl games list --auth-config-path <dir> | python3 -m json.tool | head -40`
-    private func parseGames(from data: Data) -> [GogGame] {
-        // Intento 1: array directo
-        if let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
-            return gamesFromArray(arr)
-        }
-        // Intento 2: objeto con clave "games" o "owned"
-        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            let arr = (obj["games"] as? [[String: Any]])
-                ?? (obj["owned"] as? [[String: Any]])
-                ?? []
-            return gamesFromArray(arr)
-        }
-        log.log("gogdl: no se pudo parsear la respuesta de games list", level: .warn)
-        return []
-    }
-
-    private func gamesFromArray(_ arr: [[String: Any]]) -> [GogGame] {
-        arr.compactMap { obj -> GogGame? in
-            // gogdl puede usar "app_name", "appId" o "id" como identificador
-            let appId = (obj["app_name"] as? String)
-                ?? (obj["appId"]    as? String)
-                ?? (obj["id"]       as? String)
-                ?? (obj["app_id"]   as? String)
-            // Título puede estar en "title" o "app_title"
-            let title = (obj["title"]     as? String)
-                ?? (obj["app_title"] as? String)
-
-            guard let appId, let title, !title.isEmpty else { return nil }
-
-            let installed = (obj["installed"] as? Bool) ?? false
-            return GogGame(appId: appId, title: title, installed: installed)
-        }
-        .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-    }
 }
