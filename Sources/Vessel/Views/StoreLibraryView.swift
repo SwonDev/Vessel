@@ -773,7 +773,7 @@ struct GameDetailView: View {
         .overlay { if let idx = lightboxIndex { screenshotLightbox(idx) } }
         .animation(.smooth(duration: 0.22), value: lightboxIndex)
         .sheet(isPresented: $showingSettings) {
-            GameSettingsView(game: game, tint: tint, installPath: game.installPath) {
+            GameSettingsView(game: game, tint: tint, installPath: game.installPath, store: store) {
                 showingSettings = false
             }
         }

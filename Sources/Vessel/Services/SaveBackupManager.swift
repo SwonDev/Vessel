@@ -213,6 +213,12 @@ final class SaveBackupManager {
         log.log("Partida restaurada de la copia: \(title).", level: .info)
     }
 
+    /// Carpeta de copias del juego (para "abrir en Finder"). `nil` si aún no hay copias.
+    func backupsFolder(store: Store, id: String) -> String? {
+        let dir = "\(backupsRoot)/\(gameKey(store: store, id: id))"
+        return FileManager.default.fileExists(atPath: dir) ? dir : nil
+    }
+
     /// Fecha del último backup (para la UI). `nil` si no hay copias.
     func lastBackupDate(store: Store, id: String) -> Date? {
         guard let snap = latestSnapshotDir(store: store, id: id) else { return nil }

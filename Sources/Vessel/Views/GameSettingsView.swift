@@ -67,11 +67,23 @@ struct GameSettingsView: View {
     let game: StoreGame
     let tint: Color
     var installPath: String? = nil
+    var store: StoreKind = .steam
     var onClose: () -> Void = {}
 
     @State private var config = GameConfig()
     @State private var profile: CompatProfile?
     @State private var copied = false
+    @State private var saveBackupDate: Date?
+
+    private var sbStore: SaveBackupManager.Store {
+        switch store { case .steam: return .steam; case .epic: return .epic; case .gog: return .gog }
+    }
+    private var sbId: String { game.steamAppId ?? game.id }
+    /// Prefijo Wine, derivado de la ruta de instalación (la parte previa a `/drive_c`).
+    private var winePrefix: String? {
+        guard let ip = installPath, let r = ip.range(of: "/drive_c") else { return nil }
+        return String(ip[..<r.lowerBound])
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -127,6 +139,38 @@ struct GameSettingsView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
+                    if winePrefix != nil {
+                        section("Copias de partida") {
+                            Text("Vessel respalda tu partida al cerrar el juego y la restaura si la copia es más nueva. Solo copia; nunca borra.")
+                                .font(.caption).foregroundStyle(.white.opacity(0.5)).fixedSize(horizontal: false, vertical: true)
+                            HStack(spacing: 8) {
+                                Image(systemName: "clock.arrow.circlepath").font(.caption).foregroundStyle(.white.opacity(0.5))
+                                Text(saveBackupDate.map { "Última copia: \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "Aún sin copias.")
+                                    .font(.caption2).foregroundStyle(.white.opacity(0.7))
+                            }
+                            HStack(spacing: 10) {
+                                Button {
+                                    Task {
+                                        if let prefix = winePrefix {
+                                            await SaveBackupManager.shared.backup(store: sbStore, id: sbId, title: game.title,
+                                                                                  steamId: game.steamAppId, prefix: prefix, installPath: installPath)
+                                            saveBackupDate = SaveBackupManager.shared.lastBackupDate(store: sbStore, id: sbId)
+                                        }
+                                    }
+                                } label: { Label("Hacer copia ahora", systemImage: "arrow.down.doc").frame(maxWidth: .infinity) }
+                                .vesselButton(false)
+
+                                Button {
+                                    if let f = SaveBackupManager.shared.backupsFolder(store: sbStore, id: sbId) {
+                                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: f)])
+                                    }
+                                } label: { Label("Ver copias", systemImage: "folder").frame(maxWidth: .infinity) }
+                                .vesselButton(false)
+                                .disabled(saveBackupDate == nil)
+                            }
+                        }
+                    }
+
                     if let path = installPath, !path.isEmpty {
                         Button {
                             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
@@ -176,6 +220,7 @@ struct GameSettingsView: View {
         .onAppear {
             config = GameConfigStore.load(game.id)
             profile = CompatService.shared.profile(steam: game.steamAppId, title: game.title)
+            saveBackupDate = SaveBackupManager.shared.lastBackupDate(store: sbStore, id: sbId)
         }
         .onChange(of: config) { _, new in GameConfigStore.save(game.id, new) }
     }

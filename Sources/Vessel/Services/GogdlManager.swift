@@ -292,7 +292,7 @@ final class GogdlManager {
         let code = try await runStreaming(bin, args: [
             "--auth-config-path", Self.authConfigPath,
             "download", appId, "--path", installDir,
-            "--platform", "windows", "--lang", "en-US"
+            "--with-dlcs", "--platform", "windows", "--lang", "en-US"
         ], onLine: onProgress)
         guard code == 0 else {
             throw GogdlError.installFailed("La instalación de GOG falló (código \(code)). Revisa los logs.")
@@ -308,7 +308,7 @@ final class GogdlManager {
         let code = try await runStreaming(bin, args: [
             "--auth-config-path", Self.authConfigPath,
             "repair", appId, "--path", installDir,
-            "--platform", "windows", "--lang", "en-US"
+            "--with-dlcs", "--platform", "windows", "--lang", "en-US"
         ], onLine: onProgress)
         guard code == 0 else {
             throw GogdlError.installFailed("La verificación de GOG falló (código \(code)). Revisa los logs.")
@@ -323,7 +323,7 @@ final class GogdlManager {
         let code = try await runStreaming(bin, args: [
             "--auth-config-path", Self.authConfigPath,
             "update", appId, "--path", installDir,
-            "--platform", "windows", "--lang", "en-US"
+            "--with-dlcs", "--platform", "windows", "--lang", "en-US"
         ], onLine: onProgress)
         guard code == 0 else {
             throw GogdlError.installFailed("La actualización de GOG falló (código \(code)). Revisa los logs.")
