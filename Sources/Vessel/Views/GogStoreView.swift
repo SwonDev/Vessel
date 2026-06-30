@@ -227,12 +227,27 @@ final class GogStore {
 
     /// Lanza un juego de GOG ya instalado con el motor de juegos (wine-dxmt), igual que Steam/Epic.
     func play(_ game: GogdlManager.GogGame) async {
-        await GameLaunchTracker.shared.track(game.appId, statsKey: "gog:\(game.appId)") {
-            let bottle = try await self.ensureBottle()
-            let dir = self.installDir(bottle, game.appId)
+        // Resolvemos el bottle ANTES de track para tener la ruta del prefijo en ambos extremos
+        // (bajar partidas antes de jugar / subirlas al cerrar). Si el bottle no se puede preparar,
+        // no hay nada que lanzar.
+        let bottle: Bottle
+        do { bottle = try await ensureBottle() }
+        catch {
+            log.log("GOG: no se pudo preparar el entorno para \(game.title): \(error.localizedDescription)", level: .error)
+            return
+        }
+        let dir = installDir(bottle, game.appId)
+        let prefix = bottle.prefixPath
+        await GameLaunchTracker.shared.track(
+            game.appId, statsKey: "gog:\(game.appId)",
+            // Cloud saves automáticos: al CERRAR el juego, sube la partida a la nube de GOG.
+            onExit: { Task { await self.gogdl.syncSaves(appId: game.appId, installDir: dir, prefix: prefix, direction: .upload) } }
+        ) {
             guard let exe = self.gogdl.primaryExecutable(appId: game.appId, installDir: dir) else {
                 throw GogdlManager.GogdlError.notImplemented("No se encontró el ejecutable del juego. Reinstálalo.")
             }
+            // Cloud saves: baja lo último de la nube ANTES de jugar (silencioso si no aplica).
+            await self.gogdl.syncSaves(appId: game.appId, installDir: dir, prefix: prefix, direction: .download)
             let cfg = GameConfigStore.load(game.appId)
             let profile = CompatService.shared.profile(gog: game.appId, title: game.title)
             let eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)

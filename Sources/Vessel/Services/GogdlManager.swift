@@ -347,6 +347,100 @@ final class GogdlManager {
         return Double(num)
     }
 
+    // MARK: - Cloud saves (sincronización de partidas)
+
+    enum SaveSyncDirection { case download, upload }
+
+    /// Lee el `clientId` del `goggame-<id>.info` (necesario para la API de cloud storage de GOG).
+    func clientId(appId: String, installDir: String) -> String? {
+        guard let root = gameRoot(appId: appId, installDir: installDir),
+              let data = FileManager.default.contents(atPath: "\(root)/goggame-\(appId).info"),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return obj["clientId"] as? String
+    }
+
+    /// Carpeta del usuario dentro del prefijo Wine (`drive_c/users/<user>`), saltando `Public`.
+    private func wineUserDir(prefix: String) -> String? {
+        let users = "\(prefix)/drive_c/users"
+        guard let subs = try? FileManager.default.contentsOfDirectory(atPath: users) else { return nil }
+        if let u = subs.first(where: { $0 != "Public" && !$0.hasPrefix(".") }) { return "\(users)/\(u)" }
+        return nil
+    }
+
+    /// Pide a la API de GOG (remote-config) las ubicaciones de cloud save para Windows. Son
+    /// plantillas con variables (`<?SAVED_GAMES?>\Juego`) que luego se expanden contra el prefijo.
+    private func cloudSaveLocationTemplates(clientId: String) async -> [(name: String, location: String)] {
+        guard let url = URL(string: "https://remote-config.gog.com/components/galaxy_client/clients/\(clientId)?component_version=2.0.45"),
+              let (data, resp) = try? await URLSession.shared.data(from: url),
+              (resp as? HTTPURLResponse).map({ (200...299).contains($0.statusCode) }) ?? false,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let content = obj["content"] as? [String: Any],
+              let win = content["Windows"] as? [String: Any],
+              let cloud = win["cloudStorage"] as? [String: Any],
+              (cloud["enabled"] as? Bool) == true,
+              let locs = cloud["locations"] as? [[String: Any]] else { return [] }
+        return locs.compactMap { l in
+            guard let name = l["name"] as? String, let location = l["location"] as? String else { return nil }
+            return (name, location)
+        }
+    }
+
+    /// Expande una plantilla de ubicación GOG a una ruta local absoluta dentro del prefijo Wine.
+    /// `nil` si usa una variable que no sabemos mapear (no arriesgamos a sincronizar a ciegas).
+    private func resolveTemplate(_ template: String, appId: String, installDir: String, prefix: String) -> String? {
+        guard let userDir = wineUserDir(prefix: prefix) else { return nil }
+        let gameRootDir = gameRoot(appId: appId, installDir: installDir) ?? installDir
+        let map: [String: String] = [
+            "<?SAVED_GAMES?>": "\(userDir)/Saved Games",
+            "<?APPLICATION_DATA_LOCAL?>": "\(userDir)/AppData/Local",
+            "<?APPLICATION_DATA_LOCAL_LOW?>": "\(userDir)/AppData/LocalLow",
+            "<?APPLICATION_DATA_ROAMING?>": "\(userDir)/AppData/Roaming",
+            "<?DOCUMENTS?>": "\(userDir)/Documents",
+            "<?INSTALL?>": gameRootDir
+        ]
+        var result = template
+        for (k, v) in map { result = result.replacingOccurrences(of: k, with: v) }
+        guard !result.contains("<?") else { return nil }   // variable desconocida → abortar
+        return result.replacingOccurrences(of: "\\", with: "/")
+    }
+
+    /// Sincroniza los cloud saves de un juego (todas sus ubicaciones). DIRECCIONAL para no colgar
+    /// ni pisar partidas: `.download` baja antes de jugar (`--skip-upload`), `.upload` sube al
+    /// cerrar (`--skip-download`). Silencioso: si el juego no tiene cloud saves o falta sesión,
+    /// termina sin romper nada. Persiste el timestamp que devuelve gogdl para el próximo sync.
+    func syncSaves(appId: String, installDir: String, prefix: String, direction: SaveSyncDirection) async {
+        guard isAuthenticated(), let bin = try? resolvedBinaryPath(),
+              let cid = clientId(appId: appId, installDir: installDir) else { return }
+        let templates = await cloudSaveLocationTemplates(clientId: cid)
+        guard !templates.isEmpty else { return }
+        _ = try? await accessToken()   // refresca el token para que gogdl pueda hablar con cloud storage
+
+        for t in templates {
+            guard let localPath = resolveTemplate(t.location, appId: appId, installDir: installDir, prefix: prefix) else {
+                log.log("GOG cloud saves: ubicación '\(t.location)' usa una variable no soportada; se omite.", level: .warn)
+                continue
+            }
+            if direction == .upload {
+                // Subir solo si la carpeta existe y NO está vacía (evita pisar la nube con nada).
+                let contents = (try? FileManager.default.contentsOfDirectory(atPath: localPath)) ?? []
+                if contents.isEmpty { continue }
+            } else {
+                try? FileManager.default.createDirectory(atPath: localPath, withIntermediateDirectories: true)
+            }
+            let ts = GogSaveSyncStore.shared.timestamp(appId: appId, location: t.name)
+            var args = ["--auth-config-path", Self.authConfigPath, "save-sync", localPath, appId,
+                        "--os", "windows", "--ts", ts, "--name", t.name]
+            args.append(direction == .download ? "--skip-upload" : "--skip-download")
+            guard let result = try? await runBackground(bin, args: args), result.exitCode == 0 else { continue }
+            // gogdl imprime por stdout el nuevo timestamp (epoch en segundos) al terminar OK.
+            let newTs = result.output
+                .split(whereSeparator: { " \n\r\t".contains($0) }).map(String.init)
+                .last(where: { (Double($0) ?? 0) > 1_000_000_000 })
+            if let newTs { GogSaveSyncStore.shared.setTimestamp(newTs, appId: appId, location: t.name) }
+            log.log("GOG cloud saves (\(direction == .download ? "bajada" : "subida")) OK: \(appId)/\(t.name)", level: .debug)
+        }
+    }
+
     // MARK: - Errores del dominio
 
     enum GogdlError: LocalizedError {
