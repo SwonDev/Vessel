@@ -299,12 +299,17 @@ struct StoreLibraryView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            List(selection: $selectedGame) {
+            // Selección MANUAL (no el binding del List): así el resaltado es un cristal Liquid
+            // Glass tintado (premium), no el azul sólido del sistema. Ver DESIGN.md §7.
+            List {
                 ForEach(filtered) { game in
-                    StoreGameRow(game: game, isFavorite: isFav(game.id))
-                        .tag(game)
-                        .listRowInsets(EdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 8))
+                    StoreGameRow(game: game, tint: tint,
+                                 isFavorite: isFav(game.id),
+                                 isSelected: selectedGame?.id == game.id)
+                        .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
                         .listRowBackground(Color.clear)
+                        .contentShape(Rectangle())
+                        .onTapGesture { selectedGame = game }
                         .contextMenu { rowContextMenu(game) }
                 }
             }
@@ -500,7 +505,10 @@ struct StoreGameCard: View {
 /// placeholder del modelo `StoreGame` (sin duplicar).
 struct StoreGameRow: View {
     let game: StoreGame
+    var tint: Color = Theme.accent
     var isFavorite: Bool = false
+    var isSelected: Bool = false
+    @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -520,9 +528,28 @@ struct StoreGameRow: View {
                 Image(systemName: "star.fill").font(.caption2).foregroundStyle(.yellow)
             }
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .background { rowBackground }
         .contentShape(Rectangle())
+        .onHover { hovering = $0 }
         .help(game.title)
+    }
+
+    /// Fondo de la fila: **cristal Liquid Glass tintado** si está seleccionada (premium, no el
+    /// azul sólido del sistema); un velo sutil en hover; nada en reposo.
+    @ViewBuilder private var rowBackground: some View {
+        let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
+        if isSelected {
+            // Cristal NEUTRO + velo de color mínimo + borde tintado (premium), no azul sólido.
+            ZStack {
+                Color.clear.liquidGlass(in: shape)
+                shape.fill(tint.opacity(0.12))
+            }
+            .overlay { shape.strokeBorder(tint.opacity(0.45), lineWidth: 0.8) }
+        } else if hovering {
+            shape.fill(.white.opacity(0.06))
+        }
     }
 
     @ViewBuilder private var miniCover: some View {

@@ -147,19 +147,64 @@ extension ButtonStyle where Self == PremiumButtonStyle {
     }
 }
 
+/// Botón **Liquid Glass premium** de Vessel (macOS 26): cristal `.regular` **translúcido** en
+/// cápsula (no el relleno sólido de `.glassProminent`, que queda "cantoso"), tintado con `tint`
+/// en acciones principales y neutro en secundarias. Refracta lo de detrás y reacciona al press
+/// (cristal interactivo) + glow de color y micro-escala en hover. Acabado mucho más premium.
+struct GlassButtonStyle: ButtonStyle {
+    var tint: Color = Theme.accent
+    var prominent: Bool = true
+
+    func makeBody(configuration: Configuration) -> some View {
+        GlassButtonBody(configuration: configuration, tint: tint, prominent: prominent)
+    }
+
+    private struct GlassButtonBody: View {
+        let configuration: ButtonStyleConfiguration
+        let tint: Color
+        let prominent: Bool
+        @State private var hovering = false
+        @Environment(\.isEnabled) private var isEnabled
+
+        var body: some View {
+            let shape = Capsule(style: .continuous)
+            configuration.label
+                .foregroundStyle(.white)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 10)
+                .background {
+                    // Cristal NEUTRO translúcido (refracta, como el header) — el color es solo
+                    // un ACENTO (velo mínimo + borde + glow), nunca un relleno sólido.
+                    ZStack {
+                        Color.clear.liquidGlass(in: shape, interactive: true)
+                        if prominent {
+                            shape.fill(tint.opacity(hovering ? 0.16 : 0.10))
+                        }
+                    }
+                }
+                .overlay { shape.strokeBorder(tint.opacity(prominent ? 0.45 : 0.12), lineWidth: 0.8) }
+                .clipShape(shape)
+                .shadow(color: prominent ? tint.opacity(hovering ? 0.50 : 0.28) : .black.opacity(0.18),
+                        radius: hovering ? 12 : 6, y: hovering ? 5 : 3)
+                .scaleEffect(configuration.isPressed ? 0.97 : (hovering ? 1.02 : 1))
+                .opacity(isEnabled ? 1 : 0.5)
+                .animation(.spring(response: 0.26, dampingFraction: 0.7), value: hovering)
+                .animation(.spring(response: 0.2, dampingFraction: 0.65), value: configuration.isPressed)
+                .onHover { hovering = $0 }
+                .contentShape(shape)
+        }
+    }
+}
+
 extension View {
-    /// Botón con **Liquid Glass nativo** de Apple (`.glassProminent` / `.glass`) en macOS 26+;
-    /// en macOS 15 cae al `PremiumButtonStyle`. `prominent` = acción principal (cristal tintado);
-    /// `prominent: false` = acción secundaria (cristal claro). Es el estilo de botón canónico
-    /// de Vessel — usar SIEMPRE este en vez de `.borderedProminent`/`.premium` sueltos.
+    /// Botón canónico de Vessel: **Liquid Glass premium** (`GlassButtonStyle`, cristal `.regular`
+    /// translúcido en cápsula) en macOS 26+; en macOS 15 cae al `PremiumButtonStyle` (gradiente).
+    /// `prominent` = acción principal (cristal tintado); `prominent: false` = secundaria (cristal
+    /// neutro). Usar SIEMPRE este en vez de `.borderedProminent`/`.glassProminent`/`.premium` sueltos.
     @ViewBuilder
     func vesselButton(_ prominent: Bool = true, tint: Color = Theme.accent) -> some View {
         if #available(macOS 26.0, *) {
-            if prominent {
-                buttonStyle(.glassProminent).tint(tint)
-            } else {
-                buttonStyle(.glass)
-            }
+            buttonStyle(GlassButtonStyle(tint: tint, prominent: prominent))
         } else {
             buttonStyle(.premium(tint: tint, prominent: prominent))
         }

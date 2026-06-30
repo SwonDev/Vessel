@@ -63,7 +63,7 @@ de **Steam**: materiales/blur, gradientes, sombras, animaciones suaves, hover y 
 | Fondo de pantalla | `.vesselBackground(tint:)` | tint = color de la tienda |
 | Cristal (paneles, campos, chips) | `.liquidGlass(in:tint:interactive:)` | glassEffect / material |
 | Tarjeta premium | `.vesselCard(padding:cornerRadius:tint:)` | envoltura de `liquidGlass` |
-| Botón | `.vesselButton(_ prominent:tint:)` | `.glassProminent`/`.glass` (26) o `PremiumButtonStyle` |
+| Botón | `.vesselButton(_ prominent:tint:)` | `GlassButtonStyle` (cristal translúcido, 26) o `PremiumButtonStyle` (15) |
 | Elevación hover | `.hoverLift(scale:)` | escala + sombra con muelle |
 
 **Reglas:** nunca `.borderedProminent`/`.bordered` sueltos → `vesselButton`. Nunca hardcodear
@@ -73,9 +73,17 @@ colores/sombras/blur en una vista → usar Theme y los modificadores. Botón Jug
 sobre el fondo navy —botones, **chips/etiquetas** (género…), **insignias** (favorito, instalado…),
 campos, paneles de carga, icon-buttons— usa Liquid Glass: `liquidGlass(in:)` o `vesselButton`.
 Prohibido `.ultraThinMaterial`/`Capsule().fill(.white.opacity(...))` sueltos como acabado final.
-- **Tinte:** neutro (`liquidGlass(in:)` sin tint) para elementos pasivos (chips, insignias) — mismo
-  cristal limpio que el header; **tintado** (`tint:`/`vesselButton(tint:)`) solo para ACCIONES (CTA,
-  selección), p. ej. Jugar (verde) / Instalar (acento).
+- **⚠️ El cristal SIEMPRE va neutro.** `glassEffect(.regular.tint(colorFuerte))` NO refracta:
+  renderiza un relleno SÓLIDO de ese color (el botón Jugar salía "verde cantoso", la selección
+  "azul plano"). El color **nunca** es el relleno del cristal, sino un ACENTO encima:
+  - elementos **pasivos** (chips de género, insignias favorito/instalado) → `liquidGlass(in:)` a secas,
+    sin nada más (mismo cristal limpio que el header);
+  - **acciones/CTA** (Jugar, Instalar) → `vesselButton(tint:)` = `GlassButtonStyle`: cristal **neutro**
+    `.interactive()` + velo mínimo del color (`tint.opacity(0.10→0.16)` en hover) + **borde** tintado
+    (`strokeBorder(tint.opacity(0.45))`) + glow de color en la sombra;
+  - **selección** de fila (`StoreGameRow`) → idéntico patrón: cristal neutro + `tint.opacity(0.12)` +
+    borde `tint.opacity(0.45)`. NUNCA `List(selection:)` (da el resaltado sólido del sistema): lista
+    plana + `.onTapGesture` + fondo glass por fila según `isSelected`.
 - **Nunca cristal sobre cristal:** un chip/insignia DENTRO de un panel ya `liquidGlass` (p. ej.
   "sin verificar" dentro de una `cardSection`) NO lleva glass (se degrada) → fill sutil.
 - **Refracción:** el efecto luce de verdad cuando hay contenido detrás (carátulas tras el header);
