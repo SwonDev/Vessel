@@ -161,6 +161,7 @@ final class GogStore {
                     }
                 }
             }
+            NotificationService.shared.notify(title: "Instalación completada", body: game.title)
             await reloadLibrary()
         } catch {
             log.log("Error instalando \(game.title): \(error.localizedDescription)", level: .error)

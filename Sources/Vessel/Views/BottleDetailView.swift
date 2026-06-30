@@ -250,6 +250,7 @@ struct BottleDetailView: View {
             store.addGame(game, to: localBottle.id)
             if let updated = store.bottles.first(where: { $0.id == localBottle.id }) { localBottle = updated }
             ownedGames.removeAll { $0.appId == appId }
+            NotificationService.shared.notify(title: "Instalación completada", body: name)
         } else if !ok {
             statusMessage = "La instalación de \(name) no se completó. Revisa los logs."
         }

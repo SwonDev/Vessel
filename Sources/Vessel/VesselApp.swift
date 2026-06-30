@@ -19,6 +19,8 @@ struct VesselApp: App {
                     }
                 }
                 .task {
+                    // Permiso de notificaciones (descarga lista, update disponible…), una vez.
+                    NotificationService.shared.requestAuthorization()
                     // Actualiza la BD de compatibilidad desde el repo comunitario (1×/día).
                     await CompatService.shared.refreshRemoteIfNeeded()
                 }
