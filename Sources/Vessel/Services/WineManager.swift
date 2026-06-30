@@ -426,9 +426,12 @@ final class WineManager {
             return try await launchD3D12Game(executable: executable, in: bottle, steamAppId: steamAppId, effective: eff)
         }
         // Juegos D3D9/D3D8/DDraw → Gcenx (wine-osx64, Wine 11 completo, wined3d→Metal).
-        // wine-dxmt no resuelve el d3d9 de 32-bit (falla con c0000135 "d3d9.dll not
-        // found"); Gcenx sí lo ejecuta. Solo en automático/DXMT-no-forzado.
-        if go == .auto, detectGraphicsAPI(forExecutable: executable) == .d3d9 {
+        // wine-dxmt no resuelve el d3d9 (falla con c0000135 "d3d9.dll not found"); Gcenx sí.
+        // Se aplica SIEMPRE que la API sea D3D9 — también si un perfil/usuario forzó `.dxmt`:
+        // forzar wine-dxmt aquí rompería el juego, así que el override `.dxmt` solo decide el
+        // motor de los D3D11 (`.gptk` ya salió arriba por la rama D3D12).
+        if detectGraphicsAPI(forExecutable: executable) == .d3d9 {
+            if go == .dxmt { log.log("Override DXMT ignorado en juego D3D9: se usa Gcenx (wined3d→Vulkan), que es lo que funciona.", level: .info) }
             return try await launchD3D9Game(executable: executable, in: bottle,
                                             arguments: allArgs, steamAppId: steamAppId, effective: eff)
         }
@@ -436,8 +439,10 @@ final class WineManager {
         // Gcenx/wine-dxmt CRASHEA su runtime (p.ej. el Mono de Unity → "Crash!!!" nada más
         // arrancar). El Wine de CrossOver (gptk-mythic) sí los ejecuta; Unity cae a su
         // OpenGL (Apple GLD→Metal) con render monohilo (ver `launch32BitGame`).
-        // Validado con "A Short Hike" (Unity 2019.4, 32-bit).
-        if go == .auto, isExecutable32Bit(executable) {
+        // Validado con "A Short Hike" (Unity 2019.4, 32-bit). Se aplica también con override
+        // `.dxmt` (forzar wine-dxmt en 32-bit crashea Mono igualmente).
+        if isExecutable32Bit(executable) {
+            if go == .dxmt { log.log("Override DXMT ignorado en juego de 32-bit: se usa CrossOver (gptk-mythic).", level: .info) }
             return try await launch32BitGame(executable: executable, in: bottle,
                                              arguments: allArgs, steamAppId: steamAppId, effective: eff)
         }
@@ -665,16 +670,16 @@ final class WineManager {
         try? fm.copyItem(atPath: src, toPath: dst)
     }
 
-    /// Directorio con los d3dx9/d3dcompiler nativos de Microsoft (subcarpetas `x32`/`x64`).
-    /// Preferimos el bundle (`Contents/Resources/redist/d3dx9`); si no, la ruta del repo.
+    /// Directorio con los d3dx9/d3dcompiler nativos de Microsoft (subcarpetas `x32`/`x64`),
+    /// empaquetados en el bundle (`Contents/Resources/redist/d3dx9`). Si no está presente
+    /// devuelve `nil` y el llamante lo registra — sin rutas de desarrollo hardcodeadas.
     private static func d3dx9RedistDirectory() -> String? {
         let fm = FileManager.default
         if let res = Bundle.main.resourceURL?.appendingPathComponent("redist/d3dx9").path,
            fm.fileExists(atPath: res) {
             return res
         }
-        let repo = "/Users/vesseldeveloper0000/Documents/vessel-mac/Resources/redist/d3dx9"
-        return fm.fileExists(atPath: repo) ? repo : nil
+        return nil
     }
 
     /// Lanza un juego **D3D12** con **GPTK / D3DMetal** (D3D12→Metal nativo de
@@ -1336,6 +1341,15 @@ final class WineManager {
             }
             // Variables de entorno del perfil: ganan sobre todo (pueden ajustar DXVK, etc.).
             for (k, v) in eff.extraEnv { fullEnv[k] = v }
+            // Preparación DECLARATIVA del perfil (idempotente), ANTES de arrancar el exe — aquí
+            // ya sabemos el motor (`winePath`) que ejecutará el juego. Antes el perfil rellenaba
+            // estos campos pero nadie los consumía (no tenían efecto real).
+            if let ver = eff.windowsVersion, !ver.isEmpty {
+                await applyWindowsVersion(ver, prefix: prefix, wine: winePath)
+            }
+            if !eff.winetricksVerbs.isEmpty {
+                await applyWinetricksVerbs(eff.winetricksVerbs, prefix: prefix, wine: winePath)
+            }
         }
         process.environment = fullEnv
 
@@ -1357,6 +1371,70 @@ final class WineManager {
         } catch {
             try? await terminateWineProcesses(winePath: winePath, prefix: prefix)
             throw WineError.launchFailed(error.localizedDescription)
+        }
+    }
+
+    /// Fija la versión de Windows del prefijo (`HKCU\Software\Wine\Version`) que pide el perfil
+    /// de compatibilidad — lo mismo que hace `winecfg`. Es un `reg add` puro (no necesita
+    /// winetricks), idempotente (`/f`) e inocuo si ya estaba puesto. Valores Wine: win11,
+    /// win10, win81, win8, win7, winxp…
+    private func applyWindowsVersion(_ version: String, prefix: String, wine: String) async {
+        log.log("Fijando versión de Windows del prefijo (perfil): \(version)", level: .info)
+        _ = try? await runWine(
+            winePath: wine,
+            arguments: ["reg", "add", #"HKCU\Software\Wine"#, "/v", "Version",
+                        "/t", "REG_SZ", "/d", version, "/f"],
+            prefix: prefix,
+            environment: ["WINEPREFIX": prefix, "WINEDEBUG": "-all", "WINEDLLOVERRIDES": "winedbg.exe=d"],
+            allowNonZeroExit: true
+        )
+    }
+
+    /// Aplica los verbos de winetricks que pide el perfil (vcrun, d3dx9…) de forma IDEMPOTENTE:
+    /// lleva un registro en `<prefix>/.vessel-winetricks-applied` y solo aplica los que falten.
+    ///
+    /// NO descarga winetricks en el camino de lanzamiento (sería lento/bloqueante y rompería el
+    /// "sin fricciones"): si no hay un `winetricks` instalado en el sistema, avisa en el log
+    /// nombrando los verbos pendientes y sigue. Así el juego arranca igual y el usuario sabe qué
+    /// runtime podría faltarle. (`winetricks` se instala con `brew install winetricks`.)
+    private func applyWinetricksVerbs(_ verbs: [String], prefix: String, wine: String) async {
+        let marker = "\(prefix)/.vessel-winetricks-applied"
+        let already = Set(((try? String(contentsOfFile: marker, encoding: .utf8)) ?? "")
+            .split(separator: "\n").map(String.init))
+        let pending = verbs.filter { !already.contains($0) }
+        guard !pending.isEmpty else { return }
+
+        // winetricks NO se empaqueta: resolverlo del sistema. Sin él, no bloqueamos el lanzamiento.
+        let candidates = ["/opt/homebrew/bin/winetricks", "/usr/local/bin/winetricks"]
+        guard let winetricks = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            log.log("El perfil pide winetricks [\(pending.joined(separator: ", "))] pero winetricks no está instalado; el juego podría faltarle ese runtime. Instálalo con `brew install winetricks`.", level: .warn)
+            return
+        }
+
+        log.log("Aplicando winetricks (perfil): \(pending.joined(separator: ", "))…", level: .info)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: winetricks)
+        process.arguments = ["--unattended"] + pending
+        var env = ProcessInfo.processInfo.environment
+        env["WINE"] = wine
+        env["WINEPREFIX"] = prefix
+        env["WINEDEBUG"] = "-all"
+        process.environment = env
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do {
+            try process.run()
+            process.waitUntilExit()
+            if process.terminationStatus == 0 {
+                let updated = already.union(pending).sorted().joined(separator: "\n")
+                try? updated.write(toFile: marker, atomically: true, encoding: .utf8)
+                log.log("✓ winetricks aplicado: \(pending.joined(separator: ", "))", level: .info)
+            } else {
+                log.log("winetricks devolvió código \(process.terminationStatus) aplicando [\(pending.joined(separator: ", "))].", level: .warn)
+            }
+        } catch {
+            log.log("No se pudo ejecutar winetricks: \(error.localizedDescription)", level: .warn)
         }
     }
 

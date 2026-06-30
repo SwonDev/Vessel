@@ -241,7 +241,10 @@ final class DXVKManager {
     }
 
     private func runRegAdd(winePath: String, prefix: String) async throws {
-        let dlls = ["d3d8", "d3d9", "d3d10", "d3d10_1", "d3d10core", "d3d11", "d3d12", "d3d12core", "dxgi"]
+        // DXVK 1.10.3 NO trae DLLs de D3D12: registrar d3d12/d3d12core como native,builtin
+        // dejaba un override muerto en user.reg que luego interfería con el d3d12 builtin de
+        // GPTK/D3DMetal (prioridad `native` busca en el prefijo, donde no hay nada → fallo).
+        let dlls = ["d3d8", "d3d9", "d3d10", "d3d10_1", "d3d10core", "d3d11", "dxgi"]
         for dll in dlls {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: winePath)

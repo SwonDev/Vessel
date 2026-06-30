@@ -116,6 +116,17 @@ final class CompatService {
 
         if let p = profile {
             cfg.graphicsOverride = p.graphicsLayer.asGameConfigLayer
+            // wined3d/dxvk/opengl NO son capas de enrutado de primera clase en Vessel (el enum de
+            // lanzamiento es auto/dxmt/gptk). En vez de descartarlas en silencio, avisamos: su
+            // intención se logra normalmente vía los dllOverrides/envVars del propio perfil
+            // (que sí se aplican). Routing completo de dxvk exigiría instalar DXVK y, para FL 11_0,
+            // ni siquiera funciona (Metal no tiene geometry shaders) → no se fuerza a ciegas.
+            switch p.graphicsLayer {
+            case .wined3d, .dxvk, .opengl:
+                LogStore.shared.log("Perfil '\(p.title)' pide capa gráfica '\(p.graphicsLayer.rawValue)': Vessel la aproxima con auto-detección; usa dllOverrides/envVars del perfil para forzarla.", level: .info)
+            case .auto, .dxmt, .gptk:
+                break
+            }
             cfg.dllOverrides = p.dllOverrides
             cfg.extraEnv = p.envVars
             cfg.launchArgs = p.launchArgs

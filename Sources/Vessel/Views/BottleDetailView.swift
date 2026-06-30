@@ -254,19 +254,28 @@ struct BottleDetailView: View {
     private func mainExecutable(in dir: String) -> String? {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(atPath: dir) else { return nil }
-        var candidates: [String] = []
+        let dirName = (dir as NSString).lastPathComponent.lowercased()
+        // (ruta relativa en minúsculas, ruta completa) de cada .exe que NO sea redistribuible/instalador.
+        var exes: [(rel: String, full: String)] = []
         for case let path as String in enumerator where path.lowercased().hasSuffix(".exe") {
             let lower = path.lowercased()
             if lower.contains("redist") || lower.contains("vcredist") || lower.contains("crashpad")
                 || lower.contains("unitycrash") || lower.contains("dxsetup") || lower.contains("dotnet") {
                 continue
             }
-            candidates.append("\(dir)/\(path)")
+            exes.append((lower, "\(dir)/\(path)"))
         }
-        if let launcher = candidates.first(where: { $0.lowercased().contains("launcher") || $0.lowercased().contains((dir as NSString).lastPathComponent.lowercased()) }) {
-            return launcher
-        }
-        return candidates.min(by: { $0.count < $1.count })
+        guard !exes.isEmpty else { return nil }
+        // Preferir el juego real frente a launchers de terceros (EA/Ubisoft/Rockstar): si
+        // eligiéramos el launcher, se enrutaría el motor por su bitness/API, no la del juego.
+        func isLauncher(_ rel: String) -> Bool { rel.contains("launcher") }
+        let real = exes.filter { !isLauncher($0.rel) }
+        // 1) exe que coincide con el nombre de la carpeta y NO es launcher → el juego real.
+        if let game = real.first(where: { $0.rel.contains(dirName) }) { return game.full }
+        // 2) cualquier exe que no sea launcher (ruta más corta, normalmente en la raíz).
+        if let shortest = real.min(by: { $0.rel.count < $1.rel.count }) { return shortest.full }
+        // 3) solo quedan launchers (el juego arranca por su launcher): el de ruta más corta.
+        return exes.min(by: { $0.rel.count < $1.rel.count })?.full
     }
 
     /// Vigila en tiempo real la carpeta `steamapps` del bottle: cuando Steam instala

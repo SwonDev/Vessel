@@ -118,21 +118,25 @@ final class SteamLibraryImporter {
 
         let dirName = (dir as NSString).lastPathComponent.lowercased()
 
-        var candidates: [String] = []
-        for case let path as String in enumerator {
-            if path.lowercased().hasSuffix(".exe") {
-                let lower = path.lowercased()
-                if lower.contains("launcher") || lower.contains(dirName) {
-                    return "\(dir)/\(path)"
-                }
-                candidates.append("\(dir)/\(path)")
-            }
+        // (ruta relativa en minúsculas, ruta completa) de cada .exe.
+        var exes: [(rel: String, full: String)] = []
+        for case let path as String in enumerator where path.lowercased().hasSuffix(".exe") {
+            exes.append((path.lowercased(), "\(dir)/\(path)"))
         }
+        guard !exes.isEmpty else { return nil }
 
-        if let first = candidates.sorted(by: { $0.count < $1.count }).first {
-            return first
-        }
-        return nil
+        // Los launchers de terceros (EA App, Ubisoft Connect, Rockstar…) NO son el juego: si
+        // los eligiéramos, Vessel lanzaría el launcher (y enrutaría el motor por su bitness/API,
+        // no la del juego). Preferimos el ejecutable real y dejamos el launcher como último recurso.
+        func isLauncher(_ rel: String) -> Bool { rel.contains("launcher") }
+        let real = exes.filter { !isLauncher($0.rel) }
+
+        // 1) exe cuyo nombre coincide con la carpeta del juego y NO es launcher → el juego real.
+        if let game = real.first(where: { $0.rel.contains(dirName) }) { return game.full }
+        // 2) cualquier exe que no sea launcher (ruta más corta → normalmente en la raíz del juego).
+        if let shortest = real.min(by: { $0.rel.count < $1.rel.count }) { return shortest.full }
+        // 3) solo quedan launchers (juegos que SÍ arrancan por su launcher): el de ruta más corta.
+        return exes.min(by: { $0.rel.count < $1.rel.count })?.full
     }
 
     private func extractValue(from line: String) -> String? {

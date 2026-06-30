@@ -135,7 +135,14 @@ final class DependencyManager {
         // 3) Integrar DXMT en el builtin del motor de juegos (fix gráfico D3D11).
         if let gameWine = WineEngineLocator.gameWineBinary(enginesDirectory: enginesDirectory) {
             progress("Integrando DXMT en el motor de juegos…", 0.85)
-            try? await DXMTManager().installIntoEngine(engineWinePath: gameWine, progress: progress)
+            do {
+                try await DXMTManager().installIntoEngine(engineWinePath: gameWine, progress: progress)
+            } catch {
+                // NO damos éxito en falso: si la descarga/integración de DXMT falla (red), los
+                // motores ya están pero los juegos D3D11 usarían wined3d y fallarían. La
+                // auto-reparación `ensureGameEngineDXMT` lo reintegrará en el primer lanzamiento.
+                LogStore.shared.log("No se pudo integrar DXMT en el motor de juegos: \(error.localizedDescription). Se reintentará al lanzar el primer juego D3D11.", level: .warn)
+            }
         }
 
         progress("✓ Motores listos (cliente + juegos D3D11)", 1.0)
@@ -167,6 +174,10 @@ final class DependencyManager {
         try? FileManager.default.removeItem(atPath: finalEngineDir)
         try FileManager.default.moveItem(atPath: stagingDir, toPath: finalEngineDir)
 
+        // Quitar quarantine de TODO el motor antes de firmar (igual que Gcenx/Mythic): si el
+        // tarball venía marcado, los archivos no-Mach-O (dylibs de datos, scripts) quedarían
+        // bloqueados por Gatekeeper aunque `codesign` reescriba los Mach-O.
+        await stripQuarantineRecursive(at: finalEngineDir)
         progress("Firmando binarios Wine-DXMT…", 0.90)
         await adhocSignBinaries(in: finalEngineDir)
 
@@ -405,7 +416,12 @@ final class DependencyManager {
                 do {
                     try task.run()
                     task.waitUntilExit()
-                } catch {}
+                    if task.terminationStatus != 0 {
+                        LogStore.shared.log("codesign falló (código \(task.terminationStatus)) firmando \((full as NSString).lastPathComponent); macOS podría bloquear el binario.", level: .warn)
+                    }
+                } catch {
+                    LogStore.shared.log("No se pudo ejecutar codesign sobre \((full as NSString).lastPathComponent): \(error.localizedDescription)", level: .warn)
+                }
             }
         }
     }

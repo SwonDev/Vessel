@@ -229,11 +229,13 @@ final class DXMTManager {
 
         if task.terminationStatus != 0 {
             let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            try? fm.removeItem(atPath: extractRoot)   // no dejar el dir huérfano en Caches
             throw DXMTError.extractionFailed(output.isEmpty ? "tar terminó con código \(task.terminationStatus)" : output)
         }
 
         // DXMT extrae como `v0.80/x86_64-windows`, `v0.80/i386-windows`, `v0.80/x86_64-unix`.
         guard let contents = try? fm.contentsOfDirectory(atPath: extractRoot) else {
+            try? fm.removeItem(atPath: extractRoot)
             throw DXMTError.extractionFailed("No se pudo listar el contenido extraído.")
         }
 
@@ -253,6 +255,7 @@ final class DXMTManager {
             return extractRoot
         }
 
+        try? fm.removeItem(atPath: extractRoot)   // estructura inesperada: limpiar el dir huérfano
         throw DXMTError.invalidArchive
     }
 
