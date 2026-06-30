@@ -253,6 +253,9 @@ final class GogStore {
             let eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
             return try await self.wineManager.launch(executable: exe, in: bottle, arguments: [], effective: eff)
         }
+        // Aviso de compatibilidad Unity 6 (no falla en silencio), comprobado tras el arranque.
+        let title = game.title
+        Task { try? await Task.sleep(for: .seconds(15)); UnityInputCompat.warnIfAffected(prefix: prefix, gameTitle: title) }
     }
 }
 

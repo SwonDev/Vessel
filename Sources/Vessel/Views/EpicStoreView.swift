@@ -216,13 +216,20 @@ final class EpicStore {
             log.log("Epic: \(game.title) sin ejecutable conocido (¿reinstalar?)", level: .warn)
             return
         }
+        // Resolvemos el bottle antes de track para tener la ruta del prefijo (aviso de compat).
+        let bottle: Bottle
+        do { bottle = try await ensureBottle() }
+        catch {
+            log.log("Epic: no se pudo preparar el entorno para \(game.title): \(error.localizedDescription)", level: .error)
+            return
+        }
+        let prefix = bottle.prefixPath
         // Rastrear el estado (Iniciando… → Ejecutándose) + cloud saves automáticos: al CERRAR
         // el juego, sube la partida a la nube (Epic). legendary resuelve solo la ruta.
         await GameLaunchTracker.shared.track(
             game.appName, statsKey: "epic:\(game.appName)",
             onExit: { Task { await self.legendary.syncSaves(appName: game.appName, direction: .upload) } }
         ) {
-            let bottle = try await ensureBottle()
             // Cloud saves: baja lo último de la nube ANTES de jugar (no bloquea si no aplica).
             await legendary.syncSaves(appName: game.appName, direction: .download)
             let cfg = GameConfigStore.load(game.appName)
@@ -233,6 +240,9 @@ final class EpicStore {
                 executable: exe, in: bottle, arguments: [], effective: eff
             )
         }
+        // Aviso de compatibilidad Unity 6 (no falla en silencio), comprobado tras el arranque.
+        let title = game.title
+        Task { try? await Task.sleep(for: .seconds(15)); UnityInputCompat.warnIfAffected(prefix: prefix, gameTitle: title) }
     }
 }
 
