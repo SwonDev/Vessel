@@ -104,9 +104,30 @@ final class BottleStore {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             bottles = try decoder.decode([Bottle].self, from: data)
+            deduplicateGames()   // auto-reparación: limpia juegos duplicados de datos antiguos
         } catch {
             bottles = []
         }
+    }
+
+    /// Elimina juegos DUPLICADOS dentro de cada bottle (misma identidad: `steamAppId`, o si no,
+    /// misma ruta de ejecutable/instalación). Conserva la primera aparición. Auto-reparación de
+    /// datos corruptos por carreras de alta antiguas. Guarda solo si hubo cambios.
+    private func deduplicateGames() {
+        var changed = false
+        for bi in bottles.indices {
+            var seen = Set<String>()
+            var unique: [GameInstall] = []
+            for g in bottles[bi].games {
+                let key: String
+                if let id = g.steamAppId, !id.isEmpty { key = "id:\(id)" }
+                else if !g.executablePath.isEmpty { key = "exe:\(g.executablePath)" }
+                else { key = "ip:\(g.installPath)" }
+                if seen.insert(key).inserted { unique.append(g) } else { changed = true }
+            }
+            if unique.count != bottles[bi].games.count { bottles[bi].games = unique }
+        }
+        if changed { save() }
     }
 
     private func save() {
@@ -146,17 +167,25 @@ final class BottleStore {
     }
 
     func addGame(_ game: GameInstall, to bottleID: UUID) {
-        if let i = bottles.firstIndex(where: { $0.id == bottleID }) {
-            var newGame = game
-            // installPath debe ser la carpeta del JUEGO, nunca el prefijo del bottle
-            // (apuntarlo al prefijo causó borrar el prefijo entero al desinstalar). Si
-            // viene vacío, se deriva de la carpeta del ejecutable.
-            if newGame.installPath.isEmpty {
-                newGame.installPath = (newGame.executablePath as NSString).deletingLastPathComponent
-            }
-            bottles[i].games.append(newGame)
-            save()
+        guard let i = bottles.firstIndex(where: { $0.id == bottleID }) else { return }
+        var newGame = game
+        // installPath debe ser la carpeta del JUEGO, nunca el prefijo del bottle
+        // (apuntarlo al prefijo causó borrar el prefijo entero al desinstalar). Si
+        // viene vacío, se deriva de la carpeta del ejecutable.
+        if newGame.installPath.isEmpty {
+            newGame.installPath = (newGame.executablePath as NSString).deletingLastPathComponent
         }
+        // ANTI-DUPLICADOS (fuente de verdad): no añadir si el juego YA está en el bottle
+        // (mismo steamAppId, o misma ruta de ejecutable/instalación). Blinda contra las carreras
+        // de varias rutas de alta (instalar + auto-importar + escaneos concurrentes) que duplicaban.
+        let dupe = bottles[i].games.contains { e in
+            (newGame.steamAppId.map { !$0.isEmpty && e.steamAppId == $0 } ?? false)
+            || (!newGame.executablePath.isEmpty && e.executablePath == newGame.executablePath)
+            || (!newGame.installPath.isEmpty && e.installPath == newGame.installPath)
+        }
+        guard !dupe else { return }
+        bottles[i].games.append(newGame)
+        save()
     }
 
     func deleteGame(_ gameID: UUID, from bottleID: UUID) {
