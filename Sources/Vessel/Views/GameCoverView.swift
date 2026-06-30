@@ -41,13 +41,16 @@ struct GameCoverImage<Placeholder: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        ZStack {
-            placeholder()
-            if let image {
-                Image(nsImage: image).resizable().scaledToFill()
+        // `placeholder` (flexible) fija el tamaño; la imagen va como overlay y se recorta a él.
+        // Con un ZStack, la imagen apaisada impondría su tamaño y desbordaría el 2:3 de la tarjeta.
+        placeholder()
+            .overlay {
+                if let image {
+                    Image(nsImage: image).resizable().scaledToFill()
+                }
             }
-        }
-        .task(id: cacheKey) {
+            .clipped()
+            .task(id: cacheKey) {
             // Caché en memoria → aparición instantánea al reusar la celda (sin parpadeo).
             if let cached = CoverCache.shared.cached(cacheKey) { image = cached; return }
             image = nil
