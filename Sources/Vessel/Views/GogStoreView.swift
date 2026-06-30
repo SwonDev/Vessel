@@ -76,7 +76,10 @@ final class GogStore {
         await loadLibrary()
     }
 
-    /// Abre la página de login de GOG en el navegador predeterminado.
+    /// URL de login de GOG (para el WebView embebido que captura el code automáticamente).
+    var authURL: URL { gogdl.authURL }
+
+    /// Abre la página de login de GOG en el navegador predeterminado (respaldo manual).
     func openAuthPage() {
         NSWorkspace.shared.open(gogdl.authURL)
     }
@@ -200,14 +203,12 @@ struct GogStoreView: View {
                     onLogout:  { gog.disconnect() }
                 )
             case .working(let msg):
-                ConnectGogView(working: msg, errorMessage: nil, onOpenAuth: {}, onConnect: { _ in })
+                ConnectGogView(working: msg, errorMessage: nil, authURL: gog.authURL, onConnect: { _ in })
             case .error(let msg):
-                ConnectGogView(working: nil, errorMessage: msg,
-                               onOpenAuth: { gog.openAuthPage() },
+                ConnectGogView(working: nil, errorMessage: msg, authURL: gog.authURL,
                                onConnect:  { code in Task { await gog.connect(code: code) } })
             case .disconnected:
-                ConnectGogView(working: nil, errorMessage: nil,
-                               onOpenAuth: { gog.openAuthPage() },
+                ConnectGogView(working: nil, errorMessage: nil, authURL: gog.authURL,
                                onConnect:  { code in Task { await gog.connect(code: code) } })
             }
         }
@@ -226,11 +227,11 @@ struct GogStoreView: View {
 struct ConnectGogView: View {
     let working: String?
     let errorMessage: String?
-    let onOpenAuth: () -> Void
+    let authURL: URL
     let onConnect: (String) -> Void
 
     private let tint = StoreKind.gog.tint
-    @State private var authCode = ""
+    @State private var showingLogin = false
     @State private var pulse = false
 
     var body: some View {
@@ -263,7 +264,7 @@ struct ConnectGogView: View {
                 }
                 .padding(.top, 4)
             } else {
-                // Pantalla de conexión con los 2 pasos
+                // Pantalla de conexión con un único botón (WebView embebido captura el code)
                 VStack(spacing: 20) {
                     Text("Conecta tu cuenta de GOG para ver y jugar toda tu biblioteca desde Vessel.")
                         .font(.title3)
@@ -286,67 +287,16 @@ struct ConnectGogView: View {
                             )
                     }
 
-                    // Paso 1 — Abrir página de login de GOG
-                    VStack(alignment: .leading, spacing: 10) {
-                        Label("Paso 1 — Inicia sesión en GOG", systemImage: "1.circle.fill")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.55))
-
-                        Button(action: onOpenAuth) {
-                            Label("Abrir inicio de sesión de GOG", systemImage: "safari")
-                                .frame(maxWidth: 320)
-                                .padding(.vertical, 4)
-                        }
-                        .vesselButton(tint: tint)
-
-                        Text("Se abrirá el navegador. Inicia sesión y copia el código que aparece en la URL de redirección de GOG (parámetro «code=»).")
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.40))
-                            .frame(maxWidth: 440)
+                    // Único botón: abre el WebView de login dentro de la app
+                    Button {
+                        showingLogin = true
+                    } label: {
+                        Label("Iniciar sesión con GOG", systemImage: "globe")
+                            .frame(maxWidth: 320)
+                            .padding(.vertical, 4)
                     }
-                    .frame(maxWidth: 440, alignment: .leading)
-
-                    // Paso 2 — Pegar el código de autorización
-                    VStack(alignment: .leading, spacing: 10) {
-                        Label("Paso 2 — Pega el código de autorización", systemImage: "2.circle.fill")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.55))
-
-                        HStack(spacing: 10) {
-                            TextField("Código de autorización de GOG…", text: $authCode)
-                                .textFieldStyle(.plain)
-                                .font(.system(.callout, design: .monospaced))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 9)
-                                .background(
-                                    .white.opacity(0.10),
-                                    in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-                                        .strokeBorder(.white.opacity(0.15), lineWidth: 0.5)
-                                )
-                                .onSubmit {
-                                    let trimmed = authCode.trimmingCharacters(in: .whitespacesAndNewlines)
-                                    guard !trimmed.isEmpty else { return }
-                                    onConnect(trimmed)
-                                }
-
-                            Button {
-                                let trimmed = authCode.trimmingCharacters(in: .whitespacesAndNewlines)
-                                guard !trimmed.isEmpty else { return }
-                                onConnect(trimmed)
-                            } label: {
-                                Label("Conectar", systemImage: "person.crop.circle.badge.plus")
-                                    .padding(.vertical, 4)
-                            }
-                            .vesselButton(tint: tint)
-                            .disabled(authCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        }
-                        .frame(maxWidth: 440)
-                    }
-                    .frame(maxWidth: 440, alignment: .leading)
+                    .vesselButton(tint: tint)
+                    .padding(.top, 4)
                 }
             }
         }
@@ -355,6 +305,109 @@ struct ConnectGogView: View {
         .vesselBackground(tint: tint)
         .onAppear { pulse = working != nil }
         .onChange(of: working) { _, new in pulse = new != nil }
+        // Sheet con el WebView embebido de GOG
+        .sheet(isPresented: $showingLogin) {
+            GogWebLoginSheet(authURL: authURL) { code in
+                showingLogin = false
+                onConnect(code)
+            }
+        }
+    }
+}
+
+// MARK: - Sheet de WebView (login de GOG)
+
+/// Sheet que presenta el portal de inicio de sesión de GOG dentro de un WKWebView.
+/// Captura el `code` automáticamente del redirect — sin que el usuario copie ni pegue nada.
+struct GogWebLoginSheet: View {
+    let authURL: URL
+    let onCodeCaptured: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var isLoading = true
+    @State private var webError: String?
+    private let tint = StoreKind.gog.tint
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Barra de cabecera
+            HStack(spacing: 12) {
+                StoreLogoTile(store: .gog, size: 28)
+                Text("Iniciar sesión — GOG")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(.white)
+                Spacer()
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark")
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.55))
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.escape, modifiers: [])
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+            .background(Theme.navyTop)
+
+            Divider().opacity(0.15)
+
+            ZStack {
+                GogLoginWebView(
+                    authURL: authURL,
+                    onCodeCaptured: { code in
+                        dismiss()
+                        onCodeCaptured(code)
+                    },
+                    onError: { error in
+                        webError = error
+                        isLoading = false
+                    },
+                    onLoadingChanged: { loading in
+                        if loading { webError = nil }
+                        withAnimation(.easeOut(duration: 0.3)) { isLoading = loading }
+                    }
+                )
+
+                if isLoading {
+                    ZStack {
+                        Theme.navyDeep.opacity(0.88)
+                        VStack(spacing: 14) {
+                            ProgressView().controlSize(.large).tint(.white)
+                            Text("Cargando GOG…")
+                                .font(.callout.weight(.medium))
+                                .foregroundStyle(.white.opacity(0.75))
+                        }
+                        .padding(28)
+                        .background(.ultraThinMaterial,
+                                    in: RoundedRectangle(cornerRadius: Theme.Radius.panel, style: .continuous))
+                    }
+                    .transition(.opacity)
+                }
+
+                if let webError {
+                    ZStack {
+                        Theme.navyDeep.opacity(0.94)
+                        VStack(spacing: 20) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.system(size: 48))
+                                .foregroundStyle(tint.opacity(0.75))
+                            Text(webError)
+                                .font(.callout)
+                                .foregroundStyle(.white.opacity(0.8))
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: 360)
+                            Button("Cerrar") { dismiss() }
+                                .vesselButton(false)
+                        }
+                        .padding(36)
+                    }
+                    .transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.25), value: webError)
+        }
+        .frame(width: 820, height: 640)
+        .background(Theme.navyDeep)
     }
 }
 
