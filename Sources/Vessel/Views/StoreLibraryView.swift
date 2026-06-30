@@ -462,8 +462,7 @@ struct StoreGameCard: View {
                     Image(systemName: isFavorite ? "star.fill" : "star")
                         .font(.callout).foregroundStyle(isFavorite ? .yellow : .white)
                         .padding(7)
-                        .background(.ultraThinMaterial, in: Circle())
-                        .overlay(Circle().strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
+                        .liquidGlass(in: Circle())
                 }
                 .buttonStyle(.plain).padding(7)
                 .accessibilityLabel(isFavorite ? "Quitar de favoritos" : "Añadir a favoritos")
@@ -806,10 +805,9 @@ struct GameDetailView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(genres, id: \.self) { g in
-                        Text(g).font(.caption.weight(.medium)).foregroundStyle(.white.opacity(0.88))
-                            .padding(.horizontal, 11).padding(.vertical, 5)
-                            .background(Capsule().fill(.white.opacity(0.07)))
-                            .overlay(Capsule().strokeBorder(tint.opacity(0.45), lineWidth: 0.6))
+                        Text(g).font(.caption.weight(.medium)).foregroundStyle(.white.opacity(0.92))
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .liquidGlass(in: Capsule())
                     }
                 }
                 .padding(.vertical, 2)

@@ -370,8 +370,7 @@ struct EpicWebLoginSheet: View {
                                 .foregroundStyle(.white.opacity(0.75))
                         }
                         .padding(28)
-                        .background(.ultraThinMaterial,
-                                    in: RoundedRectangle(cornerRadius: Theme.Radius.panel, style: .continuous))
+                        .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.panel, style: .continuous))
                     }
                     .transition(.opacity)
                 }
@@ -560,7 +559,7 @@ struct EpicGameCard: View {
                         .font(.callout)
                         .foregroundStyle(Color(red: 0.30, green: 0.85, blue: 0.55))
                         .padding(6)
-                        .background(.ultraThinMaterial, in: Circle())
+                        .liquidGlass(in: Circle())
                         .padding(7)
                 }
             }

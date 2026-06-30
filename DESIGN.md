@@ -69,6 +69,18 @@ de **Steam**: materiales/blur, gradientes, sombras, animaciones suaves, hover y 
 **Reglas:** nunca `.borderedProminent`/`.bordered` sueltos → `vesselButton`. Nunca hardcodear
 colores/sombras/blur en una vista → usar Theme y los modificadores. Botón Jugar = `vesselButton(tint: steamGreen)`.
 
+**★ Liquid Glass por TODAS PARTES (firma visual premium).** Es el sello de Vessel. TODO elemento
+sobre el fondo navy —botones, **chips/etiquetas** (género…), **insignias** (favorito, instalado…),
+campos, paneles de carga, icon-buttons— usa Liquid Glass: `liquidGlass(in:)` o `vesselButton`.
+Prohibido `.ultraThinMaterial`/`Capsule().fill(.white.opacity(...))` sueltos como acabado final.
+- **Tinte:** neutro (`liquidGlass(in:)` sin tint) para elementos pasivos (chips, insignias) — mismo
+  cristal limpio que el header; **tintado** (`tint:`/`vesselButton(tint:)`) solo para ACCIONES (CTA,
+  selección), p. ej. Jugar (verde) / Instalar (acento).
+- **Nunca cristal sobre cristal:** un chip/insignia DENTRO de un panel ya `liquidGlass` (p. ej.
+  "sin verificar" dentro de una `cardSection`) NO lleva glass (se degrada) → fill sutil.
+- **Refracción:** el efecto luce de verdad cuando hay contenido detrás (carátulas tras el header);
+  sobre navy plano es un cristal frosted sutil — igualmente premium.
+
 ---
 
 ## 5. Movimiento

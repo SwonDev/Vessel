@@ -385,8 +385,7 @@ struct GogWebLoginSheet: View {
                                 .foregroundStyle(.white.opacity(0.75))
                         }
                         .padding(28)
-                        .background(.ultraThinMaterial,
-                                    in: RoundedRectangle(cornerRadius: Theme.Radius.panel, style: .continuous))
+                        .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.panel, style: .continuous))
                     }
                     .transition(.opacity)
                 }
