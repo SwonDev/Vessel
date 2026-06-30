@@ -119,6 +119,20 @@ Vessel se organiza **como la biblioteca de Steam**. Tres zonas:
    compatibilidad, ajustes) o, si no hay selección, el **grid "home"** de carátulas verticales.
 4. **Solo 3 tiendas**: Steam, Epic, GOG. (Amazon y Battle.net retiradas.)
 5. La ficha NO es un `.sheet` modal flotante: es una **vista integrada** en el panel principal.
+6. **El header/barra de título es NAVY, nunca el gris nativo de macOS.** El `vesselBackground`
+   (navy oceánico + resplandor por tienda) debe **subir hasta el borde superior de la ventana**
+   sin costura (estilo Mythic), de modo que el `StoreSwitcher`, el título y el menú "Más" floten
+   sobre el navy. **Prohibido** dejar la franja gris por defecto del titlebar/toolbar.
+
+**Header navy (cómo se consigue — `ContentView`):**
+- `VesselWindowStyler` (`NSViewRepresentable` puesto como `.background`) sobre la `NSWindow`:
+  `titlebarAppearsTransparent = true` + `styleMask.insert(.fullSizeContentView)` + `backgroundColor`
+  navy (`Theme.navyDeep`, respaldo) + `isMovableByWindowBackground = true`.
+- `.toolbarBackground(.hidden, for: .windowToolbar)` para quitar el material gris del toolbar
+  y dejar ver el navy del fondo por detrás.
+- Se conserva `.windowStyle(.titleBar)` + `.windowToolbarStyle(.unified(showsTitle: true))` (mantiene
+  los semáforos y el título "Vessel"); el contenido a tamaño completo respeta el área segura, así que
+  la cabecera de la sidebar **no** queda tapada por el toolbar.
 
 **Componentes (en `Views/StoreLibraryView.swift`, reutilizados por las 3 tiendas):**
 - `StoreGame` — modelo genérico de juego (id, title, coverURL, heroURL, steamAppId, installed,

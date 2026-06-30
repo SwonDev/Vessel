@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Raíz de Vessel (layout estilo Steam — ver DESIGN.md §7): el **cambio de tienda vive en
 /// el header** (`StoreSwitcher` con los logos de Steam/Epic/GOG) y cada tienda muestra su
@@ -30,7 +31,14 @@ struct ContentView: View {
                         }
                     }
                 }
+                // Header navy: oculta el material gris nativo del toolbar para que el
+                // fondo `vesselBackground` (navy + resplandor por tienda) fluya por detrás
+                // sin costura. Ver DESIGN.md §7 (regla 6 — header navy).
+                .toolbarBackground(.hidden, for: .windowToolbar)
         }
+        // Titlebar transparente + contenido a tamaño completo: el navy de la app sube
+        // hasta arriba (estilo Mythic), en vez del gris del sistema. Ver DESIGN.md §7 (regla 6).
+        .background(VesselWindowStyler())
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showingSettings) { SettingsView() }
         .sheet(isPresented: $showingLogs) { LogsView() }
@@ -52,6 +60,29 @@ struct ContentView: View {
         }
         .id(selectedStore)
         .transition(.opacity)
+    }
+}
+
+/// Hace que la barra de título de la ventana respete la **identidad navy** de Vessel en lugar
+/// del gris nativo de macOS: titlebar transparente + contenido a tamaño completo, de modo que
+/// el `vesselBackground` (navy oceánico + resplandor por tienda) suba por detrás del header
+/// sin costura (estilo Mythic). El `backgroundColor` navy es el respaldo para cualquier zona
+/// que el contenido no cubra. Ver DESIGN.md §7 (regla 6).
+private struct VesselWindowStyler: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { Self.apply(to: view.window) }
+        return view
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { Self.apply(to: nsView.window) }
+    }
+    private static func apply(to window: NSWindow?) {
+        guard let window else { return }
+        window.titlebarAppearsTransparent = true
+        window.styleMask.insert(.fullSizeContentView)
+        window.backgroundColor = NSColor(Theme.navyDeep)
+        window.isMovableByWindowBackground = true
     }
 }
 
