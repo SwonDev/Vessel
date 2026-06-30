@@ -734,6 +734,12 @@ struct GameDetailView: View {
 
     /// Perfil de compatibilidad del juego (para la sección de compatibilidad de la ficha).
     private var profile: CompatProfile? { CompatService.shared.profile(steam: game.steamAppId, title: game.title) }
+    /// Tienda para el sistema de copias de partida.
+    private var saveStore: SaveBackupManager.Store {
+        switch store { case .steam: return .steam; case .epic: return .epic; case .gog: return .gog }
+    }
+    /// Identidad del juego para las copias (mismo criterio que los hooks de lanzamiento).
+    private var saveId: String { game.steamAppId ?? game.id }
     /// Estado de lanzamiento (idle/launching/running) para el feedback del botón.
     private var launchState: GameLaunchTracker.State { GameLaunchTracker.shared.state(game.id) }
 
@@ -1142,6 +1148,9 @@ struct GameDetailView: View {
                 if let appId = game.steamAppId, !appId.isEmpty { detailRow("Steam AppID", appId) }
                 detailRow("Última sesión", game.lastPlayed.map { $0.formatted(date: .abbreviated, time: .omitted) } ?? "—")
                 detailRow("Tiempo de juego", playtimeText)
+                if let last = SaveBackupManager.shared.lastBackupDate(store: saveStore, id: saveId) {
+                    detailRow("Copia de partida", last.formatted(date: .abbreviated, time: .shortened), valueColor: steamGreen)
+                }
                 if let path = game.installPath, !path.isEmpty {
                     Divider().overlay(.white.opacity(0.06)).padding(.vertical, 4)
                     Button {
