@@ -684,6 +684,8 @@ struct SteamGameDetails {
     var genres: [String] = []
     var metacritic: Int?
     var screenshots: [URL] = []
+    /// Versión a resolución completa de cada captura (para el visor ampliado). Paralelo a `screenshots`.
+    var screenshotsFull: [URL] = []
     /// Características del juego (categorías de Steam): un jugador, mando, logros, nube, etc.
     var categories: [String] = []
     /// Número de reseñas de Steam (recommendations.total), para paridad con la tienda.
@@ -710,6 +712,8 @@ struct GameDetailView: View {
     @State private var showingSettings = false
     @State private var details: SteamGameDetails?
     @State private var loadingDetails = false
+    /// Índice de la captura abierta en el visor ampliado (nil = cerrado).
+    @State private var lightboxIndex: Int?
     private let steamGreen = Color(red: 0.34, green: 0.72, blue: 0.36)
     private let runningRed = Color(red: 0.85, green: 0.40, blue: 0.32)
 
@@ -745,12 +749,64 @@ struct GameDetailView: View {
         }
         .vesselBackground(tint: tint)
         .overlay(alignment: .topLeading) { backButton }
+        .overlay { if let idx = lightboxIndex { screenshotLightbox(idx) } }
+        .animation(.smooth(duration: 0.22), value: lightboxIndex)
         .sheet(isPresented: $showingSettings) {
             GameSettingsView(game: game, tint: tint, installPath: game.installPath) {
                 showingSettings = false
             }
         }
         .task(id: game.id) { await loadDetails() }
+    }
+
+    /// Visor de captura a tamaño grande (estilo Steam): fondo oscuro, imagen a resolución completa,
+    /// navegación anterior/siguiente, contador y cierre. Reutilizable por las 3 tiendas.
+    @ViewBuilder private func screenshotLightbox(_ idx: Int) -> some View {
+        let full = details?.screenshotsFull ?? []
+        let thumbs = details?.screenshots ?? []
+        let count = max(full.count, thumbs.count)
+        if count > 0, idx >= 0, idx < count {
+            let url = idx < full.count ? full[idx] : (idx < thumbs.count ? thumbs[idx] : nil)
+            ZStack {
+                Rectangle().fill(.black.opacity(0.88)).ignoresSafeArea()
+                    .onTapGesture { lightboxIndex = nil }
+                AsyncImage(url: url) { phase in
+                    if let img = phase.image { img.resizable().scaledToFit() }
+                    else if phase.error != nil { Image(systemName: "photo").font(.largeTitle).foregroundStyle(.white.opacity(0.4)) }
+                    else { ProgressView().tint(.white) }
+                }
+                .padding(.horizontal, 64).padding(.vertical, 48)
+                .shadow(color: .black.opacity(0.6), radius: 24, y: 8)
+                HStack {
+                    lightboxArrow("chevron.left", enabled: idx > 0) { lightboxIndex = idx - 1 }
+                    Spacer()
+                    lightboxArrow("chevron.right", enabled: idx < count - 1) { lightboxIndex = idx + 1 }
+                }.padding(.horizontal, 18)
+                VStack {
+                    HStack {
+                        Text("\(idx + 1) / \(count)").font(.callout.weight(.semibold)).foregroundStyle(.white.opacity(0.9))
+                            .padding(.horizontal, 12).padding(.vertical, 6).liquidGlass(in: Capsule())
+                        Spacer()
+                        Button { lightboxIndex = nil } label: {
+                            Image(systemName: "xmark").font(.body.weight(.bold)).foregroundStyle(.white)
+                                .frame(width: 38, height: 38).liquidGlass(in: Circle())
+                        }
+                        .buttonStyle(.plain).accessibilityLabel("Cerrar visor")
+                    }.padding(20)
+                    Spacer()
+                }
+            }
+            .transition(.opacity)
+        }
+    }
+
+    private func lightboxArrow(_ icon: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon).font(.title2.weight(.bold)).foregroundStyle(.white)
+                .frame(width: 46, height: 46).liquidGlass(in: Circle())
+        }
+        .buttonStyle(.plain).opacity(enabled ? 1 : 0.25).disabled(!enabled)
+        .accessibilityLabel(icon.contains("left") ? "Captura anterior" : "Captura siguiente")
     }
 
     private var hero: some View {
@@ -909,16 +965,26 @@ struct GameDetailView: View {
                     .padding(.horizontal, 32)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
-                        ForEach(shots, id: \.self) { url in
-                            AsyncImage(url: url) { phase in
-                                if let img = phase.image { img.resizable().scaledToFill() }
-                                else { Theme.surface }
+                        ForEach(Array(shots.enumerated()), id: \.element) { idx, url in
+                            Button { lightboxIndex = idx } label: {
+                                AsyncImage(url: url) { phase in
+                                    if let img = phase.image { img.resizable().scaledToFill() }
+                                    else { Theme.surface }
+                                }
+                                .frame(width: 300, height: 169)
+                                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous)
+                                    .strokeBorder(.white.opacity(0.10), lineWidth: 0.5))
+                                .overlay(alignment: .bottomTrailing) {
+                                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                        .font(.caption2.weight(.bold)).foregroundStyle(.white)
+                                        .padding(5).background(.black.opacity(0.45), in: Circle()).padding(8)
+                                }
+                                .shadow(color: .black.opacity(0.30), radius: 6, y: 3)
+                                .hoverLift(scale: 1.02)
                             }
-                            .frame(width: 300, height: 169)
-                            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous))
-                            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous)
-                                .strokeBorder(.white.opacity(0.10), lineWidth: 0.5))
-                            .shadow(color: .black.opacity(0.30), radius: 6, y: 3)
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Ampliar captura \(idx + 1)")
                         }
                     }
                     .padding(.horizontal, 32).padding(.vertical, 4)
@@ -1078,9 +1144,9 @@ struct GameDetailView: View {
             det.categories = ((d["categories"] as? [[String: Any]]) ?? []).compactMap { $0["description"] as? String }
             det.metacritic = (d["metacritic"] as? [String: Any])?["score"] as? Int
             det.reviewCount = (d["recommendations"] as? [String: Any])?["total"] as? Int
-            det.screenshots = ((d["screenshots"] as? [[String: Any]]) ?? []).prefix(8).compactMap {
-                ($0["path_thumbnail"] as? String).flatMap { URL(string: $0) }
-            }
+            let shots = ((d["screenshots"] as? [[String: Any]]) ?? []).prefix(12)
+            det.screenshots = shots.compactMap { ($0["path_thumbnail"] as? String).flatMap { URL(string: $0) } }
+            det.screenshotsFull = shots.compactMap { ($0["path_full"] as? String).flatMap { URL(string: $0) } }
             details = det
         } catch { }
     }
