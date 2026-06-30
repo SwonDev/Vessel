@@ -47,6 +47,9 @@ final class GogdlManager {
     /// Archivo JSON donde gogdl guarda los tokens (lo que se pasa a `--auth-config-path`).
     static let authConfigPath = "\(configDir)/auth.json"
 
+    /// Marcador con la versión instalada (para auto-actualizar cuando se sube el pin).
+    static let versionMarkerPath = "\(gogdlDir)/.vessel-version"
+
     /// `client_id` de GOG Galaxy que gogdl usa por defecto (clave del objeto en `auth.json`).
     private static let gogClientID = "46899977096215655"
 
@@ -55,19 +58,22 @@ final class GogdlManager {
     private let log = LogStore.shared
 
     /// Versión de gogdl pinneada (la misma que usa Heroic). Repo: `Heroic-Games-Launcher/heroic-gogdl`.
-    private static let gogdlVersion = "v1.2.1"
+    private static let gogdlVersion = "v1.2.2"
 
     // MARK: - Instalación del binario
 
-    /// Devuelve la ruta al binario de gogdl, descargándolo si aún no está disponible.
-    /// Idempotente: si ya existe y es ejecutable, vuelve directamente.
+    /// Devuelve la ruta al binario de gogdl, instalándolo o **auto-actualizándolo** si el pin
+    /// cambió. La actualización es TRANSACCIONAL y SEGURA (regla #1: nunca romper):
+    /// descarga a un candidato aparte → lo valida (corre `--version`) → swap atómico con backup
+    /// → rollback si falla. Si la nueva versión no valida, SE CONSERVA la actual funcionando.
     func ensureInstalled(onProgress: @escaping @Sendable (String) -> Void) async throws -> String {
-        if FileManager.default.isExecutableFile(atPath: Self.binaryPath) {
+        let fm = FileManager.default
+        // Ya instalado y al día → nada que hacer.
+        if fm.isExecutableFile(atPath: Self.binaryPath), installedVersionMarker() == Self.gogdlVersion {
             return Self.binaryPath
         }
-
-        try FileManager.default.createDirectory(atPath: Self.gogdlDir, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(atPath: Self.configDir, withIntermediateDirectories: true)
+        try fm.createDirectory(atPath: Self.gogdlDir, withIntermediateDirectories: true)
+        try fm.createDirectory(atPath: Self.configDir, withIntermediateDirectories: true)
 
         // Binario nativo de macOS del fork heroic-gogdl (mismo origen y versión que usa Heroic).
         #if arch(arm64)
@@ -75,39 +81,60 @@ final class GogdlManager {
         #else
         let assetName = "gogdl_macos_x86_64"
         #endif
-        let urlString = "https://github.com/Heroic-Games-Launcher/heroic-gogdl/releases/download/\(Self.gogdlVersion)/\(assetName)"
-        guard let downloadURL = URL(string: urlString) else {
-            throw NSError(domain: "Vessel", code: 100,
-                userInfo: [NSLocalizedDescriptionKey: "URL de gogdl inválida."])
+        guard let downloadURL = URL(string: "https://github.com/Heroic-Games-Launcher/heroic-gogdl/releases/download/\(Self.gogdlVersion)/\(assetName)") else {
+            throw NSError(domain: "Vessel", code: 100, userInfo: [NSLocalizedDescriptionKey: "URL de gogdl inválida."])
         }
+        let updating = fm.isExecutableFile(atPath: Self.binaryPath)
+        onProgress(updating ? "Actualizando gogdl a \(Self.gogdlVersion)…" : "Descargando gogdl \(Self.gogdlVersion) (GOG)…")
+        log.log("gogdl: \(updating ? "actualizando a" : "descargando") \(assetName) \(Self.gogdlVersion)", level: .info)
 
-        onProgress("Descargando gogdl \(Self.gogdlVersion) (GOG)…")
-        log.log("gogdl: descargando \(assetName) v\(Self.gogdlVersion) (heroic-gogdl)", level: .info)
-
+        // 1) Descargar a un CANDIDATO aparte (no toca el binario actual aún).
         let (tempURL, response) = try await URLSession.shared.download(from: downloadURL)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            try? FileManager.default.removeItem(at: tempURL)
-            throw NSError(domain: "Vessel", code: http.statusCode,
-                userInfo: [NSLocalizedDescriptionKey: "Descarga de gogdl falló: HTTP \(http.statusCode)"])
+            try? fm.removeItem(at: tempURL)
+            if updating { log.log("gogdl: descarga de \(Self.gogdlVersion) falló (HTTP \(http.statusCode)); se conserva la versión actual.", level: .warn); return Self.binaryPath }
+            throw NSError(domain: "Vessel", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Descarga de gogdl falló: HTTP \(http.statusCode)"])
         }
-        defer { try? FileManager.default.removeItem(at: tempURL) }
-
-        let finalURL = URL(fileURLWithPath: Self.binaryPath)
-        try? FileManager.default.removeItem(at: finalURL)
-        try FileManager.default.moveItem(at: tempURL, to: finalURL)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: Self.binaryPath)
-
+        let candidate = "\(Self.gogdlDir)/gogdl.candidate"
+        try? fm.removeItem(atPath: candidate)
+        try fm.moveItem(at: tempURL, to: URL(fileURLWithPath: candidate))
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: candidate)
         onProgress("Quitando cuarentena y firmando gogdl…")
-        await stripQuarantine(Self.binaryPath)
-        await adhocSign(Self.binaryPath)
+        await stripQuarantine(candidate)
+        await adhocSign(candidate)
 
-        guard FileManager.default.isExecutableFile(atPath: Self.binaryPath) else {
-            throw NSError(domain: "Vessel", code: 101,
-                userInfo: [NSLocalizedDescriptionKey: "gogdl se descargó pero no es ejecutable (\(Self.binaryPath))."])
+        // 2) VALIDAR el candidato (ejecutable + responde). Si no, descartarlo y conservar el actual.
+        guard fm.isExecutableFile(atPath: candidate), await smokeTest(candidate) else {
+            try? fm.removeItem(atPath: candidate)
+            if updating { log.log("gogdl: el candidato \(Self.gogdlVersion) no validó; se conserva la versión actual.", level: .warn); return Self.binaryPath }
+            throw NSError(domain: "Vessel", code: 101, userInfo: [NSLocalizedDescriptionKey: "gogdl se descargó pero no validó (no responde)."])
         }
 
+        // 3) Swap ATÓMICO con backup + rollback.
+        let backup = "\(Self.gogdlDir)/gogdl.bak"
+        try? fm.removeItem(atPath: backup)
+        if updating { try? fm.moveItem(atPath: Self.binaryPath, toPath: backup) }
+        do {
+            try fm.moveItem(atPath: candidate, toPath: Self.binaryPath)
+        } catch {
+            if fm.fileExists(atPath: backup) { try? fm.moveItem(atPath: backup, toPath: Self.binaryPath) }
+            throw error
+        }
+        try? fm.removeItem(atPath: backup)
+        try? Self.gogdlVersion.write(toFile: Self.versionMarkerPath, atomically: true, encoding: .utf8)
         log.log("✓ gogdl \(Self.gogdlVersion) listo en \(Self.binaryPath)", level: .info)
         return Self.binaryPath
+    }
+
+    /// Versión instalada (marcador). `nil` si nunca se escribió (instalación previa a esta lógica).
+    private func installedVersionMarker() -> String? {
+        (try? String(contentsOfFile: Self.versionMarkerPath, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Smoke test de seguridad: el binario corre y responde (`gogdl --version` → exit 0).
+    private func smokeTest(_ binary: String) async -> Bool {
+        ((try? await runBackground(binary, args: ["--version"]))?.exitCode ?? 1) == 0
     }
 
     // MARK: - Autenticación
