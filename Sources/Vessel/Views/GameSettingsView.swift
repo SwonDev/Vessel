@@ -119,6 +119,14 @@ struct GameSettingsView: View {
                         Toggle("Fsync", isOn: $config.fsync).tint(tint).foregroundStyle(.white)
                     }
 
+                    section("Rendimiento en pantalla") {
+                        Toggle("Mostrar HUD de Metal", isOn: $config.metalHUD)
+                            .tint(tint).foregroundStyle(.white)
+                        Text("Superpone FPS y tiempos de frame en el juego (HUD nativo de Metal). Útil para medir rendimiento; desactívalo para jugar.")
+                            .font(.caption2).foregroundStyle(.white.opacity(0.45))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
                     if let path = installPath, !path.isEmpty {
                         Button {
                             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])

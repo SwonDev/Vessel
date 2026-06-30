@@ -141,6 +141,7 @@ final class CompatService {
         if user.graphicsLayer != .auto { cfg.graphicsOverride = user.graphicsLayer }
         cfg.esync = user.esync
         cfg.fsync = user.fsync
+        cfg.metalHUD = user.metalHUD
         let userArgs = user.launchArguments.split(separator: " ").map(String.init)
         cfg.launchArgs += userArgs
 

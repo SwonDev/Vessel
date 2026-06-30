@@ -1333,6 +1333,10 @@ final class WineManager {
             fullEnv["WINEMSYNC"] = eff.msync ? "1" : "0"
             fullEnv["WINEESYNC"] = (eff.esync || eff.msync) ? "1" : "0"
             fullEnv["WINEFSYNC"] = eff.fsync ? "1" : "0"
+            // HUD de rendimiento de Metal (ajuste del usuario). Se aplica AQUÍ, en el overlay
+            // efectivo, para que pise el `MTL_HUD_ENABLED=0` que fija el entorno base de D3DMetal
+            // (GPTKManager) — así el toggle también funciona en juegos D3D12.
+            fullEnv["MTL_HUD_ENABLED"] = eff.metalHUD ? "1" : "0"
             // Overrides de DLL del perfil: se AÑADEN a los que ya trae el entorno base.
             let extra = eff.dllOverridesString
             if !extra.isEmpty {

@@ -185,6 +185,8 @@ struct EffectiveLaunchConfig: Sendable {
     var msync: Bool = true
     /// Modo Retina (DPI 192) — nitidez en pantallas Apple, como hace Mythic.
     var retina: Bool = true
+    /// HUD de rendimiento de Metal (FPS / tiempos de frame) superpuesto. Ajuste del usuario.
+    var metalHUD: Bool = false
 
     /// Procedencia (para logs/UI): de dónde salió la config aplicada.
     var rating: CompatProfile.Rating? = nil
