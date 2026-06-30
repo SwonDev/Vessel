@@ -153,7 +153,7 @@ final class EpicStore {
             return
         }
         // Rastrear el estado para el feedback visual (Iniciando… → Ejecutándose).
-        await GameLaunchTracker.shared.track(game.appName) {
+        await GameLaunchTracker.shared.track(game.appName, statsKey: "epic:\(game.appName)") {
             let bottle = try await ensureBottle()
             let cfg = GameConfigStore.load(game.appName)
             // Perfil de compatibilidad (comunidad) + overrides del usuario → config efectiva.

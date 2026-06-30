@@ -317,7 +317,7 @@ struct BottleDetailView: View {
         // Mismo id que usa la UI (StoreGame.id) para que el feedback (Iniciando…/Ejecutándose)
         // se refleje en la ficha y la tarjeta.
         let trackId = game.steamAppId ?? game.id.uuidString
-        await GameLaunchTracker.shared.track(trackId) {
+        await GameLaunchTracker.shared.track(trackId, statsKey: "steam:\(trackId)") {
             let cfg = GameConfigStore.load(trackId)
             let profile = CompatService.shared.profile(steam: game.steamAppId, title: game.name)
             let eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)

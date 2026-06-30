@@ -170,7 +170,7 @@ final class GogStore {
 
     /// Lanza un juego de GOG ya instalado con el motor de juegos (wine-dxmt), igual que Steam/Epic.
     func play(_ game: GogdlManager.GogGame) async {
-        await GameLaunchTracker.shared.track(game.appId) {
+        await GameLaunchTracker.shared.track(game.appId, statsKey: "gog:\(game.appId)") {
             let bottle = try await self.ensureBottle()
             let dir = self.installDir(bottle, game.appId)
             guard let exe = self.gogdl.primaryExecutable(appId: game.appId, installDir: dir) else {

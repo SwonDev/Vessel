@@ -50,8 +50,15 @@ struct StoreGame: Identifiable, Hashable {
 enum StoreSortOrder: String, CaseIterable, Identifiable {
     case nombre = "Nombre"
     case recientes = "Recientes"
+    case masJugado = "Más jugado"
     var id: String { rawValue }
-    var symbol: String { self == .nombre ? "textformat" : "clock" }
+    var symbol: String {
+        switch self {
+        case .nombre:    return "textformat"
+        case .recientes: return "clock"
+        case .masJugado: return "hourglass"
+        }
+    }
 }
 
 enum StoreLibraryFilter: String, CaseIterable, Identifiable {
@@ -96,8 +103,25 @@ struct StoreLibraryView: View {
         UserDefaults.standard.set(Array(favorites), forKey: favKey)
     }
 
+    /// Clave de estadística de juego (`"<tienda>:<id>"`), la misma que escribe el
+    /// `GameLaunchTracker` al jugar. Une lectura (aquí) y escritura (al lanzar).
+    private func statsKey(_ game: StoreGame) -> String { "\(store.rawValue):\(game.id)" }
+
+    /// Juegos enriquecidos con las estadísticas persistidas (`PlayStatsStore`): última sesión y
+    /// tiempo jugado. La UI (orden Recientes/Más jugado, carrusel, ficha) ya espera estos campos
+    /// en `StoreGame`; aquí es donde se rellenan, en UN solo sitio, sin tocar las 3 tiendas.
+    private var enriched: [StoreGame] {
+        games.map { g in
+            var e = g
+            let k = statsKey(g)
+            if let lp = PlayStatsStore.shared.lastPlayed(k) { e.lastPlayed = lp }
+            if let pm = PlayStatsStore.shared.playtimeMinutes(k) { e.playtimeMinutes = pm }
+            return e
+        }
+    }
+
     private var filtered: [StoreGame] {
-        var list = games
+        var list = enriched
         switch filter {
         case .instalados:  list = list.filter { $0.installed }
         case .porInstalar: list = list.filter { !$0.installed }
@@ -112,6 +136,7 @@ struct StoreLibraryView: View {
             switch sortOrder {
             case .nombre:    return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
             case .recientes: return (a.lastPlayed ?? .distantPast) > (b.lastPlayed ?? .distantPast)
+            case .masJugado: return (a.playtimeMinutes ?? 0) > (b.playtimeMinutes ?? 0)
             }
         }
         return list
@@ -132,7 +157,10 @@ struct StoreLibraryView: View {
     // MARK: - Panel principal: ficha del juego seleccionado o grid "home"
 
     @ViewBuilder private var detailPane: some View {
-        if let game = selectedGame {
+        if let selected = selectedGame {
+            // Re-resolver desde `enriched` por id: así la ficha refleja el tiempo jugado y la
+            // última sesión EN VIVO cuando el juego se cierra (PlayStatsStore es @Observable).
+            let game = enriched.first(where: { $0.id == selected.id }) ?? selected
             GameDetailView(
                 game: game, tint: tint,
                 installing: installingIDs.contains(game.id),
@@ -174,7 +202,7 @@ struct StoreLibraryView: View {
 
     /// Juegos jugados recientemente (los que tienen `lastPlayed`), más recientes primero.
     private var recentlyPlayed: [StoreGame] {
-        games.filter { $0.lastPlayed != nil }
+        enriched.filter { $0.lastPlayed != nil }
             .sorted { ($0.lastPlayed ?? .distantPast) > ($1.lastPlayed ?? .distantPast) }
             .prefix(8).map { $0 }
     }
