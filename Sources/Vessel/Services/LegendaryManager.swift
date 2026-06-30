@@ -233,6 +233,35 @@ final class LegendaryManager {
         log.log("✓ Epic: \(appName) verificado/reparado", level: .info)
     }
 
+    /// Aplica la actualización de un juego de Epic (`legendary update`, alias de install).
+    func updateGame(appName: String, basePath: String, onProgress: @escaping @Sendable (String) -> Void) async throws {
+        let code = try await runStreaming(
+            Self.binaryPath,
+            args: ["update", appName, "--base-path", basePath, "--platform", "Windows", "--yes"],
+            onLine: onProgress
+        )
+        guard code == 0 else {
+            throw NSError(domain: "Vessel", code: 112, userInfo: [NSLocalizedDescriptionKey:
+                "La actualización de Epic falló (código \(code)). Revisa los logs."])
+        }
+        log.log("✓ Epic: \(appName) actualizado", level: .info)
+    }
+
+    /// Devuelve los `appName` de juegos INSTALADOS con actualización disponible
+    /// (`legendary list-installed --check-updates --json` → campo `update_available`).
+    /// Silencioso ante fallos (devuelve vacío): es información orientativa, no crítica.
+    func gamesWithUpdates() async -> Set<String> {
+        guard let result = try? await runBackground(Self.binaryPath, args: ["list-installed", "--check-updates", "--json"]),
+              result.exitCode == 0,
+              let data = result.stdout.data(using: .utf8),
+              let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
+        var updates: Set<String> = []
+        for obj in arr where (obj["update_available"] as? Bool) == true {
+            if let name = obj["app_name"] as? String { updates.insert(name) }
+        }
+        return updates
+    }
+
     /// Ejecuta legendary para una operación LARGA (instalación), drenando la salida en vivo
     /// y reportando cada línea de progreso. Sin timeout: las descargas pueden durar mucho.
     private func runStreaming(_ binary: String, args: [String], onLine: @escaping @Sendable (String) -> Void) async throws -> Int32 {

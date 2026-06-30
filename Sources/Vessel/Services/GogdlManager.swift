@@ -289,6 +289,21 @@ final class GogdlManager {
         log.log("✓ GOG: \(appId) verificado/reparado", level: .info)
     }
 
+    /// Aplica la actualización de un juego de GOG (`gogdl update`, alias de download).
+    func updateGame(appId: String, installDir: String,
+                    onProgress: @escaping @Sendable (String) -> Void) async throws {
+        let bin = try resolvedBinaryPath()
+        let code = try await runStreaming(bin, args: [
+            "--auth-config-path", Self.authConfigPath,
+            "update", appId, "--path", installDir,
+            "--platform", "windows", "--lang", "en-US"
+        ], onLine: onProgress)
+        guard code == 0 else {
+            throw GogdlError.installFailed("La actualización de GOG falló (código \(code)). Revisa los logs.")
+        }
+        log.log("✓ GOG: \(appId) actualizado", level: .info)
+    }
+
     /// `true` si el juego está instalado en `installDir` (existe su `goggame-<id>.info`).
     func isInstalled(appId: String, installDir: String) -> Bool {
         FileManager.default.fileExists(atPath: "\(installDir)/goggame-\(appId).info")

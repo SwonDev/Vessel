@@ -89,6 +89,8 @@ final class EpicStore {
         do {
             let games = try await legendary.ownedGames()
             phase = .connected(games)
+            // Detección de actualizaciones (orientativa, no bloquea la biblioteca).
+            Task { self.updatesAvailable = await legendary.gamesWithUpdates() }
         } catch {
             log.log("Error cargando biblioteca Epic: \(error.localizedDescription)", level: .error)
             // Si ya mostramos la caché, no romper la vista con un error.
@@ -98,6 +100,9 @@ final class EpicStore {
     }
 
     // MARK: - Instalar / Jugar
+
+    /// `appName`s con actualización disponible (detección por `legendary --check-updates`).
+    var updatesAvailable: Set<String> = []
 
     func isInstalling(_ appName: String) -> Bool { installingAppNames.contains(appName) }
     func progress(_ appName: String) -> String? { installProgress[appName] }
@@ -173,6 +178,34 @@ final class EpicStore {
         }
     }
 
+    /// Aplica la actualización de un juego de Epic (reusa el feedback visual de instalación).
+    func update(_ game: LegendaryManager.EpicGame) async {
+        installingAppNames.insert(game.appName)
+        installProgress[game.appName] = "Actualizando…"
+        defer {
+            installingAppNames.remove(game.appName)
+            installProgress[game.appName] = nil
+            installPercents[game.appName] = nil
+        }
+        do {
+            let bottle = try await ensureBottle()
+            let dir = "\(bottle.prefixPath)/drive_c/Games"
+            try await legendary.updateGame(appName: game.appName, basePath: dir) { line in
+                if let pct = LegendaryManager.progressPercent(in: line) {
+                    Task { @MainActor in
+                        self.installPercents[game.appName] = max(0, min(1, pct / 100))
+                        self.installProgress[game.appName] = "Actualizando… \(Int(pct))%"
+                    }
+                }
+            }
+            updatesAvailable.remove(game.appName)
+            await reloadLibrary()
+        } catch {
+            log.log("Error actualizando \(game.title): \(error.localizedDescription)", level: .error)
+            installProgress[game.appName] = "Error en la actualización"
+        }
+    }
+
     /// Lanza un juego de Epic ya instalado con el motor de juegos (wine-dxmt), igual que Steam.
     func play(_ game: LegendaryManager.EpicGame) async {
         guard let exe = game.executablePath, !exe.isEmpty else {
@@ -206,13 +239,14 @@ struct EpicStoreView: View {
             case .connected(let games):
                 StoreLibraryView(
                     store: .epic,
-                    games: games.map { StoreGame(id: $0.appName, title: $0.title, coverURL: $0.coverURL, installed: $0.installed, installPath: $0.installPath) },
+                    games: games.map { StoreGame(id: $0.appName, title: $0.title, coverURL: $0.coverURL, installed: $0.installed, updateAvailable: epic.updatesAvailable.contains($0.appName), installPath: $0.installPath) },
                     installingIDs: epic.installingAppNames,
                     progressFor: { epic.progress($0) },
                     percentFor: { epic.percent($0) },
                     onInstall: { sg in if let g = games.first(where: { $0.appName == sg.id }) { Task { await epic.install(g) } } },
                     onPlay:    { sg in if let g = games.first(where: { $0.appName == sg.id }) { Task { await epic.play(g) } } },
                     onVerify:  { sg in if let g = games.first(where: { $0.appName == sg.id }) { Task { await epic.verify(g) } } },
+                    onUpdate:  { sg in if let g = games.first(where: { $0.appName == sg.id }) { Task { await epic.update(g) } } },
                     onReload:  { Task { await epic.reloadLibrary() } },
                     onLogout:  { epic.disconnect() }
                 )

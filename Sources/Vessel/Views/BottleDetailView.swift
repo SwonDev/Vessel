@@ -64,6 +64,8 @@ struct BottleDetailView: View {
             // Verificar/reparar en Steam = re-ejecutar SteamCMD `app_update <id> validate` (el
             // mismo flujo de instalación, que YA valida la integridad y re-descarga lo dañado).
             onVerify: { sg in if sg.steamAppId != nil { Task { await installGame(sg.id) } } },
+            // Actualizar en Steam = `app_update <id>` (sin validate forzado, va a la última build).
+            onUpdate: { sg in if sg.steamAppId != nil { Task { await installGame(sg.id) } } },
             onReload: { Task { await loadSteamLibrary() } },
             onLogout: { NotificationCenter.default.post(name: .steamLogout, object: nil) }
         )

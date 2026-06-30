@@ -195,6 +195,33 @@ final class GogStore {
         }
     }
 
+    /// Aplica la actualización de un juego de GOG (reusa el feedback visual de instalación).
+    func update(_ game: GogdlManager.GogGame) async {
+        installingAppIds.insert(game.appId)
+        installProgress[game.appId] = "Actualizando…"
+        defer {
+            installingAppIds.remove(game.appId)
+            installProgress[game.appId] = nil
+            installPercents[game.appId] = nil
+        }
+        do {
+            let bottle = try await ensureBottle()
+            let dir = installDir(bottle, game.appId)
+            try await gogdl.updateGame(appId: game.appId, installDir: dir) { line in
+                if let pct = GogdlManager.progressPercent(in: line) {
+                    Task { @MainActor in
+                        self.installPercents[game.appId] = max(0, min(1, pct / 100))
+                        self.installProgress[game.appId] = "Actualizando… \(Int(pct))%"
+                    }
+                }
+            }
+            await reloadLibrary()
+        } catch {
+            log.log("Error actualizando \(game.title): \(error.localizedDescription)", level: .error)
+            installProgress[game.appId] = "Error en la actualización"
+        }
+    }
+
     /// Lanza un juego de GOG ya instalado con el motor de juegos (wine-dxmt), igual que Steam/Epic.
     func play(_ game: GogdlManager.GogGame) async {
         await GameLaunchTracker.shared.track(game.appId, statsKey: "gog:\(game.appId)") {
@@ -234,6 +261,7 @@ struct GogStoreView: View {
                     onInstall: { sg in if let g = games.first(where: { $0.appId == sg.id }) { Task { await gog.install(g) } } },
                     onPlay:    { sg in if let g = games.first(where: { $0.appId == sg.id }) { Task { await gog.play(g) } } },
                     onVerify:  { sg in if let g = games.first(where: { $0.appId == sg.id }) { Task { await gog.verify(g) } } },
+                    onUpdate:  { sg in if let g = games.first(where: { $0.appId == sg.id }) { Task { await gog.update(g) } } },
                     onReload:  { Task { await gog.reloadLibrary() } },
                     onLogout:  { gog.disconnect() }
                 )

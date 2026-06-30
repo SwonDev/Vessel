@@ -11,6 +11,7 @@ struct StoreGame: Identifiable, Hashable {
     var heroURL: String? = nil       // banner horizontal para la ficha del juego
     var steamAppId: String? = nil    // para la portada del CDN de Steam
     var installed: Bool = false
+    var updateAvailable: Bool = false   // hay actualización pendiente (detección por tienda)
     var lastPlayed: Date? = nil
     var playtimeMinutes: Int? = nil
     var installPath: String? = nil   // carpeta del juego (para "Abrir carpeta")
@@ -85,6 +86,8 @@ struct StoreLibraryView: View {
     /// Verificar/reparar integridad de un juego instalado (re-descarga lo dañado). Reusa el
     /// feedback de instalación (`installingIDs`/`progressFor`/`percentFor`).
     var onVerify: (StoreGame) -> Void = { _ in }
+    /// Aplicar la actualización de un juego instalado (mismo feedback que instalar/verificar).
+    var onUpdate: (StoreGame) -> Void = { _ in }
     var onReload: () -> Void = {}
     var onLogout: () -> Void = {}
 
@@ -174,6 +177,7 @@ struct StoreLibraryView: View {
                 onPlay: { onPlay(game) },
                 onUninstall: { onUninstall(game) },
                 onVerify: { onVerify(game) },
+                onUpdate: { onUpdate(game) },
                 onToggleFavorite: { toggleFav(game.id) },
                 onBack: { selectedGame = nil }
             )
@@ -356,6 +360,10 @@ struct StoreLibraryView: View {
         if game.installed {
             Button { onPlay(game) } label: { Label("Jugar", systemImage: "play.fill") }
             if !installingIDs.contains(game.id) {
+                Button { onUpdate(game) } label: {
+                    Label(game.updateAvailable ? "Actualizar (disponible)" : "Actualizar",
+                          systemImage: "arrow.triangle.2.circlepath")
+                }
                 Button { onVerify(game) } label: { Label("Verificar / reparar", systemImage: "checkmark.shield") }
             }
             Button(role: .destructive) { onUninstall(game) } label: { Label("Desinstalar", systemImage: "trash") }
@@ -554,11 +562,16 @@ struct StoreGameRow: View {
                     .strokeBorder(.white.opacity(0.08), lineWidth: 0.5))
             VStack(alignment: .leading, spacing: 2) {
                 Text(game.title).font(.callout).foregroundStyle(.white).lineLimit(1)
-                Text(game.installed ? "Instalado" : "Sin instalar")
+                Text(game.updateAvailable ? "Actualización disponible"
+                                          : (game.installed ? "Instalado" : "Sin instalar"))
                     .font(.caption2)
-                    .foregroundStyle(game.installed ? Color(red: 0.30, green: 0.85, blue: 0.55) : .white.opacity(0.4))
+                    .foregroundStyle(game.updateAvailable ? tint
+                                     : (game.installed ? Color(red: 0.30, green: 0.85, blue: 0.55) : .white.opacity(0.4)))
             }
             Spacer(minLength: 0)
+            if game.updateAvailable {
+                Image(systemName: "arrow.down.circle.fill").font(.caption2).foregroundStyle(tint)
+            }
             if isFavorite {
                 Image(systemName: "star.fill").font(.caption2).foregroundStyle(.yellow)
             }
@@ -686,6 +699,7 @@ struct GameDetailView: View {
     var onPlay: () -> Void = {}
     var onUninstall: () -> Void = {}
     var onVerify: () -> Void = {}
+    var onUpdate: () -> Void = {}
     var onToggleFavorite: () -> Void = {}
     var onBack: () -> Void = {}
 
@@ -766,6 +780,9 @@ struct GameDetailView: View {
             stat("clock", "Última sesión", game.lastPlayed.map { $0.formatted(date: .abbreviated, time: .omitted) } ?? "—")
             stat("hourglass", "Tiempo de juego", playtimeText)
             Spacer(minLength: 0)
+            if game.installed && !installing {
+                iconButton("arrow.triangle.2.circlepath", tinted: game.updateAvailable, action: onUpdate)
+            }
             if game.installed && !installing { iconButton("checkmark.shield", action: onVerify) }
             if game.installed { iconButton("trash", action: onUninstall) }
             iconButton("gearshape.fill") { showingSettings = true }
