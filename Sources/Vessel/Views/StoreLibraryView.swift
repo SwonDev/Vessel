@@ -168,7 +168,7 @@ struct StoreLibraryView: View {
             // última sesión EN VIVO cuando el juego se cierra (PlayStatsStore es @Observable).
             let game = enriched.first(where: { $0.id == selected.id }) ?? selected
             GameDetailView(
-                game: game, tint: tint,
+                game: game, tint: tint, store: store,
                 installing: installingIDs.contains(game.id),
                 progress: progressFor(game.id),
                 percent: percentFor(game.id),
@@ -709,6 +709,7 @@ struct StoreDLC: Identifiable, Hashable {
 struct GameDetailView: View {
     let game: StoreGame
     let tint: Color
+    var store: StoreKind = .steam
     var installing: Bool = false
     var progress: String? = nil
     var percent: Double? = nil
@@ -1188,9 +1189,44 @@ struct GameDetailView: View {
     /// géneros, capturas, estudio, editor, fecha y Metacritic. Metadatos públicos del juego,
     /// igual que las carátulas; sin datos personales.
     @MainActor private func loadDetails() async {
-        details = nil
-        guard let appId = game.steamAppId, !appId.isEmpty,
-              let url = URL(string: "https://store.steampowered.com/api/appdetails?appids=\(appId)&l=spanish")
+        details = nil; dlcs = []
+        if let appId = game.steamAppId, !appId.isEmpty {
+            await loadSteamDetails(appId)
+        } else if store == .gog {
+            await loadGogDetails(game.id)
+        }
+        // Epic no expone metadatos de tienda públicos sencillos; muestra lo que da su backend.
+    }
+
+    /// Enriquece la ficha de un juego de **GOG** con su API pública (descripción + capturas).
+    /// Reutiliza el visor y las secciones comunes — paridad visual también en GOG.
+    @MainActor private func loadGogDetails(_ id: String) async {
+        guard let url = URL(string: "https://api.gog.com/products/\(id)?expand=description,screenshots") else { return }
+        loadingDetails = true
+        defer { loadingDetails = false }
+        do {
+            var req = URLRequest(url: url); req.timeoutInterval = 12
+            let (data, _) = try await URLSession.shared.data(for: req)
+            guard let d = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+            var det = SteamGameDetails()
+            if let desc = d["description"] as? [String: Any] {
+                let body = (desc["full"] as? String) ?? (desc["lead"] as? String) ?? ""
+                det.description = Self.stripHTML(body)
+            }
+            let shots = ((d["screenshots"] as? [[String: Any]]) ?? []).prefix(12)
+            func gogURL(_ s: [String: Any], _ formatter: String) -> URL? {
+                (s["formatter_template_url"] as? String)
+                    .flatMap { URL(string: $0.replacingOccurrences(of: "{formatter}", with: formatter)) }
+            }
+            det.screenshots = shots.compactMap { gogURL($0, "ggvgm_2x") }       // miniatura
+            det.screenshotsFull = shots.compactMap { gogURL($0, "ggvgl_2x") }   // resolución grande
+            details = det
+        } catch { }
+    }
+
+    /// Enriquece la ficha de un juego de **Steam** con la API pública `appdetails`.
+    @MainActor private func loadSteamDetails(_ appId: String) async {
+        guard let url = URL(string: "https://store.steampowered.com/api/appdetails?appids=\(appId)&l=spanish")
         else { return }
         loadingDetails = true
         defer { loadingDetails = false }
