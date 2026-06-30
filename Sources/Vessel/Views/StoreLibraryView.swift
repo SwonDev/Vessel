@@ -1099,7 +1099,8 @@ struct GameDetailView: View {
                             Spacer(minLength: 0)
                         }
                     }
-                    Text("Los DLC que tengas en tu cuenta se instalan junto al juego.")
+                    Text(store == .epic ? "Contenido adicional disponible para este juego."
+                                        : "Los DLC que tengas en tu cuenta se instalan junto al juego.")
                         .font(.caption2).foregroundStyle(.white.opacity(0.45)).padding(.top, 2)
                 }
             }
@@ -1203,8 +1204,38 @@ struct GameDetailView: View {
             await loadSteamDetails(appId)
         } else if store == .gog {
             await loadGogDetails(game.id)
+        } else if store == .epic {
+            await loadEpicDetails(game.id)
         }
-        // Epic no expone metadatos de tienda públicos sencillos; muestra lo que da su backend.
+    }
+
+    /// Enriquece la ficha de un juego de **Epic** leyendo la metadata que legendary ya cachea
+    /// (`Epic/metadata/<app>.json`): descripción, desarrollador y capturas (keyImages `Screenshot`).
+    /// Sin lanzar procesos. Paridad de ficha también en Epic con lo que su backend ofrece.
+    @MainActor private func loadEpicDetails(_ appName: String) async {
+        let path = "\(VesselPaths.appSupport)/Epic/metadata/\(appName).json"
+        guard let data = FileManager.default.contents(atPath: path),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let md = obj["metadata"] as? [String: Any] else { return }
+        var det = SteamGameDetails()
+        if let desc = md["description"] as? String, !desc.isEmpty { det.description = Self.stripHTML(desc) }
+        if let dev = md["developer"] as? String, !dev.isEmpty { det.developers = [dev] }
+        let images = (md["keyImages"] as? [[String: Any]]) ?? []
+        let shots = images.filter { ($0["type"] as? String) == "Screenshot" }.prefix(12)
+            .compactMap { ($0["url"] as? String).flatMap { URL(string: $0) } }
+        det.screenshots = shots
+        det.screenshotsFull = shots
+        details = det
+        // DLC de Epic (de la propia metadata): nombre + carátula.
+        if let dlcList = md["dlcItemList"] as? [[String: Any]] {
+            dlcs = dlcList.prefix(20).compactMap { dlc in
+                guard let title = dlc["title"] as? String, !title.isEmpty else { return nil }
+                let imgs = (dlc["keyImages"] as? [[String: Any]]) ?? []
+                let cover = (imgs.first { ($0["type"] as? String)?.contains("Tall") == true }?["url"] as? String)
+                    ?? (imgs.first?["url"] as? String)
+                return StoreDLC(id: (dlc["id"] as? String) ?? title, title: title, coverURL: cover.flatMap { URL(string: $0) })
+            }
+        }
     }
 
     /// Enriquece la ficha de un juego de **GOG** con su API pública (descripción + capturas).
