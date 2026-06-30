@@ -77,7 +77,9 @@ final class GogStore {
     /// Recarga la biblioteca sin pedir el código de nuevo.
     func reloadLibrary() async {
         guard gogdl.isAuthenticated() else { phase = .disconnected; return }
-        phase = .working("Actualizando biblioteca GOG…")
+        // Refresco ORGÁNICO: si ya está cargada, NO ponemos splash a pantalla completa; la lista
+        // se mantiene y se actualiza en su sitio (los instalados suben arriba) al fijar .connected.
+        if case .connected = phase {} else { phase = .working("Actualizando biblioteca GOG…") }
         await loadLibrary()
     }
 

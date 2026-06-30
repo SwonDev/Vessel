@@ -73,7 +73,10 @@ final class EpicStore {
     /// Recarga la biblioteca sin pedir el código de nuevo.
     func reloadLibrary() async {
         guard legendary.isAuthenticated() else { phase = .disconnected; return }
-        phase = .working("Actualizando biblioteca Epic…")
+        // Refresco ORGÁNICO: si la biblioteca YA está cargada, NO mostramos splash a pantalla
+        // completa (queda horrible). La lista se mantiene visible y se actualiza en su sitio
+        // cuando loadLibrary fija `.connected(nuevos)` (los instalados suben arriba solos).
+        if case .connected = phase {} else { phase = .working("Actualizando biblioteca Epic…") }
         await loadLibrary()
     }
 

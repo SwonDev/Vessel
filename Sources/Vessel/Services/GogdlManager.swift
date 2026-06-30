@@ -304,21 +304,38 @@ final class GogdlManager {
         log.log("✓ GOG: \(appId) actualizado", level: .info)
     }
 
-    /// `true` si el juego está instalado en `installDir` (existe su `goggame-<id>.info`).
+    /// Carpeta REAL del juego dentro de `installDir`. gogdl ANIDA los archivos en una subcarpeta
+    /// con el nombre del juego (p. ej. `installDir/War Wind/`), NO directamente en `installDir`;
+    /// por eso buscamos el `goggame-<id>.info` en `installDir` o UN nivel por debajo. Sin esto,
+    /// el juego se descargaba bien pero Vessel lo daba por "Sin instalar" y no se podía jugar.
+    func gameRoot(appId: String, installDir: String) -> String? {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: "\(installDir)/goggame-\(appId).info") { return installDir }
+        if let subs = try? fm.contentsOfDirectory(atPath: installDir) {
+            for sub in subs where fm.fileExists(atPath: "\(installDir)/\(sub)/goggame-\(appId).info") {
+                return "\(installDir)/\(sub)"
+            }
+        }
+        return nil
+    }
+
+    /// `true` si el juego está instalado (existe su `goggame-<id>.info` en la carpeta real).
     func isInstalled(appId: String, installDir: String) -> Bool {
-        FileManager.default.fileExists(atPath: "\(installDir)/goggame-\(appId).info")
+        gameRoot(appId: appId, installDir: installDir) != nil
     }
 
     /// Ejecutable principal del juego (del `goggame-<id>.info` que instala GOG), ruta absoluta.
-    /// Se lanza luego con wine-dxmt desde Vessel (igual que Steam/Epic), no con `gogdl launch`.
+    /// Se resuelve relativo a la carpeta REAL (la subcarpeta donde gogdl puso los archivos). Se
+    /// lanza luego con wine-dxmt desde Vessel (igual que Steam/Epic), no con `gogdl launch`.
     func primaryExecutable(appId: String, installDir: String) -> String? {
-        let info = "\(installDir)/goggame-\(appId).info"
+        guard let root = gameRoot(appId: appId, installDir: installDir) else { return nil }
+        let info = "\(root)/goggame-\(appId).info"
         guard let data = FileManager.default.contents(atPath: info),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tasks = obj["playTasks"] as? [[String: Any]] else { return nil }
         let primary = tasks.first { ($0["isPrimary"] as? Bool) == true } ?? tasks.first
         guard let rel = primary?["path"] as? String, !rel.isEmpty else { return nil }
-        return "\(installDir)/\(rel)"
+        return "\(root)/\(rel)"
     }
 
     /// Extrae el porcentaje de descarga (0–100) de una línea de salida de gogdl

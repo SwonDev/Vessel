@@ -222,18 +222,20 @@ struct BottleDetailView: View {
     /// moverá a "Juegos instalados" cuando termine la descarga.
     private func installGame(_ appId: String) async {
         let name = ownedGames.first(where: { $0.appId == appId })?.name ?? "App \(appId)"
-        // Requiere sesión de SteamCMD. Si no la hay, pedir login primero.
-        guard !steamCMDUser.isEmpty else {
+        do { try await steamCMD.ensureInstalled() } catch {
+            statusMessage = "No se pudo preparar SteamCMD."
+            return
+        }
+        // Descargar de Steam requiere una SESIÓN REAL de SteamCMD, distinta del login oficial web
+        // (que solo da el nombre de cuenta para la biblioteca). Sin sesión, `app_update` falla en
+        // silencio → parecía "que instala pero no instala nada". Pedimos login de SteamCMD primero.
+        guard !steamCMDUser.isEmpty, await steamCMD.hasSession(user: steamCMDUser) else {
             pendingInstallAppId = appId
             showSteamCMDLogin = true
             return
         }
         installingAppIds.insert(appId)
         defer { installingAppIds.remove(appId); installMessages[appId] = nil; installPercents[appId] = nil }
-        do { try await steamCMD.ensureInstalled() } catch {
-            statusMessage = "No se pudo preparar SteamCMD."
-            return
-        }
         let safeName = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "")
         let installDir = "\(localBottle.prefixPath)/drive_c/Program Files (x86)/Steam/steamapps/common/\(safeName)"
         installMessages[appId] = "Iniciando descarga…"
