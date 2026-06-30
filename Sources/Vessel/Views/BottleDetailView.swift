@@ -326,7 +326,13 @@ struct BottleDetailView: View {
             }
             log.log("Ejecutable re-resuelto al lanzar \(game.name): \((resolved as NSString).lastPathComponent)", level: .info)
         }
-        await GameLaunchTracker.shared.track(trackId, statsKey: "steam:\(trackId)") {
+        await GameLaunchTracker.shared.track(
+            trackId, statsKey: "steam:\(trackId)",
+            // Copia de partida automática: al CERRAR el juego, respalda la partida (seguro, solo copia).
+            onExit: { Task { await SaveBackupManager.shared.backup(store: .steam, id: trackId, title: game.name, steamId: game.steamAppId, prefix: localBottle.prefixPath, installPath: game.installPath) } }
+        ) {
+            // Restaura la copia ANTES de jugar SOLO si es más nueva que la partida local.
+            await SaveBackupManager.shared.restoreIfNewer(store: .steam, id: trackId, title: game.name, steamId: game.steamAppId, prefix: localBottle.prefixPath, installPath: game.installPath)
             let cfg = GameConfigStore.load(trackId)
             let profile = CompatService.shared.profile(steam: game.steamAppId, title: game.name)
             let eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)

@@ -31,7 +31,7 @@ final class SaveBackupManager {
     /// Índice compacto: para cada juego, sus plantillas de ruta de guardado (tag `save`).
     /// Mapas por **steam appid** y por **nombre normalizado**. Se construye del manifiesto y se
     /// cachea como JSON (carga instantánea las siguientes veces).
-    private struct Index: Codable {
+    struct Index: Codable {
         var bySteamId: [String: [String]] = [:]
         var byName: [String: [String]] = [:]
         var builtAt: Double = 0
@@ -77,7 +77,7 @@ final class SaveBackupManager {
     }
 
     /// Parsea el YAML de ludusavi y extrae, por juego, solo las plantillas con tag `save`.
-    nonisolated private static func buildIndex(fromYAML data: Data) throws -> Index {
+    nonisolated static func buildIndex(fromYAML data: Data) throws -> Index {
         guard let text = String(data: data, encoding: .utf8),
               let root = try Yams.load(yaml: text) as? [String: Any] else {
             throw NSError(domain: "Vessel", code: 70, userInfo: [NSLocalizedDescriptionKey: "Manifiesto YAML no válido"])

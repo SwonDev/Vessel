@@ -224,14 +224,19 @@ final class EpicStore {
             return
         }
         let prefix = bottle.prefixPath
+        let gameDir = (exe as NSString).deletingLastPathComponent
         // Rastrear el estado (Iniciando… → Ejecutándose) + cloud saves automáticos: al CERRAR
-        // el juego, sube la partida a la nube (Epic). legendary resuelve solo la ruta.
+        // el juego, sube la partida a la nube (Epic) + copia local de Vessel. legendary resuelve la ruta.
         await GameLaunchTracker.shared.track(
             game.appName, statsKey: "epic:\(game.appName)",
-            onExit: { Task { await self.legendary.syncSaves(appName: game.appName, direction: .upload) } }
+            onExit: { Task {
+                await self.legendary.syncSaves(appName: game.appName, direction: .upload)
+                await SaveBackupManager.shared.backup(store: .epic, id: game.appName, title: game.title, steamId: nil, prefix: prefix, installPath: gameDir)
+            } }
         ) {
             // Cloud saves: baja lo último de la nube ANTES de jugar (no bloquea si no aplica).
             await legendary.syncSaves(appName: game.appName, direction: .download)
+            await SaveBackupManager.shared.restoreIfNewer(store: .epic, id: game.appName, title: game.title, steamId: nil, prefix: prefix, installPath: gameDir)
             let cfg = GameConfigStore.load(game.appName)
             // Perfil de compatibilidad (comunidad) + overrides del usuario → config efectiva.
             let profile = CompatService.shared.profile(epic: game.appName, title: game.title)

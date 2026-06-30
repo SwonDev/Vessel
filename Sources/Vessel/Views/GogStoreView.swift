@@ -240,14 +240,18 @@ final class GogStore {
         let prefix = bottle.prefixPath
         await GameLaunchTracker.shared.track(
             game.appId, statsKey: "gog:\(game.appId)",
-            // Cloud saves automáticos: al CERRAR el juego, sube la partida a la nube de GOG.
-            onExit: { Task { await self.gogdl.syncSaves(appId: game.appId, installDir: dir, prefix: prefix, direction: .upload) } }
+            // Cloud saves automáticos: al CERRAR el juego, sube a la nube de GOG + copia local de Vessel.
+            onExit: { Task {
+                await self.gogdl.syncSaves(appId: game.appId, installDir: dir, prefix: prefix, direction: .upload)
+                await SaveBackupManager.shared.backup(store: .gog, id: game.appId, title: game.title, steamId: nil, prefix: prefix, installPath: dir)
+            } }
         ) {
             guard let exe = self.gogdl.primaryExecutable(appId: game.appId, installDir: dir) else {
                 throw GogdlManager.GogdlError.notImplemented("No se encontró el ejecutable del juego. Reinstálalo.")
             }
             // Cloud saves: baja lo último de la nube ANTES de jugar (silencioso si no aplica).
             await self.gogdl.syncSaves(appId: game.appId, installDir: dir, prefix: prefix, direction: .download)
+            await SaveBackupManager.shared.restoreIfNewer(store: .gog, id: game.appId, title: game.title, steamId: nil, prefix: prefix, installPath: dir)
             let cfg = GameConfigStore.load(game.appId)
             let profile = CompatService.shared.profile(gog: game.appId, title: game.title)
             let eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
