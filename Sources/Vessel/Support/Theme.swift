@@ -184,8 +184,10 @@ struct GlassButtonStyle: ButtonStyle {
                 }
                 .overlay { shape.strokeBorder(tint.opacity(prominent ? 0.45 : 0.12), lineWidth: 0.8) }
                 .clipShape(shape)
-                .shadow(color: prominent ? tint.opacity(hovering ? 0.50 : 0.28) : .black.opacity(0.18),
-                        radius: hovering ? 12 : 6, y: hovering ? 5 : 3)
+                // Sombra NEUTRA de profundidad (sin glow de color: el aura tintada "cantaba").
+                // El color queda solo en el velo + el borde.
+                .shadow(color: .black.opacity(hovering ? 0.28 : 0.18),
+                        radius: hovering ? 10 : 6, y: hovering ? 4 : 3)
                 .scaleEffect(configuration.isPressed ? 0.97 : (hovering ? 1.02 : 1))
                 .opacity(isEnabled ? 1 : 0.5)
                 .animation(.spring(response: 0.26, dampingFraction: 0.7), value: hovering)
