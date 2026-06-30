@@ -31,17 +31,6 @@ struct VesselApp: App {
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified(showsTitle: true))
         .commands {
-            CommandGroup(after: .newItem) {
-                Divider()
-                Button("Crear bottle nuevo…") {
-                    NotificationCenter.default.post(name: .createBottle, object: nil)
-                }
-                .keyboardShortcut("n", modifiers: [.command, .shift])
-
-                Button("Importar de Steam…") {
-                    NotificationCenter.default.post(name: .importSteam, object: nil)
-                }
-            }
             CommandGroup(after: .appSettings) {
                 Button("Ajustes…") {
                     NotificationCenter.default.post(name: .openSettings, object: nil)
@@ -61,8 +50,6 @@ struct VesselApp: App {
 }
 
 extension Notification.Name {
-    static let createBottle = Notification.Name("vessel.createBottle")
-    static let importSteam = Notification.Name("vessel.importSteam")
     static let openSettings = Notification.Name("vessel.openSettings")
     static let openLogs = Notification.Name("vessel.openLogs")
     static let openAbout = Notification.Name("vessel.openAbout")

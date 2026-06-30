@@ -9,7 +9,6 @@ struct ContentView: View {
     @State private var showingSettings = false
     @State private var showingLogs = false
     @State private var showingAbout = false
-    @State private var showingCreateSheet = false
     /// Alto de la zona del header (área segura superior), medido en runtime.
     @State private var headerHeight: CGFloat = 52
 
@@ -60,11 +59,9 @@ struct ContentView: View {
         .sheet(isPresented: $showingSettings) { SettingsView() }
         .sheet(isPresented: $showingLogs) { LogsView() }
         .sheet(isPresented: $showingAbout) { AboutView() }
-        .sheet(isPresented: $showingCreateSheet) { CreateBottleView() }
         .onReceive(NotificationCenter.default.publisher(for: .openSettings)) { _ in showingSettings = true }
         .onReceive(NotificationCenter.default.publisher(for: .openLogs)) { _ in showingLogs = true }
         .onReceive(NotificationCenter.default.publisher(for: .openAbout)) { _ in showingAbout = true }
-        .onReceive(NotificationCenter.default.publisher(for: .createBottle)) { _ in showingCreateSheet = true }
     }
 
     /// Barra de **Liquid Glass** en la zona del header. En macOS 26 usa `glassEffect` (refracta y
