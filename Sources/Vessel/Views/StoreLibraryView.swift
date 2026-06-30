@@ -82,6 +82,9 @@ struct StoreLibraryView: View {
     var onInstall: (StoreGame) -> Void = { _ in }
     var onPlay: (StoreGame) -> Void = { _ in }
     var onUninstall: (StoreGame) -> Void = { _ in }
+    /// Verificar/reparar integridad de un juego instalado (re-descarga lo dañado). Reusa el
+    /// feedback de instalación (`installingIDs`/`progressFor`/`percentFor`).
+    var onVerify: (StoreGame) -> Void = { _ in }
     var onReload: () -> Void = {}
     var onLogout: () -> Void = {}
 
@@ -170,6 +173,7 @@ struct StoreLibraryView: View {
                 onInstall: { onInstall(game) },
                 onPlay: { onPlay(game) },
                 onUninstall: { onUninstall(game) },
+                onVerify: { onVerify(game) },
                 onToggleFavorite: { toggleFav(game.id) },
                 onBack: { selectedGame = nil }
             )
@@ -351,6 +355,9 @@ struct StoreLibraryView: View {
     @ViewBuilder private func rowContextMenu(_ game: StoreGame) -> some View {
         if game.installed {
             Button { onPlay(game) } label: { Label("Jugar", systemImage: "play.fill") }
+            if !installingIDs.contains(game.id) {
+                Button { onVerify(game) } label: { Label("Verificar / reparar", systemImage: "checkmark.shield") }
+            }
             Button(role: .destructive) { onUninstall(game) } label: { Label("Desinstalar", systemImage: "trash") }
         } else if !installingIDs.contains(game.id) {
             Button { onInstall(game) } label: { Label("Instalar", systemImage: "arrow.down.circle") }
@@ -678,6 +685,7 @@ struct GameDetailView: View {
     var onInstall: () -> Void = {}
     var onPlay: () -> Void = {}
     var onUninstall: () -> Void = {}
+    var onVerify: () -> Void = {}
     var onToggleFavorite: () -> Void = {}
     var onBack: () -> Void = {}
 
@@ -758,6 +766,7 @@ struct GameDetailView: View {
             stat("clock", "Última sesión", game.lastPlayed.map { $0.formatted(date: .abbreviated, time: .omitted) } ?? "—")
             stat("hourglass", "Tiempo de juego", playtimeText)
             Spacer(minLength: 0)
+            if game.installed && !installing { iconButton("checkmark.shield", action: onVerify) }
             if game.installed { iconButton("trash", action: onUninstall) }
             iconButton("gearshape.fill") { showingSettings = true }
             iconButton(isFavorite ? "heart.fill" : "heart", tinted: isFavorite, action: onToggleFavorite)

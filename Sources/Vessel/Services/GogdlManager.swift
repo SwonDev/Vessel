@@ -273,6 +273,22 @@ final class GogdlManager {
         log.log("✓ GOG: \(appId) instalado en \(installDir)", level: .info)
     }
 
+    /// Verifica y REPARA un juego de GOG ya instalado. `repair` es un alias de `download` en
+    /// gogdl: re-descarga SOLO lo dañado o ausente. Mismo progreso que `installGame`.
+    func repairGame(appId: String, installDir: String,
+                    onProgress: @escaping @Sendable (String) -> Void) async throws {
+        let bin = try resolvedBinaryPath()
+        let code = try await runStreaming(bin, args: [
+            "--auth-config-path", Self.authConfigPath,
+            "repair", appId, "--path", installDir,
+            "--platform", "windows", "--lang", "en-US"
+        ], onLine: onProgress)
+        guard code == 0 else {
+            throw GogdlError.installFailed("La verificación de GOG falló (código \(code)). Revisa los logs.")
+        }
+        log.log("✓ GOG: \(appId) verificado/reparado", level: .info)
+    }
+
     /// `true` si el juego está instalado en `installDir` (existe su `goggame-<id>.info`).
     func isInstalled(appId: String, installDir: String) -> Bool {
         FileManager.default.fileExists(atPath: "\(installDir)/goggame-\(appId).info")

@@ -146,6 +146,33 @@ final class EpicStore {
         }
     }
 
+    /// Verifica y repara un juego de Epic ya instalado (reusa el feedback visual de instalación).
+    func verify(_ game: LegendaryManager.EpicGame) async {
+        installingAppNames.insert(game.appName)
+        installProgress[game.appName] = "Verificando…"
+        defer {
+            installingAppNames.remove(game.appName)
+            installProgress[game.appName] = nil
+            installPercents[game.appName] = nil
+        }
+        do {
+            let bottle = try await ensureBottle()
+            let dir = "\(bottle.prefixPath)/drive_c/Games"
+            try await legendary.repairGame(appName: game.appName, basePath: dir) { line in
+                if let pct = LegendaryManager.progressPercent(in: line) {
+                    Task { @MainActor in
+                        self.installPercents[game.appName] = max(0, min(1, pct / 100))
+                        self.installProgress[game.appName] = "Verificando… \(Int(pct))%"
+                    }
+                }
+            }
+            await reloadLibrary()
+        } catch {
+            log.log("Error verificando \(game.title): \(error.localizedDescription)", level: .error)
+            installProgress[game.appName] = "Error en la verificación"
+        }
+    }
+
     /// Lanza un juego de Epic ya instalado con el motor de juegos (wine-dxmt), igual que Steam.
     func play(_ game: LegendaryManager.EpicGame) async {
         guard let exe = game.executablePath, !exe.isEmpty else {
@@ -185,6 +212,7 @@ struct EpicStoreView: View {
                     percentFor: { epic.percent($0) },
                     onInstall: { sg in if let g = games.first(where: { $0.appName == sg.id }) { Task { await epic.install(g) } } },
                     onPlay:    { sg in if let g = games.first(where: { $0.appName == sg.id }) { Task { await epic.play(g) } } },
+                    onVerify:  { sg in if let g = games.first(where: { $0.appName == sg.id }) { Task { await epic.verify(g) } } },
                     onReload:  { Task { await epic.reloadLibrary() } },
                     onLogout:  { epic.disconnect() }
                 )

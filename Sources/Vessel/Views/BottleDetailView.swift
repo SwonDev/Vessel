@@ -61,6 +61,9 @@ struct BottleDetailView: View {
             onUninstall: { sg in
                 gameToUninstall = localBottle.games.first(where: { ($0.steamAppId ?? $0.id.uuidString) == sg.id })
             },
+            // Verificar/reparar en Steam = re-ejecutar SteamCMD `app_update <id> validate` (el
+            // mismo flujo de instalación, que YA valida la integridad y re-descarga lo dañado).
+            onVerify: { sg in if sg.steamAppId != nil { Task { await installGame(sg.id) } } },
             onReload: { Task { await loadSteamLibrary() } },
             onLogout: { NotificationCenter.default.post(name: .steamLogout, object: nil) }
         )

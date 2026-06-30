@@ -218,6 +218,21 @@ final class LegendaryManager {
         log.log("✓ Epic: \(appName) instalado en \(basePath)", level: .info)
     }
 
+    /// Verifica y REPARA los archivos de un juego de Epic ya instalado. `repair` es un alias de
+    /// `install` en legendary: re-descarga SOLO los trozos dañados o ausentes. Mismo progreso.
+    func repairGame(appName: String, basePath: String, onProgress: @escaping @Sendable (String) -> Void) async throws {
+        let code = try await runStreaming(
+            Self.binaryPath,
+            args: ["repair", appName, "--base-path", basePath, "--platform", "Windows", "--yes"],
+            onLine: onProgress
+        )
+        guard code == 0 else {
+            throw NSError(domain: "Vessel", code: 111, userInfo: [NSLocalizedDescriptionKey:
+                "La verificación de Epic falló (código \(code)). Revisa los logs."])
+        }
+        log.log("✓ Epic: \(appName) verificado/reparado", level: .info)
+    }
+
     /// Ejecuta legendary para una operación LARGA (instalación), drenando la salida en vivo
     /// y reportando cada línea de progreso. Sin timeout: las descargas pueden durar mucho.
     private func runStreaming(_ binary: String, args: [String], onLine: @escaping @Sendable (String) -> Void) async throws -> Int32 {
