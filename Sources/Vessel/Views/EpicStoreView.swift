@@ -213,9 +213,15 @@ final class EpicStore {
             log.log("Epic: \(game.title) sin ejecutable conocido (¿reinstalar?)", level: .warn)
             return
         }
-        // Rastrear el estado para el feedback visual (Iniciando… → Ejecutándose).
-        await GameLaunchTracker.shared.track(game.appName, statsKey: "epic:\(game.appName)") {
+        // Rastrear el estado (Iniciando… → Ejecutándose) + cloud saves automáticos: al CERRAR
+        // el juego, sube la partida a la nube (Epic). legendary resuelve solo la ruta.
+        await GameLaunchTracker.shared.track(
+            game.appName, statsKey: "epic:\(game.appName)",
+            onExit: { Task { await self.legendary.syncSaves(appName: game.appName, direction: .upload) } }
+        ) {
             let bottle = try await ensureBottle()
+            // Cloud saves: baja lo último de la nube ANTES de jugar (no bloquea si no aplica).
+            await legendary.syncSaves(appName: game.appName, direction: .download)
             let cfg = GameConfigStore.load(game.appName)
             // Perfil de compatibilidad (comunidad) + overrides del usuario → config efectiva.
             let profile = CompatService.shared.profile(epic: game.appName, title: game.title)

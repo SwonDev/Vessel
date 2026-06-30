@@ -247,6 +247,26 @@ final class LegendaryManager {
         log.log("✓ Epic: \(appName) actualizado", level: .info)
     }
 
+    enum SaveSyncDirection { case download, upload, both }
+
+    /// Sincroniza las partidas guardadas en la nube de Epic (`legendary sync-saves`). legendary
+    /// RESUELVE SOLO la ruta de guardado del juego (no hay que adivinarla). Se usa DIRECCIONAL a
+    /// propósito (`--skip-upload` para bajar antes de jugar, `--skip-download` para subir al
+    /// cerrar): así NO hay prompt de conflicto y el subproceso nunca se cuelga. Silencioso: si el
+    /// juego no soporta cloud saves, legendary lo informa y termina sin romper nada.
+    func syncSaves(appName: String, direction: SaveSyncDirection) async {
+        var args = ["sync-saves", appName]
+        switch direction {
+        case .download: args.append("--skip-upload")
+        case .upload:   args.append("--skip-download")
+        case .both:     break
+        }
+        guard let result = try? await runBackground(Self.binaryPath, args: args) else { return }
+        if result.exitCode == 0 {
+            log.log("Epic: cloud saves sincronizados (\(appName), \(direction))", level: .debug)
+        }
+    }
+
     /// Devuelve los `appName` de juegos INSTALADOS con actualización disponible
     /// (`legendary list-installed --check-updates --json` → campo `update_available`).
     /// Silencioso ante fallos (devuelve vacío): es información orientativa, no crítica.

@@ -18,6 +18,8 @@ final class GameLaunchTracker {
     /// acumular el tiempo jugado en `PlayStatsStore` al terminar el proceso.
     private var statsKeys: [String: String] = [:]
     private var startTimes: [String: Date] = [:]
+    /// Acción a ejecutar cuando el juego termina (p. ej. subir cloud saves). Por id en curso.
+    private var onExits: [String: @MainActor () -> Void] = [:]
 
     func state(_ id: String) -> State { states[id] ?? .idle }
     func isBusy(_ id: String) -> Bool { state(id) != .idle }
@@ -28,7 +30,9 @@ final class GameLaunchTracker {
     ///
     /// `statsKey` (`"<tienda>:<id>"`) activa el registro de tiempo jugado: marca "jugado ahora"
     /// al arrancar (para "Recientes" instantáneo) y suma la duración de la sesión al cerrar.
-    func track(_ id: String, statsKey: String? = nil, _ body: () async throws -> Process) async {
+    func track(_ id: String, statsKey: String? = nil,
+               onExit: (@MainActor () -> Void)? = nil,
+               _ body: () async throws -> Process) async {
         guard state(id) == .idle else { return }
         states[id] = .launching
         do {
@@ -40,6 +44,7 @@ final class GameLaunchTracker {
                 startTimes[id] = Date()
                 PlayStatsStore.shared.markPlayed(statsKey)
             }
+            if let onExit { onExits[id] = onExit }
             proc.terminationHandler = { _ in
                 Task { @MainActor in GameLaunchTracker.shared.finish(id) }
             }
@@ -58,9 +63,11 @@ final class GameLaunchTracker {
         if let key = statsKeys[id], let start = startTimes[id] {
             PlayStatsStore.shared.addSession(key, seconds: Int(Date().timeIntervalSince(start)))
         }
+        onExits[id]?()            // p. ej. subir cloud saves tras cerrar el juego
         states[id] = .idle
         processes[id] = nil
         statsKeys[id] = nil
         startTimes[id] = nil
+        onExits[id] = nil
     }
 }
