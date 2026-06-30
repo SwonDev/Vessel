@@ -9,9 +9,17 @@ let package = Package(
     products: [
         .executable(name: "Vessel", targets: ["Vessel"])
     ],
+    dependencies: [
+        // Parser YAML estándar de Swift — para leer con seguridad el manifiesto de rutas de
+        // guardado (ludusavi) en el sistema de copias de partidas. Evita un parser casero frágil.
+        .package(url: "https://github.com/jpsim/Yams.git", from: "5.1.0")
+    ],
     targets: [
         .executableTarget(
             name: "Vessel",
+            dependencies: [
+                .product(name: "Yams", package: "Yams")
+            ],
             path: "Sources/Vessel"
         ),
         .testTarget(
