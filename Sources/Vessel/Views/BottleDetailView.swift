@@ -311,12 +311,27 @@ struct BottleDetailView: View {
         // Mismo id que usa la UI (StoreGame.id) para que el feedback (Iniciando…/Ejecutándose)
         // se refleje en la ficha y la tarjeta.
         let trackId = game.steamAppId ?? game.id.uuidString
+        // GARANTÍA al lanzar: re-resolver el ejecutable desde la carpeta del juego. Si un escaneo
+        // antiguo guardó el exe equivocado (p. ej. el server.exe headless de un MMO), aquí se
+        // corrige justo antes de arrancar → SIEMPRE se lanza el cliente, aunque el dato persistido
+        // esté obsoleto. Se persiste la corrección para que la ficha/detalles también queden bien.
+        var exePath = game.executablePath
+        if !game.installPath.isEmpty,
+           let resolved = SteamLibraryImporter.mainGameExecutable(in: game.installPath),
+           resolved != exePath {
+            exePath = resolved
+            if let appId = game.steamAppId {
+                store.fixGameExecutable(steamAppId: appId, executablePath: resolved,
+                                        installPath: game.installPath, in: localBottle.id)
+            }
+            log.log("Ejecutable re-resuelto al lanzar \(game.name): \((resolved as NSString).lastPathComponent)", level: .info)
+        }
         await GameLaunchTracker.shared.track(trackId, statsKey: "steam:\(trackId)") {
             let cfg = GameConfigStore.load(trackId)
             let profile = CompatService.shared.profile(steam: game.steamAppId, title: game.name)
             let eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
             let proc = try await wineManager.launch(
-                executable: game.executablePath, in: localBottle,
+                executable: exePath, in: localBottle,
                 arguments: [], steamAppId: game.steamAppId, effective: eff)
             store.touchGame(game.id, in: localBottle.id)
             return proc
