@@ -112,8 +112,11 @@ struct BottleDetailView: View {
             }
         }
         .sheet(isPresented: $showOfficialLogin) {
-            SteamOfficialLoginView { tokens in
-                if !tokens.accountName.isEmpty { steamCMDUser = tokens.accountName }
+            SteamOfficialLoginView { _ in
+                // NO marcamos `steamCMDUser` aquí: el login oficial (web/RSA) carga la biblioteca
+                // pero NO crea sesión de SteamCMD (que es lo que DESCARGA). Si lo marcáramos, el
+                // install creería tener sesión y fallaría/se colgaba ("hacía como que instala").
+                // La sesión real de SteamCMD se obtiene en su propio login (showSteamCMDLogin).
                 Task { await loadSteamLibrary() }
             }
         }

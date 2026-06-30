@@ -26,6 +26,24 @@ struct GameConfig: Codable, Equatable {
     var launchArguments: String = ""
     var esync: Bool = true
     var fsync: Bool = true
+    /// Muestra el HUD de rendimiento de Metal (FPS / tiempos de frame) superpuesto en el juego.
+    var metalHUD: Bool = false
+
+    init() {}
+
+    enum CodingKeys: String, CodingKey { case graphicsLayer, launchArguments, esync, fsync, metalHUD }
+
+    /// Decodificación TOLERANTE: los campos ausentes usan su valor por defecto. El decoder
+    /// sintetizado de Swift NO lo hace y RESETEABA todos los ajustes guardados al añadir un campo
+    /// nuevo (p. ej. `metalHUD`) → se perdían capa gráfica, args, sync del usuario.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        graphicsLayer = try c.decodeIfPresent(GraphicsLayer.self, forKey: .graphicsLayer) ?? .auto
+        launchArguments = try c.decodeIfPresent(String.self, forKey: .launchArguments) ?? ""
+        esync = try c.decodeIfPresent(Bool.self, forKey: .esync) ?? true
+        fsync = try c.decodeIfPresent(Bool.self, forKey: .fsync) ?? true
+        metalHUD = try c.decodeIfPresent(Bool.self, forKey: .metalHUD) ?? false
+    }
 }
 
 /// Persistencia de la configuración por juego.

@@ -120,6 +120,10 @@ final class SteamCMDManager {
                 let pipe = Pipe()
                 process.standardOutput = pipe
                 process.standardError = pipe
+                // CLAVE: stdin NULO. Sin esto, un `+login <user>` sin sesión cacheada hace que
+                // steamcmd PIDA la contraseña por stdin y se quede COLGADO PARA SIEMPRE (la app no
+                // tiene terminal) → el install "no hacía nada". Con stdin nulo recibe EOF y sale.
+                process.standardInput = FileHandle.nullDevice
                 let buffer = OutputBuffer()
                 pipe.fileHandleForReading.readabilityHandler = { fh in
                     let data = fh.availableData
@@ -134,11 +138,16 @@ final class SteamCMDManager {
                 }
                 do {
                     try process.run()
-                    process.waitUntilExit()
                 } catch {
                     continuation.resume(returning: (error.localizedDescription, -1))
                     return
                 }
+                // Cinturón de seguridad extra: si algo se cuelga (descarga atascada), matar a los
+                // 45 min. Las descargas grandes caben de sobra; un login/validate es de segundos.
+                let watchdog = DispatchWorkItem { if process.isRunning { process.terminate() } }
+                DispatchQueue.global().asyncAfter(deadline: .now() + 2700, execute: watchdog)
+                process.waitUntilExit()
+                watchdog.cancel()
                 pipe.fileHandleForReading.readabilityHandler = nil
                 continuation.resume(returning: (buffer.value, process.terminationStatus))
             }
