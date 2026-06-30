@@ -263,30 +263,7 @@ struct BottleDetailView: View {
 
     /// Localiza el ejecutable principal del juego descargado (ignora redistribuibles).
     private func mainExecutable(in dir: String) -> String? {
-        let fm = FileManager.default
-        guard let enumerator = fm.enumerator(atPath: dir) else { return nil }
-        let dirName = (dir as NSString).lastPathComponent.lowercased()
-        // (ruta relativa en minúsculas, ruta completa) de cada .exe que NO sea redistribuible/instalador.
-        var exes: [(rel: String, full: String)] = []
-        for case let path as String in enumerator where path.lowercased().hasSuffix(".exe") {
-            let lower = path.lowercased()
-            if lower.contains("redist") || lower.contains("vcredist") || lower.contains("crashpad")
-                || lower.contains("unitycrash") || lower.contains("dxsetup") || lower.contains("dotnet") {
-                continue
-            }
-            exes.append((lower, "\(dir)/\(path)"))
-        }
-        guard !exes.isEmpty else { return nil }
-        // Preferir el juego real frente a launchers de terceros (EA/Ubisoft/Rockstar): si
-        // eligiéramos el launcher, se enrutaría el motor por su bitness/API, no la del juego.
-        func isLauncher(_ rel: String) -> Bool { rel.contains("launcher") }
-        let real = exes.filter { !isLauncher($0.rel) }
-        // 1) exe que coincide con el nombre de la carpeta y NO es launcher → el juego real.
-        if let game = real.first(where: { $0.rel.contains(dirName) }) { return game.full }
-        // 2) cualquier exe que no sea launcher (ruta más corta, normalmente en la raíz).
-        if let shortest = real.min(by: { $0.rel.count < $1.rel.count }) { return shortest.full }
-        // 3) solo quedan launchers (el juego arranca por su launcher): el de ruta más corta.
-        return exes.min(by: { $0.rel.count < $1.rel.count })?.full
+        SteamLibraryImporter.mainGameExecutable(in: dir)
     }
 
     /// Vigila en tiempo real la carpeta `steamapps` del bottle: cuando Steam instala
@@ -304,23 +281,29 @@ struct BottleDetailView: View {
     /// no estén. Hace que aparezcan automáticamente con su botón "Jugar" (wine-dxmt).
     private func autoImportGames() async {
         let found = importer.scanBottleGames(bottle: localBottle)
-        var added = false
-        for g in found where !localBottle.games.contains(where: {
-            $0.steamAppId == g.appId || $0.executablePath == g.executablePath
-        }) {
-            let game = GameInstall(
-                name: g.name,
-                executablePath: g.executablePath,
-                steamAppId: g.appId,
-                installPath: g.installPath,
-                coverImageURL: g.coverURL
-            )
-            store.addGame(game, to: localBottle.id)
-            added = true
+        var changed = false
+        for g in found {
+            let existing = localBottle.games.first { $0.steamAppId == g.appId || $0.executablePath == g.executablePath }
+            if existing == nil {
+                let game = GameInstall(
+                    name: g.name,
+                    executablePath: g.executablePath,
+                    steamAppId: g.appId,
+                    installPath: g.installPath,
+                    coverImageURL: g.coverURL
+                )
+                store.addGame(game, to: localBottle.id)
+                changed = true
+            } else if store.fixGameExecutable(steamAppId: g.appId, executablePath: g.executablePath,
+                                               installPath: g.installPath, in: localBottle.id) {
+                // El escaneo anterior había guardado el exe equivocado (p. ej. server.exe): corregido.
+                log.log("Auto-reparado el ejecutable de \(g.name) → \((g.executablePath as NSString).lastPathComponent)", level: .info)
+                changed = true
+            }
         }
-        if added, let updated = store.bottles.first(where: { $0.id == localBottle.id }) {
+        if changed, let updated = store.bottles.first(where: { $0.id == localBottle.id }) {
             localBottle = updated
-            log.log("Auto-importados \(found.count) juego(s) de Steam en \(localBottle.name)", level: .info)
+            log.log("Biblioteca de Steam sincronizada (\(found.count) juego(s)) en \(localBottle.name)", level: .info)
         }
     }
 

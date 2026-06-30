@@ -174,4 +174,19 @@ final class BottleStore {
             save()
         }
     }
+
+    /// Corrige la ruta del ejecutable (y la carpeta) de un juego de Steam ya importado.
+    /// AUTO-REPARACIÓN: si un escaneo previo guardó el exe equivocado (p. ej. el `server.exe`
+    /// headless de un MMO), el re-escaneo lo endereza sin que el usuario tenga que reinstalar.
+    /// Devuelve `true` si hubo cambio real.
+    @discardableResult
+    func fixGameExecutable(steamAppId: String, executablePath: String, installPath: String, in bottleID: UUID) -> Bool {
+        guard let i = bottles.firstIndex(where: { $0.id == bottleID }),
+              let j = bottles[i].games.firstIndex(where: { $0.steamAppId == steamAppId }),
+              bottles[i].games[j].executablePath != executablePath else { return false }
+        bottles[i].games[j].executablePath = executablePath
+        if !installPath.isEmpty { bottles[i].games[j].installPath = installPath }
+        save()
+        return true
+    }
 }

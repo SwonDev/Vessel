@@ -113,30 +113,75 @@ final class SteamLibraryImporter {
     }
 
     private func findMainExecutable(in dir: String) -> String? {
+        Self.mainGameExecutable(in: dir)
+    }
+
+    /// Normaliza un nombre dejando solo alfanuméricos en minúscula. Permite comparar el nombre
+    /// del exe con el de la carpeta aunque difieran en espacios/símbolos
+    /// (p. ej. carpeta "Ancient Kingdoms" ↔ exe "ancientkingdoms.exe").
+    static func normalizedName(_ s: String) -> String {
+        s.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.map(String.init).joined()
+    }
+
+    /// Resuelve el ejecutable PRINCIPAL (el **cliente**) de un juego instalado en `dir`.
+    /// Única fuente de verdad (la usan el importador y la instalación directa de Steam).
+    ///
+    /// Usa una HEURÍSTICA POR PUNTUACIÓN en vez de "la ruta más corta" porque esa regla fallaba
+    /// con MMOs que traen un `server/server.exe` headless (Unity con `GfxDevice: Null`): al ser
+    /// su ruta más corta que la del cliente, se lanzaba el SERVIDOR → corría eternamente SIN
+    /// ventana ("Ejecutándose" para siempre). Reglas:
+    ///  - Descarta redistribuibles, crash handlers e instaladores (nunca son el juego).
+    ///  - Penaliza MUCHO los servidores dedicados (carpeta/nombre `server`/`dedicated`).
+    ///  - Premia el marcador de cliente Unity: existe la carpeta hermana `<exe>_Data`.
+    ///  - Premia que el nombre del exe ≈ nombre de la carpeta (normalizado, ignora espacios).
+    ///  - Prefiere la raíz del juego frente a subcarpetas; penaliza launchers de terceros.
+    static func mainGameExecutable(in dir: String) -> String? {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(atPath: dir) else { return nil }
+        let folderKey = normalizedName((dir as NSString).lastPathComponent)
 
-        let dirName = (dir as NSString).lastPathComponent.lowercased()
-
-        // (ruta relativa en minúsculas, ruta completa) de cada .exe.
         var exes: [(rel: String, full: String)] = []
         for case let path as String in enumerator where path.lowercased().hasSuffix(".exe") {
-            exes.append((path.lowercased(), "\(dir)/\(path)"))
+            let lower = path.lowercased()
+            if lower.contains("redist") || lower.contains("vcredist") || lower.contains("crashpad")
+                || lower.contains("unitycrash") || lower.contains("crashhandler") || lower.contains("dxsetup")
+                || lower.contains("dotnet") || lower.contains("directx") || lower.contains("uninstall") {
+                continue
+            }
+            exes.append((lower, "\(dir)/\(path)"))
         }
         guard !exes.isEmpty else { return nil }
 
-        // Los launchers de terceros (EA App, Ubisoft Connect, Rockstar…) NO son el juego: si
-        // los eligiéramos, Vessel lanzaría el launcher (y enrutaría el motor por su bitness/API,
-        // no la del juego). Preferimos el ejecutable real y dejamos el launcher como último recurso.
-        func isLauncher(_ rel: String) -> Bool { rel.contains("launcher") }
-        let real = exes.filter { !isLauncher($0.rel) }
+        func score(_ rel: String, _ full: String) -> Int {
+            var s = 0
+            let comps = rel.split(separator: "/").map(String.init)
+            let base = (rel as NSString).lastPathComponent
+            let baseNoExt = normalizedName((base as NSString).deletingPathExtension)
+            let depth = comps.count - 1
 
-        // 1) exe cuyo nombre coincide con la carpeta del juego y NO es launcher → el juego real.
-        if let game = real.first(where: { $0.rel.contains(dirName) }) { return game.full }
-        // 2) cualquier exe que no sea launcher (ruta más corta → normalmente en la raíz del juego).
-        if let shortest = real.min(by: { $0.rel.count < $1.rel.count }) { return shortest.full }
-        // 3) solo quedan launchers (juegos que SÍ arrancan por su launcher): el de ruta más corta.
-        return exes.min(by: { $0.rel.count < $1.rel.count })?.full
+            // Servidor dedicado: lo PEOR (headless, sin ventana). Carpeta o nombre server/dedicated.
+            let serverLike = comps.dropLast().contains { $0.contains("server") || $0.contains("dedicated") }
+                || base.contains("server") || base.contains("dedicated")
+            if serverLike { s -= 1000 }
+            // Launchers de terceros: penalizar (pero por encima de un servidor).
+            if rel.contains("launcher") { s -= 200 }
+            // Marcador de cliente Unity: existe la carpeta hermana `<base>_Data`.
+            let sibling = (full as NSString).deletingLastPathComponent
+            let exeStem = ((base as NSString).deletingPathExtension)
+            if fm.fileExists(atPath: "\(sibling)/\(exeStem)_Data") { s += 300 }
+            // Nombre del exe ≈ nombre de la carpeta del juego (normalizado).
+            if !folderKey.isEmpty, !baseNoExt.isEmpty,
+               baseNoExt.contains(folderKey) || folderKey.contains(baseNoExt) { s += 150 }
+            // Preferir la raíz del juego frente a subcarpetas.
+            s -= depth * 50
+            return s
+        }
+
+        return exes.max { a, b in
+            let sa = score(a.rel, a.full), sb = score(b.rel, b.full)
+            if sa != sb { return sa < sb }
+            return a.rel.count > b.rel.count   // empate → ruta más corta gana
+        }?.full
     }
 
     private func extractValue(from line: String) -> String? {
