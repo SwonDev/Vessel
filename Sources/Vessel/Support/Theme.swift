@@ -1,4 +1,5 @@
 import SwiftUI
+import ColorfulX
 
 /// **Sistema de diseño central de Vessel.** Toda la estética premium vive aquí
 /// (paleta, radios, materiales, Liquid Glass, botones, elevación en hover), no dispersa
@@ -48,11 +49,23 @@ enum Theme {
 
 private struct VesselBackground: ViewModifier {
     var tint: Color = Theme.accent
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func body(content: Content) -> some View {
         content.background {
             ZStack {
                 LinearGradient(colors: [Theme.navyTop, Theme.navyDeep],
                                startPoint: .top, endPoint: .bottom)
+                // Vida premium: gradiente animado con Metal (ColorfulX) MUY sutil, con el color de la
+                // tienda. Aditivo y a baja opacidad → el fondo "respira" sin distraer. Se desactiva
+                // con reduce-motion.
+                if !reduceMotion {
+                    ColorfulView(
+                        color: .constant([tint.opacity(0.85), Theme.navyDeep, tint.opacity(0.35), Theme.navyTop]),
+                        speed: .constant(0.28)
+                    )
+                    .opacity(0.11)
+                    .blendMode(.plusLighter)
+                }
                 // Resplandor superior con el color de la sección (branding por tienda).
                 RadialGradient(colors: [tint.opacity(0.16), .clear],
                                center: .top, startRadius: 0, endRadius: 640)
