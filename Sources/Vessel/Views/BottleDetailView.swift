@@ -67,7 +67,8 @@ struct BottleDetailView: View {
             // Actualizar en Steam = `app_update <id>` (sin validate forzado, va a la última build).
             onUpdate: { sg in if sg.steamAppId != nil { Task { await installGame(sg.id, validate: false) } } },
             onReload: { Task { await loadSteamLibrary() } },
-            onLogout: { NotificationCenter.default.post(name: .steamLogout, object: nil) }
+            onLogout: { NotificationCenter.default.post(name: .steamLogout, object: nil) },
+            onLogin: { NotificationCenter.default.post(name: .steamLogin, object: nil) }
         )
         .sheet(isPresented: $showingInstaller) {
             SteamInstallerView(bottle: localBottle, wineManager: wineManager) {
@@ -128,9 +129,12 @@ struct BottleDetailView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .steamLogout)) { _ in
             steamCMDUser = ""
-            SteamAccountService.webAPIKey = ""
+            // Cerrar sesión = borrar la SESIÓN (tokens), NO la Web API key: es una credencial que el
+            // usuario pegó a mano (preferencia persistente), no parte de la sesión.
+            UserDefaults.standard.removeObject(forKey: "steam.accessToken")
+            UserDefaults.standard.removeObject(forKey: "steam.refreshToken")
             ownedGames = []
-            statusMessage = "Sesión cerrada. Usa clic derecho en Steam para volver a iniciar sesión."
+            statusMessage = "Sesión cerrada. Abre el menú «…» → Iniciar sesión para volver a entrar."
         }
     }
 

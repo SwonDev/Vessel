@@ -137,6 +137,9 @@ struct StoreLibraryView: View {
     var onUpdate: (StoreGame) -> Void = { _ in }
     var onReload: () -> Void = {}
     var onLogout: () -> Void = {}
+    /// Iniciar sesión (re-login). Si se provee, aparece "Iniciar sesión" en el menú "…". Steam lo
+    /// usa para relanzar el login oficial; Epic/GOG tienen su propio flujo de conexión.
+    var onLogin: (() -> Void)? = nil
 
     @State private var search = ""
     @State private var sortOrder: StoreSortOrder = .nombre
@@ -417,6 +420,9 @@ struct StoreLibraryView: View {
             .buttonStyle(.plain).help("Ocultar la lista")
             Menu {
                 Button { onReload() } label: { Label("Actualizar biblioteca", systemImage: "arrow.clockwise") }
+                if let onLogin {
+                    Button { onLogin() } label: { Label("Iniciar sesión", systemImage: "person.crop.circle.badge.plus") }
+                }
                 Divider()
                 Button(role: .destructive) { onLogout() } label: {
                     Label("Cerrar sesión", systemImage: "rectangle.portrait.and.arrow.right")
