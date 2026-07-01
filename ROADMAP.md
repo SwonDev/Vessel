@@ -15,7 +15,16 @@ invisible) y la estética premium (DESIGN.md). Basado en auditoría de huecos fr
 - Metadata rica: descripción, capturas ampliables (lightbox), logros (totales), compat ProtonDB.
 - **Desinstalar en Epic y GOG** (paridad con Steam, con regla de seguridad de rutas).
 - **Diagnóstico post-lanzamiento** (`LaunchDiagnostics`): avisos accionables al fallar un juego.
+- **Fallback automático de motor** (DXMT↔GPTK): si el arranque falla de forma recuperable
+  (gráficos/crash/Vulkan), relanza con la otra capa una vez y avisa. Cableado en las 3 tiendas.
+- **Provisión de dependencias de runtime** (`RuntimeDependencyProvisioner`): detecta imports PE y
+  copia junto al `.exe` los helpers de DirectX 9 (d3dx9/d3dcompiler) que empaquetamos. VC++/.NET/
+  XInput los cubre el builtin del motor; se registran para el diagnóstico.
 - Permisos macOS: `NSNetworkVolumesUsageDescription` (prompt una sola vez).
+- **UI premium**: scrollbars **Liquid Glass** en toda la app (NSScroller custom + swizzle global);
+  **sidebar colapsable animada** + divisor arrastrable; **selector de tamaño de carátulas**
+  (Compacta/Normal/Grande, estilo Steam); **buscador/filtro/orden en la cabecera** del grid al
+  colapsar; fix del arrastre de ventana (solo desde el header).
 
 ## 🔜 Pendiente (orden por impacto en catálogo/UX)
 
@@ -25,9 +34,7 @@ invisible) y la estética premium (DESIGN.md). Basado en auditoría de huecos fr
    cuelguen): bundlear/descargar los DLLs redistribuibles y copiarlos a `system32`/`syswow64` del
    prefijo según los imports PE del `.exe` (ampliar `detectRuntimeDependencies` + el sistema de
    `winetricksVerbs` de los perfiles). Requiere decidir de dónde se obtienen los DLLs.
-2. **Fallback automático de motor** al fallar el lanzamiento: si `LaunchDiagnostics` detecta
-   "InitializeEngineGraphics"/graphics fail, reintentar con la siguiente capa (DXMT↔GPTK↔wined3d)
-   y avisar. (Ahora ya detectamos el fallo; falta el reintento.)
+2. ~~**Fallback automático de motor**~~ ✅ HECHO (ver arriba).
 3. **Anti-cheat** (EAC/BattlEye/CodeFusion): investigar; muchos no tienen solución en Mac → marcar
    `rating: borked` con causa documentada.
 4. Detección de arquitectura más robusta (launcher 32-bit → exe 64-bit interno) + override manual.
