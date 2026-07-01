@@ -128,9 +128,9 @@ struct BottleDetailView: View {
             Task { await loadSteamLibrary() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .steamLogout)) { _ in
-            steamCMDUser = ""
-            // Cerrar sesión = borrar la SESIÓN (tokens), NO la Web API key: es una credencial que el
-            // usuario pegó a mano (preferencia persistente), no parte de la sesión.
+            // Cerrar sesión = borrar la SESIÓN WEB (tokens). NO tocamos ni la Web API key (credencial
+            // pegada a mano) ni `steamCMDUser` (la sesión de DESCARGA de SteamCMD es independiente y
+            // sigue cacheada; borrar el nombre obligaba a re-loguear en SteamCMD sin necesidad).
             UserDefaults.standard.removeObject(forKey: "steam.accessToken")
             UserDefaults.standard.removeObject(forKey: "steam.refreshToken")
             ownedGames = []
@@ -236,17 +236,23 @@ struct BottleDetailView: View {
         // Descargar de Steam requiere una SESIÓN REAL de SteamCMD, distinta del login oficial web
         // (que solo da el nombre de cuenta para la biblioteca). Sin sesión, `app_update` falla en
         // silencio → parecía "que instala pero no instala nada". Pedimos login de SteamCMD primero.
-        guard !steamCMDUser.isEmpty, await steamCMD.hasSession(user: steamCMDUser) else {
+        // Usuario de SteamCMD: el guardado o, si está vacío (p. ej. tras cerrar la sesión WEB), el de
+        // la cuenta detectada en el prefijo. La sesión de SteamCMD puede seguir CACHEADA aunque no
+        // tengamos el nombre guardado, así que la comprobamos antes de pedir login otra vez.
+        var user = steamCMDUser
+        if user.isEmpty { user = accountService.detectAccount(bottle: localBottle)?.accountName ?? "" }
+        guard !user.isEmpty, await steamCMD.hasSession(user: user) else {
             pendingInstallAppId = appId
             showSteamCMDLogin = true
             return
         }
+        steamCMDUser = user   // recordarlo para la próxima
         installingAppIds.insert(appId)
         defer { installingAppIds.remove(appId); installMessages[appId] = nil; installPercents[appId] = nil }
         let safeName = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "")
         let installDir = "\(localBottle.prefixPath)/drive_c/Program Files (x86)/Steam/steamapps/common/\(safeName)"
         installMessages[appId] = "Iniciando descarga…"
-        let ok = await steamCMD.installGame(appId: appId, user: steamCMDUser, installDir: installDir, validate: validate) { pct, msg in
+        let ok = await steamCMD.installGame(appId: appId, user: user, installDir: installDir, validate: validate) { pct, msg in
             installMessages[appId] = msg
             // Solo barra determinada cuando hay descarga real con %; verificación → indeterminado.
             installPercents[appId] = msg.contains("Descargando") ? max(0, min(1, pct / 100)) : nil

@@ -172,6 +172,12 @@ final class SteamLibraryImporter {
             // Nombre del exe ≈ nombre de la carpeta del juego (normalizado).
             if !folderKey.isEmpty, !baseNoExt.isEmpty,
                baseNoExt.contains(folderKey) || folderKey.contains(baseNoExt) { s += 150 }
+            // Preferir la variante de **64 bits** (carpeta x64/win64/bin64/…): es la que los juegos
+            // con doble build (p. ej. Grim Dawn: `Grim Dawn.exe` 32-bit arriba + `x64/Grim Dawn.exe`
+            // 64-bit) lanzan por defecto, y la que va por DXMT→Metal (mejor que el 32-bit por
+            // CrossOver). +120 supera el −50 de profundidad, así que gana al mismo exe en la raíz.
+            let dir64: Set<String> = ["x64", "win64", "bin64", "binaries64", "x86_64", "amd64"]
+            if comps.dropLast().contains(where: { dir64.contains($0) }) { s += 120 }
             // Preferir la raíz del juego frente a subcarpetas.
             s -= depth * 50
             return s
