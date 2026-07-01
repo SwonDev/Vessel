@@ -84,6 +84,38 @@ enum StoreLibraryFilter: String, CaseIterable, Identifiable {
     }
 }
 
+/// Densidad del grid de carátulas (tamaño de las portadas), persistente. Como el slider de
+/// tamaño de la biblioteca de Steam, aquí en 3 pasos premium — clave para navegar bibliotecas
+/// de miles de juegos según prefieras densidad o tamaño.
+enum GridDensity: String, CaseIterable, Identifiable {
+    case compacta = "Compacta"
+    case normal   = "Normal"
+    case grande   = "Grande"
+    var id: String { rawValue }
+    /// (min, max) del ancho adaptativo de cada carátula.
+    var coverRange: (min: CGFloat, max: CGFloat) {
+        switch self {
+        case .compacta: return (116, 148)
+        case .normal:   return (158, 200)
+        case .grande:   return (212, 268)
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .compacta: return "square.grid.4x3.fill"
+        case .normal:   return "square.grid.3x2.fill"
+        case .grande:   return "square.grid.2x2.fill"
+        }
+    }
+    var help: String {
+        switch self {
+        case .compacta: return "Carátulas pequeñas (más por fila)"
+        case .normal:   return "Carátulas normales"
+        case .grande:   return "Carátulas grandes"
+        }
+    }
+}
+
 /// Biblioteca **genérica y premium** reutilizada por todas las tiendas. Solo recibe la
 /// tienda (para el color/logo), sus juegos y los callbacks; la búsqueda, el orden, los
 /// filtros y los favoritos son comunes. Accesible y con reduce-motion (UI/UX Pro Max).
@@ -112,13 +144,19 @@ struct StoreLibraryView: View {
     @State private var showFavoritesOnly = false
     /// Sidebar colapsada (persistente): más espacio para el grid/ficha. Estilo Steam.
     @AppStorage("vessel.sidebarCollapsed") private var sidebarCollapsed = false
+    /// Tamaño de las carátulas del grid (persistente). Como el slider de tamaño de Steam.
+    @AppStorage("vessel.gridDensity") private var gridDensity: GridDensity = .normal
     @State private var favorites: Set<String> = []
     @State private var selectedGame: StoreGame?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var tint: Color { store.tint }
     private var favKey: String { "favorites.\(store.rawValue)" }
-    private let columns = [GridItem(.adaptive(minimum: 158, maximum: 200), spacing: Theme.Space.gameGrid)]
+    /// Columnas adaptativas según la densidad elegida (tamaño de carátula).
+    private var columns: [GridItem] {
+        [GridItem(.adaptive(minimum: gridDensity.coverRange.min, maximum: gridDensity.coverRange.max),
+                  spacing: Theme.Space.gameGrid)]
+    }
 
     private func isFav(_ id: String) -> Bool { favorites.contains(id) }
     private func toggleFav(_ id: String) {
@@ -305,11 +343,12 @@ struct StoreLibraryView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.section) {
                 if !recentlyPlayed.isEmpty { recentlyPlayedSection }
-                HStack(alignment: .firstTextBaseline) {
+                HStack(alignment: .center, spacing: 12) {
                     Text("Todos los juegos").font(.title.bold()).foregroundStyle(.white)
                     Spacer()
                     Text("\(displayed.count) juego\(displayed.count == 1 ? "" : "s")")
                         .font(.subheadline).foregroundStyle(.white.opacity(0.5))
+                    gridDensityToggle
                 }
                 grid
             }
@@ -495,6 +534,34 @@ struct StoreLibraryView: View {
 
     // MARK: - Grid
 
+    /// Segmentado premium (Liquid Glass) para elegir el tamaño de las carátulas. Estilo Steam.
+    private var gridDensityToggle: some View {
+        HStack(spacing: 2) {
+            ForEach(GridDensity.allCases) { d in
+                Button {
+                    withAnimation(reduceMotion ? nil : .snappy(duration: 0.28)) { gridDensity = d }
+                } label: {
+                    Image(systemName: d.symbol)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(gridDensity == d ? Color.white : .white.opacity(0.42))
+                        .frame(width: 28, height: 22)
+                        .background {
+                            if gridDensity == d {
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .fill(tint.opacity(0.32))
+                            }
+                        }
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(d.help)
+            }
+        }
+        .padding(3)
+        .liquidGlass(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .accessibilityLabel("Tamaño de las carátulas")
+    }
+
     @ViewBuilder private var grid: some View {
         if displayed.isEmpty {
             VStack(spacing: 16) {
@@ -528,6 +595,7 @@ struct StoreLibraryView: View {
                 }
             }
             .animation(reduceMotion ? nil : .snappy(duration: 0.28), value: displayed.count)
+            .animation(reduceMotion ? nil : .snappy(duration: 0.30), value: gridDensity)
         }
     }
 }
