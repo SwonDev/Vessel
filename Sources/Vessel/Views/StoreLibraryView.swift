@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import DockProgress
 
 /// Juego genérico común a TODAS las tiendas (Steam/Epic/GOG). Cada tienda mapea
 /// sus datos a este modelo y reutiliza `StoreLibraryView` — así la UI/UX (búsqueda,
@@ -173,7 +174,25 @@ struct StoreLibraryView: View {
                 .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: selectedGame)
         }
         .vesselBackground(tint: tint)
-        .onAppear { favorites = Set(UserDefaults.standard.stringArray(forKey: favKey) ?? []) }
+        .onAppear {
+            favorites = Set(UserDefaults.standard.stringArray(forKey: favKey) ?? [])
+            updateDockProgress()
+        }
+        .onChange(of: dockProgressSnapshot) { _, _ in updateDockProgress() }
+    }
+
+    /// Progreso AGREGADO (0–1) de las instalaciones/actualizaciones en curso, para el icono del
+    /// Dock. `-1` = nada en curso; `0.03` = hay instalación(es) sin % conocido (indeterminado).
+    private var dockProgressSnapshot: Double {
+        let known = installingIDs.compactMap { percentFor($0) }
+        if !known.isEmpty { return known.reduce(0, +) / Double(known.count) }
+        return installingIDs.isEmpty ? -1 : 0.03
+    }
+
+    /// Refleja `dockProgressSnapshot` en el icono del Dock (barra de progreso estilo Mythic).
+    private func updateDockProgress() {
+        let v = dockProgressSnapshot
+        if v < 0 { DockProgress.resetProgress() } else { DockProgress.progress = min(1, max(0, v)) }
     }
 
     // MARK: - Panel principal: ficha del juego seleccionado o grid "home"
