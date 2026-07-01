@@ -82,8 +82,8 @@ final class SteamAccountService {
     ///  2. Si no hay key, cae al endpoint público de Steam Community (requiere perfil
     ///     de juegos público).
     func fetchOwnedGames(steamID64: String) async -> [OwnedGame] {
-        // 1) Con el access_token del login oficial (QR) — sin que el usuario pegue clave.
-        let token = UserDefaults.standard.string(forKey: "steam.accessToken") ?? ""
+        // 1) Con el access_token del login oficial (refrescado automáticamente) — sin pegar clave.
+        let token = await SteamAuthService.currentAccessToken()
         if !token.isEmpty, let viaToken = await fetchViaWebAPI(steamID64: steamID64, auth: "access_token=\(token)"), !viaToken.isEmpty {
             return viaToken
         }

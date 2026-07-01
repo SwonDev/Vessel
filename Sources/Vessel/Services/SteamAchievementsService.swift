@@ -50,7 +50,9 @@ actor SteamAchievementsService {
     /// `nil` solo si no hay NADA que mostrar (ni schema con key ni estado). En ese caso la ficha se
     /// queda con su vista decorativa.
     func fetch(appId: String, steamID64: String, language: String = "spanish") async -> Progress? {
-        let token = UserDefaults.standard.string(forKey: "steam.accessToken") ?? ""
+        // access_token de sesión (se refresca solo desde el refresh_token). Autentica como el
+        // usuario → ve sus logros aunque el perfil sea privado, como el cliente de Steam.
+        let token = await SteamAuthService.currentAccessToken()
         let key = await SteamAccountService.webAPIKey
         guard !steamID64.isEmpty else { return nil }
 

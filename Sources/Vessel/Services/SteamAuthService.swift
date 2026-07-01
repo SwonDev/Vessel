@@ -109,13 +109,59 @@ final class SteamAuthService {
         body.append(ProtoWriter.bytes(field: 2, handle.requestID))
         let data = try await post("IAuthenticationService/PollAuthSessionStatus/v1/", protobuf: body)
         let f = ProtoReader.parse(data)
-        guard let refresh = f.string(2), !refresh.isEmpty else { return nil }  // refresh_token=2
-        let access = f.string(3) ?? ""                                          // access_token=3
-        let account = f.string(5) ?? ""                                         // account_name=5
+        // Campos REALES de CAuthentication_PollAuthSessionStatus_Response:
+        // 1=new_client_id, 2=new_challenge_url, 3=refresh_token, 4=access_token,
+        // 5=had_remote_interaction, 6=account_name. (Antes se leían 2/3/5 → tokens corruptos:
+        // el "refresh" era la challenge_url de 39 chars y el access_token quedaba vacío.)
+        guard let refresh = f.string(3), !refresh.isEmpty else { return nil }  // refresh_token=3
+        let access = f.string(4) ?? ""                                          // access_token=4
+        let account = f.string(6) ?? ""                                         // account_name=6
         UserDefaults.standard.set(access, forKey: "steam.accessToken")
         UserDefaults.standard.set(account, forKey: "steam.accountName")
         UserDefaults.standard.set(refresh, forKey: "steam.refreshToken")
         return Tokens(accountName: account, accessToken: access, refreshToken: refresh)
+    }
+
+    // MARK: - Sesión permanente (login una vez)
+
+    /// Devuelve un **access_token válido** para autenticar como el usuario (logros, biblioteca
+    /// privada, nube), refrescándolo si hace falta. El **refresh_token** (dura ~200 días) se guarda
+    /// permanente al loguear; el access_token se mintea de él cuando caduca (~24 h). Así el login es
+    /// una sola vez. Cadena vacía si no hay sesión (nunca se ha logueado / logout explícito).
+    static func currentAccessToken() async -> String {
+        let access = UserDefaults.standard.string(forKey: "steam.accessToken") ?? ""
+        if !access.isEmpty, !isJWTExpired(access) { return access }
+        let refresh = UserDefaults.standard.string(forKey: "steam.refreshToken") ?? ""
+        guard !refresh.isEmpty, !isJWTExpired(refresh) else { return "" }   // sin refresh usable → re-login
+        if let fresh = try? await SteamAuthService().generateAccessToken(refreshToken: refresh), !fresh.isEmpty {
+            UserDefaults.standard.set(fresh, forKey: "steam.accessToken")
+            return fresh
+        }
+        return access   // si el mint falla, devolvemos lo que haya (mejor intentarlo que nada)
+    }
+
+    /// Mintea un access_token nuevo a partir del refresh_token (IAuthenticationService).
+    func generateAccessToken(refreshToken: String) async throws -> String? {
+        var body = Data()
+        body.append(ProtoWriter.string(field: 1, refreshToken))              // refresh_token
+        if let sid = UInt64(SteamAccountService.currentSteamID64) {
+            body.append(ProtoWriter.fixed64(field: 2, sid))                  // steamid (fixed64)
+        }
+        let data = try await post("IAuthenticationService/GenerateAccessTokenForApp/v1/", protobuf: body)
+        return ProtoReader.parse(data).string(1)                             // access_token=1
+    }
+
+    /// ¿El JWT (access/refresh token de Steam) ha caducado? Decodifica el `exp` del payload. Si no se
+    /// puede leer, lo tratamos como caducado (para forzar refresco).
+    nonisolated static func isJWTExpired(_ jwt: String, margin: TimeInterval = 120) -> Bool {
+        let parts = jwt.split(separator: ".")
+        guard parts.count >= 2 else { return true }
+        var b64 = String(parts[1]).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        while b64.count % 4 != 0 { b64 += "=" }
+        guard let data = Data(base64Encoded: b64),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let exp = obj["exp"] as? Double else { return true }
+        return Date().timeIntervalSince1970 + margin >= exp
     }
 
     // MARK: - RSA
@@ -219,6 +265,7 @@ enum ProtoWriter {
     static func string(field: Int, _ value: String) -> Data { bytes(field: field, Data(value.utf8)) }
     static func bytes(field: Int, _ value: Data) -> Data { tag(field, 2) + encodeVarint(UInt64(value.count)) + value }
     static func message(field: Int, _ value: Data) -> Data { bytes(field: field, value) }
+    static func fixed64(field: Int, _ value: UInt64) -> Data { tag(field, 1) + withUnsafeBytes(of: value.littleEndian) { Data($0) } }
     private static func tag(_ field: Int, _ wire: UInt8) -> Data { encodeVarint(UInt64(field) << 3 | UInt64(wire)) }
     private static func encodeVarint(_ v: UInt64) -> Data {
         var value = v, out = Data()
