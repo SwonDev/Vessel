@@ -125,7 +125,10 @@ private struct VesselWindowStyler: NSViewRepresentable {
         window.titlebarAppearsTransparent = true
         window.styleMask.insert(.fullSizeContentView)
         window.backgroundColor = NSColor(Theme.navyDeep)
-        window.isMovableByWindowBackground = true
+        // La ventana se mueve SOLO arrastrando por el header/titlebar (comportamiento estándar de
+        // macOS), no desde cualquier punto del contenido. `true` hacía arrastrable todo el fondo,
+        // lo que movía la ventana al arrastrar sobre el grid/lista/ficha. Ver DESIGN.md §7.
+        window.isMovableByWindowBackground = false
         window.titlebarSeparatorStyle = .none
     }
 }

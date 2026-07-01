@@ -173,30 +173,44 @@ struct StoreLibraryView: View {
         return list
     }
 
+    /// Ancho de la sidebar (persistente y arrastrable). Al colapsar se lleva a 0 con animación
+    /// suave (deslizándose), lo que da la transición premium que `HSplitView` no permitía.
+    @AppStorage("vessel.sidebarWidth") private var sidebarWidthRaw: Double = 244
+    @State private var sidebarDragStart: Double? = nil
+    private var sidebarWidth: CGFloat { CGFloat(min(360, max(200, sidebarWidthRaw))) }
+
     var body: some View {
-        HSplitView {
-            if !sidebarCollapsed {
-                sidebar
-                    .frame(minWidth: 208, idealWidth: 248, maxWidth: 340)
-                    .transition(.move(edge: .leading).combined(with: .opacity))
-            }
+        HStack(spacing: 0) {
+            // Sidebar con ancho ANIMADO: el contenido va a ancho fijo dentro de un marco que se
+            // encoge a 0 y recorta → colapsa/expande deslizándose, fluido y premium. (HSplitView,
+            // al ser NSSplitView, no animaba la inserción/eliminación del panel: saltaba en seco.)
+            sidebar
+                .frame(width: sidebarWidth)
+                .frame(width: sidebarCollapsed ? 0 : sidebarWidth, alignment: .leading)
+                .clipped()
+                .opacity(sidebarCollapsed ? 0 : 1)
+                .allowsHitTesting(!sidebarCollapsed)
+            // Divisor arrastrable entre lista y panel (redimensiona la lista); se pliega con ella.
+            sidebarDivider
+                .frame(width: sidebarCollapsed ? 0 : 8)
+                .opacity(sidebarCollapsed ? 0 : 1)
+                .allowsHitTesting(!sidebarCollapsed)
             detailPane
-                .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: selectedGame)
         }
-        .animation(reduceMotion ? nil : .smooth(duration: 0.28), value: sidebarCollapsed)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.38), value: sidebarCollapsed)
         // Botón para MOSTRAR la lista cuando está colapsada (en el grid; en la ficha manda "atrás").
         .overlay(alignment: .topLeading) {
             if sidebarCollapsed && selectedGame == nil {
-                Button {
-                    withAnimation(reduceMotion ? nil : .smooth(duration: 0.28)) { sidebarCollapsed = false }
-                } label: {
+                Button { sidebarCollapsed = false } label: {
                     Image(systemName: "sidebar.left").font(.body.weight(.semibold))
                         .foregroundStyle(.white.opacity(0.85)).frame(width: 32, height: 32)
                         .liquidGlass(in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 }
                 .buttonStyle(.plain).padding(.top, 12).padding(.leading, 12)
-                .help("Mostrar la lista").transition(.opacity)
+                .help("Mostrar la lista")
+                .transition(.opacity.combined(with: .move(edge: .leading)))
             }
         }
         .vesselBackground(tint: tint)
@@ -218,6 +232,29 @@ struct StoreLibraryView: View {
             displayed = computeFiltered()
             CoverCache.shared.prefetch(games.map { ($0.id, $0.coverCandidates) })
         }
+    }
+
+    /// Divisor vertical arrastrable entre la lista y el panel: fina línea de cristal dentro de una
+    /// zona de agarre ancha, con cursor de redimensionado. Ajusta `sidebarWidthRaw` en vivo (sin
+    /// animación, para que el arrastre sea 1:1 con el cursor).
+    private var sidebarDivider: some View {
+        ZStack {
+            Color.clear
+            Rectangle().fill(.white.opacity(0.09)).frame(width: 1)
+        }
+        .frame(maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .onHover { $0 ? NSCursor.resizeLeftRight.push() : NSCursor.pop() }
+        .gesture(
+            DragGesture(minimumDistance: 1)
+                .onChanged { value in
+                    if sidebarDragStart == nil { sidebarDragStart = sidebarWidthRaw }
+                    let base = sidebarDragStart ?? sidebarWidthRaw
+                    sidebarWidthRaw = Double(min(360, max(200, CGFloat(base) + value.translation.width)))
+                }
+                .onEnded { _ in sidebarDragStart = nil }
+        )
+        .accessibilityHidden(true)
     }
 
     /// Progreso AGREGADO (0–1) de las instalaciones/actualizaciones en curso, para el icono del
@@ -327,9 +364,7 @@ struct StoreLibraryView: View {
                     .font(.caption2).foregroundStyle(.white.opacity(0.45))
             }
             Spacer()
-            Button {
-                withAnimation(reduceMotion ? nil : .smooth(duration: 0.28)) { sidebarCollapsed = true }
-            } label: {
+            Button { sidebarCollapsed = true } label: {
                 Image(systemName: "sidebar.left").font(.body.weight(.medium))
                     .foregroundStyle(.white.opacity(0.55)).frame(width: 26, height: 26).contentShape(Rectangle())
             }

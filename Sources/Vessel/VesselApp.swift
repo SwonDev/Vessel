@@ -8,6 +8,8 @@ struct VesselApp: App {
 
     init() {
         VesselPaths.ensureDirectories()
+        // Scrollbars Liquid Glass en TODA la app (SwiftUI ScrollView, List, TextView…).
+        NSScrollView.installVesselGlassScrollers()
     }
 
     var body: some Scene {
