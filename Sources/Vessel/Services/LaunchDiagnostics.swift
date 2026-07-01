@@ -139,15 +139,18 @@ enum LaunchDiagnostics {
         NotificationService.shared.notify(title: "\(f.title) — \(gameTitle)", body: f.body)
     }
 
-    /// Siguiente capa gráfica a probar tras un fallo. Alterna entre DXMT (D3D11→Metal) y
-    /// GPTK/D3DMetal (D3D12→Metal), los dos motores de juegos de 64-bit. `auto` para Unity resuelve
-    /// a DXMT, así que su fallback es GPTK.
+    /// Siguiente capa gráfica a probar tras un fallo. Las 3 vías de 64-bit de Vessel forman un
+    /// CICLO: DXMT (D3D11→Metal) → GPTK (D3D12→Metal) → Gcenx (D3D9/wined3d→Vulkan) → DXMT…
+    /// Como el llamante pasa la capa REAL de arranque (`resolvedGraphicsLayer`, no `.auto`) y el
+    /// reintento se corta a los 2 intentos (`attempt < 2`), desde CUALQUIER motor de arranque se
+    /// prueban los 3 distintos sin repetir. Clave en Apple Silicon nuevo (M5): si wined3d/Vulkan
+    /// (Gcenx) casca con la GPU, el ciclo alcanza DXMT/Metal, que sí la soporta.
     private static func nextLayer(after layer: GameConfig.GraphicsLayer) -> GameConfig.GraphicsLayer? {
-        // Cadena de fallback por las 3 vías de Vessel: DXMT (D3D11) → GPTK (D3D12) → Gcenx (D3D9).
         switch layer {
-        case .auto, .dxmt: return .gptk
-        case .gptk:        return .gcenx
-        case .gcenx:       return nil
+        case .dxmt:  return .gptk
+        case .gptk:  return .gcenx
+        case .gcenx: return .dxmt
+        case .auto:  return .gptk   // defensivo: `usedLayer` ya llega resuelto a un motor concreto
         }
     }
 

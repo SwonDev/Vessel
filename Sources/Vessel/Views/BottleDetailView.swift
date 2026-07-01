@@ -341,7 +341,8 @@ struct BottleDetailView: View {
         let profile = CompatService.shared.profile(steam: game.steamAppId, title: game.name)
         var eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
         if let forcedLayer { eff.graphicsOverride = forcedLayer }
-        let usedLayer = eff.graphicsOverride
+        // Motor REAL que se usará (no `.auto`), para que el fallback recorra los 3 motores.
+        let usedLayer = wineManager.resolvedGraphicsLayer(forExecutable: exePath, effective: eff)
         await GameLaunchTracker.shared.track(
             trackId, statsKey: "steam:\(trackId)",
             // Copia de partida automática: al CERRAR el juego, respalda la partida (seguro, solo copia).

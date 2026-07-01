@@ -401,6 +401,24 @@ final class WineManager {
         return .other
     }
 
+    /// Motor gráfico REAL que usará `launch()` para este ejecutable + override. Se usa para
+    /// pasar la capa correcta al **fallback automático**: si se pasara `.auto`, la cadena
+    /// `nextLayer` supondría que se arrancó en DXMT y saltaría motores (p. ej. un juego
+    /// `.other` arranca en Gcenx pero el fallback probaría gptk→gcenx, sin tocar DXMT).
+    /// DEBE reflejar EXACTAMENTE el enrutado de `launch()`. Juegos de 32-bit (CrossOver) y
+    /// D3D9 se reportan como `.gcenx`: launch() los re-fuerza a su motor pase lo que pase,
+    /// así que el valor solo sirve para arrancar el ciclo de fallback.
+    func resolvedGraphicsLayer(forExecutable executable: String, effective eff: EffectiveLaunchConfig = EffectiveLaunchConfig()) -> GameConfig.GraphicsLayer {
+        let go = eff.graphicsOverride
+        if go == .gcenx { return .gcenx }
+        let api = detectGraphicsAPI(forExecutable: executable)
+        if go == .gptk || (go == .auto && api == .d3d12) { return .gptk }
+        if api == .d3d9 { return .gcenx }
+        if isExecutable32Bit(executable) { return .gcenx }   // CrossOver; launch() lo re-fuerza
+        if api == .other { return .gcenx }                   // carga dinámica de D3D → Gcenx
+        return .dxmt                                          // D3D11 → wine-dxmt
+    }
+
     /// ¿El .exe importa alguna de estas DLL? Escanea el binario (mapeado en memoria)
     /// buscando los nombres en la tabla de imports. Heurístico pero fiable: los nombres
     /// de import aparecen como ASCII terminado en nulo. Comprueba minúsculas y mayúsculas.

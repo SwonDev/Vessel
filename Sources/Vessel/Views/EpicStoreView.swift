@@ -251,7 +251,8 @@ final class EpicStore {
         let profile = CompatService.shared.profile(epic: game.appName, title: game.title)
         var eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
         if let forcedLayer { eff.graphicsOverride = forcedLayer }
-        let usedLayer = eff.graphicsOverride
+        // Motor REAL que se usará (no `.auto`), para que el fallback recorra los 3 motores.
+        let usedLayer = wineManager.resolvedGraphicsLayer(forExecutable: exe, effective: eff)
         // Rastrear el estado (Iniciando… → Ejecutándose) + cloud saves automáticos: al CERRAR
         // el juego, sube la partida a la nube (Epic) + copia local de Vessel. legendary resuelve la ruta.
         await GameLaunchTracker.shared.track(

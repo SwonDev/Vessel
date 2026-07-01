@@ -266,7 +266,9 @@ final class GogStore {
         let profile = CompatService.shared.profile(gog: game.appId, title: game.title)
         var eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
         if let forcedLayer { eff.graphicsOverride = forcedLayer }
-        let usedLayer = eff.graphicsOverride
+        // Motor REAL que se usará (no `.auto`), para que el fallback recorra los 3 motores.
+        let usedLayer = gogdl.primaryExecutable(appId: game.appId, installDir: dir)
+            .map { wineManager.resolvedGraphicsLayer(forExecutable: $0, effective: eff) } ?? eff.graphicsOverride
         await GameLaunchTracker.shared.track(
             game.appId, statsKey: "gog:\(game.appId)",
             // Cloud saves automáticos: al CERRAR el juego, sube a la nube de GOG + copia local de Vessel.
