@@ -469,6 +469,10 @@ final class WineManager {
         // "DLL not found" al no encontrar d3d11). Con las DLLs junto al exe, siempre
         // cargan.
         ensureGameDXMTDLLs(gameExecutable: executable, gameWine: gameWine)
+        // Dependencias de runtime: detecta lo que el juego importa y provisiona los DirectX helper
+        // que empaquetamos (d3dx9/d3dcompiler, cuyo builtin de Wine es incompleto). El resto
+        // (Visual C++, .NET, XInput) lo cubre el builtin del motor; se registra para el diagnóstico.
+        RuntimeDependencyProvisioner.provision(executable: executable)
         // Cerrar procesos previos (el cliente Steam corre en Gcenx y deja el prefix
         // en su versión; hay que liberarlo antes de re-sincronizar a wine-dxmt).
         log.log("Preparando prefijo para el juego…", level: .info)

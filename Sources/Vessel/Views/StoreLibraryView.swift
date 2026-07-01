@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import DockProgress
 
 /// Juego genérico común a TODAS las tiendas (Steam/Epic/GOG). Cada tienda mapea
 /// sus datos a este modelo y reutiliza `StoreLibraryView` — así la UI/UX (búsqueda,
@@ -66,7 +67,20 @@ enum StoreLibraryFilter: String, CaseIterable, Identifiable {
     case todos = "Todos"
     case instalados = "Instalados"
     case porInstalar = "Por instalar"
+    case conActualizacion = "Con actualización"
+    case sinJugar = "Sin jugar"
+    case jugados = "Jugados"
     var id: String { rawValue }
+    var symbol: String {
+        switch self {
+        case .todos:            return "square.grid.2x2"
+        case .instalados:       return "internaldrive"
+        case .porInstalar:      return "arrow.down.circle"
+        case .conActualizacion: return "arrow.triangle.2.circlepath"
+        case .sinJugar:         return "sparkles"
+        case .jugados:          return "clock.arrow.circlepath"
+        }
+    }
 }
 
 /// Biblioteca **genérica y premium** reutilizada por todas las tiendas. Solo recibe la
@@ -129,9 +143,12 @@ struct StoreLibraryView: View {
     private var filtered: [StoreGame] {
         var list = enriched
         switch filter {
-        case .instalados:  list = list.filter { $0.installed }
-        case .porInstalar: list = list.filter { !$0.installed }
-        case .todos:       break
+        case .instalados:       list = list.filter { $0.installed }
+        case .porInstalar:      list = list.filter { !$0.installed }
+        case .conActualizacion: list = list.filter { $0.updateAvailable }
+        case .sinJugar:         list = list.filter { $0.lastPlayed == nil && ($0.playtimeMinutes ?? 0) == 0 }
+        case .jugados:          list = list.filter { $0.lastPlayed != nil || ($0.playtimeMinutes ?? 0) > 0 }
+        case .todos:            break
         }
         if showFavoritesOnly { list = list.filter { isFav($0.id) } }
         if !search.isEmpty {
@@ -157,7 +174,25 @@ struct StoreLibraryView: View {
                 .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: selectedGame)
         }
         .vesselBackground(tint: tint)
-        .onAppear { favorites = Set(UserDefaults.standard.stringArray(forKey: favKey) ?? []) }
+        .onAppear {
+            favorites = Set(UserDefaults.standard.stringArray(forKey: favKey) ?? [])
+            updateDockProgress()
+        }
+        .onChange(of: dockProgressSnapshot) { _, _ in updateDockProgress() }
+    }
+
+    /// Progreso AGREGADO (0–1) de las instalaciones/actualizaciones en curso, para el icono del
+    /// Dock. `-1` = nada en curso; `0.03` = hay instalación(es) sin % conocido (indeterminado).
+    private var dockProgressSnapshot: Double {
+        let known = installingIDs.compactMap { percentFor($0) }
+        if !known.isEmpty { return known.reduce(0, +) / Double(known.count) }
+        return installingIDs.isEmpty ? -1 : 0.03
+    }
+
+    /// Refleja `dockProgressSnapshot` en el icono del Dock (barra de progreso estilo Mythic).
+    private func updateDockProgress() {
+        let v = dockProgressSnapshot
+        if v < 0 { DockProgress.resetProgress() } else { DockProgress.progress = min(1, max(0, v)) }
     }
 
     // MARK: - Panel principal: ficha del juego seleccionado o grid "home"
@@ -291,7 +326,7 @@ struct StoreLibraryView: View {
         HStack(spacing: 12) {
             Menu {
                 Picker("Mostrar", selection: $filter) {
-                    ForEach(StoreLibraryFilter.allCases) { Text($0.rawValue).tag($0) }
+                    ForEach(StoreLibraryFilter.allCases) { Label($0.rawValue, systemImage: $0.symbol).tag($0) }
                 }
                 .pickerStyle(.inline)
             } label: {
@@ -451,7 +486,6 @@ struct StoreGameCard: View {
             .hoverLift()
             .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous))
             .onTapGesture { onOpen() }
-            .help(game.title)
             .contextMenu {
                 if game.installed {
                     Button { onPlay() } label: { Label("Jugar", systemImage: "play.fill") }
@@ -581,7 +615,6 @@ struct StoreGameRow: View {
         .background { rowBackground }
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
-        .help(game.title)
     }
 
     /// Fondo de la fila: **cristal Liquid Glass tintado** si está seleccionada (premium, no el
@@ -667,7 +700,6 @@ struct RecentlyPlayedCard: View {
         .hoverLift(scale: 1.02)
         .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
         .onTapGesture { onOpen() }
-        .help(game.title)
     }
 }
 
@@ -1213,7 +1245,10 @@ struct GameDetailView: View {
     /// (`Epic/metadata/<app>.json`): descripción, desarrollador y capturas (keyImages `Screenshot`).
     /// Sin lanzar procesos. Paridad de ficha también en Epic con lo que su backend ofrece.
     @MainActor private func loadEpicDetails(_ appName: String) async {
-        let path = "\(VesselPaths.appSupport)/Epic/metadata/\(appName).json"
+        // legendary cachea la metadata en su LEGENDARY_CONFIG_PATH (= LegendaryManager.configDir),
+        // NO en un directorio "Epic". Usar la constante real evita el desajuste que dejaba la ficha
+        // de Epic sin descripción.
+        let path = "\(LegendaryManager.configDir)/metadata/\(appName).json"
         guard let data = FileManager.default.contents(atPath: path),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let md = obj["metadata"] as? [String: Any] else { return }
@@ -1235,6 +1270,26 @@ struct GameDetailView: View {
                     ?? (imgs.first?["url"] as? String)
                 return StoreDLC(id: (dlc["id"] as? String) ?? title, title: title, coverURL: cover.flatMap { URL(string: $0) })
             }
+        }
+        // Enriquecimiento PREMIUM (paridad con Steam/GOG): Epic no expone capturas ni descripción
+        // larga por su backend (ni Heroic las tiene). La mayoría de juegos de Epic están también en
+        // Steam, así que buscamos el MISMO juego por título (API pública de Steam, gratis, sin clave)
+        // y tomamos sus CAPTURAS reales + descripción rica, manteniendo DLCs y estudio de Epic. Solo
+        // se aplica si el título coincide de forma estricta (no confunde juegos distintos).
+        if det.screenshots.isEmpty,
+           let steamId = await Self.steamAppId(forTitle: game.title),
+           let sd = await Self.fetchSteamDetails(appId: steamId) {
+            var merged = details ?? det
+            if !sd.screenshots.isEmpty {
+                merged.screenshots = sd.screenshots
+                merged.screenshotsFull = sd.screenshotsFull
+            }
+            if let sdesc = sd.description, sdesc.count > (merged.description?.count ?? 0) {
+                merged.description = sdesc
+            }
+            if merged.genres.isEmpty { merged.genres = sd.genres }
+            if merged.developers.isEmpty { merged.developers = sd.developers }
+            details = merged
         }
     }
 
@@ -1266,20 +1321,29 @@ struct GameDetailView: View {
 
     /// Enriquece la ficha de un juego de **Steam** con la API pública `appdetails`.
     @MainActor private func loadSteamDetails(_ appId: String) async {
-        guard let url = URL(string: "https://store.steampowered.com/api/appdetails?appids=\(appId)&l=spanish")
-        else { return }
         loadingDetails = true
         defer { loadingDetails = false }
+        guard let det = await Self.fetchSteamDetails(appId: appId) else { return }
+        details = det
+        await loadDLCs(det.dlcIds)
+    }
+
+    /// Descarga y parsea los detalles públicos de un juego de Steam (`appdetails`): descripción,
+    /// desarrolladores, géneros, logros, DLCs y CAPTURAS reales. Reutilizable como fuente de
+    /// enriquecimiento para Epic (que no expone capturas por su backend). Sin clave ni auth.
+    static func fetchSteamDetails(appId: String) async -> SteamGameDetails? {
+        guard let url = URL(string: "https://store.steampowered.com/api/appdetails?appids=\(appId)&l=spanish")
+        else { return nil }
         do {
             var req = URLRequest(url: url); req.timeoutInterval = 12
             let (data, _) = try await URLSession.shared.data(for: req)
             guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let entry = obj[appId] as? [String: Any],
                   (entry["success"] as? Bool) == true,
-                  let d = entry["data"] as? [String: Any] else { return }
+                  let d = entry["data"] as? [String: Any] else { return nil }
             var det = SteamGameDetails()
             if let desc = (d["short_description"] as? String) ?? (d["about_the_game"] as? String) {
-                det.description = Self.stripHTML(desc)
+                det.description = stripHTML(desc)
             }
             det.developers = (d["developers"] as? [String]) ?? []
             det.publishers = (d["publishers"] as? [String]) ?? []
@@ -1298,9 +1362,44 @@ struct GameDetailView: View {
             let shots = ((d["screenshots"] as? [[String: Any]]) ?? []).prefix(12)
             det.screenshots = shots.compactMap { ($0["path_thumbnail"] as? String).flatMap { URL(string: $0) } }
             det.screenshotsFull = shots.compactMap { ($0["path_full"] as? String).flatMap { URL(string: $0) } }
-            details = det
-            await loadDLCs(det.dlcIds)
-        } catch { }
+            return det
+        } catch { return nil }
+    }
+
+    /// Busca en Steam el `appid` de un juego por su título (API pública `storesearch`, sin clave).
+    /// Solo devuelve un match si el nombre coincide de forma estricta (normalizado) — evita
+    /// enriquecer un juego de Epic con capturas de otro juego distinto de nombre parecido.
+    static func steamAppId(forTitle title: String) async -> String? {
+        let norm = normalizedTitle(title)
+        guard !norm.isEmpty,
+              let enc = title.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://store.steampowered.com/api/storesearch/?term=\(enc)&cc=us&l=en")
+        else { return nil }
+        do {
+            var req = URLRequest(url: url); req.timeoutInterval = 12
+            let (data, _) = try await URLSession.shared.data(for: req)
+            guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let items = obj["items"] as? [[String: Any]] else { return nil }
+            for it in items.prefix(5) {
+                guard let name = it["name"] as? String, let id = it["id"] as? Int else { continue }
+                if normalizedTitle(name) == norm { return String(id) }
+            }
+            return nil
+        } catch { return nil }
+    }
+
+    /// Normaliza un título para comparar: minúsculas, sin ™®©, sin puntuación, sin sufijos de
+    /// edición y sin espacios (así "Layers of Fear" == "Layers of Fear™").
+    static func normalizedTitle(_ s: String) -> String {
+        var t = s.lowercased()
+        for junk in ["™", "®", "©", "’", "'", ":", "-", "–", "—", ".", ",", "!", "?", "(", ")"] {
+            t = t.replacingOccurrences(of: junk, with: " ")
+        }
+        for suffix in ["definitive edition", "game of the year edition", "goty edition",
+                       "complete edition", "deluxe edition", "remastered", "the "] {
+            t = t.replacingOccurrences(of: suffix, with: " ")
+        }
+        return t.components(separatedBy: .whitespaces).filter { !$0.isEmpty }.joined()
     }
 
     /// Resuelve nombre + carátula de los primeros DLC (datos públicos de Steam, en paralelo).
