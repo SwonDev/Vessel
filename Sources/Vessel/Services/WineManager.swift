@@ -479,6 +479,20 @@ final class WineManager {
             return try await launch32BitGame(executable: executable, in: bottle,
                                              arguments: allArgs, steamAppId: steamAppId, effective: eff)
         }
+        // Juegos de 64-bit que NO importan NINGUNA DLL de Direct3D en su tabla PE: cargan la
+        // API gráfica DINÁMICAMENTE en runtime (LoadLibrary), así que no sabemos si usan D3D9,
+        // D3D10 u D3D11. Muchos (p. ej. Grim Dawn, AppID 219990) son juegos de era D3D9 con un
+        // renderer D3D11 opcional y arrancan en D3D9 por defecto. Gcenx (wined3d→Vulkan→Metal)
+        // maneja D3D8/9/10/11 con un solo motor → es el default MÁS compatible; wine-dxmt (solo
+        // D3D11→Metal) se cerraría al instante y SIN log si el juego elige D3D9. Verificado
+        // empíricamente: Grim Dawn inicializa MoltenVK en Gcenx y muere silencioso en wine-dxmt.
+        // (Unity queda excluido: `detectGraphicsAPI` lo clasifica como .d3d11, no .other.)
+        if detectGraphicsAPI(forExecutable: executable) == .other {
+            if go == .dxmt { log.log("Override DXMT ignorado: el juego carga Direct3D dinámicamente; se usa Gcenx (wined3d), la capa más compatible.", level: .info) }
+            else { log.log("El juego carga Direct3D dinámicamente (sin imports PE) → Gcenx (wined3d), la capa más compatible.", level: .info) }
+            return try await launchD3D9Game(executable: executable, in: bottle,
+                                            arguments: allArgs, steamAppId: steamAppId, effective: eff)
+        }
         // D3D11 → wine-dxmt (DXMT→Metal). Aseguramos DXMT en el builtin del motor; si
         // no, los juegos usarían wined3d y fallarían con "InitializeEngineGraphics".
         let gameWine = resolveGameWine(for: bottle)
@@ -1132,6 +1146,41 @@ final class WineManager {
             process.waitUntilExit()
         } catch {
             // pkill devuelve non-zero si no hay procesos que matar: esperado.
+        }
+        // El WINESERVER NO lleva el prefix en su argv (lo lee de la env `WINEPREFIX`),
+        // así que `pkill -f <prefix>` NO lo alcanza y queda ZOMBI. Al cambiar de motor
+        // (fallback DXMT→GPTK→Gcenx, o cliente Steam→juego) el nuevo wine —de otra
+        // versión— choca con ese server zombi: «wine client error: version mismatch» y
+        // el juego MUERE nada más arrancar (el clásico "se ejecuta y se cierra"). Lo
+        // matamos por SEÑAL (independiente de versión): localizamos los `wineserver`
+        // cuyos descriptores abiertos apuntan a ESTE prefix vía `lsof` y les mandamos
+        // SIGKILL. `wineserver -k` no vale aquí porque también dialoga por protocolo y
+        // falla igual con el mismatch de versión.
+        await killPrefixWineservers(prefix: prefix)
+    }
+
+    /// Mata por SIGKILL cualquier `wineserver` ligado a `prefix`, sea cual sea el motor
+    /// (versión) que lo arrancó. Evita el "version mismatch" que deja colgado al juego
+    /// tras un cambio de motor. Silencioso e idempotente.
+    private func killPrefixWineservers(prefix: String) async {
+        let shell = Process()
+        shell.executableURL = URL(fileURLWithPath: "/bin/sh")
+        // Para cada wineserver vivo, si tiene ABIERTO algo bajo el prefix → SIGKILL.
+        let script = """
+        for pid in $(/usr/bin/pgrep -x wineserver 2>/dev/null); do
+          if /usr/sbin/lsof -p "$pid" 2>/dev/null | /usr/bin/grep -qF '\(prefix)'; then
+            /bin/kill -9 "$pid" 2>/dev/null
+          fi
+        done
+        """
+        shell.arguments = ["-c", script]
+        shell.standardOutput = FileHandle(forWritingAtPath: "/dev/null")
+        shell.standardError = FileHandle(forWritingAtPath: "/dev/null")
+        do {
+            try shell.run()
+            shell.waitUntilExit()
+        } catch {
+            // Sin wineservers o sin lsof: nada que hacer.
         }
     }
 
