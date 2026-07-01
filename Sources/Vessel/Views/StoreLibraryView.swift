@@ -1814,7 +1814,11 @@ struct GameDetailView: View {
                           (entry["success"] as? Bool) == true,
                           let d = entry["data"] as? [String: Any],
                           let name = d["name"] as? String else { return nil }
-                    let cover = URL(string: "https://cdn.cloudflare.steamstatic.com/steam/apps/\(id)/capsule_231x87.jpg")
+                    // La carátula: `header_image` REAL de appdetails (muchos DLC —packs de armadura,
+                    // sombreros— NO tienen `capsule_231x87.jpg` → daba 404 y salía el hueco). Con el
+                    // header_image cargan todos. Fallback al capsule por si acaso.
+                    let cover = (d["header_image"] as? String).flatMap { URL(string: $0) }
+                        ?? URL(string: "https://cdn.cloudflare.steamstatic.com/steam/apps/\(id)/capsule_231x87.jpg")
                     return StoreDLC(id: "\(id)", title: name, coverURL: cover)
                 }
             }
