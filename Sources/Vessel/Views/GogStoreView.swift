@@ -281,7 +281,7 @@ final class GogStore {
         }
         // Aviso de compatibilidad Unity 6 (no falla en silencio), comprobado tras el arranque.
         let title = game.title
-        Task { try? await Task.sleep(for: .seconds(15)); UnityInputCompat.warnIfAffected(prefix: prefix, gameTitle: title) }
+        Task { try? await Task.sleep(for: .seconds(15)); LaunchDiagnostics.diagnose(prefix: prefix, gameTitle: title) }
     }
 }
 

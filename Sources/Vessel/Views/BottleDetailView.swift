@@ -345,7 +345,7 @@ struct BottleDetailView: View {
         // Aviso de compatibilidad (no falla en silencio): si el juego es Unity 6 y el ratón
         // queda muerto, el propio Player.log lo registra; lo comprobamos unos segundos después.
         let prefix = localBottle.prefixPath, title = game.name
-        Task { try? await Task.sleep(for: .seconds(15)); UnityInputCompat.warnIfAffected(prefix: prefix, gameTitle: title) }
+        Task { try? await Task.sleep(for: .seconds(15)); LaunchDiagnostics.diagnose(prefix: prefix, gameTitle: title) }
     }
 
     private func refreshDXVKStatus() async {
