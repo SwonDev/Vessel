@@ -230,7 +230,8 @@ final class EpicStore {
     }
 
     /// Lanza un juego de Epic ya instalado con el motor de juegos (wine-dxmt), igual que Steam.
-    func play(_ game: LegendaryManager.EpicGame) async {
+    /// `forcedLayer`/`attempt` los usa el fallback automático de motor (relanzar con otra capa).
+    func play(_ game: LegendaryManager.EpicGame, forcedLayer: GameConfig.GraphicsLayer? = nil, attempt: Int = 0) async {
         guard let exe = game.executablePath, !exe.isEmpty else {
             log.log("Epic: \(game.title) sin ejecutable conocido (¿reinstalar?)", level: .warn)
             return
@@ -244,6 +245,13 @@ final class EpicStore {
         }
         let prefix = bottle.prefixPath
         let gameDir = (exe as NSString).deletingLastPathComponent
+        // Config efectiva (perfil comunidad + overrides usuario) resuelta ANTES de track para saber
+        // la capa gráfica usada y poder reintentar con otra si falla el arranque.
+        let cfg = GameConfigStore.load(game.appName)
+        let profile = CompatService.shared.profile(epic: game.appName, title: game.title)
+        var eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
+        if let forcedLayer { eff.graphicsOverride = forcedLayer }
+        let usedLayer = eff.graphicsOverride
         // Rastrear el estado (Iniciando… → Ejecutándose) + cloud saves automáticos: al CERRAR
         // el juego, sube la partida a la nube (Epic) + copia local de Vessel. legendary resuelve la ruta.
         await GameLaunchTracker.shared.track(
@@ -256,17 +264,16 @@ final class EpicStore {
             // Cloud saves: baja lo último de la nube ANTES de jugar (no bloquea si no aplica).
             await legendary.syncSaves(appName: game.appName, direction: .download)
             await SaveBackupManager.shared.restoreIfNewer(store: .epic, id: game.appName, title: game.title, steamId: nil, prefix: prefix, installPath: gameDir)
-            let cfg = GameConfigStore.load(game.appName)
-            // Perfil de compatibilidad (comunidad) + overrides del usuario → config efectiva.
-            let profile = CompatService.shared.profile(epic: game.appName, title: game.title)
-            let eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
             return try await wineManager.launch(
                 executable: exe, in: bottle, arguments: [], effective: eff
             )
         }
-        // Aviso de compatibilidad Unity 6 (no falla en silencio), comprobado tras el arranque.
-        let title = game.title
-        Task { try? await Task.sleep(for: .seconds(15)); LaunchDiagnostics.diagnose(prefix: prefix, gameTitle: title) }
+        // Diagnóstico + fallback automático de motor: si falla el arranque de forma recuperable,
+        // relanza con la otra capa (DXMT ↔ GPTK) una vez; si no, avisa con causa y acción.
+        LaunchDiagnostics.monitorAndMaybeRetry(
+            prefix: prefix, gameId: game.appName, gameTitle: game.title,
+            currentLayer: usedLayer, attempt: attempt
+        ) { [weak self] next in await self?.play(game, forcedLayer: next, attempt: attempt + 1) }
     }
 }
 

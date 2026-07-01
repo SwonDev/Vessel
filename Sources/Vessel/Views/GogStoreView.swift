@@ -248,7 +248,8 @@ final class GogStore {
     }
 
     /// Lanza un juego de GOG ya instalado con el motor de juegos (wine-dxmt), igual que Steam/Epic.
-    func play(_ game: GogdlManager.GogGame) async {
+    /// `forcedLayer`/`attempt` los usa el fallback automático de motor (relanzar con otra capa).
+    func play(_ game: GogdlManager.GogGame, forcedLayer: GameConfig.GraphicsLayer? = nil, attempt: Int = 0) async {
         // Resolvemos el bottle ANTES de track para tener la ruta del prefijo en ambos extremos
         // (bajar partidas antes de jugar / subirlas al cerrar). Si el bottle no se puede preparar,
         // no hay nada que lanzar.
@@ -260,6 +261,12 @@ final class GogStore {
         }
         let dir = installDir(bottle, game.appId)
         let prefix = bottle.prefixPath
+        // Config efectiva resuelta ANTES de track para saber la capa gráfica usada y reintentar.
+        let cfg = GameConfigStore.load(game.appId)
+        let profile = CompatService.shared.profile(gog: game.appId, title: game.title)
+        var eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
+        if let forcedLayer { eff.graphicsOverride = forcedLayer }
+        let usedLayer = eff.graphicsOverride
         await GameLaunchTracker.shared.track(
             game.appId, statsKey: "gog:\(game.appId)",
             // Cloud saves automáticos: al CERRAR el juego, sube a la nube de GOG + copia local de Vessel.
@@ -274,14 +281,13 @@ final class GogStore {
             // Cloud saves: baja lo último de la nube ANTES de jugar (silencioso si no aplica).
             await self.gogdl.syncSaves(appId: game.appId, installDir: dir, prefix: prefix, direction: .download)
             await SaveBackupManager.shared.restoreIfNewer(store: .gog, id: game.appId, title: game.title, steamId: nil, prefix: prefix, installPath: dir)
-            let cfg = GameConfigStore.load(game.appId)
-            let profile = CompatService.shared.profile(gog: game.appId, title: game.title)
-            let eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
             return try await self.wineManager.launch(executable: exe, in: bottle, arguments: [], effective: eff)
         }
-        // Aviso de compatibilidad Unity 6 (no falla en silencio), comprobado tras el arranque.
-        let title = game.title
-        Task { try? await Task.sleep(for: .seconds(15)); LaunchDiagnostics.diagnose(prefix: prefix, gameTitle: title) }
+        // Diagnóstico + fallback automático de motor (DXMT ↔ GPTK) si falla el arranque.
+        LaunchDiagnostics.monitorAndMaybeRetry(
+            prefix: prefix, gameId: game.appId, gameTitle: game.title,
+            currentLayer: usedLayer, attempt: attempt
+        ) { [weak self] next in await self?.play(game, forcedLayer: next, attempt: attempt + 1) }
     }
 }
 

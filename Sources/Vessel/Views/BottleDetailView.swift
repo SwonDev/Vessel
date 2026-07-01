@@ -307,7 +307,7 @@ struct BottleDetailView: View {
         }
     }
 
-    private func launchGame(_ game: GameInstall) async {
+    private func launchGame(_ game: GameInstall, forcedLayer: GameConfig.GraphicsLayer? = nil, attempt: Int = 0) async {
         // Mismo id que usa la UI (StoreGame.id) para que el feedback (Iniciando…/Ejecutándose)
         // se refleje en la ficha y la tarjeta.
         let trackId = game.steamAppId ?? game.id.uuidString
@@ -326,6 +326,12 @@ struct BottleDetailView: View {
             }
             log.log("Ejecutable re-resuelto al lanzar \(game.name): \((resolved as NSString).lastPathComponent)", level: .info)
         }
+        // Config efectiva resuelta ANTES de track para saber la capa gráfica usada y reintentar.
+        let cfg = GameConfigStore.load(trackId)
+        let profile = CompatService.shared.profile(steam: game.steamAppId, title: game.name)
+        var eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
+        if let forcedLayer { eff.graphicsOverride = forcedLayer }
+        let usedLayer = eff.graphicsOverride
         await GameLaunchTracker.shared.track(
             trackId, statsKey: "steam:\(trackId)",
             // Copia de partida automática: al CERRAR el juego, respalda la partida (seguro, solo copia).
@@ -333,19 +339,18 @@ struct BottleDetailView: View {
         ) {
             // Restaura la copia ANTES de jugar SOLO si es más nueva que la partida local.
             await SaveBackupManager.shared.restoreIfNewer(store: .steam, id: trackId, title: game.name, steamId: game.steamAppId, prefix: localBottle.prefixPath, installPath: game.installPath)
-            let cfg = GameConfigStore.load(trackId)
-            let profile = CompatService.shared.profile(steam: game.steamAppId, title: game.name)
-            let eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
             let proc = try await wineManager.launch(
                 executable: exePath, in: localBottle,
                 arguments: [], steamAppId: game.steamAppId, effective: eff)
             store.touchGame(game.id, in: localBottle.id)
             return proc
         }
-        // Aviso de compatibilidad (no falla en silencio): si el juego es Unity 6 y el ratón
-        // queda muerto, el propio Player.log lo registra; lo comprobamos unos segundos después.
-        let prefix = localBottle.prefixPath, title = game.name
-        Task { try? await Task.sleep(for: .seconds(15)); LaunchDiagnostics.diagnose(prefix: prefix, gameTitle: title) }
+        // Diagnóstico + fallback automático de motor (DXMT ↔ GPTK) si falla el arranque de forma
+        // recuperable; si no, avisa con causa y acción. Reintenta una sola vez.
+        LaunchDiagnostics.monitorAndMaybeRetry(
+            prefix: localBottle.prefixPath, gameId: trackId, gameTitle: game.name,
+            currentLayer: usedLayer, attempt: attempt
+        ) { next in await launchGame(game, forcedLayer: next, attempt: attempt + 1) }
     }
 
     private func refreshDXVKStatus() async {
