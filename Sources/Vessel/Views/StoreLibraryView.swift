@@ -66,7 +66,20 @@ enum StoreLibraryFilter: String, CaseIterable, Identifiable {
     case todos = "Todos"
     case instalados = "Instalados"
     case porInstalar = "Por instalar"
+    case conActualizacion = "Con actualización"
+    case sinJugar = "Sin jugar"
+    case jugados = "Jugados"
     var id: String { rawValue }
+    var symbol: String {
+        switch self {
+        case .todos:            return "square.grid.2x2"
+        case .instalados:       return "internaldrive"
+        case .porInstalar:      return "arrow.down.circle"
+        case .conActualizacion: return "arrow.triangle.2.circlepath"
+        case .sinJugar:         return "sparkles"
+        case .jugados:          return "clock.arrow.circlepath"
+        }
+    }
 }
 
 /// Biblioteca **genérica y premium** reutilizada por todas las tiendas. Solo recibe la
@@ -129,9 +142,12 @@ struct StoreLibraryView: View {
     private var filtered: [StoreGame] {
         var list = enriched
         switch filter {
-        case .instalados:  list = list.filter { $0.installed }
-        case .porInstalar: list = list.filter { !$0.installed }
-        case .todos:       break
+        case .instalados:       list = list.filter { $0.installed }
+        case .porInstalar:      list = list.filter { !$0.installed }
+        case .conActualizacion: list = list.filter { $0.updateAvailable }
+        case .sinJugar:         list = list.filter { $0.lastPlayed == nil && ($0.playtimeMinutes ?? 0) == 0 }
+        case .jugados:          list = list.filter { $0.lastPlayed != nil || ($0.playtimeMinutes ?? 0) > 0 }
+        case .todos:            break
         }
         if showFavoritesOnly { list = list.filter { isFav($0.id) } }
         if !search.isEmpty {
@@ -291,7 +307,7 @@ struct StoreLibraryView: View {
         HStack(spacing: 12) {
             Menu {
                 Picker("Mostrar", selection: $filter) {
-                    ForEach(StoreLibraryFilter.allCases) { Text($0.rawValue).tag($0) }
+                    ForEach(StoreLibraryFilter.allCases) { Label($0.rawValue, systemImage: $0.symbol).tag($0) }
                 }
                 .pickerStyle(.inline)
             } label: {
