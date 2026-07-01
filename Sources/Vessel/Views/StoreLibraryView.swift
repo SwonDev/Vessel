@@ -940,6 +940,9 @@ struct StoreDLC: Identifiable, Hashable {
     let id: String
     let title: String
     let coverURL: URL?
+    /// ¿El usuario lo POSEE? Los que no, se atenúan para que no destaquen. `true` por defecto
+    /// (o si no hay datos de sesión → no atenuar sin saber).
+    var owned: Bool = true
 }
 
 /// Ficha de juego al estilo Steam: banner hero + botón Jugar/Instalar + tiempo jugado y
@@ -1511,12 +1514,19 @@ struct GameDetailView: View {
                             }
                             .frame(width: 66, height: 25)
                             .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                            Text(dlc.title).font(.caption).foregroundStyle(.white.opacity(0.85)).lineLimit(1)
+                            .saturation(dlc.owned ? 1 : 0.1)   // los no poseídos, apagados
+                            Text(dlc.title).font(.caption)
+                                .foregroundStyle(.white.opacity(dlc.owned ? 0.85 : 0.5)).lineLimit(1)
                             Spacer(minLength: 0)
+                            if dlc.owned {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.caption2).foregroundStyle(steamGreen.opacity(0.9))
+                            }
                         }
+                        .opacity(dlc.owned ? 1 : 0.5)   // atenúa el que no tienes para que no destaque
                     }
                     Text(store == .epic ? "Contenido adicional disponible para este juego."
-                                        : "Los DLC que tengas en tu cuenta se instalan junto al juego.")
+                                        : "Los DLC marcados (✓) están en tu cuenta y se instalan junto al juego.")
                         .font(.caption2).foregroundStyle(.white.opacity(0.45)).padding(.top, 2)
                 }
             }
@@ -1804,6 +1814,9 @@ struct GameDetailView: View {
     @MainActor private func loadDLCs(_ ids: [Int]) async {
         dlcs = []
         guard !ids.isEmpty else { return }
+        // Qué DLC posee el usuario (juegos+DLC de rgOwnedApps vía la sesión web). Vacío = sin datos
+        // → no atenuamos (no sabemos). Se hace UNA vez para todos los DLC.
+        let ownedApps = await SteamWebSession.shared.ownedAppIDs()
         let resolved = await withTaskGroup(of: StoreDLC?.self) { group -> [StoreDLC] in
             for id in ids.prefix(12) {
                 group.addTask {
@@ -1819,14 +1832,19 @@ struct GameDetailView: View {
                     // header_image cargan todos. Fallback al capsule por si acaso.
                     let cover = (d["header_image"] as? String).flatMap { URL(string: $0) }
                         ?? URL(string: "https://cdn.cloudflare.steamstatic.com/steam/apps/\(id)/capsule_231x87.jpg")
-                    return StoreDLC(id: "\(id)", title: name, coverURL: cover)
+                    let owned = ownedApps.isEmpty || ownedApps.contains(id)
+                    return StoreDLC(id: "\(id)", title: name, coverURL: cover, owned: owned)
                 }
             }
             var out: [StoreDLC] = []
             for await dlc in group { if let dlc { out.append(dlc) } }
             return out
         }
-        dlcs = resolved.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        // Poseídos primero; dentro de cada grupo, por nombre. Los no poseídos se atenúan (abajo).
+        dlcs = resolved.sorted {
+            if $0.owned != $1.owned { return $0.owned }
+            return $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+        }
     }
 
     private static func stripHTML(_ s: String) -> String {

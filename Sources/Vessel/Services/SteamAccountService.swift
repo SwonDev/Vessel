@@ -51,7 +51,7 @@ final class SteamAccountService {
 
     /// SteamID64 del usuario logueado (persistido al detectar la cuenta). Lo usan otras vistas
     /// (p. ej. la ficha, para los logros reales) sin necesidad del bottle.
-    static var currentSteamID64: String { UserDefaults.standard.string(forKey: "steam.steamID64") ?? "" }
+    nonisolated static var currentSteamID64: String { UserDefaults.standard.string(forKey: "steam.steamID64") ?? "" }
 
     @discardableResult
     private func remember(_ account: Account) -> Account {
