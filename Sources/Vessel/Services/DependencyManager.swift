@@ -593,18 +593,24 @@ final class DependencyManager {
 
     private func runCapture(executable: String, arguments: [String]) async -> String? {
         await withCheckedContinuation { cont in
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: executable)
-            task.arguments = arguments
-            let pipe = Pipe()
-            task.standardOutput = pipe
-            task.standardError = pipe
-            do { try task.run() } catch {
-                cont.resume(returning: nil); return
+            // SIEMPRE fuera del hilo principal: `waitUntilExit()` corre un runloop anidado que, en el
+            // main thread, chocaba con el ciclo de render Metal (ColorfulX) → EXC_BAD_ACCESS.
+            DispatchQueue.global(qos: .userInitiated).async {
+                let task = Process()
+                task.executableURL = URL(fileURLWithPath: executable)
+                task.arguments = arguments
+                let pipe = Pipe()
+                task.standardOutput = pipe
+                task.standardError = pipe
+                do { try task.run() } catch {
+                    cont.resume(returning: nil); return
+                }
+                // Leer hasta EOF ANTES de esperar: evita el deadlock si el proceso llena el buffer del
+                // pipe (readDataToEndOfFile bloquea hasta que el proceso cierra stdout, es decir sale).
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                task.waitUntilExit()
+                cont.resume(returning: String(data: data, encoding: .utf8))
             }
-            task.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            cont.resume(returning: String(data: data, encoding: .utf8))
         }
     }
 }
