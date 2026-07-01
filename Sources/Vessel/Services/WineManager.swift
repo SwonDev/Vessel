@@ -1402,13 +1402,19 @@ final class WineManager {
     /// al forzar software compositing que Wine no hace bien en macOS.
     /// `-no-cef-sandbox` es imprescindible para que CEF funcione en Wine.
     /// `-skipinitialbootstrap` evita que Steam reinstale componentes al arrancar.
+    /// `-tcp`: fuerza la conexión al CM de Steam por TCP en vez de UDP. Bajo nuestro Wine
+    /// en macOS 26.5 la conexión UDP (puerto 27017) se cae con `ConnectionDisconnected
+    /// ('I/O Operation Failed')` a los ~46s y el cliente se queda en "Esperando a la red…"
+    /// (verificado en connection_log.txt); TCP se mantiene estable. Además el IPv6 no
+    /// resuelve bajo Wine, así que TCP/IPv4 es la vía fiable.
     nonisolated static let steamLaunchArguments = [
         "-no-cef-sandbox",
         "-noverifyfiles",
         "-skipinitialbootstrap",
         "-skipstreamingdrivers",
         "-vrdisable",
-        "-nobootstraperrorinprogress"
+        "-nobootstraperrorinprogress",
+        "-tcp"
     ]
 
     /// Detecta si el motor Wine actual es wine-dxmt (3Shain) con DXMT integrado.
