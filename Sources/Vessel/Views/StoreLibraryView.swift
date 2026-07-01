@@ -1396,10 +1396,18 @@ struct GameDetailView: View {
                 Button {
                     withAnimation(.snappy(duration: 0.28)) { showAllAchievements.toggle() }
                 } label: {
-                    Text(showAllAchievements ? "Ver menos" : "Ver los \(prog.total) logros")
+                    Text(showAllAchievements ? "Ver menos" : "Ver los \(prog.achievements.count) logros")
                         .font(.caption.weight(.semibold)).foregroundStyle(tint)
                 }
                 .buttonStyle(.plain)
+            }
+            // Si solo tenemos el detalle de los desbloqueados (login sin Web API key), indicamos los
+            // bloqueados restantes y cómo verlos todos.
+            if prog.stateKnown, prog.achievements.count < prog.total {
+                Label("Y \(prog.total - prog.achievements.count) logros por desbloquear. Añade tu Web API key en Ajustes para ver también los bloqueados con sus iconos.",
+                      systemImage: "lock")
+                    .font(.caption2).foregroundStyle(.white.opacity(0.45))
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

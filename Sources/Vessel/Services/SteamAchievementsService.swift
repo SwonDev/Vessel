@@ -50,96 +50,112 @@ actor SteamAchievementsService {
     /// `nil` solo si no hay NADA que mostrar (ni schema con key ni estado). En ese caso la ficha se
     /// queda con su vista decorativa.
     func fetch(appId: String, steamID64: String, language: String = "spanish") async -> Progress? {
-        // access_token de sesión (se refresca solo desde el refresh_token). Autentica como el
-        // usuario → ve sus logros aunque el perfil sea privado, como el cliente de Steam.
+        // access_token de sesión (se refresca solo desde el refresh_token). Autentica como el usuario
+        // → ve sus logros DESBLOQUEADOS aunque el perfil sea privado (como el cliente de Steam), vía
+        // IPlayerService/GetTopAchievementsForGames (la Web API GetPlayerAchievements NO lo permite).
         let token = await SteamAuthService.currentAccessToken()
         let key = await SteamAccountService.webAPIKey
         guard !steamID64.isEmpty else { return nil }
 
         async let schemaTask = key.isEmpty ? [:] : schemaIcons(appId: appId, key: key, language: language)
-        async let globalsTask = globalPercentages(appId: appId)
+        async let topTask = token.isEmpty ? Optional<TopResult>.none
+            : topAchievements(appId: appId, steamID64: steamID64, token: token, language: language)
 
-        // Estado del jugador: access_token y, si no, la key. Puede venir vacío (perfil privado).
-        var player: [PlayerAch] = []
-        if !token.isEmpty {
-            player = await playerAchievements(appId: appId, steamID64: steamID64, auth: "access_token=\(token)", language: language)
-        }
-        if player.isEmpty, !key.isEmpty {
-            player = await playerAchievements(appId: appId, steamID64: steamID64, auth: "key=\(key)", language: language)
-        }
         let schema = await schemaTask
-        let globals = await globalsTask
-        let playerByName = Dictionary(player.map { ($0.apiname, $0) }, uniquingKeysWith: { a, _ in a })
-        let stateKnown = !player.isEmpty
+        let top = await topTask
+        // Estado real de desbloqueo desde el login: conjunto de hashes de icono + nombres desbloqueados.
+        let unlockedHashes = Set((top?.unlocked ?? []).compactMap { Self.iconHash($0.icon) })
+        let unlockedNames = Set((top?.unlocked ?? []).map { $0.name })
+        let stateKnown = top != nil
 
         var list: [Achievement]
+        var total: Int
         if !schema.isEmpty {
-            // Base = schema COMPLETO (iconos+nombres), con estado si lo conocemos.
+            // Lista COMPLETA (schema, con key) + estado real de desbloqueo (login).
+            let globals = await globalPercentages(appId: appId)
             list = schema.map { (apiname, s) in
-                let p = playerByName[apiname]
-                return Achievement(
-                    apiName: apiname,
-                    displayName: s.displayName,
-                    description: s.description,
-                    unlocked: p?.achieved == 1,
-                    unlockTime: (p?.unlocktime ?? 0) > 0 ? Date(timeIntervalSince1970: TimeInterval(p!.unlocktime!)) : nil,
-                    iconUnlocked: s.icon,
-                    iconLocked: s.iconGray,
-                    globalPercent: globals[apiname]
-                )
+                let hash = s.icon.flatMap { Self.iconHash($0.lastPathComponent) }
+                let unlocked = (hash.map(unlockedHashes.contains) ?? false) || unlockedNames.contains(s.displayName)
+                return Achievement(apiName: apiname, displayName: s.displayName, description: s.description,
+                    unlocked: stateKnown && unlocked, unlockTime: nil,
+                    iconUnlocked: s.icon, iconLocked: s.iconGray, globalPercent: globals[apiname])
             }
-        } else if !player.isEmpty {
-            // Sin key: solo el estado del jugador (nombres del propio endpoint, sin iconos de juego).
-            list = player.map { p in
-                Achievement(
-                    apiName: p.apiname,
-                    displayName: p.name?.isEmpty == false ? p.name! : p.apiname,
-                    description: p.description ?? "",
-                    unlocked: p.achieved == 1,
-                    unlockTime: (p.unlocktime ?? 0) > 0 ? Date(timeIntervalSince1970: TimeInterval(p.unlocktime!)) : nil,
-                    iconUnlocked: nil, iconLocked: nil,
-                    globalPercent: globals[p.apiname]
-                )
+            total = list.count
+        } else if let top, top.total > 0 {
+            // Solo con login (sin key): mostramos los DESBLOQUEADOS con todo el detalle (icono real,
+            // nombre, descripción, rareza) + el total del juego. Los bloqueados no se detallan (sin
+            // schema no tenemos sus nombres/iconos) pero se indican como recuento.
+            list = top.unlocked.map { t in
+                Achievement(apiName: t.name, displayName: t.name, description: t.desc,
+                    unlocked: true, unlockTime: nil,
+                    iconUnlocked: Self.iconURL(appId: appId, file: t.icon),
+                    iconLocked: Self.iconURL(appId: appId, file: t.iconGray),
+                    globalPercent: Double(t.percent))
             }
+            total = top.total
         } else {
-            return nil   // nada que mostrar → la ficha usa su vista decorativa
+            return nil   // ni schema ni login → la ficha usa su vista decorativa
         }
 
-        // Orden: si conocemos el estado, desbloqueados primero (recientes arriba); si no, por rareza
-        // (los más raros primero, que lucen más). Luego por rareza descendente / nombre.
+        // Desbloqueados primero; luego por rareza (más raro antes) y nombre.
         list.sort { a, b in
             if stateKnown, a.unlocked != b.unlocked { return a.unlocked }
-            if stateKnown, a.unlocked, b.unlocked { return (a.unlockTime ?? .distantPast) > (b.unlockTime ?? .distantPast) }
             let pa = a.globalPercent ?? 0, pb = b.globalPercent ?? 0
-            if pa != pb { return pa < pb }   // más raro (menor %) primero
+            if pa != pb { return pa < pb }
             return a.displayName.localizedCaseInsensitiveCompare(b.displayName) == .orderedAscending
         }
-        let unlocked = list.filter(\.unlocked).count
-        return Progress(achievements: list, unlocked: unlocked, total: list.count, stateKnown: stateKnown)
+        let unlocked = stateKnown ? (schema.isEmpty ? list.count : list.filter(\.unlocked).count) : 0
+        return Progress(achievements: list, unlocked: unlocked, total: total, stateKnown: stateKnown)
     }
 
     // MARK: - Endpoints
 
-    private struct PlayerAch: Decodable {
-        let apiname: String
-        let achieved: Int
-        let unlocktime: Int?
-        let name: String?
-        let description: String?
-    }
+    struct TopAch { let name: String; let desc: String; let icon: String; let iconGray: String; let percent: Double }
+    struct TopResult { let unlocked: [TopAch]; let total: Int }
 
-    private func playerAchievements(appId: String, steamID64: String, auth: String, language: String) async -> [PlayerAch] {
-        let urlStr = "\(base)/GetPlayerAchievements/v1/?\(auth)&steamid=\(steamID64)&appid=\(appId)&l=\(language)&format=json"
-        guard let url = URL(string: urlStr),
+    /// Logros DESBLOQUEADOS del usuario vía `IPlayerService/GetTopAchievementsForGames` (acepta
+    /// access_token → ve datos propios aunque el perfil sea privado). Devuelve los desbloqueados
+    /// (con icono/nombre/desc/rareza) + el total del juego. `nil` si el token no vale.
+    private func topAchievements(appId: String, steamID64: String, token: String, language: String) async -> TopResult? {
+        var comps = URLComponents(string: "https://api.steampowered.com/IPlayerService/GetTopAchievementsForGames/v1/")!
+        comps.queryItems = [
+            .init(name: "access_token", value: token),
+            .init(name: "steamid", value: steamID64),
+            .init(name: "language", value: language),
+            .init(name: "max_achievements", value: "100"),
+            .init(name: "appids[0]", value: appId)
+        ]
+        guard let url = comps.url,
               let (data, resp) = try? await URLSession.shared.data(from: url),
-              let http = resp as? HTTPURLResponse, http.statusCode == 200 else { return [] }
+              let http = resp as? HTTPURLResponse, http.statusCode == 200 else { return nil }
         struct Payload: Decodable {
-            struct Stats: Decodable { let success: Bool?; let achievements: [PlayerAch]? }
-            let playerstats: Stats?
+            struct Game: Decodable { let total_achievements: Int?; let achievements: [Ach]? }
+            struct Ach: Decodable {
+                let name: String?; let desc: String?; let icon: String?; let icon_gray: String?
+                let player_percent_unlocked: String?
+            }
+            struct Resp: Decodable { let games: [Game]? }
+            let response: Resp?
         }
         guard let p = try? JSONDecoder().decode(Payload.self, from: data),
-              p.playerstats?.success == true else { return [] }
-        return p.playerstats?.achievements ?? []
+              let game = p.response?.games?.first else { return nil }
+        let unlocked = (game.achievements ?? []).map {
+            TopAch(name: $0.name ?? "", desc: $0.desc ?? "", icon: $0.icon ?? "",
+                   iconGray: $0.icon_gray ?? "", percent: Double($0.player_percent_unlocked ?? "0") ?? 0)
+        }
+        return TopResult(unlocked: unlocked, total: game.total_achievements ?? unlocked.count)
+    }
+
+    /// Hash del icono (nombre de fichero sin extensión) para casar schema ↔ top achievements.
+    static func iconHash(_ fileOrURL: String) -> String? {
+        let last = (fileOrURL as NSString).lastPathComponent
+        let name = (last as NSString).deletingPathExtension
+        return name.isEmpty ? nil : name
+    }
+    /// URL del icono de un logro (los de `GetTopAchievementsForGames` vienen como nombre de fichero).
+    static func iconURL(appId: String, file: String) -> URL? {
+        guard !file.isEmpty else { return nil }
+        return URL(string: "https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/\(appId)/\(file)")
     }
 
     private func globalPercentages(appId: String) async -> [String: Double] {
