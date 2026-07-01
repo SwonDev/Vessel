@@ -68,7 +68,10 @@ struct BottleDetailView: View {
             onUpdate: { sg in if sg.steamAppId != nil { Task { await installGame(sg.id, validate: false) } } },
             onReload: { Task { await loadSteamLibrary() } },
             onLogout: { NotificationCenter.default.post(name: .steamLogout, object: nil) },
-            onLogin: { NotificationCenter.default.post(name: .steamLogin, object: nil) }
+            onLogin: { NotificationCenter.default.post(name: .steamLogin, object: nil) },
+            // "Abrir Steam": arranca el cliente Steam completo conectado (GPTK/D3DMetal) para
+            // jugar DESDE Steam con DRM real —el modelo que hace funcionar juegos como Grim Dawn—.
+            onOpenSteam: { Task { await wineManager.openSteamClient(in: localBottle) } }
         )
         .sheet(isPresented: $showingInstaller) {
             SteamInstallerView(bottle: localBottle, wineManager: wineManager) {

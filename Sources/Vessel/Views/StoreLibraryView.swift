@@ -140,6 +140,9 @@ struct StoreLibraryView: View {
     /// Iniciar sesión (re-login). Si se provee, aparece "Iniciar sesión" en el menú "…". Steam lo
     /// usa para relanzar el login oficial; Epic/GOG tienen su propio flujo de conexión.
     var onLogin: (() -> Void)? = nil
+    /// Abrir el cliente Steam completo (solo Steam). Si se provee, aparece "Abrir Steam" en el
+    /// menú "…": arranca Steam conectado en D3DMetal para jugar DESDE Steam con DRM real.
+    var onOpenSteam: (() -> Void)? = nil
 
     @State private var search = ""
     /// Foco del buscador (para el atajo ⌘F). Se aplica a ambos buscadores (sidebar y cabecera);
@@ -439,6 +442,9 @@ struct StoreLibraryView: View {
                 Button { onReload() } label: { Label("Actualizar biblioteca", systemImage: "arrow.clockwise") }
                 if let onLogin {
                     Button { onLogin() } label: { Label("Iniciar sesión", systemImage: "person.crop.circle.badge.plus") }
+                }
+                if let onOpenSteam {
+                    Button { onOpenSteam() } label: { Label("Abrir Steam (jugar desde Steam)", systemImage: "arrowshape.turn.up.forward") }
                 }
                 Divider()
                 Button(role: .destructive) { onLogout() } label: {

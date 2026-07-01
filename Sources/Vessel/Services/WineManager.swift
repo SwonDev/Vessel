@@ -844,6 +844,101 @@ final class WineManager {
         try? await Task.sleep(nanoseconds: 10_000_000_000)
     }
 
+    /// ¿El cliente Steam está CONECTADO al CM (logueado), no solo arrancado? Lee el
+    /// `connection_log.txt` del bottle: hay conexión si el último evento relevante es
+    /// "Logged On" y no hay un "Logged Off"/"ConnectionDisconnected" posterior.
+    func isSteamConnected(in bottle: Bottle) -> Bool {
+        let logPath = "\(bottle.prefixPath)/drive_c/Program Files (x86)/Steam/logs/connection_log.txt"
+        guard let data = FileManager.default.contents(atPath: logPath),
+              let text = String(data: data, encoding: .utf8) else { return false }
+        var connected = false
+        for line in text.split(separator: "\n").suffix(80) {
+            if line.contains("Logged On,") { connected = true }
+            else if line.contains("Logged Off,") || line.contains("ConnectionDisconnected") { connected = false }
+        }
+        return connected
+    }
+
+    /// Asegura que el cliente Steam está CORRIENDO y **conectado** en `clientWine` (mismo
+    /// motor que usará el juego, para compartir wineserver → DRM). Lo arranca si hace falta y
+    /// espera hasta `timeoutSeconds` a que el `connection_log` confirme el logon. Devuelve si
+    /// llegó a conectar. Con `-tcp` la conexión al CM es estable bajo Wine (el UDP se caía).
+    func ensureSteamConnected(in bottle: Bottle, clientWine: String, timeoutSeconds: Int = 90) async -> Bool {
+        if isSteamConnected(in: bottle) { return true }
+        if !isWineProcessRunning(matching: "steamwebhelper") {
+            _ = try? await launchSteam(in: bottle, using: clientWine)
+        }
+        for _ in 0..<timeoutSeconds {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            if isSteamConnected(in: bottle) { return true }
+        }
+        return isSteamConnected(in: bottle)
+    }
+
+    /// MODO "STEAM REAL" (nuestro equivalente a CrossOver, invisible): lanza un juego DRM de
+    /// Steam con el cliente Steam REAL corriendo y **conectado** en el MISMO motor/wineserver
+    /// que el juego, para que `SteamAPI_Init` hable con él (DRM real, como en Windows). Es la
+    /// única vía que arranca juegos como Grim Dawn en Apple Silicon nuevo (M5): el lanzamiento
+    /// "suelto" (Goldberg) no basta para su DRM+entorno. Usa **GPTK/D3DMetal** (D3D11/12 →
+    /// Metal nativo, rinde en M5) tanto para el cliente como para el juego.
+    func launchViaRealSteam(executable: String, in bottle: Bottle, appId: String,
+                            effective: EffectiveLaunchConfig = EffectiveLaunchConfig()) async throws -> Process {
+        // 1) DRM REAL: restaurar el steam_api ORIGINAL del juego (deshacer Goldberg) + appid.
+        goldbergManager.restoreGame(gameExecutable: executable)
+        let gameDir = (executable as NSString).deletingLastPathComponent
+        try? appId.write(toFile: "\(gameDir)/steam_appid.txt", atomically: true, encoding: .utf8)
+
+        // 2) Motor GPTK/D3DMetal para cliente + juego (mismo wineserver).
+        try await gptkManager.ensureInstalled { msg, pct in
+            Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
+        }
+        guard let gptkWine = gptkManager.wineBinaryPath else {
+            throw WineError.launchFailed("No se encontró GPTK/D3DMetal para el modo Steam real.")
+        }
+
+        // 3) Cliente Steam corriendo y CONECTADO (para el DRM). steam.cfg evita autoupdate.
+        ensureSteamConfig(in: bottle)
+        log.log("Modo Steam real: preparando el cliente Steam (conectado) para el DRM…", level: .info)
+        let connected = await ensureSteamConnected(in: bottle, clientWine: gptkWine)
+        log.log(connected
+            ? "Cliente Steam conectado; lanzando el juego con DRM real."
+            : "El cliente Steam no confirmó conexión a tiempo; se intenta lanzar igualmente.",
+            level: connected ? .info : .warn)
+
+        // 4) Lanzar el juego en GPTK, MISMO wineserver que Steam (NO se mata Steam ni se
+        //    resincroniza el prefijo, que lo tumbaría). SteamAPI_Init encuentra el cliente vivo.
+        var env = gptkManager.d3dMetalEnvironment(prefix: bottle.prefixPath)
+        env["SteamAppId"] = appId
+        env["SteamGameId"] = appId
+        log.log("Lanzando \((executable as NSString).lastPathComponent) vía Steam real (GPTK/D3DMetal).", level: .info)
+        return try await launchWineProcess(
+            winePath: gptkWine,
+            prefix: bottle.prefixPath,
+            arguments: [executable] + effective.launchArgs,
+            environment: env,
+            workingDirectory: gameWorkingDirectory(forExecutable: executable),
+            effective: effective
+        )
+    }
+
+    /// Abre el cliente Steam COMPLETO y conectado en **GPTK/D3DMetal** — para poder jugar
+    /// DESDE Steam (DRM real, como en Windows) con render por Metal, que funciona en Apple
+    /// Silicon nuevo (M5). Opción manual del menú "…"; también sirve para verificar la conexión.
+    func openSteamClient(in bottle: Bottle) async {
+        ensureSteamConfig(in: bottle)
+        do {
+            try await gptkManager.ensureInstalled { msg, pct in
+                Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
+            }
+        } catch {
+            log.log("No se pudo preparar GPTK para Steam: \(error.localizedDescription)", level: .warn)
+        }
+        let wine = gptkManager.wineBinaryPath ?? resolveClientWine(for: bottle)
+        log.log("Abriendo el cliente Steam completo (GPTK/D3DMetal). Desde él puedes lanzar juegos con DRM real.", level: .info)
+        let ok = await ensureSteamConnected(in: bottle, clientWine: wine)
+        log.log(ok ? "Steam abierto y conectado ✓" : "Steam abierto (conexión aún no confirmada).", level: ok ? .info : .warn)
+    }
+
     private func isWineProcessRunning(matching pattern: String) -> Bool {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
