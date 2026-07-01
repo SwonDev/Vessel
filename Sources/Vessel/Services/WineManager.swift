@@ -538,6 +538,11 @@ final class WineManager {
         let clientWine = resolveClientWine(for: bottle)
         log.log("Capa gráfica: wined3d → Vulkan → Metal (juego D3D9/D3D8) con Gcenx", level: .info)
         log.log("Preparando prefijo para el juego…", level: .info)
+        // Si venimos de un intento con DXMT (fallback), sus DLLs (d3d11/dxgi/winemetal) quedaron
+        // JUNTO al exe y usan la capa unix de wine-dxmt → con Gcenx dan
+        // "ntdll.__wine_unix_call unimplemented" y el juego ABORTA. Las quitamos para que Gcenx use
+        // sus propias d3d9/wined3d.
+        cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
         try? await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
         try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
         // Re-sincronizar el prefix al motor Gcenx (tras el cliente Steam o un juego
@@ -892,6 +897,18 @@ final class WineManager {
                 try? fm.removeItem(atPath: dst)
                 try? fm.copyItem(atPath: src, toPath: dst)
             }
+        }
+    }
+
+    /// Quita las DLLs de DXMT (d3d11/dxgi/d3d10/winemetal) que `ensureGameDXMTDLLs` dejó JUNTO al
+    /// exe, para que un lanzamiento con **Gcenx** (D3D9/wined3d) no las cargue: esas DLLs esperan la
+    /// capa unix de wine-dxmt y con Gcenx dan `ntdll.__wine_unix_call unimplemented` (aborta). Un
+    /// juego D3D9 no necesita d3d11/dxgi, así que es seguro retirarlas del lado del exe.
+    func cleanExeAdjacentDXMTDLLs(gameExecutable: String) {
+        let gameDir = (gameExecutable as NSString).deletingLastPathComponent
+        let fm = FileManager.default
+        for dll in ["d3d11.dll", "dxgi.dll", "d3d10core.dll", "d3d10.dll", "d3d10_1.dll", "winemetal.dll"] {
+            try? fm.removeItem(atPath: "\(gameDir)/\(dll)")
         }
     }
 
