@@ -425,6 +425,18 @@ final class WineManager {
         if eff.fromProfile, let r = eff.rating {
             log.log("Perfil de compatibilidad aplicado: \(r.label)\(eff.verified ? " ✓ verificado" : " (sin verificar)")", level: .info)
         }
+        // DRM Steamworks AUTO: muchos juegos de Steam exigen que Steam esté corriendo (SteamAPI_Init)
+        // y, si no, se cierran o intentan RELANZARSE por Steam (el "abre Steam y se cierra" clásico).
+        // Como Vessel NO abre el cliente Steam para jugar, EMULAMOS la Steamworks API con Goldberg,
+        // automáticamente y sin que el usuario toque nada (filosofía "abre y juega"). Un juego sin DRM
+        // estricto funciona IGUAL con Goldberg (le da la API); solo lo evitan anti-tamper de terceros
+        // (p. ej. CodeFusion), que de todos modos ya no arrancan. Idempotente (no re-copia si ya está).
+        if let appId = steamAppId, !appId.isEmpty {
+            try? await goldbergManager.ensureInstalled { _, _ in }
+            if goldbergManager.applyToGame(gameExecutable: executable, appId: appId) {
+                log.log("DRM Steamworks emulado con Goldberg (jugar sin abrir Steam).", level: .info)
+            }
+        }
         // Capa gráfica: override por juego (Ajustes/perfil) o auto-detección por API.
         // D3D12 (AAA, FF Tactics) → GPTK/D3DMetal (Metal nativo, ignora el Agility
         // SDK), con el cliente Steam en el mismo wineserver para el DRM.
