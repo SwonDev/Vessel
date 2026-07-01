@@ -29,12 +29,12 @@ final class SteamAccountService {
 
         if let content = try? String(contentsOfFile: "\(steamRoot)/config/loginusers.vdf", encoding: .utf8),
            let account = Self.parseLoginUsers(content) {
-            return account
+            return remember(account)
         }
 
         if let content = try? String(contentsOfFile: "\(steamRoot)/config/config.vdf", encoding: .utf8),
            let id = Self.firstSteamID64(in: content) {
-            return Account(steamID64: id, personaName: "Steam", accountName: "")
+            return remember(Account(steamID64: id, personaName: "Steam", accountName: ""))
         }
 
         let userdata = "\(steamRoot)/userdata"
@@ -42,11 +42,21 @@ final class SteamAccountService {
             for dir in dirs.sorted() {
                 if let accountID = UInt64(dir), accountID > 0 {
                     let id64 = accountID + 76561197960265728
-                    return Account(steamID64: String(id64), personaName: "Steam", accountName: "")
+                    return remember(Account(steamID64: String(id64), personaName: "Steam", accountName: ""))
                 }
             }
         }
         return nil
+    }
+
+    /// SteamID64 del usuario logueado (persistido al detectar la cuenta). Lo usan otras vistas
+    /// (p. ej. la ficha, para los logros reales) sin necesidad del bottle.
+    static var currentSteamID64: String { UserDefaults.standard.string(forKey: "steam.steamID64") ?? "" }
+
+    @discardableResult
+    private func remember(_ account: Account) -> Account {
+        UserDefaults.standard.set(account.steamID64, forKey: "steam.steamID64")
+        return account
     }
 
     nonisolated static func firstSteamID64(in content: String) -> String? {

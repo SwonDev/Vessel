@@ -961,6 +961,10 @@ struct GameDetailView: View {
     @State private var lightboxIndex: Int?
     /// DLCs resueltos (nombre + carátula) del juego.
     @State private var dlcs: [StoreDLC] = []
+    /// Estado REAL de logros (desbloqueado/bloqueado) del usuario, si hay credencial de Steam.
+    @State private var achievements: SteamAchievementsService.Progress?
+    /// Mostrar todos los logros (o solo un avance).
+    @State private var showAllAchievements = false
     private let steamGreen = Color(red: 0.34, green: 0.72, blue: 0.36)
     private let runningRed = Color(red: 0.85, green: 0.40, blue: 0.32)
 
@@ -1313,7 +1317,11 @@ struct GameDetailView: View {
 
     /// Logros del juego (número + iconos destacados, datos públicos de Steam).
     @ViewBuilder private var achievementsSection: some View {
-        if let total = details?.achievementsTotal, total > 0 {
+        if let prog = achievements, !prog.achievements.isEmpty {
+            // Estado REAL: progreso desbloqueado/bloqueado + lista con iconos, rareza y fecha.
+            cardSection("Logros") { realAchievements(prog) }
+        } else if let total = details?.achievementsTotal, total > 0 {
+            // Fallback decorativo (sin credencial de Steam): total + iconos destacados públicos.
             cardSection("Logros") {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 8) {
@@ -1337,6 +1345,128 @@ struct GameDetailView: View {
                 }
             }
         }
+    }
+
+    /// Vista de logros con estado REAL: barra de progreso + lista (desbloqueados primero) con icono,
+    /// nombre, rareza y fecha de desbloqueo.
+    @ViewBuilder private func realAchievements(_ prog: SteamAchievementsService.Progress) -> some View {
+        let shown = showAllAchievements ? prog.achievements : Array(prog.achievements.prefix(6))
+        VStack(alignment: .leading, spacing: 14) {
+            if prog.stateKnown {
+                HStack(spacing: 8) {
+                    Image(systemName: "trophy.fill").foregroundStyle(tint)
+                    Text("\(prog.unlocked) / \(prog.total) desbloqueados")
+                        .font(.callout.weight(.semibold)).foregroundStyle(.white)
+                    Spacer()
+                    Text("\(Int((prog.fraction * 100).rounded()))%")
+                        .font(.caption.weight(.semibold)).foregroundStyle(tint)
+                }
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(.white.opacity(0.10))
+                        Capsule().fill(Theme.gradient(tint)).frame(width: max(6, geo.size.width * prog.fraction))
+                    }
+                }
+                .frame(height: 7)
+            } else {
+                // No conocemos el estado (perfil privado / sin token). Mostramos la lista completa y
+                // lo decimos con honestidad, con la vía para verlo.
+                HStack(spacing: 8) {
+                    Image(systemName: "trophy.fill").foregroundStyle(tint)
+                    Text("\(prog.total) logro\(prog.total == 1 ? "" : "s")")
+                        .font(.callout.weight(.semibold)).foregroundStyle(.white)
+                    Spacer()
+                }
+                Label("Pon tu perfil de Steam en «Detalles del juego: Público» para ver cuáles tienes desbloqueados.",
+                      systemImage: "eye.slash")
+                    .font(.caption2).foregroundStyle(.white.opacity(0.45))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(spacing: 8) {
+                ForEach(shown) { ach in achievementRow(ach, stateKnown: prog.stateKnown) }
+            }
+            if prog.achievements.count > 6 {
+                Button {
+                    withAnimation(.snappy(duration: 0.28)) { showAllAchievements.toggle() }
+                } label: {
+                    Text(showAllAchievements ? "Ver menos" : "Ver los \(prog.total) logros")
+                        .font(.caption.weight(.semibold)).foregroundStyle(tint)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    /// Fila de un logro: icono, nombre, rareza y —si conocemos el estado— desbloqueado/bloqueado.
+    private func achievementRow(_ ach: SteamAchievementsService.Achievement, stateKnown: Bool) -> some View {
+        let dimmed = stateKnown && !ach.unlocked
+        return HStack(spacing: 12) {
+            achievementIcon(ach, stateKnown: stateKnown)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(ach.displayName)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(dimmed ? .white.opacity(0.55) : .white)
+                    .lineLimit(1)
+                if !ach.description.isEmpty {
+                    Text(ach.description).font(.caption2).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 2) {
+                if stateKnown {
+                    if ach.unlocked {
+                        Image(systemName: "checkmark.seal.fill").font(.caption).foregroundStyle(steamGreen)
+                        if let d = ach.unlockTime {
+                            Text(d.formatted(date: .abbreviated, time: .omitted)).font(.caption2).foregroundStyle(.white.opacity(0.4))
+                        }
+                    } else {
+                        Image(systemName: "lock.fill").font(.caption).foregroundStyle(.white.opacity(0.35))
+                    }
+                }
+                if let p = ach.globalPercent {
+                    Text(rarityLabel(p)).font(.caption2).foregroundStyle(rarityColor(p))
+                }
+            }
+        }
+        .opacity(dimmed ? 0.82 : 1)
+    }
+
+    /// Icono del logro: imagen del schema (color si está desbloqueado o si no conocemos el estado;
+    /// en gris si sabemos que está bloqueado) o un emblema con glifo cuando no hay icono (sin key).
+    @ViewBuilder private func achievementIcon(_ ach: SteamAchievementsService.Achievement, stateKnown: Bool) -> some View {
+        let showColor = ach.unlocked || !stateKnown
+        let url = showColor ? (ach.iconUnlocked ?? ach.iconLocked) : (ach.iconLocked ?? ach.iconUnlocked)
+        Group {
+            if let url {
+                AsyncImage(url: url) { phase in
+                    if let img = phase.image { img.resizable().scaledToFill() } else { Color.white.opacity(0.06) }
+                }
+            } else {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous).fill(tint.opacity(showColor ? 0.30 : 0.10))
+                    Image(systemName: showColor ? "trophy.fill" : "lock.fill")
+                        .font(.system(size: 16)).foregroundStyle(showColor ? tint : .white.opacity(0.4))
+                }
+            }
+        }
+        .frame(width: 40, height: 40)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .saturation(showColor ? 1 : 0)
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(.white.opacity(0.1), lineWidth: 0.5))
+    }
+
+    /// Etiqueta de rareza según el % global de jugadores que lo tienen.
+    private func rarityLabel(_ percent: Double) -> String {
+        let p = (percent * 10).rounded() / 10
+        if percent < 5 { return "Ultra raro · \(p)%" }
+        if percent < 20 { return "Raro · \(p)%" }
+        return "\(p)%"
+    }
+    private func rarityColor(_ percent: Double) -> Color {
+        if percent < 5 { return Color(red: 1.0, green: 0.72, blue: 0.30) }   // ámbar (muy raro)
+        if percent < 20 { return tint }
+        return .white.opacity(0.4)
     }
 
     /// Contenido descargable (DLC) del juego, con carátula y nombre. Los DLC que el usuario
@@ -1456,14 +1586,25 @@ struct GameDetailView: View {
     /// géneros, capturas, estudio, editor, fecha y Metacritic. Metadatos públicos del juego,
     /// igual que las carátulas; sin datos personales.
     @MainActor private func loadDetails() async {
-        details = nil; dlcs = []
+        details = nil; dlcs = []; achievements = nil
         if let appId = game.steamAppId, !appId.isEmpty {
             await loadSteamDetails(appId)
+            await loadAchievements(appId)
         } else if store == .gog {
             await loadGogDetails(game.id)
         } else if store == .epic {
             await loadEpicDetails(game.id)
         }
+    }
+
+    /// Estado REAL de logros (desbloqueado/bloqueado) del juego de Steam para el usuario logueado.
+    /// No bloquea la ficha (va tras los `details`). Si no hay credencial/datos, deja la sección con
+    /// su vista decorativa (total + iconos destacados). Ver `SteamAchievementsService`.
+    @MainActor private func loadAchievements(_ appId: String) async {
+        guard store == .steam else { return }
+        let id = SteamAccountService.currentSteamID64
+        guard !id.isEmpty else { return }
+        achievements = await SteamAchievementsService.shared.fetch(appId: appId, steamID64: id)
     }
 
     /// Enriquece la ficha de un juego de **Epic** leyendo la metadata que legendary ya cachea

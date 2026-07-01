@@ -9,6 +9,9 @@ struct SettingsView: View {
     @State private var wineDownloading = false
     @State private var wineStatusText = ""
     @AppStorage(CompatService.autoUpdateKey) private var compatAutoUpdate = true
+    /// Clave Web API de Steam (opcional): habilita iconos por logro y garantiza el estado de logros
+    /// aunque el perfil sea privado. Se guarda en `SteamAccountService.webAPIKey`.
+    @State private var steamApiKey = SteamAccountService.webAPIKey
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,6 +33,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: Theme.Space.section) {
                     dependenciesSection
                     enginesSection
+                    steamAccountSection
                     privacySection
                     aboutSection
                 }
@@ -140,6 +144,36 @@ struct SettingsView: View {
                 }
                 .vesselButton(false)
                 .padding(.top, 6)
+            }
+            .vesselCard(padding: 12)
+        }
+    }
+
+    /// Cuenta de Steam: clave Web API opcional para logros completos (iconos + estado garantizado).
+    private var steamAccountSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("Cuenta de Steam")
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Clave Web API (opcional)").font(.callout)
+                HStack(spacing: 8) {
+                    Image(systemName: "key.fill").foregroundStyle(.secondary).font(.caption)
+                    SecureField("Pega tu clave de steamcommunity.com/dev/apikey", text: $steamApiKey)
+                        .textFieldStyle(.plain)
+                        .onChange(of: steamApiKey) { _, new in SteamAccountService.webAPIKey = new }
+                    if !steamApiKey.isEmpty {
+                        Button { steamApiKey = ""; SteamAccountService.webAPIKey = "" } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(8)
+                .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                Text("Con la clave (gratis) se ve la lista completa de logros con sus iconos y nombres. Para saber cuáles tienes DESBLOQUEADOS, tu perfil de Steam debe tener «Detalles del juego» en Público (Perfil › Editar perfil › Privacidad).")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Link("Obtener mi clave Web API", destination: URL(string: "https://steamcommunity.com/dev/apikey")!)
+                    .font(.caption.weight(.medium))
             }
             .vesselCard(padding: 12)
         }
