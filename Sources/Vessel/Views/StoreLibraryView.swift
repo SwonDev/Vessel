@@ -1213,7 +1213,10 @@ struct GameDetailView: View {
     /// (`Epic/metadata/<app>.json`): descripción, desarrollador y capturas (keyImages `Screenshot`).
     /// Sin lanzar procesos. Paridad de ficha también en Epic con lo que su backend ofrece.
     @MainActor private func loadEpicDetails(_ appName: String) async {
-        let path = "\(VesselPaths.appSupport)/Epic/metadata/\(appName).json"
+        // legendary cachea la metadata en su LEGENDARY_CONFIG_PATH (= LegendaryManager.configDir),
+        // NO en un directorio "Epic". Usar la constante real evita el desajuste que dejaba la ficha
+        // de Epic sin descripción.
+        let path = "\(LegendaryManager.configDir)/metadata/\(appName).json"
         guard let data = FileManager.default.contents(atPath: path),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let md = obj["metadata"] as? [String: Any] else { return }
