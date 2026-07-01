@@ -865,9 +865,11 @@ final class WineManager {
     /// llegó a conectar. Con `-tcp` la conexión al CM es estable bajo Wine (el UDP se caía).
     func ensureSteamConnected(in bottle: Bottle, clientWine: String, timeoutSeconds: Int = 90) async -> Bool {
         if isSteamConnected(in: bottle) { return true }
-        if !isWineProcessRunning(matching: "steamwebhelper") {
-            _ = try? await launchSteam(in: bottle, using: clientWine)
-        }
+        // Arrancar Steam SIEMPRE que no esté conectado: `launchSteam` ya es idempotente (si
+        // `steam.exe` corre, se reutiliza). NO gatear en `steamwebhelper` — pgrep lista zombies
+        // que `pkill` no puede reapear, y eso hacía que se SALTARA el arranque (Steam nunca abría).
+        do { _ = try await launchSteam(in: bottle, using: clientWine) }
+        catch { log.log("No se pudo arrancar el cliente Steam: \(error.localizedDescription)", level: .error) }
         for _ in 0..<timeoutSeconds {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             if isSteamConnected(in: bottle) { return true }
@@ -940,9 +942,13 @@ final class WineManager {
     }
 
     private func isWineProcessRunning(matching pattern: String) -> Bool {
+        // Vía `ps` (no `pgrep -f`) para poder EXCLUIR zombies: un proceso killed queda
+        // `<defunct>`/STAT `Z` hasta que su padre lo reapea, y `pgrep` lo sigue listando →
+        // hacía creer que Steam seguía vivo y se SALTABA su arranque. Solo cuenta procesos
+        // realmente VIVOS que casen el patrón.
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        process.arguments = ["-f", pattern]
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-axo", "stat=,command="]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle(forWritingAtPath: "/dev/null")
@@ -950,7 +956,15 @@ final class WineManager {
             try process.run()
             process.waitUntilExit()
             let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            return process.terminationStatus == 0 && !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            for raw in out.split(separator: "\n") {
+                let line = raw.trimmingCharacters(in: .whitespaces)
+                guard let sep = line.firstIndex(of: " ") else { continue }
+                let stat = String(line[..<sep])
+                let command = String(line[line.index(after: sep)...])
+                if stat.contains("Z") || command.contains("<defunct>") { continue }  // zombie
+                if command.contains(pattern) { return true }
+            }
+            return false
         } catch {
             return false
         }
