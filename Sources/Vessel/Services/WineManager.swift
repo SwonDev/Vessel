@@ -1131,6 +1131,21 @@ final class WineManager {
         ]
     }
 
+    /// Entorno del cliente Steam según el motor. En **GPTK/D3DMetal** (cuando Steam corre en
+    /// el mismo motor que un juego que rinde por Metal, para el DRM) hace falta el entorno de
+    /// D3DMetal (`DYLD_FALLBACK_LIBRARY_PATH` a sus libs externas + WINEMSYNC); sin él, Steam
+    /// arranca y se cierra al instante en GPTK. Verificado: con este entorno steam.exe +
+    /// steamwebhelper se mantienen vivos en GPTK. En Gcenx, el entorno normal.
+    private func steamClientEnvironment(prefix: String, wine: String) -> [String: String] {
+        guard wine.contains("/\(GPTKManager.engineName)/") else {
+            return steamClientEnvironment(prefix: prefix)
+        }
+        var env = gptkManager.d3dMetalEnvironment(prefix: prefix)
+        env["SteamAppId"] = "753"
+        env["SteamGameId"] = "753"
+        return env
+    }
+
     @discardableResult
     func launchSteam(in bottle: Bottle, using winePath: String? = nil) async throws -> Process {
         guard FileManager.default.fileExists(atPath: bottle.steamPath) else {
@@ -1186,7 +1201,7 @@ final class WineManager {
             winePath: clientWine,
             prefix: bottle.prefixPath,
             arguments: [bottle.steamPath] + args,
-            environment: steamClientEnvironment(prefix: bottle.prefixPath),
+            environment: steamClientEnvironment(prefix: bottle.prefixPath, wine: clientWine),
             workingDirectory: (bottle.steamPath as NSString).deletingLastPathComponent
         )
     }
@@ -1244,7 +1259,7 @@ final class WineManager {
             winePath: clientWine,
             prefix: bottle.prefixPath,
             arguments: [bottle.steamPath, "steam://install/\(appId)"],
-            environment: steamClientEnvironment(prefix: bottle.prefixPath),
+            environment: steamClientEnvironment(prefix: bottle.prefixPath, wine: clientWine),
             workingDirectory: (bottle.steamPath as NSString).deletingLastPathComponent
         )
     }
