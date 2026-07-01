@@ -80,13 +80,16 @@ final class SteamCMDManager {
 
     /// Descarga/instala el juego (archivos Windows) en `installDir`. Llama `onProgress`
     /// con el porcentaje (0–100) y un mensaje. Devuelve true si terminó OK.
-    func installGame(appId: String, user: String, installDir: String, onProgress: @escaping @MainActor (Double, String) -> Void) async -> Bool {
+    /// Instala/actualiza/verifica un juego con SteamCMD. `validate` fuerza la comprobación de
+    /// integridad (re-hash de TODOS los ficheros): necesaria para instalar y para "Verificar/
+    /// reparar", pero innecesaria y lenta para una simple "Actualización" (que es incremental).
+    func installGame(appId: String, user: String, installDir: String, validate: Bool = true, onProgress: @escaping @MainActor (Double, String) -> Void) async -> Bool {
         try? FileManager.default.createDirectory(atPath: installDir, withIntermediateDirectories: true)
         let args = [
             "+@sSteamCmdForcePlatformType windows",
             "+force_install_dir \(shellQuote(installDir))",
             "+login \(shellQuote(user))",
-            "+app_update \(appId) validate",
+            "+app_update \(appId)\(validate ? " validate" : "")",
             "+quit"
         ]
         var success = false

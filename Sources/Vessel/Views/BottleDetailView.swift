@@ -65,7 +65,7 @@ struct BottleDetailView: View {
             // mismo flujo de instalación, que YA valida la integridad y re-descarga lo dañado).
             onVerify: { sg in if sg.steamAppId != nil { Task { await installGame(sg.id) } } },
             // Actualizar en Steam = `app_update <id>` (sin validate forzado, va a la última build).
-            onUpdate: { sg in if sg.steamAppId != nil { Task { await installGame(sg.id) } } },
+            onUpdate: { sg in if sg.steamAppId != nil { Task { await installGame(sg.id, validate: false) } } },
             onReload: { Task { await loadSteamLibrary() } },
             onLogout: { NotificationCenter.default.post(name: .steamLogout, object: nil) }
         )
@@ -223,7 +223,7 @@ struct BottleDetailView: View {
 
     /// Pide a Steam que instale el juego (desde Vessel). El watcher en tiempo real lo
     /// moverá a "Juegos instalados" cuando termine la descarga.
-    private func installGame(_ appId: String) async {
+    private func installGame(_ appId: String, validate: Bool = true) async {
         let name = ownedGames.first(where: { $0.appId == appId })?.name ?? "App \(appId)"
         do { try await steamCMD.ensureInstalled() } catch {
             statusMessage = "No se pudo preparar SteamCMD."
@@ -242,7 +242,7 @@ struct BottleDetailView: View {
         let safeName = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "")
         let installDir = "\(localBottle.prefixPath)/drive_c/Program Files (x86)/Steam/steamapps/common/\(safeName)"
         installMessages[appId] = "Iniciando descarga…"
-        let ok = await steamCMD.installGame(appId: appId, user: steamCMDUser, installDir: installDir) { pct, msg in
+        let ok = await steamCMD.installGame(appId: appId, user: steamCMDUser, installDir: installDir, validate: validate) { pct, msg in
             installMessages[appId] = msg
             // Solo barra determinada cuando hay descarga real con %; verificación → indeterminado.
             installPercents[appId] = msg.contains("Descargando") ? max(0, min(1, pct / 100)) : nil
