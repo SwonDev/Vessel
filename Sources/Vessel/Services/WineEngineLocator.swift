@@ -5,6 +5,16 @@ enum WineEngineLocator {
     /// Motor Wine con soporte DXMT (3Shain/wine v9.9-mingw). Necesario para
     /// que juegos D3D11 rendericen en Apple Silicon via Metal nativo.
     static let dxmtEngineName = "wine-dxmt"
+    /// Variante de `wine-dxmt` con el parche del ratón de Unity 6
+    /// (`EnableMouseInPointer` → `WM_POINTER`). Es un `wine-dxmt` IDÉNTICO con
+    /// SOLO `win32u.so` reemplazado por una versión parcheada compilada desde la
+    /// MISMA versión de Wine (9.9) → mismo ABI, todas las piezas de DXMT
+    /// (winemetal/d3d11) intactas. Sin el fix, los juegos Unity 6 llaman a
+    /// `EnableMouseInPointer`, Wine lo tiene como stub y el ratón queda muerto
+    /// (caen a `Windows.Gaming.Input`). El parche es inerte para juegos que NO
+    /// llaman a esa API, así que es seguro usarlo como motor de juegos por
+    /// defecto. Se prefiere si está presente; si no, se usa `wine-dxmt`.
+    static let mousefixEngineName = "wine-dxmt-mousefix"
 
     // MARK: - Roles de motor (arquitectura de doble motor)
     //
@@ -25,14 +35,28 @@ enum WineEngineLocator {
     /// Motor para JUEGOS D3D11: wine-dxmt (DXMT builtin → Metal nativo).
     static var gameEngineName: String { dxmtEngineName }
 
+    /// Nombre del motor de JUEGOS efectivo: prefiere el motor parcheado con el fix
+    /// del ratón de Unity 6 (`wine-dxmt-mousefix`) si está instalado; si no, el
+    /// `wine-dxmt` normal. Ambos son 3Shain/DXMT; el parcheado solo cambia
+    /// `win32u.so` (mismo ABI), así que es un reemplazo seguro.
+    static func resolvedGameEngineName(enginesDirectory: String = VesselPaths.enginesDirectory) -> String {
+        let mf = URL(fileURLWithPath: enginesDirectory).appendingPathComponent(mousefixEngineName)
+        for bin in ["bin/wine", "bin/wine64"] {
+            if FileManager.default.isExecutableFile(atPath: mf.appendingPathComponent(bin).path) {
+                return mousefixEngineName
+            }
+        }
+        return dxmtEngineName
+    }
+
     /// Binario Wine del motor del CLIENTE de Steam (Gcenx wine-osx64).
     static func clientWineBinary(enginesDirectory: String = VesselPaths.enginesDirectory) -> String? {
         wineBinary(in: clientEngineName, enginesDirectory: enginesDirectory)
     }
 
-    /// Binario Wine del motor de JUEGOS D3D11 (wine-dxmt).
+    /// Binario Wine del motor de JUEGOS D3D11 (prefiere `wine-dxmt-mousefix`).
     static func gameWineBinary(enginesDirectory: String = VesselPaths.enginesDirectory) -> String? {
-        wineBinary(in: gameEngineName, enginesDirectory: enginesDirectory)
+        wineBinary(in: resolvedGameEngineName(enginesDirectory: enginesDirectory), enginesDirectory: enginesDirectory)
     }
 
     /// Resuelve el binario `wine`/`wine64` dentro de un motor por nombre.
@@ -45,9 +69,10 @@ enum WineEngineLocator {
         return findExecutable(named: ["wine64", "wine"], under: base)
     }
 
-    /// True si la ruta de Wine pertenece al motor de juegos (wine-dxmt).
+    /// True si la ruta de Wine pertenece a un motor de juegos DXMT
+    /// (`wine-dxmt` o su variante parcheada `wine-dxmt-mousefix`).
     static func isGameEngine(_ winePath: String) -> Bool {
-        winePath.contains("/\(gameEngineName)/")
+        winePath.contains("/\(mousefixEngineName)/") || winePath.contains("/\(dxmtEngineName)/")
     }
 
     static func portableEngineDirectory(enginesDirectory: String = VesselPaths.enginesDirectory) -> URL {

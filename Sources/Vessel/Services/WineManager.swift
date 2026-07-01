@@ -371,6 +371,24 @@ final class WineManager {
     func detectGraphicsAPI(forExecutable executable: String) -> GameGraphicsAPI {
         let dir = (executable as NSString).deletingLastPathComponent
         let fm = FileManager.default
+        let exeName = ((executable as NSString).lastPathComponent as NSString).deletingPathExtension
+        let isUnity = fm.fileExists(atPath: "\(dir)/UnityPlayer.dll")
+            || fm.fileExists(atPath: "\(dir)/\(exeName)_Data")
+        // Juegos Unity: por defecto renderizan en D3D11 AUNQUE incluyan la Agility SDK
+        // (carpeta `D3D12/`) — Unity solo usa D3D12 si se le fuerza, y la vía DXMT ya
+        // añade `-force-d3d11`. Los enrutamos a DXMT (wine-dxmt-mousefix): rinde por
+        // Metal Y aplica el fix del ratón de Unity 6 (EnableMouseInPointer→WM_POINTER).
+        // GPTK/D3D12 NO tiene ese fix → el ratón queda muerto (validado con Ancient
+        // Kingdoms: trae carpeta D3D12 pero inicializa "Direct3D 11.0 [level 11.1]" y
+        // con GPTK el ratón no responde; con DXMT+mousefix sí).
+        if isUnity {
+            // Solo lo tratamos como D3D12 si el exe importa d3d12 directamente y NO d3d11.
+            if exeImports(executable, anyOf: ["d3d12.dll"])
+                && !exeImports(executable, anyOf: ["d3d11.dll", "dxgi.dll"]) {
+                return .d3d12
+            }
+            return .d3d11
+        }
         if fm.fileExists(atPath: "\(dir)/D3D12/D3D12Core.dll")
             || fm.fileExists(atPath: "\(dir)/D3D12Core.dll") {
             return .d3d12
@@ -380,11 +398,6 @@ final class WineManager {
         if exeImports(executable, anyOf: ["d3d12.dll"]) { return .d3d12 }
         if exeImports(executable, anyOf: ["d3d11.dll", "dxgi.dll", "d3d10.dll", "d3d10core.dll"]) { return .d3d11 }
         if exeImports(executable, anyOf: ["d3d9.dll", "d3d8.dll", "ddraw.dll"]) { return .d3d9 }
-        let exeName = ((executable as NSString).lastPathComponent as NSString).deletingPathExtension
-        if fm.fileExists(atPath: "\(dir)/UnityPlayer.dll")
-            || fm.fileExists(atPath: "\(dir)/\(exeName)_Data") {
-            return .d3d11
-        }
         return .other
     }
 
