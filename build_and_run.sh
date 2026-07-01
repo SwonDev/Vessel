@@ -29,6 +29,8 @@ cp "$BIN_PATH" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 [ -d "Resources/redist" ] && cp -R "Resources/redist" "$APP_BUNDLE/Contents/Resources/redist"
 # Base de datos de compatibilidad por juego empaquetada (se actualiza desde el repo comunitario)
 [ -d "Resources/CompatDB" ] && cp -R "Resources/CompatDB" "$APP_BUNDLE/Contents/Resources/CompatDB"
+# win32u.so parcheado (fix del ratón de Unity 6): Vessel crea el motor wine-dxmt-mousefix con él
+[ -d "Resources/mousefix" ] && cp -R "Resources/mousefix" "$APP_BUNDLE/Contents/Resources/mousefix"
 
 cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -59,6 +61,16 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
     <string>public.app-category.games</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSNetworkVolumesUsageDescription</key>
+    <string>Vessel accede a los archivos de tus juegos y motores de Wine, que pueden estar en volúmenes de red. Concede el permiso una vez y no volverá a preguntar.</string>
+    <key>NSRemovableVolumesUsageDescription</key>
+    <string>Vessel accede a los juegos que tengas instalados en discos externos.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>Vessel puede necesitar leer juegos o archivos ubicados en tu Escritorio.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>Vessel puede necesitar leer partidas o archivos de juego ubicados en Documentos.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>Vessel puede necesitar leer instaladores o archivos de juego ubicados en Descargas.</string>
     <key>CFBundleIconFile</key>
     <string>icon</string>
     <key>CFBundleIconName</key>

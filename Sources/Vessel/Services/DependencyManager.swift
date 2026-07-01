@@ -90,6 +90,9 @@ final class DependencyManager {
     func ensureWinePortableInstalled(progress: @escaping @Sendable (String, Double) -> Void) async throws -> String {
         let current = await check(.winePortable)
         if let path = current.path, current.installed {
+            // Auto-reparación: crear el motor con fix del ratón si falta (p. ej. si el
+            // usuario ya tenía Wine instalado de una versión anterior de Vessel).
+            await ensureMousefixEngine(progress: progress)
             return path
         }
 
@@ -145,7 +148,79 @@ final class DependencyManager {
             }
         }
 
+        // 4) Motor con el fix del ratón de Unity 6 (wine-dxmt-mousefix): copia de
+        //    wine-dxmt + win32u.so parcheado. Best-effort (fallback: wine-dxmt).
+        await ensureMousefixEngine(progress: progress)
+
         progress("✓ Motores listos (cliente + juegos D3D11)", 1.0)
+    }
+
+    /// Crea o repara el motor `wine-dxmt-mousefix`: una COPIA de `wine-dxmt` con el
+    /// `win32u.so` parcheado (fix del ratón de Unity 6, `EnableMouseInPointer`→`WM_POINTER`).
+    /// En APFS `copyItem` hace un clon COW (instantáneo, sin gastar espacio). El motor real
+    /// `wine-dxmt` queda intacto como fallback.
+    ///
+    /// **Guarda de versión**: el `win32u.so` parcheado se compiló desde Wine 9.9, así que
+    /// solo se aplica si el `wine-dxmt` instalado reporta 9.9 (mismo ABI de la tabla de
+    /// syscalls de win32u). Si 3Shain publica otra versión, se omite (y se borra un mousefix
+    /// obsoleto) → los juegos usan `wine-dxmt` normal, sin el fix, pero sin romperse.
+    ///
+    /// Idempotente y auto-reparable: recrea el motor si falta, si su `win32u.so` no es el
+    /// parcheado, o si quedó más viejo que `wine-dxmt` (tras actualizar el motor de juegos).
+    func ensureMousefixEngine(progress: (@Sendable (String, Double) -> Void)? = nil) async {
+        let fm = FileManager.default
+        let dxmtDir = "\(enginesDirectory)/\(WineEngineLocator.dxmtEngineName)"
+        let dxmtWine = "\(dxmtDir)/bin/wine"
+        let mfDir = "\(enginesDirectory)/\(WineEngineLocator.mousefixEngineName)"
+        let mfWine = "\(mfDir)/bin/wine"
+        let mfWin32u = "\(mfDir)/lib/wine/x86_64-unix/win32u.so"
+
+        // Sin wine-dxmt no hay base sobre la que construir.
+        guard fm.isExecutableFile(atPath: dxmtWine) else { return }
+
+        // win32u.so parcheado bundleado en Resources/mousefix/.
+        guard let patched = Bundle.main.resourceURL?
+            .appendingPathComponent("mousefix/win32u.so").path,
+              fm.fileExists(atPath: patched) else {
+            LogStore.shared.log("No se encontró el win32u.so parcheado en Resources; se omite el motor con fix del ratón.", level: .warn)
+            return
+        }
+
+        // Guarda de versión: el parche es de Wine 9.9.
+        let version = (await runCapture(executable: dxmtWine, arguments: ["--version"]))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard version.contains("wine-9.9") else {
+            LogStore.shared.log("wine-dxmt reporta '\(version)' (no 9.9): se omite el motor con fix del ratón para no romper el ABI. Los juegos usan wine-dxmt normal.", level: .warn)
+            try? fm.removeItem(atPath: mfDir)   // limpiar un mousefix de otra versión
+            return
+        }
+
+        // Idempotente: ¿ya existe, con el win32u.so parcheado, y no más viejo que wine-dxmt?
+        if fm.isExecutableFile(atPath: mfWine) {
+            let patchedSize = (try? fm.attributesOfItem(atPath: patched))?[.size] as? Int
+            let curSize = (try? fm.attributesOfItem(atPath: mfWin32u))?[.size] as? Int
+            let dxmtDate = (try? fm.attributesOfItem(atPath: dxmtWine))?[.modificationDate] as? Date
+            let mfDate = (try? fm.attributesOfItem(atPath: mfWine))?[.modificationDate] as? Date
+            if let ps = patchedSize, let cs = curSize, ps == cs, ps > 0,
+               let dd = dxmtDate, let md = mfDate, md >= dd {
+                return  // al día
+            }
+        }
+
+        progress?("Preparando fix del ratón de Unity 6…", 0.95)
+        do {
+            try? fm.removeItem(atPath: mfDir)
+            // Copia (clon COW en APFS: instantánea) de wine-dxmt → wine-dxmt-mousefix.
+            try fm.copyItem(atPath: dxmtDir, toPath: mfDir)
+            // Swap del win32u.so por el parcheado.
+            try? fm.removeItem(atPath: mfWin32u)
+            try fm.copyItem(atPath: patched, toPath: mfWin32u)
+            await stripQuarantineRecursive(at: mfDir)
+            LogStore.shared.log("Motor 'wine-dxmt-mousefix' listo (fix del ratón de Unity 6).", level: .info)
+        } catch {
+            LogStore.shared.log("No se pudo crear el motor con fix del ratón: \(error.localizedDescription). Los juegos usarán wine-dxmt normal.", level: .warn)
+            try? fm.removeItem(atPath: mfDir)   // no dejar a medias
+        }
     }
 
     /// Descarga 3Shain/wine v9.9-mingw con soporte DXMT integrado.
