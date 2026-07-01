@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Shimmer
 
 /// Caché de carátulas en memoria (`NSCache`) con **cascada de URLs**: prueba las candidatas
 /// en orden y cachea la primera que cargue. A diferencia de `AsyncImage`, la descarga **no se
@@ -44,6 +45,8 @@ struct GameCoverImage<Placeholder: View>: View {
         // `placeholder` (flexible) fija el tamaño; la imagen va como overlay y se recorta a él.
         // Con un ZStack, la imagen apaisada impondría su tamaño y desbordaría el 2:3 de la tarjeta.
         placeholder()
+            // Brillo premium mientras la carátula carga (se apaga al aparecer la imagen).
+            .shimmering(active: image == nil && !reduceMotion)
             .overlay {
                 if let image {
                     Image(nsImage: image).resizable().scaledToFill()
