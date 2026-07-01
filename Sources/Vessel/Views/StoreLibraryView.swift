@@ -110,6 +110,8 @@ struct StoreLibraryView: View {
     @State private var sortOrder: StoreSortOrder = .nombre
     @State private var filter: StoreLibraryFilter = .todos
     @State private var showFavoritesOnly = false
+    /// Sidebar colapsada (persistente): más espacio para el grid/ficha. Estilo Steam.
+    @AppStorage("vessel.sidebarCollapsed") private var sidebarCollapsed = false
     @State private var favorites: Set<String> = []
     @State private var selectedGame: StoreGame?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -141,7 +143,12 @@ struct StoreLibraryView: View {
         }
     }
 
-    private var filtered: [StoreGame] {
+    /// Lista mostrada (filtrada + ordenada) MEMOIZADA: se recalcula solo cuando cambian las
+    /// entradas (juegos/búsqueda/filtro/orden/favoritos), NO en cada render — así con miles de
+    /// juegos el tecleo y los cambios de estado son fluidos.
+    @State private var displayed: [StoreGame] = []
+
+    private func computeFiltered() -> [StoreGame] {
         var list = enriched
         switch filter {
         case .instalados:       list = list.filter { $0.installed }
@@ -168,21 +175,47 @@ struct StoreLibraryView: View {
 
     var body: some View {
         HSplitView {
-            sidebar
-                .frame(minWidth: 240, idealWidth: 300, maxWidth: 380)
+            if !sidebarCollapsed {
+                sidebar
+                    .frame(minWidth: 208, idealWidth: 248, maxWidth: 340)
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+            }
             detailPane
                 .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
                 .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: selectedGame)
         }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.28), value: sidebarCollapsed)
+        // Botón para MOSTRAR la lista cuando está colapsada (en el grid; en la ficha manda "atrás").
+        .overlay(alignment: .topLeading) {
+            if sidebarCollapsed && selectedGame == nil {
+                Button {
+                    withAnimation(reduceMotion ? nil : .smooth(duration: 0.28)) { sidebarCollapsed = false }
+                } label: {
+                    Image(systemName: "sidebar.left").font(.body.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.85)).frame(width: 32, height: 32)
+                        .liquidGlass(in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                }
+                .buttonStyle(.plain).padding(.top, 12).padding(.leading, 12)
+                .help("Mostrar la lista").transition(.opacity)
+            }
+        }
         .vesselBackground(tint: tint)
         .onAppear {
             favorites = Set(UserDefaults.standard.stringArray(forKey: favKey) ?? [])
+            displayed = computeFiltered()
             updateDockProgress()
         }
+        // Recalcular la lista mostrada SOLO al cambiar una entrada (no en cada render).
+        .onChange(of: search) { _, _ in displayed = computeFiltered() }
+        .onChange(of: filter) { _, _ in displayed = computeFiltered() }
+        .onChange(of: sortOrder) { _, _ in displayed = computeFiltered() }
+        .onChange(of: showFavoritesOnly) { _, _ in displayed = computeFiltered() }
+        .onChange(of: favorites) { _, _ in displayed = computeFiltered() }
         .onChange(of: dockProgressSnapshot) { _, _ in updateDockProgress() }
         // Pre-descarga TODAS las carátulas de la tienda a disco en 2º plano (cuando la lista carga),
         // para que ninguna cargue de red al hacer scroll: instantáneas siempre. Idempotente.
         .task(id: games.count) {
+            displayed = computeFiltered()
             CoverCache.shared.prefetch(games.map { ($0.id, $0.coverCandidates) })
         }
     }
@@ -238,7 +271,7 @@ struct StoreLibraryView: View {
                 HStack(alignment: .firstTextBaseline) {
                     Text("Todos los juegos").font(.title.bold()).foregroundStyle(.white)
                     Spacer()
-                    Text("\(filtered.count) juego\(filtered.count == 1 ? "" : "s")")
+                    Text("\(displayed.count) juego\(displayed.count == 1 ? "" : "s")")
                         .font(.subheadline).foregroundStyle(.white.opacity(0.5))
                 }
                 grid
@@ -294,6 +327,13 @@ struct StoreLibraryView: View {
                     .font(.caption2).foregroundStyle(.white.opacity(0.45))
             }
             Spacer()
+            Button {
+                withAnimation(reduceMotion ? nil : .smooth(duration: 0.28)) { sidebarCollapsed = true }
+            } label: {
+                Image(systemName: "sidebar.left").font(.body.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.55)).frame(width: 26, height: 26).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).help("Ocultar la lista")
             Menu {
                 Button { onReload() } label: { Label("Actualizar biblioteca", systemImage: "arrow.clockwise") }
                 Divider()
@@ -367,7 +407,7 @@ struct StoreLibraryView: View {
     }
 
     @ViewBuilder private var gameList: some View {
-        if filtered.isEmpty {
+        if displayed.isEmpty {
             VStack(spacing: 10) {
                 Image(systemName: showFavoritesOnly ? "star.slash" : "magnifyingglass")
                     .font(.system(size: 30)).foregroundStyle(.white.opacity(0.25))
@@ -379,7 +419,7 @@ struct StoreLibraryView: View {
             // Selección MANUAL (no el binding del List): así el resaltado es un cristal Liquid
             // Glass tintado (premium), no el azul sólido del sistema. Ver DESIGN.md §7.
             List {
-                ForEach(filtered) { game in
+                ForEach(displayed) { game in
                     StoreGameRow(game: game, tint: tint,
                                  isFavorite: isFav(game.id),
                                  isSelected: selectedGame?.id == game.id)
@@ -393,7 +433,7 @@ struct StoreLibraryView: View {
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
             .tint(tint)
-            .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: filtered.count)
+            .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: displayed.count)
         }
     }
 
@@ -421,7 +461,7 @@ struct StoreLibraryView: View {
     // MARK: - Grid
 
     @ViewBuilder private var grid: some View {
-        if filtered.isEmpty {
+        if displayed.isEmpty {
             VStack(spacing: 16) {
                 Image(systemName: showFavoritesOnly ? "star.slash" : "magnifyingglass")
                     .font(.system(size: 44))
@@ -435,7 +475,7 @@ struct StoreLibraryView: View {
             .padding(.top, 60)
         } else {
             LazyVGrid(columns: columns, spacing: Theme.Space.gameGrid) {
-                ForEach(filtered) { game in
+                ForEach(displayed) { game in
                     StoreGameCard(
                         game: game,
                         tint: tint,
@@ -452,7 +492,7 @@ struct StoreLibraryView: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.97)))
                 }
             }
-            .animation(reduceMotion ? nil : .snappy(duration: 0.28), value: filtered.count)
+            .animation(reduceMotion ? nil : .snappy(duration: 0.28), value: displayed.count)
         }
     }
 }
