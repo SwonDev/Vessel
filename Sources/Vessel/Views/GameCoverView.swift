@@ -14,20 +14,29 @@ import CryptoKit
 final class CoverCache {
     static let shared = CoverCache()
     private let cache = NSCache<NSString, NSImage>()
-    private let diskDir: URL
 
     private init() {
         cache.countLimit = 3000
-        diskDir = URL(fileURLWithPath: VesselPaths.cacheDirectory).appendingPathComponent("Covers", isDirectory: true)
-        try? FileManager.default.createDirectory(at: diskDir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: Self.diskDir, withIntermediateDirectories: true)
+    }
+
+    /// Directorio de disco de las carátulas (persistente entre arranques).
+    nonisolated static var diskDir: URL {
+        URL(fileURLWithPath: VesselPaths.cacheDirectory).appendingPathComponent("Covers", isDirectory: true)
+    }
+
+    /// Nombre de fichero ESTABLE (hash SHA256 del key). No usar `hashValue`: en Swift es aleatorio
+    /// por proceso y no serviría entre arranques.
+    nonisolated static func diskFile(_ key: String) -> URL {
+        let hex = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
+        return diskDir.appendingPathComponent(hex)
     }
 
     /// Imagen ya disponible SIN red: primero memoria, luego DISCO. Rápida y síncrona (NSImage
     /// difiere el decodificado hasta el pintado), así que el grid puede pintarla en el primer frame.
     func cached(_ key: String) -> NSImage? {
         if let img = cache.object(forKey: key as NSString) { return img }
-        let file = diskFile(key)
-        if let img = NSImage(contentsOf: file) {
+        if let img = NSImage(contentsOf: Self.diskFile(key)) {
             cache.setObject(img, forKey: key as NSString)
             return img
         }
@@ -44,18 +53,38 @@ final class CoverCache {
             if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) { continue }
             if let img = NSImage(data: data) {
                 cache.setObject(img, forKey: key as NSString)
-                try? data.write(to: diskFile(key), options: .atomic)   // persistir para futuros arranques
+                try? data.write(to: Self.diskFile(key), options: .atomic)   // persistir para futuros arranques
                 return img
             }
         }
         return nil
     }
 
-    /// Nombre de fichero ESTABLE (hash SHA256 del key). No usar `hashValue`: en Swift es aleatorio
-    /// por proceso y no serviría entre arranques.
-    private func diskFile(_ key: String) -> URL {
-        let hex = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
-        return diskDir.appendingPathComponent(hex)
+    /// **Pre-descarga** en segundo plano (baja prioridad) las carátulas que aún NO estén en disco,
+    /// para que TODAS sean instantáneas al hacer scroll o relanzar — no solo las ya vistas. No toca
+    /// la caché de memoria (evita bloat con miles de juegos): solo escribe a disco. Throttle a 6
+    /// descargas en paralelo. Idempotente: salta las ya cacheadas.
+    nonisolated func prefetch(_ items: [(key: String, candidates: [URL])]) {
+        Task.detached(priority: .background) {
+            let fm = FileManager.default
+            await withTaskGroup(of: Void.self) { group in
+                var running = 0
+                for item in items where !item.candidates.isEmpty {
+                    if fm.fileExists(atPath: Self.diskFile(item.key).path) { continue }   // ya en disco
+                    if running >= 6 { await group.next(); running -= 1 }
+                    group.addTask {
+                        for url in item.candidates {
+                            guard let (data, resp) = try? await URLSession.shared.data(from: url),
+                                  !data.isEmpty else { continue }
+                            if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) { continue }
+                            try? data.write(to: Self.diskFile(item.key), options: .atomic)
+                            return
+                        }
+                    }
+                    running += 1
+                }
+            }
+        }
     }
 }
 

@@ -179,6 +179,11 @@ struct StoreLibraryView: View {
             updateDockProgress()
         }
         .onChange(of: dockProgressSnapshot) { _, _ in updateDockProgress() }
+        // Pre-descarga TODAS las carátulas de la tienda a disco en 2º plano (cuando la lista carga),
+        // para que ninguna cargue de red al hacer scroll: instantáneas siempre. Idempotente.
+        .task(id: games.count) {
+            CoverCache.shared.prefetch(games.map { ($0.id, $0.coverCandidates) })
+        }
     }
 
     /// Progreso AGREGADO (0–1) de las instalaciones/actualizaciones en curso, para el icono del

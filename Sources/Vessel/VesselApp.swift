@@ -1,4 +1,5 @@
 import SwiftUI
+import DockProgress
 
 @main
 struct VesselApp: App {
@@ -19,6 +20,9 @@ struct VesselApp: App {
                     }
                 }
                 .task {
+                    // El icono del Dock arranca SIEMPRE limpio (por si una instalación quedó a
+                    // medias en una sesión anterior); el progreso se repinta solo si hay descargas.
+                    DockProgress.resetProgress()
                     // Permiso de notificaciones (descarga lista, update disponible…), una vez.
                     NotificationService.shared.requestAuthorization()
                     // Actualiza la BD de compatibilidad desde el repo comunitario (1×/día).
