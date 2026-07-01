@@ -505,9 +505,13 @@ final class WineManager {
         // D3D11→Metal) se cerraría al instante y SIN log si el juego elige D3D9. Verificado
         // empíricamente: Grim Dawn inicializa MoltenVK en Gcenx y muere silencioso en wine-dxmt.
         // (Unity queda excluido: `detectGraphicsAPI` lo clasifica como .d3d11, no .other.)
-        if detectGraphicsAPI(forExecutable: executable) == .other {
-            if go == .dxmt { log.log("Override DXMT ignorado: el juego carga Direct3D dinámicamente; se usa Gcenx (wined3d), la capa más compatible.", level: .info) }
-            else { log.log("El juego carga Direct3D dinámicamente (sin imports PE) → Gcenx (wined3d), la capa más compatible.", level: .info) }
+        // Solo en AUTO. Si el usuario o el FALLBACK fuerzan un motor concreto (.dxmt/.gptk),
+        // se respeta: el fallback necesita poder probar DXMT/Metal y GPTK/D3DMetal, que en
+        // Apple Silicon nuevo (M5) SÍ soportan la GPU cuando wined3d→Vulkan de Gcenx casca
+        // (`__wine_unix_call` tras "Failed to retrieve GPU description Apple M5 Pro"). Sin este
+        // gate, `.other` volvía siempre a Gcenx y el fallback quedaba en bucle sin tocar DXMT.
+        if go == .auto && detectGraphicsAPI(forExecutable: executable) == .other {
+            log.log("El juego carga Direct3D dinámicamente (sin imports PE) → Gcenx (wined3d), la capa más compatible.", level: .info)
             return try await launchD3D9Game(executable: executable, in: bottle,
                                             arguments: allArgs, steamAppId: steamAppId, effective: eff)
         }
@@ -1208,6 +1212,11 @@ final class WineManager {
     /// falla con "InitializeEngineGraphics failed". `wineboot -u` restaura el estado
     /// que DXMT necesita. Mono/Gecko silenciados para no mostrar su instalador.
     private func resyncGamePrefix(gameWine: String, prefix: String) async {
+        // SEGURIDAD: matar wineservers zombis del prefix ANTES de `wineboot`. Si queda uno de
+        // OTRO motor/versión (p. ej. tras un crash del intento anterior en el fallback), el
+        // `wineboot -u` choca con él y se queda COLGADO esperando —dejando el árbol de
+        // servicios a medias y disparando el clásico cuelgue/fork-bomba—. Limpiarlo antes lo evita.
+        await killPrefixWineservers(prefix: prefix)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: gameWine)
         process.arguments = ["wineboot", "-u"]
@@ -1216,23 +1225,30 @@ final class WineManager {
             "WINEDEBUG": "-all",
             "WINEDLLOVERRIDES": "mscoree,mshtml=d;d3d9,d3d8,ddraw=b"
         ]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
+        process.standardOutput = FileHandle(forWritingAtPath: "/dev/null")
+        process.standardError = FileHandle(forWritingAtPath: "/dev/null")
         do {
             try process.run()
-            process.waitUntilExit()
+            // TIMEOUT: `wineboot -u` tarda <15s en condiciones normales. Si supera 45s está
+            // COLGADO (wineserver malo, servicio que no arranca): lo cancelamos y seguimos, para
+            // que un lanzamiento NUNCA quede bloqueado indefinidamente ni acumule procesos.
+            let deadline = Date().addingTimeInterval(45)
+            while process.isRunning && Date() < deadline {
+                try? await Task.sleep(nanoseconds: 300_000_000)
+            }
+            if process.isRunning {
+                log.log("wineboot -u tardó demasiado (prefijo en mal estado); se cancela y se continúa.", level: .warn)
+                process.terminate()
+            }
         } catch {
             log.log("No se pudo re-sincronizar el prefijo: \(error.localizedDescription)", level: .warn)
         }
-        // CLAVE: matar el wineserver que deja `wineboot -u`, para que el juego
-        // arranque uno LIMPIO con el prefijo ya actualizado. Si el juego corre
-        // sobre el wineserver de wineboot, DXMT no engancha y falla con
-        // "InitializeEngineGraphics failed" (esta es la diferencia que hacía que
-        // funcionara lanzado a mano pero no desde Vessel).
+        // CLAVE: matar el wineserver que deja `wineboot -u`, para que el juego arranque uno
+        // LIMPIO con el prefijo ya actualizado. Si el juego corre sobre el wineserver de
+        // wineboot, DXMT no engancha y falla con "InitializeEngineGraphics failed".
         try? await terminateWineProcesses(winePath: gameWine, prefix: prefix)
         try? await killOrphanWineProcesses(prefix: prefix)
-        log.log("Prefijo re-sincronizado a wine-dxmt para el juego", level: .debug)
+        log.log("Prefijo re-sincronizado para el juego", level: .debug)
     }
 
     @discardableResult
