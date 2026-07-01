@@ -467,7 +467,6 @@ struct StoreGameCard: View {
             .hoverLift()
             .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous))
             .onTapGesture { onOpen() }
-            .help(game.title)
             .contextMenu {
                 if game.installed {
                     Button { onPlay() } label: { Label("Jugar", systemImage: "play.fill") }
@@ -597,7 +596,6 @@ struct StoreGameRow: View {
         .background { rowBackground }
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
-        .help(game.title)
     }
 
     /// Fondo de la fila: **cristal Liquid Glass tintado** si está seleccionada (premium, no el
@@ -683,7 +681,6 @@ struct RecentlyPlayedCard: View {
         .hoverLift(scale: 1.02)
         .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
         .onTapGesture { onOpen() }
-        .help(game.title)
     }
 }
 
