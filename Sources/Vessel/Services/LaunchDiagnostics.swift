@@ -102,23 +102,35 @@ enum LaunchDiagnostics {
     static func monitorAndMaybeRetry(
         prefix: String, gameId: String, gameTitle: String,
         currentLayer: GameConfig.GraphicsLayer, attempt: Int,
+        isRunning: @escaping @MainActor () -> Bool = { false },
         relaunch: @escaping @MainActor (GameConfig.GraphicsLayer) async -> Void
     ) {
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(15))
-            guard let failure = detect(prefix: prefix) else { return }   // arrancó bien
-            if failure.category.isEngineRetryable, attempt < 1, let next = nextLayer(after: currentLayer) {
-                LogStore.shared.log("\(gameTitle): falló el arranque (\(failure.title)) con la capa \(currentLayer.rawValue). Reintentando automáticamente con \(next.rawValue)…", level: .info)
-                NotificationService.shared.notify(
-                    title: "Reintentando: \(gameTitle)",
-                    body: "El primer intento no arrancó (\(failure.title)). Probando con otra capa gráfica…")
-                // Cerrar el intento fallido (por si quedó un proceso colgado) antes de relanzar.
+            let failure = detect(prefix: prefix)
+            let alive = isRunning()
+
+            @MainActor func retry(_ next: GameConfig.GraphicsLayer, reason: String) async {
+                LogStore.shared.log("\(gameTitle): \(reason) con la capa \(currentLayer.rawValue). Reintentando con \(next.rawValue)…", level: .info)
+                NotificationService.shared.notify(title: "Reintentando: \(gameTitle)",
+                                                  body: "\(reason). Probando con otra capa gráfica…")
                 GameLaunchTracker.shared.stop(gameId)
                 try? await Task.sleep(for: .seconds(2))
                 await relaunch(next)
-            } else {
-                report(failure, gameTitle: gameTitle)
             }
+
+            // 1) Fallo con firma CONOCIDA y recuperable → reintentar con la siguiente capa.
+            if let failure, failure.category.isEngineRetryable, attempt < 2, let next = nextLayer(after: currentLayer) {
+                await retry(next, reason: "falló el arranque (\(failure.title))"); return
+            }
+            // 2) SALIDA SILENCIOSA: el juego ya NO corre y no hay firma (ni de éxito ni de fallo
+            //    conocido). Típico de juegos que importan D3D11 pero renderizan por D3D9 (Grim Dawn):
+            //    wine-dxmt cierra al instante sin log. Probamos la siguiente capa (hasta Gcenx/D3D9).
+            if failure == nil, !alive, attempt < 2, let next = nextLayer(after: currentLayer) {
+                await retry(next, reason: "se cerró sin renderizar"); return
+            }
+            // 3) Fallo no recuperable (o ya sin más capas): avisar.
+            if let failure { report(failure, gameTitle: gameTitle) }
         }
     }
 
@@ -131,10 +143,11 @@ enum LaunchDiagnostics {
     /// GPTK/D3DMetal (D3D12→Metal), los dos motores de juegos de 64-bit. `auto` para Unity resuelve
     /// a DXMT, así que su fallback es GPTK.
     private static func nextLayer(after layer: GameConfig.GraphicsLayer) -> GameConfig.GraphicsLayer? {
+        // Cadena de fallback por las 3 vías de Vessel: DXMT (D3D11) → GPTK (D3D12) → Gcenx (D3D9).
         switch layer {
         case .auto, .dxmt: return .gptk
-        case .gptk:        return .dxmt
-        default:           return nil   // wined3d/dxvk/opengl: sin swap automático simple
+        case .gptk:        return .gcenx
+        case .gcenx:       return nil
         }
     }
 

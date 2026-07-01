@@ -355,11 +355,12 @@ struct BottleDetailView: View {
             store.touchGame(game.id, in: localBottle.id)
             return proc
         }
-        // Diagnóstico + fallback automático de motor (DXMT ↔ GPTK) si falla el arranque de forma
-        // recuperable; si no, avisa con causa y acción. Reintenta una sola vez.
+        // Diagnóstico + fallback automático de motor (DXMT → GPTK → Gcenx) si falla el arranque o el
+        // juego se cierra sin renderizar; si no, avisa con causa y acción.
         LaunchDiagnostics.monitorAndMaybeRetry(
             prefix: localBottle.prefixPath, gameId: trackId, gameTitle: game.name,
-            currentLayer: usedLayer, attempt: attempt
+            currentLayer: usedLayer, attempt: attempt,
+            isRunning: { GameLaunchTracker.shared.state(trackId) == .running }
         ) { next in await launchGame(game, forcedLayer: next, attempt: attempt + 1) }
     }
 

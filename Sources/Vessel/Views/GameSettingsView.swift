@@ -5,20 +5,22 @@ import AppKit
 struct GameConfig: Codable, Equatable {
     /// Capa de traducción gráfica preferida para este juego.
     enum GraphicsLayer: String, Codable, CaseIterable, Identifiable {
-        case auto, dxmt, gptk
+        case auto, dxmt, gptk, gcenx
         var id: String { rawValue }
         var label: String {
             switch self {
-            case .auto: return "Automático (recomendado)"
-            case .dxmt: return "DXMT · D3D11 → Metal"
-            case .gptk: return "GPTK / D3DMetal · D3D12 → Metal"
+            case .auto:  return "Automático (recomendado)"
+            case .dxmt:  return "DXMT · D3D11 → Metal"
+            case .gptk:  return "GPTK / D3DMetal · D3D12 → Metal"
+            case .gcenx: return "Gcenx · D3D9 → Vulkan → Metal"
             }
         }
         var detail: String {
             switch self {
-            case .auto: return "Vessel detecta la API (D3D9/11/12) y elige la capa óptima por juego."
-            case .dxmt: return "Fuerza DXMT. Ideal para juegos modernos D3D11 (Unity, etc.)."
-            case .gptk: return "Fuerza GPTK/D3DMetal. Para juegos AAA con DirectX 12 / Agility SDK."
+            case .auto:  return "Vessel detecta la API (D3D9/11/12) y elige la capa óptima por juego."
+            case .dxmt:  return "Fuerza DXMT. Ideal para juegos modernos D3D11 (Unity, etc.)."
+            case .gptk:  return "Fuerza GPTK/D3DMetal. Para juegos AAA con DirectX 12 / Agility SDK."
+            case .gcenx: return "Fuerza Gcenx (wined3d→Vulkan). Para juegos D3D9/D3D8 (o que importan D3D11 pero renderizan en D3D9, p. ej. Grim Dawn)."
             }
         }
     }

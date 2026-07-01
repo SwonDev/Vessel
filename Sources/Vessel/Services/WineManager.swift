@@ -428,10 +428,18 @@ final class WineManager {
         // Capa gráfica: override por juego (Ajustes/perfil) o auto-detección por API.
         // D3D12 (AAA, FF Tactics) → GPTK/D3DMetal (Metal nativo, ignora el Agility
         // SDK), con el cliente Steam en el mismo wineserver para el DRM.
+        // Forzar Gcenx/D3D9 (usuario/perfil, o fallback tras fallo de DXMT): para juegos D3D9 o que
+        // importan D3D11 pero renderizan por D3D9 (p. ej. Grim Dawn). Va por wined3d→Vulkan→Metal.
+        if go == .gcenx {
+            log.log("Capa gráfica: Gcenx (wined3d→Vulkan→Metal) [forzado]", level: .info)
+            return try await launchD3D9Game(executable: executable, in: bottle,
+                                            arguments: allArgs, steamAppId: steamAppId, effective: eff)
+        }
         let useD3D12: Bool
         switch go {
         case .gptk: useD3D12 = true                                  // forzado por usuario/perfil
         case .dxmt: useD3D12 = false                                 // forzado a DXMT
+        case .gcenx: useD3D12 = false                                // (ya gestionado arriba)
         case .auto: useD3D12 = detectGraphicsAPI(forExecutable: executable) == .d3d12
         }
         if useD3D12 {

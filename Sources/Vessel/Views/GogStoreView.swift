@@ -286,7 +286,8 @@ final class GogStore {
         // Diagnóstico + fallback automático de motor (DXMT ↔ GPTK) si falla el arranque.
         LaunchDiagnostics.monitorAndMaybeRetry(
             prefix: prefix, gameId: game.appId, gameTitle: game.title,
-            currentLayer: usedLayer, attempt: attempt
+            currentLayer: usedLayer, attempt: attempt,
+            isRunning: { GameLaunchTracker.shared.state(game.appId) == .running }
         ) { [weak self] next in await self?.play(game, forcedLayer: next, attempt: attempt + 1) }
     }
 }
