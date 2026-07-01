@@ -43,21 +43,54 @@ final class CoverCache {
         return nil
     }
 
-    /// Devuelve la primera imagen que cargue de `candidates` (memoria → disco → red). Al bajarla de
-    /// la red la PERSISTE en disco para que en el siguiente arranque sea instantánea. `nil` si todas
-    /// fallan (se queda el placeholder).
+    /// Devuelve la primera imagen que cargue (memoria → disco → red). Al bajarla la PERSISTE en
+    /// disco para que en el siguiente arranque sea instantánea. `nil` si no hay carátula.
     func load(_ key: String, candidates: [URL]) async -> NSImage? {
         if let img = cached(key) { return img }
+        guard let data = await Self.fetchCoverData(candidates: candidates), let img = NSImage(data: data) else { return nil }
+        cache.setObject(img, forKey: key as NSString)
+        try? data.write(to: Self.diskFile(key), options: .atomic)
+        return img
+    }
+
+    /// Baja los BYTES de la primera candidata que cargue. Si TODAS fallan y son URLs de Steam
+    /// (juego nuevo con assets bajo una ruta HASHEADA impredecible → los patrones dan 404), pide la
+    /// URL real del `header_image` a `appdetails` (API pública, gratis) y baja esa. Así ninguna
+    /// carátula de Steam se queda en el placeholder.
+    nonisolated static func fetchCoverData(candidates: [URL]) async -> Data? {
         for url in candidates {
-            guard let (data, resp) = try? await URLSession.shared.data(from: url) else { continue }
+            guard let (data, resp) = try? await URLSession.shared.data(from: url), !data.isEmpty else { continue }
             if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) { continue }
-            if let img = NSImage(data: data) {
-                cache.setObject(img, forKey: key as NSString)
-                try? data.write(to: Self.diskFile(key), options: .atomic)   // persistir para futuros arranques
-                return img
-            }
+            return data
+        }
+        if let real = await steamHeaderURL(fromCandidates: candidates),
+           let (data, resp) = try? await URLSession.shared.data(from: real), !data.isEmpty,
+           (resp as? HTTPURLResponse).map({ (200...299).contains($0.statusCode) }) ?? true {
+            return data
         }
         return nil
+    }
+
+    /// URL real del header de un juego de Steam vía `appdetails`, extrayendo el appid de una de las
+    /// candidatas (`…/steam/apps/<id>/…`). `nil` si no es de Steam o no hay datos.
+    nonisolated static func steamHeaderURL(fromCandidates candidates: [URL]) async -> URL? {
+        guard let appId = candidates.compactMap({ steamAppId(from: $0) }).first,
+              let api = URL(string: "https://store.steampowered.com/api/appdetails?appids=\(appId)&filters=basic")
+        else { return nil }
+        guard let (data, _) = try? await URLSession.shared.data(from: api),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let entry = obj[appId] as? [String: Any], (entry["success"] as? Bool) == true,
+              let d = entry["data"] as? [String: Any],
+              let header = d["header_image"] as? String else { return nil }
+        return URL(string: header)
+    }
+
+    /// Extrae el appid de una URL de Steam del tipo `…/steam/apps/<id>/…`.
+    private nonisolated static func steamAppId(from url: URL) -> String? {
+        let parts = url.pathComponents
+        guard let i = parts.firstIndex(of: "apps"), i + 1 < parts.count else { return nil }
+        let id = parts[i + 1]
+        return id.allSatisfy(\.isNumber) && !id.isEmpty ? id : nil
     }
 
     /// **Pre-descarga** en segundo plano (baja prioridad) las carátulas que aún NO estén en disco,
@@ -73,12 +106,8 @@ final class CoverCache {
                     if fm.fileExists(atPath: Self.diskFile(item.key).path) { continue }   // ya en disco
                     if running >= 6 { await group.next(); running -= 1 }
                     group.addTask {
-                        for url in item.candidates {
-                            guard let (data, resp) = try? await URLSession.shared.data(from: url),
-                                  !data.isEmpty else { continue }
-                            if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) { continue }
+                        if let data = await Self.fetchCoverData(candidates: item.candidates) {
                             try? data.write(to: Self.diskFile(item.key), options: .atomic)
-                            return
                         }
                     }
                     running += 1
