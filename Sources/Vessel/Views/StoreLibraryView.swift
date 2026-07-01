@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import DockProgress
+import Shimmer
 
 /// Juego genérico común a TODAS las tiendas (Steam/Epic/GOG). Cada tienda mapea
 /// sus datos a este modelo y reutiliza `StoreLibraryView` — así la UI/UX (búsqueda,
@@ -801,7 +802,7 @@ struct GameDetailView: View {
                 if details?.genres.isEmpty == false {
                     genreChips.padding(.horizontal, 32).padding(.bottom, 6)
                 }
-                if details?.screenshots.isEmpty == false { mediaSection }
+                if details?.screenshots.isEmpty == false || loadingDetails { mediaSection }
                 content
             }
         }
@@ -988,10 +989,17 @@ struct GameDetailView: View {
             }
         } else if loadingDetails {
             cardSection("Acerca de") {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Cargando descripción…").font(.caption).foregroundStyle(.secondary)
+                // Skeleton premium: líneas de texto con shimmer mientras llega la descripción.
+                VStack(alignment: .leading, spacing: 9) {
+                    ForEach(0..<3, id: \.self) { i in
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(.white.opacity(0.10))
+                            .frame(height: 11)
+                            .frame(maxWidth: i == 2 ? 200 : .infinity, alignment: .leading)
+                    }
                 }
+                .shimmering()
+                .accessibilityLabel("Cargando descripción")
             }
         } else if profile == nil {
             cardSection("Acerca de") {
@@ -1019,7 +1027,25 @@ struct GameDetailView: View {
 
     /// Carrusel de capturas (estilo Steam), a todo el ancho. Metadatos públicos del juego.
     @ViewBuilder private var mediaSection: some View {
-        if let shots = details?.screenshots, !shots.isEmpty {
+        if (details?.screenshots ?? []).isEmpty, loadingDetails {
+            // Skeleton premium: marcos de captura con shimmer mientras llegan las imágenes.
+            VStack(alignment: .leading, spacing: 10) {
+                Text("CAPTURAS").font(.caption.weight(.bold)).foregroundStyle(tint)
+                    .padding(.horizontal, 32)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        ForEach(0..<4, id: \.self) { _ in
+                            RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous)
+                                .fill(.white.opacity(0.08))
+                                .frame(width: 300, height: 169)
+                        }
+                    }
+                    .padding(.horizontal, 32)
+                }
+                .shimmering()
+            }
+            .accessibilityLabel("Cargando capturas")
+        } else if let shots = details?.screenshots, !shots.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 Text("CAPTURAS").font(.caption.weight(.bold)).foregroundStyle(tint)
                     .padding(.horizontal, 32)
@@ -1250,6 +1276,9 @@ struct GameDetailView: View {
     /// (`Epic/metadata/<app>.json`): descripción, desarrollador y capturas (keyImages `Screenshot`).
     /// Sin lanzar procesos. Paridad de ficha también en Epic con lo que su backend ofrece.
     @MainActor private func loadEpicDetails(_ appName: String) async {
+        // `loadingDetails` mientras se enriquece con Steam (capturas) → muestra el skeleton premium.
+        loadingDetails = true
+        defer { loadingDetails = false }
         // legendary cachea la metadata en su LEGENDARY_CONFIG_PATH (= LegendaryManager.configDir),
         // NO en un directorio "Epic". Usar la constante real evita el desajuste que dejaba la ficha
         // de Epic sin descripción.
