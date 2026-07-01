@@ -210,6 +210,25 @@ final class EpicStore {
         }
     }
 
+    /// Desinstala un juego de Epic (borra los archivos vía legendary) y refresca la biblioteca.
+    func uninstall(_ game: LegendaryManager.EpicGame) async {
+        installingAppNames.insert(game.appName)
+        installProgress[game.appName] = "Desinstalando…"
+        defer {
+            installingAppNames.remove(game.appName)
+            installProgress[game.appName] = nil
+            installPercents[game.appName] = nil
+        }
+        do {
+            try await legendary.uninstallGame(appName: game.appName)
+            NotificationService.shared.notify(title: "Juego desinstalado", body: game.title)
+            await reloadLibrary()
+        } catch {
+            log.log("Error desinstalando \(game.title): \(error.localizedDescription)", level: .error)
+            installProgress[game.appName] = "Error al desinstalar"
+        }
+    }
+
     /// Lanza un juego de Epic ya instalado con el motor de juegos (wine-dxmt), igual que Steam.
     func play(_ game: LegendaryManager.EpicGame) async {
         guard let exe = game.executablePath, !exe.isEmpty else {
@@ -270,6 +289,7 @@ struct EpicStoreView: View {
                     percentFor: { epic.percent($0) },
                     onInstall: { sg in if let g = games.first(where: { $0.appName == sg.id }) { Task { await epic.install(g) } } },
                     onPlay:    { sg in if let g = games.first(where: { $0.appName == sg.id }) { Task { await epic.play(g) } } },
+                    onUninstall: { sg in if let g = games.first(where: { $0.appName == sg.id }) { Task { await epic.uninstall(g) } } },
                     onVerify:  { sg in if let g = games.first(where: { $0.appName == sg.id }) { Task { await epic.verify(g) } } },
                     onUpdate:  { sg in if let g = games.first(where: { $0.appName == sg.id }) { Task { await epic.update(g) } } },
                     onReload:  { Task { await epic.reloadLibrary() } },

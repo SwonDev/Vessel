@@ -247,6 +247,22 @@ final class LegendaryManager {
         log.log("✓ Epic: \(appName) actualizado", level: .info)
     }
 
+    /// Desinstala un juego de Epic (`legendary uninstall`): borra los archivos del disco y
+    /// actualiza el estado de legendary (`installed.json`). legendary sabe qué carpeta creó al
+    /// instalar, así que el borrado es limpio y seguro (no adivina rutas). `-y` evita el prompt.
+    func uninstallGame(appName: String) async throws {
+        let code = try await runStreaming(
+            Self.binaryPath,
+            args: ["-y", "uninstall", appName],
+            onLine: { _ in }
+        )
+        guard code == 0 else {
+            throw NSError(domain: "Vessel", code: 113, userInfo: [NSLocalizedDescriptionKey:
+                "La desinstalación de Epic falló (código \(code)). Revisa los logs."])
+        }
+        log.log("✓ Epic: \(appName) desinstalado", level: .info)
+    }
+
     enum SaveSyncDirection { case download, upload, both }
 
     /// Sincroniza las partidas guardadas en la nube de Epic (`legendary sync-saves`). legendary

@@ -300,6 +300,26 @@ final class GogdlManager {
         log.log("✓ GOG: \(appId) instalado en \(installDir)", level: .info)
     }
 
+    /// Desinstala un juego de GOG borrando su carpeta de instalación. gogdl NO tiene comando de
+    /// desinstalación (solo descarga/repara), así que se borra el directorio directamente.
+    ///
+    /// SEGURIDAD CRÍTICA (ver incidente de borrado de prefijo): se canonicaliza la ruta
+    /// (resolviendo symlinks y `..`) y se exige que siga siendo subcarpeta ESTRICTA de la raíz de
+    /// juegos de GOG antes de `removeItem`. Nunca se borra la raíz ni nada fuera de ella.
+    func uninstallGame(installDir: String, gamesRoot: String) throws {
+        let fm = FileManager.default
+        let resolved = URL(fileURLWithPath: installDir).resolvingSymlinksInPath().standardizedFileURL.path
+        let base = URL(fileURLWithPath: gamesRoot).resolvingSymlinksInPath().standardizedFileURL.path
+        guard resolved.hasPrefix(base + "/"),
+              resolved != base,
+              (resolved as NSString).lastPathComponent.count > 0,
+              fm.fileExists(atPath: resolved) else {
+            throw GogdlError.installFailed("Ruta de instalación no válida para desinstalar: \(installDir)")
+        }
+        try fm.removeItem(atPath: resolved)
+        log.log("✓ GOG: desinstalado (\(resolved))", level: .info)
+    }
+
     /// Verifica y REPARA un juego de GOG ya instalado. `repair` es un alias de `download` en
     /// gogdl: re-descarga SOLO lo dañado o ausente. Mismo progreso que `installGame`.
     func repairGame(appId: String, installDir: String,
