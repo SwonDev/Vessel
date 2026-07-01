@@ -971,6 +971,9 @@ struct GameDetailView: View {
     @State private var achievements: SteamAchievementsService.Progress?
     /// Mostrar todos los logros (o solo un avance).
     @State private var showAllAchievements = false
+    /// Observa la Web API key: si el usuario la pega en Ajustes con la ficha abierta, recargamos los
+    /// logros para mostrar también los bloqueados (schema) sin tener que reabrir el juego.
+    @AppStorage("steam.webApiKey") private var steamApiKeyObserver = ""
     private let steamGreen = Color(red: 0.34, green: 0.72, blue: 0.36)
     private let runningRed = Color(red: 0.85, green: 0.40, blue: 0.32)
 
@@ -1020,6 +1023,11 @@ struct GameDetailView: View {
             }
         }
         .task(id: game.id) { await loadDetails() }
+        .onChange(of: steamApiKeyObserver) { _, _ in
+            if store == .steam, let appId = game.steamAppId, !appId.isEmpty {
+                Task { await loadAchievements(appId) }
+            }
+        }
     }
 
     /// Visor de captura a tamaño grande (estilo Steam): fondo oscuro, imagen a resolución completa,
@@ -1098,10 +1106,17 @@ struct GameDetailView: View {
     }
 
     private var actionBar: some View {
-        HStack(spacing: 28) {
+        HStack(spacing: 20) {
             primaryButton
-            stat("clock", "Última sesión", game.lastPlayed.map { $0.formatted(date: .abbreviated, time: .omitted) } ?? "—")
-            stat("hourglass", "Tiempo de juego", playtimeText)
+            // Los stats (última sesión / tiempo) se ocultan LIMPIAMENTE si no caben, en vez de partir
+            // el texto carácter a carácter en ventanas estrechas. Responsive premium.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 22) {
+                    stat("clock", "Última sesión", game.lastPlayed.map { $0.formatted(date: .abbreviated, time: .omitted) } ?? "—")
+                    stat("hourglass", "Tiempo de juego", playtimeText)
+                }
+                EmptyView()
+            }
             Spacer(minLength: 0)
             if game.installed && !installing {
                 iconButton("arrow.triangle.2.circlepath", tinted: game.updateAvailable, action: onUpdate)
@@ -1831,10 +1846,11 @@ struct GameDetailView: View {
         HStack(spacing: 8) {
             Image(systemName: icon).foregroundStyle(.white.opacity(0.4))
             VStack(alignment: .leading, spacing: 1) {
-                Text(label.uppercased()).font(.caption2).foregroundStyle(.white.opacity(0.5))
-                Text(value).font(.callout.weight(.medium)).foregroundStyle(.white)
+                Text(label.uppercased()).font(.caption2).foregroundStyle(.white.opacity(0.5)).lineLimit(1)
+                Text(value).font(.callout.weight(.medium)).foregroundStyle(.white).lineLimit(1)
             }
         }
+        .fixedSize()   // ancho natural: nunca parte el texto por carácter
     }
 
     private func iconButton(_ icon: String, tinted: Bool = false, action: @escaping () -> Void) -> some View {

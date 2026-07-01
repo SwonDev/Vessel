@@ -12,7 +12,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 App nativa de macOS (SwiftUI, Apple Silicon) que **envuelve Wine** para ejecutar juegos de Windows y Steam. No reimplementa Wine: gestiona *bottles* (prefijos de Wine), descarga motores Wine portables, configura las capas de traducción gráfica (DXMT/DXVK) y lanza ejecutables. El paralelo conceptual es CrossOver / Whisky / Mythic, escrito en Swift moderno.
 
 - SwiftPM puro, **sin `.xcodeproj`**. Toolchain Swift 6, target `macOS 15+`, solo arm64.
-- Bundle ID: `com.swondev.vessel`.
+- Bundle ID: `com.swondev.vessel`. El autor/propietario del proyecto es **SwonDev**.
+
+> ⛔ **REGLA INVIOLABLE — identidad del proyecto:** el proyecto es de **SwonDev**. El Bundle ID,
+> el subsystem de logs y CUALQUIER identificador es `com.swondev.vessel`. **NUNCA** usar
+> `swondev` ni ningún otro dominio/correo/empresa, ni **inferir identificadores del entorno**
+> (red WiFi, correo del sistema, etc.). Si el contexto sugiere otro dominio (p. ej. por estar en
+> una red corporativa), **ignorarlo**: es SIEMPRE `com.swondev.vessel`.
 
 ## Comandos
 
