@@ -345,6 +345,13 @@ struct StoreLibraryView: View {
                 if !recentlyPlayed.isEmpty { recentlyPlayedSection }
                 HStack(alignment: .center, spacing: 12) {
                     Text("Todos los juegos").font(.title.bold()).foregroundStyle(.white)
+                    // Con la sidebar colapsada, el buscador (y filtro/orden) viven en la sidebar y se
+                    // ocultan → los traemos aquí para no perder la búsqueda. Estilo Steam.
+                    if sidebarCollapsed {
+                        headerSearchField
+                        headerFilterMenu
+                        headerSortMenu
+                    }
                     Spacer()
                     Text("\(displayed.count) juego\(displayed.count == 1 ? "" : "s")")
                         .font(.subheadline).foregroundStyle(.white.opacity(0.5))
@@ -444,40 +451,84 @@ struct StoreLibraryView: View {
     /// Filtro (Todos/Instalados/Por instalar), orden y favoritos — compactos para la lista.
     private var filterBar: some View {
         HStack(spacing: 12) {
-            Menu {
-                Picker("Mostrar", selection: $filter) {
-                    ForEach(StoreLibraryFilter.allCases) { Label($0.rawValue, systemImage: $0.symbol).tag($0) }
-                }
-                .pickerStyle(.inline)
-            } label: {
-                Label(filter.rawValue, systemImage: "line.3.horizontal.decrease")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(filter == .todos ? .white.opacity(0.6) : tint)
-            }
-            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-            .accessibilityLabel("Filtrar por estado")
-
-            Menu {
-                Picker("Ordenar", selection: $sortOrder) {
-                    ForEach(StoreSortOrder.allCases) { Label($0.rawValue, systemImage: $0.symbol).tag($0) }
-                }
-                .pickerStyle(.inline)
-            } label: {
-                Image(systemName: "arrow.up.arrow.down").font(.caption)
-                    .foregroundStyle(sortOrder == .nombre ? .white.opacity(0.6) : tint)
-            }
-            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-            .accessibilityLabel("Ordenar")
-
+            filterMenu
+            sortMenu
             Spacer()
-
-            Button { showFavoritesOnly.toggle() } label: {
-                Image(systemName: showFavoritesOnly ? "star.fill" : "star").font(.caption)
-                    .foregroundStyle(showFavoritesOnly ? .yellow : .white.opacity(0.6))
-            }
-            .buttonStyle(.plain).accessibilityLabel("Mostrar solo favoritos")
+            favoritesButton
         }
         .padding(.horizontal, 16).padding(.bottom, 8)
+    }
+
+    /// Menú de filtro por estado (reutilizado por la sidebar y la cabecera del grid al colapsar).
+    private var filterMenu: some View {
+        Menu {
+            Picker("Mostrar", selection: $filter) {
+                ForEach(StoreLibraryFilter.allCases) { Label($0.rawValue, systemImage: $0.symbol).tag($0) }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Label(filter.rawValue, systemImage: "line.3.horizontal.decrease")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(filter == .todos ? .white.opacity(0.6) : tint)
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .accessibilityLabel("Filtrar por estado")
+    }
+
+    /// Menú de orden (reutilizado por la sidebar y la cabecera del grid al colapsar).
+    private var sortMenu: some View {
+        Menu {
+            Picker("Ordenar", selection: $sortOrder) {
+                ForEach(StoreSortOrder.allCases) { Label($0.rawValue, systemImage: $0.symbol).tag($0) }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Image(systemName: "arrow.up.arrow.down").font(.caption)
+                .foregroundStyle(sortOrder == .nombre ? .white.opacity(0.6) : tint)
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .accessibilityLabel("Ordenar")
+    }
+
+    /// Botón de solo-favoritos (reutilizado).
+    private var favoritesButton: some View {
+        Button { showFavoritesOnly.toggle() } label: {
+            Image(systemName: showFavoritesOnly ? "star.fill" : "star").font(.caption)
+                .foregroundStyle(showFavoritesOnly ? .yellow : .white.opacity(0.6))
+        }
+        .buttonStyle(.plain).accessibilityLabel("Mostrar solo favoritos")
+    }
+
+    // MARK: - Controles en la cabecera del grid (visibles al colapsar la sidebar)
+
+    /// Buscador compacto en la cabecera del grid (cuando la sidebar, y con ella su buscador, se ocultan).
+    private var headerSearchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.caption)
+            TextField("Buscar…", text: $search).textFieldStyle(.plain).font(.callout).frame(width: 180)
+            if !search.isEmpty {
+                Button { search = "" } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain).accessibilityLabel("Borrar búsqueda")
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        .liquidGlass(in: Capsule())
+    }
+
+    /// Filtro + favoritos en cristal, para la cabecera del grid al colapsar.
+    private var headerFilterMenu: some View {
+        HStack(spacing: 10) { filterMenu; favoritesButton }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .liquidGlass(in: Capsule())
+    }
+
+    /// Orden en cristal, para la cabecera del grid al colapsar.
+    private var headerSortMenu: some View {
+        sortMenu
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .liquidGlass(in: Capsule())
     }
 
     @ViewBuilder private var gameList: some View {
