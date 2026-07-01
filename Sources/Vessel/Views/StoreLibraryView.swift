@@ -142,6 +142,9 @@ struct StoreLibraryView: View {
     var onLogin: (() -> Void)? = nil
 
     @State private var search = ""
+    /// Foco del buscador (para el atajo ⌘F). Se aplica a ambos buscadores (sidebar y cabecera);
+    /// solo enfoca el visible.
+    @FocusState private var searchFocused: Bool
     @State private var sortOrder: StoreSortOrder = .nombre
     @State private var filter: StoreLibraryFilter = .todos
     @State private var showFavoritesOnly = false
@@ -255,6 +258,20 @@ struct StoreLibraryView: View {
             }
         }
         .vesselBackground(tint: tint)
+        // ⌘F enfoca el buscador (expande la sidebar si estaba colapsada, para que sea alcanzable).
+        .background {
+            Button("") {
+                if sidebarCollapsed { sidebarCollapsed = false }
+                searchFocused = true
+            }
+            .keyboardShortcut("f", modifiers: .command).opacity(0).accessibilityHidden(true)
+        }
+        // Esc: volver de la ficha; si no, limpiar la búsqueda; si no, soltar el foco.
+        .onExitCommand {
+            if selectedGame != nil { selectedGame = nil }
+            else if !search.isEmpty { search = "" }
+            else { searchFocused = false }
+        }
         .onAppear {
             favorites = Set(UserDefaults.standard.stringArray(forKey: favKey) ?? [])
             displayed = computeFiltered()
@@ -441,7 +458,7 @@ struct StoreLibraryView: View {
     private var searchBar: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.caption)
-            TextField("Buscar…", text: $search).textFieldStyle(.plain).font(.callout)
+            TextField("Buscar…", text: $search).textFieldStyle(.plain).font(.callout).focused($searchFocused)
             if !search.isEmpty {
                 Button { search = "" } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
@@ -511,7 +528,7 @@ struct StoreLibraryView: View {
     private var headerSearchField: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.caption)
-            TextField("Buscar…", text: $search).textFieldStyle(.plain).font(.callout).frame(width: 180)
+            TextField("Buscar…", text: $search).textFieldStyle(.plain).font(.callout).frame(width: 180).focused($searchFocused)
             if !search.isEmpty {
                 Button { search = "" } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
