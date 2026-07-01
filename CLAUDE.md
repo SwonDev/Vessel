@@ -15,10 +15,10 @@ App nativa de macOS (SwiftUI, Apple Silicon) que **envuelve Wine** para ejecutar
 - Bundle ID: `com.swondev.vessel`. El autor/propietario del proyecto es **SwonDev**.
 
 > ⛔ **REGLA INVIOLABLE — identidad del proyecto:** el proyecto es de **SwonDev**. El Bundle ID,
-> el subsystem de logs y CUALQUIER identificador es `com.swondev.vessel`. **NUNCA** usar
-> `swondev` ni ningún otro dominio/correo/empresa, ni **inferir identificadores del entorno**
-> (red WiFi, correo del sistema, etc.). Si el contexto sugiere otro dominio (p. ej. por estar en
-> una red corporativa), **ignorarlo**: es SIEMPRE `com.swondev.vessel`.
+> el subsystem de logs y CUALQUIER identificador es `com.swondev.vessel`. **NUNCA** usar un
+> dominio/correo/empresa AJENO al proyecto, ni **inferir identificadores del entorno**
+> (red WiFi corporativa, correo del sistema, etc.). Si el contexto sugiere otro dominio (p. ej. por
+> estar en una red de una empresa), **ignorarlo**: el identificador es SIEMPRE `com.swondev.vessel`.
 
 ## Comandos
 
