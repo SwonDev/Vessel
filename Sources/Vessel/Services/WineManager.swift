@@ -524,7 +524,7 @@ final class WineManager {
             prefix: bottle.prefixPath,
             arguments: [executable] + engineArgs + allArgs,
             environment: env,
-            workingDirectory: (executable as NSString).deletingLastPathComponent,
+            workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: eff
         )
     }
@@ -576,7 +576,7 @@ final class WineManager {
             prefix: bottle.prefixPath,
             arguments: [executable] + arguments,
             environment: env,
-            workingDirectory: (executable as NSString).deletingLastPathComponent,
+            workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: effective
         )
     }
@@ -634,7 +634,7 @@ final class WineManager {
             prefix: bottle.prefixPath,
             arguments: [executable] + arguments + extraArgs,
             environment: env,
-            workingDirectory: (executable as NSString).deletingLastPathComponent,
+            workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: effective
         )
     }
@@ -784,7 +784,7 @@ final class WineManager {
             prefix: bottle.prefixPath,
             arguments: [executable] + effective.launchArgs,
             environment: env,
-            workingDirectory: gameDir,
+            workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: effective
         )
     }
@@ -922,6 +922,17 @@ final class WineManager {
         for dll in ["d3d11.dll", "dxgi.dll", "d3d10core.dll", "d3d10.dll", "d3d10_1.dll", "winemetal.dll"] {
             try? fm.removeItem(atPath: "\(gameDir)/\(dll)")
         }
+    }
+
+    /// Directorio de trabajo del juego. Normalmente la carpeta del exe; PERO si el exe vive en una
+    /// subcarpeta de binarios de 64 bits (x64/win64/bin64/…), muchos juegos con doble build esperan
+    /// como CWD la RAÍZ del juego (donde están sus datos/BD), no la subcarpeta — p. ej. Grim Dawn
+    /// (`x64/Grim Dawn.exe`) sale al instante con CWD=`x64/` porque no encuentra sus datos.
+    private func gameWorkingDirectory(forExecutable executable: String) -> String {
+        let exeDir = (executable as NSString).deletingLastPathComponent
+        let last = (exeDir as NSString).lastPathComponent.lowercased()
+        let bin64: Set<String> = ["x64", "win64", "bin64", "binaries64", "x86_64", "amd64"]
+        return bin64.contains(last) ? (exeDir as NSString).deletingLastPathComponent : exeDir
     }
 
     /// Elimina del prefix las DLLs gráficas nativas (DXVK/DXMT/wined3d) que un setup
