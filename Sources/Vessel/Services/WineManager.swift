@@ -942,29 +942,26 @@ final class WineManager {
     }
 
     private func isWineProcessRunning(matching pattern: String) -> Bool {
-        // Vía `ps` (no `pgrep -f`) para poder EXCLUIR zombies: un proceso killed queda
+        // Vía `ps | grep` (no `pgrep -f`) para EXCLUIR zombies: un proceso killed queda
         // `<defunct>`/STAT `Z` hasta que su padre lo reapea, y `pgrep` lo sigue listando →
-        // hacía creer que Steam seguía vivo y se SALTABA su arranque. Solo cuenta procesos
-        // realmente VIVOS que casen el patrón.
+        // hacía creer que Steam seguía vivo y se SALTABA su arranque. Se canaliza por `grep`
+        // para que la salida sea MÍNIMA: leer `ps -axo` completo tras `waitUntilExit()` llena
+        // el pipe y DEADLOCKEA (colgaba launchSteam). `awk` descarta STAT con Z (zombies).
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["-axo", "stat=,command="]
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        // `grep -v grep` es IMPRESCINDIBLE: si no, el propio proceso `grep -F <pattern>` aparece
+        // en la lista de `ps` y casa el patrón → el check SIEMPRE daba true (Steam "ya en marcha")
+        // y nunca se arrancaba. También se excluye el `sh -c` del script y los zombies.
+        let script = "/bin/ps -axo stat=,command= | /usr/bin/grep -F '\(pattern)' | /usr/bin/grep -v grep | /usr/bin/grep -v '<defunct>' | /usr/bin/awk '$1 !~ /Z/'"
+        process.arguments = ["-c", script]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle(forWritingAtPath: "/dev/null")
         do {
             try process.run()
-            process.waitUntilExit()
             let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            for raw in out.split(separator: "\n") {
-                let line = raw.trimmingCharacters(in: .whitespaces)
-                guard let sep = line.firstIndex(of: " ") else { continue }
-                let stat = String(line[..<sep])
-                let command = String(line[line.index(after: sep)...])
-                if stat.contains("Z") || command.contains("<defunct>") { continue }  // zombie
-                if command.contains(pattern) { return true }
-            }
-            return false
+            process.waitUntilExit()
+            return !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         } catch {
             return false
         }
