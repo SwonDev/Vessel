@@ -540,6 +540,10 @@ final class WineManager {
         await resyncGamePrefix(gameWine: gameWine, prefix: bottle.prefixPath)
         // Quitar DLLs nativas del prefix para que mande el DXMT builtin del motor.
         cleanPrefixNativeGraphicsDLLs(in: bottle)
+        // Modo Retina: sin él, DXMT/Metal renderiza a 1× y el juego ocupa un cuarto de la
+        // pantalla (esquina superior izquierda) en pantallas Retina. Con él, resolución
+        // física completa a pantalla completa. Respeta el flag del perfil (por defecto ON).
+        await setMacDriverRetinaMode(prefix: bottle.prefixPath, wine: gameWine, enabled: eff.retina)
 
         // Para juegos de Steam: `steam_appid.txt` + `SteamAppId` permiten que la
         // Steamworks API arranque en modo standalone (sin el cliente Steam abierto,
@@ -697,6 +701,24 @@ final class WineManager {
             winePath: wine,
             arguments: ["reg", "add", #"HKCU\Software\Wine\Direct3D"#, "/v", "renderer",
                         "/t", "REG_SZ", "/d", "vulkan", "/f"],
+            prefix: prefix,
+            environment: ["WINEPREFIX": prefix, "WINEDEBUG": "-all", "WINEDLLOVERRIDES": "winedbg.exe=d"],
+            allowNonZeroExit: true
+        )
+    }
+
+    /// Activa/desactiva el modo Retina de Wine (`HKCU\Software\Wine\Mac Driver\RetinaMode`).
+    /// IMPRESCINDIBLE en pantallas Retina: el `CAMetalLayer` de winemac.drv usa
+    /// `contentsScale = 2.0` SOLO con RetinaMode activo. Sin él, DXMT/Metal renderiza a 1×
+    /// y el juego ocupa un cuarto de la pantalla (esquina superior izquierda) con el resto
+    /// en gris. Con RetinaMode el juego elige la resolución física completa (p. ej.
+    /// 3024×1964) y se ve a pantalla completa nítida. Idempotente. Es la propiedad que
+    /// `CompatProfile.retina` (por defecto `true`) declaraba pero nunca se aplicaba.
+    private func setMacDriverRetinaMode(prefix: String, wine: String, enabled: Bool) async {
+        _ = try? await runWine(
+            winePath: wine,
+            arguments: ["reg", "add", #"HKCU\Software\Wine\Mac Driver"#, "/v", "RetinaMode",
+                        "/t", "REG_SZ", "/d", enabled ? "y" : "n", "/f"],
             prefix: prefix,
             environment: ["WINEPREFIX": prefix, "WINEDEBUG": "-all", "WINEDLLOVERRIDES": "winedbg.exe=d"],
             allowNonZeroExit: true
@@ -1017,6 +1039,11 @@ final class WineManager {
             // El motor de juegos no es wine-dxmt; no hay DXMT integrable.
             return
         }
+        // El motor UNIFICADO propio (WineHQ 11.10) trae SU PROPIO DXMT compilado a medida
+        // en el builtin (winemetal.so 11.10 + d3d11/dxgi acordes). NO reinstalar encima el
+        // DXMT 0.80 externo: mezclaría ABIs de winemetal de versiones distintas → pantalla
+        // negra o crash. Su render ya está validado; se deja intacto.
+        if WineEngineLocator.isUnifiedEngine(gameWine) { return }
         if dxmtManager.isInstalledInEngine(engineWinePath: gameWine) { return }
         log.log("Integrando DXMT en el motor wine-dxmt (fix gráfico D3D11)…", level: .info)
         do {
@@ -1601,6 +1628,17 @@ final class WineManager {
         var fullEnv = ProcessInfo.processInfo.environment
         for (key, value) in Self.userShellEnvironment { fullEnv[key] = value }
         for (key, value) in environment { fullEnv[key] = value }
+        // El motor UNIFICADO propio (WineHQ 11.10) carga freetype/gnutls por `dlopen` desde su
+        // `lib/` (SONAME sin ruta). Necesita `DYLD_FALLBACK_LIBRARY_PATH` a esa carpeta o Wine
+        // no encuentra FreeType (texto del sistema / CEF de Steam) ni gnutls (TLS). Es
+        // inofensivo para juegos que no las usan. `arch` borraría esta var (SIP), pero aquí el
+        // binario x86_64 se lanza directo (Rosetta), así que se preserva.
+        if WineEngineLocator.isUnifiedEngine(winePath),
+           let root = WineEngineLocator.engineRoot(forWineExecutable: URL(fileURLWithPath: winePath)) {
+            let libDir = root.appendingPathComponent("lib").path
+            let base = fullEnv["DYLD_FALLBACK_LIBRARY_PATH"]
+            fullEnv["DYLD_FALLBACK_LIBRARY_PATH"] = (base?.isEmpty == false) ? "\(libDir):\(base!)" : libDir
+        }
         // Overlay de la config EFECTIVA (perfil de compatibilidad + ajustes del usuario).
         // Solo para lanzamientos de JUEGO (effective != nil); Steam pasa nil → intacto.
         if let eff = effective {
