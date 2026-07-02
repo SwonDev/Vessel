@@ -289,7 +289,9 @@ final class DependencyManager {
     /// release aún no publicado), Vessel sigue con el doble motor (Gcenx + wine-dxmt).
     private func installWineUnified(progress: @escaping @Sendable (String, Double) -> Void) async throws {
         progress("Descargando motor unificado (DXMT/WineHQ 11.10, ~540 MB)…", 0.05)
-        let downloadURL = URL(string: "https://github.com/SwonDev/Vessel/releases/download/engine-unified-v1/wine-unified.tar.zst")!
+        // Repo PÚBLICO de motores (Vessel es privado; los assets de un repo privado no se
+        // sirven sin autenticación). Como Whisky/Mythic, los binarios van en un repo aparte.
+        let downloadURL = URL(string: "https://github.com/SwonDev/Vessel-Engines/releases/download/engine-unified-v1/wine-unified.tar.zst")!
         let (tempURL, response) = try await URLSession.shared.download(from: downloadURL)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             throw NSError(domain: "Vessel", code: http.statusCode,
