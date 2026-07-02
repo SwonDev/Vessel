@@ -112,6 +112,39 @@ final class WineManager {
             ?? bottle.winePath
     }
 
+    /// Importa en el prefijo los **root CAs + intermedios de DigiCert** que la cadena de
+    /// certificados de los servidores de Steam necesita para validar (login/CM/tienda).
+    /// Imprescindible: el cert de Steam es **EV ECDSA** firmado por *DigiCert Global Root G3*,
+    /// y macOS NO expone ese root por la vía que el `crypt32` de Wine auto-importa (su
+    /// `SystemRootCertificates.keychain` no lo trae). Sin esto → `Crypto API failed certificate
+    /// check` (root no confiable) → el logon se cuelga en el spinner. El `.reg` bundleado
+    /// (`Resources/steam-certs.reg`) trae los roots de Mozilla + los intermedios ECC/RSA de
+    /// Steam y se importa con `wine reg import` (el `certutil` de Wine NO persiste). Idempotente
+    /// (marcador `.vessel-steam-certs`). Requiere además el `bcrypt` con gnutls del motor
+    /// unificado (verifica firmas ECDSA); el motor publicado ya lo trae.
+    func ensureSteamRootCertificates(prefix: String, wine: String) async {
+        let marker = "\(prefix)/.vessel-steam-certs"
+        if FileManager.default.fileExists(atPath: marker) { return }
+        guard let regURL = Bundle.main.url(forResource: "steam-certs", withExtension: "reg")
+            ?? URL(string: "file:///Users/vesseldeveloper0000/Documents/vessel-mac/Resources/steam-certs.reg") else { return }
+        guard FileManager.default.fileExists(atPath: regURL.path) else { return }
+        // Copiar el .reg al drive_c del prefijo (ruta Windows accesible) e importarlo.
+        let dest = "\(prefix)/drive_c/vessel-steam-certs.reg"
+        do { try? FileManager.default.removeItem(atPath: dest)
+             try FileManager.default.copyItem(atPath: regURL.path, toPath: dest) }
+        catch { log.log("No se pudo copiar el .reg de certificados: \(error.localizedDescription)", level: .warn); return }
+        log.log("Importando certificados raíz de Steam (DigiCert)…", level: .info)
+        _ = try? await runWine(
+            winePath: wine,
+            arguments: ["reg", "import", #"C:\vessel-steam-certs.reg"#],
+            prefix: prefix,
+            environment: ["WINEPREFIX": prefix, "WINEDEBUG": "-all", "WINEDLLOVERRIDES": "winedbg.exe=d"],
+            allowNonZeroExit: true
+        )
+        try? "ok".write(toFile: marker, atomically: true, encoding: .utf8)
+        try? FileManager.default.removeItem(atPath: dest)
+    }
+
     /// Escribe `steam.cfg` con `BootStrapperInhibitAll` para que Steam NO se
     /// autoactualice/verifique. Sin esto, cuando Steam se relanza sin
     /// `-noverifyfiles` detecta el wrapper como corrupto, intenta actualizar el
@@ -1446,13 +1479,15 @@ final class WineManager {
         try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
         // Prefijo alineado con ESTE motor (solo re-sincroniza si cambió de motor).
         await ensurePrefixSyncedToEngine(clientWine, prefix: bottle.prefixPath)
-        // Modo Retina OFF para el CLIENTE de Steam: su UI (CEF por software) se
-        // compone por blit GDI y bajo RetinaMode la ventana queda NEGRA (el browser
-        // crea 705×440 px dentro de una ventana de 353×220 puntos y el contenido no
-        // se presenta al layer 2×; visto in-vivo — con Retina OFF pinta). Los juegos
-        // DXMT lo REACTIVAN en su propio lanzamiento (`setMacDriverRetinaMode` con
-        // `eff.retina`), así que cada camino fija su valor y no hay conflicto.
-        await setMacDriverRetinaMode(prefix: bottle.prefixPath, wine: clientWine, enabled: false)
+        // Modo Retina ON: el cliente Steam CEF (software, `--single-process`) se pinta bien a
+        // 2× Y los JUEGOS lanzados DESDE Steam (mismo prefijo) necesitan Retina ON para ocupar
+        // la pantalla completa — sin él, DXMT/Metal renderiza a 1× y el juego sale en un
+        // cuadradito arriba a la izquierda. Un solo valor (y) sirve para ambos.
+        await setMacDriverRetinaMode(prefix: bottle.prefixPath, wine: clientWine, enabled: true)
+        // Certificados: el cert de los servidores de Steam es EV **ECDSA** (DigiCert Global
+        // Root G3). El prefijo necesita el intermedio + root en su store para validar la cadena
+        // (macOS no expone DigiCert por la vía que Wine auto-importa). Idempotente.
+        await ensureSteamRootCertificates(prefix: bottle.prefixPath, wine: clientWine)
         try? await disableSteamAutoStart(winePath: clientWine, prefix: bottle.prefixPath)
 
         let engineLabel = WineEngineLocator.isUnifiedEngine(clientWine) ? "motor unificado Vessel"

@@ -301,7 +301,11 @@ final class DependencyManager {
         progress("Descargando motor unificado (DXMT/WineHQ 11.10, ~540 MB)…", 0.05)
         // Repo PÚBLICO de motores (Vessel es privado; los assets de un repo privado no se
         // sirven sin autenticación). Como Whisky/Mythic, los binarios van en un repo aparte.
-        let downloadURL = URL(string: "https://github.com/SwonDev/Vessel-Engines/releases/download/engine-unified-v1/wine-unified.tar.zst")!
+        // v2: motor con `bcrypt`+gnutls (verifica firmas ECDSA — validación TLS del login de
+        // Steam), `win32u`+MoltenVK y `libMoltenVK` x86_64 (SwANGLE/WebGL del CEF), `winemac`
+        // con el fix del foco de teclado. Es la build que corre el cliente de Steam COMPLETO
+        // (login+biblioteca+instalar+jugar) en la build moderna del cliente (Chrome 126+).
+        let downloadURL = URL(string: "https://github.com/SwonDev/Vessel-Engines/releases/download/engine-unified-v2/wine-unified.tar.zst")!
         let (tempURL, response) = try await URLSession.shared.download(from: downloadURL)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             throw NSError(domain: "Vessel", code: http.statusCode,
