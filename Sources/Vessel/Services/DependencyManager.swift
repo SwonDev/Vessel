@@ -128,7 +128,22 @@ final class DependencyManager {
             try await installGcenxWine(progress: progress)
         }
 
-        // 2) Motor de JUEGOS D3D11: wine-dxmt (3Shain).
+        // 2) Motor de JUEGOS preferido: el UNIFICADO propio (DXMT sobre WineHQ 11.10, con
+        //    soporte 32-bit + freetype/gnutls). Un solo motor moderno para juegos D3D11 por
+        //    Metal a pantalla completa. Best-effort: si la descarga falla (red o release aún
+        //    no publicado), Vessel sigue con el doble motor (wine-dxmt) como fallback.
+        let unifiedDir = "\(enginesDirectory)/\(WineEngineLocator.unifiedEngineName)"
+        if !FileManager.default.isExecutableFile(atPath: "\(unifiedDir)/bin/wine") {
+            progress("Instalando motor unificado (DXMT/WineHQ 11.10)…", 0.3)
+            do {
+                try await installWineUnified(progress: progress)
+            } catch {
+                LogStore.shared.log("Motor unificado no disponible (\(error.localizedDescription)); se usa el doble motor wine-dxmt.", level: .warn)
+            }
+        }
+
+        // 3) Motor de JUEGOS D3D11 fallback: wine-dxmt (3Shain). Se mantiene aunque exista el
+        //    unificado, como red de seguridad (WineEngineLocator prefiere el unificado si está).
         let dxmtEngineDir = "\(enginesDirectory)/\(WineEngineLocator.dxmtEngineName)"
         if !FileManager.default.isExecutableFile(atPath: "\(dxmtEngineDir)/bin/wine") {
             progress("Instalando motor de juegos (wine-dxmt)…", 0.4)
@@ -262,6 +277,53 @@ final class DependencyManager {
         }
 
         progress("✓ Wine-DXMT v9.9 listo", 1.0)
+    }
+
+    /// Descarga el motor UNIFICADO propio de Vessel: **DXMT compilado sobre WineHQ 11.10**
+    /// (`--enable-archs=i386,x86_64`) con freetype/gnutls, las 50 fuentes bitmap y el parche
+    /// propio `macdrv_dxmt_get_client_view` (arregla la pantalla negra de DXMT en Wine 11).
+    /// UN solo motor que corre juegos D3D11 por DXMT/Metal (64-bit) a pantalla completa Y
+    /// apps de 32-bit. Trae DXMT ya integrado en su builtin (no hay que reintegrarlo) y sus
+    /// libs externas (freetype/gnutls) en `lib/` — `WineManager` le pasa
+    /// `DYLD_FALLBACK_LIBRARY_PATH` a esa carpeta. Best-effort: si la descarga falla (red o
+    /// release aún no publicado), Vessel sigue con el doble motor (Gcenx + wine-dxmt).
+    private func installWineUnified(progress: @escaping @Sendable (String, Double) -> Void) async throws {
+        progress("Descargando motor unificado (DXMT/WineHQ 11.10, ~540 MB)…", 0.05)
+        let downloadURL = URL(string: "https://github.com/SwonDev/Vessel/releases/download/engine-unified-v1/wine-unified.tar.zst")!
+        let (tempURL, response) = try await URLSession.shared.download(from: downloadURL)
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw NSError(domain: "Vessel", code: http.statusCode,
+                          userInfo: [NSLocalizedDescriptionKey: "Descarga del motor unificado falló: HTTP \(http.statusCode)"])
+        }
+
+        progress("Extrayendo motor unificado…", 0.55)
+        let finalEngineDir = "\(enginesDirectory)/\(WineEngineLocator.unifiedEngineName)"
+        let stagingDir = "\(enginesDirectory)/wine-unified-installing-\(UUID().uuidString)"
+        try? FileManager.default.removeItem(atPath: stagingDir)
+        try FileManager.default.createDirectory(atPath: stagingDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(atPath: stagingDir)
+            try? FileManager.default.removeItem(at: tempURL)
+        }
+
+        try await extractTar(at: tempURL, to: URL(fileURLWithPath: stagingDir))
+
+        // El tarball contiene la carpeta `wine-unified/` en la raíz → normalizar a finalEngineDir.
+        let extractedRoot = "\(stagingDir)/\(WineEngineLocator.unifiedEngineName)"
+        let sourceDir = FileManager.default.isExecutableFile(atPath: "\(extractedRoot)/bin/wine")
+            ? extractedRoot : stagingDir
+        try? FileManager.default.removeItem(atPath: finalEngineDir)
+        try FileManager.default.moveItem(atPath: sourceDir, toPath: finalEngineDir)
+
+        await stripQuarantineRecursive(at: finalEngineDir)
+        progress("Firmando el motor unificado…", 0.90)
+        await adhocSignBinaries(in: finalEngineDir)
+
+        guard FileManager.default.isExecutableFile(atPath: "\(finalEngineDir)/bin/wine") else {
+            throw NSError(domain: "Vessel", code: 6,
+                          userInfo: [NSLocalizedDescriptionKey: "Motor unificado instalado pero bin/wine no es ejecutable"])
+        }
+        progress("✓ Motor unificado (DXMT/WineHQ 11.10) listo", 1.0)
     }
 
     /// Descarga Wine portable desde el repo oficial de Gcenx (fallback).
