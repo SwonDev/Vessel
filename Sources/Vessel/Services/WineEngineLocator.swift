@@ -41,8 +41,18 @@ enum WineEngineLocator {
     //
     // Por eso Vessel usa DOS motores según la tarea, sobre el mismo prefijo.
 
-    /// Motor para el CLIENTE de Steam y apps generales: Wine completo (Gcenx).
-    static var clientEngineName: String { portableEngineName }
+    /// Motor para el CLIENTE de Steam y apps generales. Prefiere el UNIFICADO propio
+    /// (WineHQ 11.10) si está instalado: corre el CEF de Steam completo (login+teclado+QR+tienda)
+    /// con el wrapper SwiftShader + `WINEMSYNC=0`, VALIDADO in-vivo, ademas de los juegos por
+    /// DXMT/Metal → un SOLO motor para todo, como CrossOver. Si no está, Gcenx (wine-osx64).
+    static func resolvedClientEngineName(enginesDirectory: String = VesselPaths.enginesDirectory) -> String {
+        if engineHasWineBinary(unifiedEngineName, enginesDirectory: enginesDirectory) {
+            return unifiedEngineName
+        }
+        return portableEngineName
+    }
+
+    static var clientEngineName: String { resolvedClientEngineName() }
 
     /// Motor para JUEGOS D3D11: wine-dxmt (DXMT builtin → Metal nativo).
     static var gameEngineName: String { dxmtEngineName }
@@ -81,9 +91,9 @@ enum WineEngineLocator {
         winePath.contains("/\(unifiedEngineName)/")
     }
 
-    /// Binario Wine del motor del CLIENTE de Steam (Gcenx wine-osx64).
+    /// Binario Wine del motor del CLIENTE de Steam (unificado si está, si no Gcenx).
     static func clientWineBinary(enginesDirectory: String = VesselPaths.enginesDirectory) -> String? {
-        wineBinary(in: clientEngineName, enginesDirectory: enginesDirectory)
+        wineBinary(in: resolvedClientEngineName(enginesDirectory: enginesDirectory), enginesDirectory: enginesDirectory)
     }
 
     /// Binario Wine del motor de JUEGOS D3D11 (prefiere `wine-dxmt-mousefix`).

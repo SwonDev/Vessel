@@ -11,7 +11,14 @@
 #include <string.h>
 #include <wchar.h>
 
-#define EXTRA_FLAGS  L"--disable-gpu --single-process"
+/* --disable-gpu + --single-process: render por CPU (el webhelper no puede usar GPU bajo Wine).
+ * --use-gl=swiftshader + --use-angle=swiftshader + --disable-gpu-compositing: fuerza el GL de
+ * Chromium por SwiftShader (software puro). IMPRESCINDIBLE en el motor unificado, donde el
+ * `d3d11` builtin es DXMT (Metal): sin esto, ANGLE intenta ANGLE→D3D11→DXMT para crear su
+ * shared context y falla (`Failed to create shared context`, `EGL_BAD_ALLOC`), dejando la UI
+ * del cliente en blanco. Con SwiftShader el CEF no toca D3D11, así que el MISMO motor corre
+ * juegos por DXMT/Metal Y el cliente Steam por CEF. En Gcenx (d3d11=wined3d) no hacía falta. */
+#define EXTRA_FLAGS  L"--disable-gpu --disable-gpu-compositing --use-gl=swiftshader --use-angle=swiftshader"
 #define REAL_BINARY  L"steamwebhelper_real.exe"
 
 static FILE *dbg = NULL;

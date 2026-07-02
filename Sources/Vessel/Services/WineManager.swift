@@ -277,7 +277,17 @@ final class WineManager {
         try? FileManager.default.removeItem(at: installerURL)
         try FileManager.default.moveItem(at: tempURL, to: installerURL)
 
-        log.log("Ejecutando instalador de Steam en el bottle (Gcenx)…", level: .info)
+        // Para el motor UNIFICADO propio (que corre el CEF de Steam): instalar las MISMAS deps
+        // que CrossOver instala antes de Steam — corefonts (Impact + fuentes de Windows) y
+        // vcrun2022 (VC++ v14 x86/x64). Además esto inicializa el prefijo (wineboot), lo que
+        // ARRANCA los servicios (RpcSs); sin ellos el instalador silent `/S` falla con COM/OLE
+        // ("start_rpcss Failed to open RpcSs service"). Best-effort (si falta winetricks, sigue).
+        if WineEngineLocator.isUnifiedEngine(clientWine) {
+            log.log("Preparando dependencias de Steam (corefonts + VC++ v14)…", level: .info)
+            await applyWinetricksVerbs(["corefonts", "vcrun2022"], prefix: bottle.prefixPath, wine: clientWine)
+        }
+
+        log.log("Ejecutando instalador de Steam en el bottle…", level: .info)
         let result = try await runWine(
             winePath: clientWine,
             arguments: [downloadPath, "/S"],
@@ -1175,13 +1185,28 @@ final class WineManager {
     /// arranca y se cierra al instante en GPTK. Verificado: con este entorno steam.exe +
     /// steamwebhelper se mantienen vivos en GPTK. En Gcenx, el entorno normal.
     private func steamClientEnvironment(prefix: String, wine: String) -> [String: String] {
-        guard wine.contains("/\(GPTKManager.engineName)/") else {
-            return steamClientEnvironment(prefix: prefix)
+        // GPTK/D3DMetal: entorno de D3DMetal (Steam en el mismo motor que un juego Metal).
+        if wine.contains("/\(GPTKManager.engineName)/") {
+            var env = gptkManager.d3dMetalEnvironment(prefix: prefix)
+            env["SteamAppId"] = "753"
+            env["SteamGameId"] = "753"
+            return env
         }
-        var env = gptkManager.d3dMetalEnvironment(prefix: prefix)
-        env["SteamAppId"] = "753"
-        env["SteamGameId"] = "753"
-        return env
+        // Motor UNIFICADO propio: el cliente de Steam CEF funciona con **WINEMSYNC=0** — msync
+        // ROMPE el async socket completion (ConnectEx/overlapped) del updater HTTP → el connect
+        // falla con 0xc00000a3 → "http error 0" y Steam no se actualiza. Con msync/esync/fsync a
+        // 0 el updater descarga bien y el cliente carga. El wrapper SwiftShader (ver
+        // SteamWebHelperWrapperInstaller) + `DYLD_FALLBACK_LIBRARY_PATH` (lo añade
+        // launchWineProcess para isUnifiedEngine) completan el flujo. VALIDADO in-vivo.
+        if WineEngineLocator.isUnifiedEngine(wine) {
+            var env = steamClientEnvironment(prefix: prefix)
+            env["WINEMSYNC"] = "0"
+            env["WINEESYNC"] = "0"
+            env["WINEFSYNC"] = "0"
+            return env
+        }
+        // Gcenx (fallback): entorno normal.
+        return steamClientEnvironment(prefix: prefix)
     }
 
     @discardableResult
