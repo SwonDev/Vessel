@@ -287,6 +287,16 @@ final class DependencyManager {
     /// libs externas (freetype/gnutls) en `lib/` — `WineManager` le pasa
     /// `DYLD_FALLBACK_LIBRARY_PATH` a esa carpeta. Best-effort: si la descarga falla (red o
     /// release aún no publicado), Vessel sigue con el doble motor (Gcenx + wine-dxmt).
+    /// Asegura que el motor unificado está instalado; si falta, lo descarga e instala.
+    /// Idempotente y seguro de llamar desde cualquier flujo (p. ej. al abrir el cliente
+    /// de Steam): si ya está, retorna al instante.
+    func ensureUnifiedEngine(progress: @escaping @Sendable (String, Double) -> Void = { _, _ in }) async throws {
+        if WineEngineLocator.engineHasWineBinary(
+            WineEngineLocator.unifiedEngineName, enginesDirectory: enginesDirectory
+        ) { return }
+        try await installWineUnified(progress: progress)
+    }
+
     private func installWineUnified(progress: @escaping @Sendable (String, Double) -> Void) async throws {
         progress("Descargando motor unificado (DXMT/WineHQ 11.10, ~540 MB)…", 0.05)
         // Repo PÚBLICO de motores (Vessel es privado; los assets de un repo privado no se

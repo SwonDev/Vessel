@@ -64,9 +64,27 @@ final class WineManager {
         return result
     }()
 
-    /// Evita que dos lanzamientos de Steam concurrentes (p.ej. "Lanzar Steam" y
-    /// "Jugar" a la vez) se maten entre sí mientras el cliente aún carga.
-    private var steamStarting = false
+    /// Candado GLOBAL de los flujos de preparación/arranque de Steam. Es `static`
+    /// porque las vistas crean instancias SEPARADAS de WineManager (SteamStoreView,
+    /// BottleDetailView…) y dos flujos concurrentes (menú "Abrir Steam" + "Iniciar
+    /// sesión" de la vista) se MATAN los procesos entre sí — visto in-vivo: uno
+    /// lanza Steam y el otro lo tumba al "limpiar procesos previos", en bucle.
+    private static var steamFlowActive = false
+
+    /// Toma el turno del flujo Steam. Devuelve `true` si somos el dueño (liberar
+    /// poniendo `Self.steamFlowActive = false` al salir); `false` si otro flujo ya
+    /// estaba preparando Steam — en ese caso se ESPERA a que termine y el llamador
+    /// NO debe repetir el trabajo pesado (solo reutilizar el Steam ya arrancado).
+    private func acquireSteamFlowTurn() async -> Bool {
+        if Self.steamFlowActive {
+            for _ in 0..<1200 where Self.steamFlowActive {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+            return false
+        }
+        Self.steamFlowActive = true
+        return true
+    }
 
     /// Resuelve el binario de Wine: prefiere el portable descargado por Vessel,
     /// si no está usa GPTK de Apple. Nunca toca /Applications.
@@ -76,11 +94,12 @@ final class WineManager {
 
     // MARK: - Doble motor (cliente Steam vs juegos D3D11)
 
-    /// Motor para el CLIENTE de Steam (tienda/biblioteca): **Gcenx wine-osx64**,
-    /// el único donde el Chromium/webhelper de Steam es estable. En GPTK/CrossOver
-    /// pelado el cliente da 0x3008 (error de transporte de CEF). Los juegos NO usan
-    /// el cliente: el DRM de Steamworks lo emula Goldberg (ver `launchD3D12Game`),
-    /// así que Steam solo sirve para tienda/instalación. Fallback: `bottle.winePath`.
+    /// Motor para el CLIENTE de Steam (tienda/biblioteca/jugar desde Steam): el
+    /// **motor unificado** propio (DXMT/WineHQ 11.10) si está instalado — corre el CEF
+    /// completo (login+teclado+QR) con el wrapper SwiftShader y `WINEMSYNC=0`, y además
+    /// los juegos por DXMT/Metal en el MISMO wineserver. Si no está: Gcenx wine-osx64
+    /// (solo tienda; su webhelper es estable pero sus juegos van por wined3d).
+    /// Fallback final: `bottle.winePath`.
     func resolveClientWine(for bottle: Bottle) -> String {
         WineEngineLocator.clientWineBinary() ?? bottle.winePath
     }
@@ -99,11 +118,28 @@ final class WineManager {
     /// cliente, la descarga falla bajo Wine (http error 0) y queda ladrillado
     /// con "Failed to load steamui.dll". Idempotente.
     func ensureSteamConfig(in bottle: Bottle) {
-        let steamDir = "\(bottle.prefixPath)/drive_c/Program Files (x86)/Steam"
+        let steamDir = bottle.steamDirectory
         guard FileManager.default.fileExists(atPath: steamDir) else { return }
         let cfg = "\(steamDir)/steam.cfg"
         let contents = "BootStrapperInhibitAll=enable\nBootStrapperForceSelfUpdate=disable\n"
         try? contents.write(toFile: cfg, atomically: true, encoding: .utf8)
+    }
+
+    /// Borra `steam.cfg` para PERMITIR que Steam verifique y se actualice a sí mismo
+    /// (modo actualización, ver `launchSteam`). Contrapartida de `ensureSteamConfig`.
+    func removeSteamConfig(in bottle: Bottle) {
+        try? FileManager.default.removeItem(atPath: "\(bottle.steamDirectory)/steam.cfg")
+    }
+
+    /// True si el cliente de Steam instalado en el bottle es el MODERNO (usa
+    /// `bin/cef/cef.win64/`). El cliente de la era Gcenx solo tiene `cef.win7x64` y su
+    /// actualización estaba INHIBIDA a propósito (el updater fallaba en Gcenx con
+    /// "http error 0"). Con el motor unificado el updater SÍ funciona (WINEMSYNC=0),
+    /// así que un cliente antiguo se deja auto-actualizar una única vez.
+    func isSteamClientModern(in bottle: Bottle) -> Bool {
+        FileManager.default.fileExists(
+            atPath: "\(bottle.steamDirectory)/bin/cef/cef.win64/steamwebhelper.exe"
+        )
     }
 
     /// Borra la caché de CEF/htmlcache del prefijo. Tras los crashes del proceso
@@ -119,7 +155,7 @@ final class WineManager {
                 if fm.fileExists(atPath: path) { try? fm.removeItem(atPath: path) }
             }
         }
-        let cfgCache = "\(bottle.prefixPath)/drive_c/Program Files (x86)/Steam/config/htmlcache"
+        let cfgCache = "\(bottle.steamDirectory)/config/htmlcache"
         if fm.fileExists(atPath: cfgCache) { try? fm.removeItem(atPath: cfgCache) }
     }
 
@@ -568,7 +604,9 @@ final class WineManager {
 
         // Flags Unity (modo borderless fullscreen + DXMT). Solo se añaden a Unity.
         let engineArgs = unityLaunchArguments(forExecutable: executable)
-        log.log("Lanzando juego con wine-dxmt (DXMT→Metal): \((executable as NSString).lastPathComponent)", level: .info)
+        let gameEngineLabel = WineEngineLocator.isUnifiedEngine(gameWine)
+            ? "motor unificado" : "wine-dxmt"
+        log.log("Lanzando juego con \(gameEngineLabel) (DXMT→Metal): \((executable as NSString).lastPathComponent)", level: .info)
         return try await launchWineProcess(
             winePath: gameWine,
             prefix: bottle.prefixPath,
@@ -880,7 +918,7 @@ final class WineManager {
     /// `connection_log.txt` del bottle: hay conexión si el último evento relevante es
     /// "Logged On" y no hay un "Logged Off"/"ConnectionDisconnected" posterior.
     func isSteamConnected(in bottle: Bottle) -> Bool {
-        let logPath = "\(bottle.prefixPath)/drive_c/Program Files (x86)/Steam/logs/connection_log.txt"
+        let logPath = "\(bottle.steamDirectory)/logs/connection_log.txt"
         guard let data = FileManager.default.contents(atPath: logPath),
               let text = String(data: data, encoding: .utf8) else { return false }
         var connected = false
@@ -911,10 +949,10 @@ final class WineManager {
 
     /// MODO "STEAM REAL" (nuestro equivalente a CrossOver, invisible): lanza un juego DRM de
     /// Steam con el cliente Steam REAL corriendo y **conectado** en el MISMO motor/wineserver
-    /// que el juego, para que `SteamAPI_Init` hable con él (DRM real, como en Windows). Es la
-    /// única vía que arranca juegos como Grim Dawn en Apple Silicon nuevo (M5): el lanzamiento
-    /// "suelto" (Goldberg) no basta para su DRM+entorno. Usa **GPTK/D3DMetal** (D3D11/12 →
-    /// Metal nativo, rinde en M5) tanto para el cliente como para el juego.
+    /// que el juego, para que `SteamAPI_Init` hable con él (DRM real, como en Windows).
+    /// Usa el **motor unificado** (cliente CEF + juego DXMT/Metal en un solo wineserver,
+    /// lo que hace CrossOver con su Wine propietario); si no está disponible, cae a
+    /// GPTK/D3DMetal (el modelo anterior).
     func launchViaRealSteam(executable: String, in bottle: Bottle, appId: String,
                             effective: EffectiveLaunchConfig = EffectiveLaunchConfig()) async throws -> Process {
         // 1) DRM REAL: restaurar el steam_api ORIGINAL del juego (deshacer Goldberg) + appid.
@@ -922,7 +960,43 @@ final class WineManager {
         let gameDir = (executable as NSString).deletingLastPathComponent
         try? appId.write(toFile: "\(gameDir)/steam_appid.txt", atomically: true, encoding: .utf8)
 
-        // 2) Motor GPTK/D3DMetal para cliente + juego (mismo wineserver).
+        // 2) Motor: preferir el UNIFICADO (auto-instalable). Cliente y juego comparten
+        //    wineserver → el DRM ve el cliente vivo, y el juego renderiza por DXMT
+        //    (el `d3d11` builtin del motor ES DXMT).
+        try? await dependencyManager.ensureUnifiedEngine { msg, pct in
+            Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
+        }
+        if let unifiedWine = WineEngineLocator.clientWineBinary(),
+           WineEngineLocator.isUnifiedEngine(unifiedWine) {
+            ensureSteamConfig(in: bottle)
+            log.log("Modo Steam real (motor unificado): preparando el cliente Steam conectado…", level: .info)
+            let connected = await ensureSteamConnected(in: bottle, clientWine: unifiedWine)
+            log.log(connected
+                ? "Cliente Steam conectado; lanzando el juego con DRM real."
+                : "El cliente Steam no confirmó conexión a tiempo; se intenta lanzar igualmente.",
+                level: connected ? .info : .warn)
+
+            // Juego en el MISMO wineserver que el cliente → la sincronización DEBE
+            // coincidir (WINEMSYNC/ESYNC/FSYNC=0, como el cliente): mezclar esync entre
+            // procesos del mismo wineserver aborta Wine. Por eso NO se pasa `effective`
+            // a launchWineProcess (su overlay pisaría el sync); lo esencial del perfil
+            // (args y entorno extra) se aplica a mano.
+            await setMacDriverRetinaMode(prefix: bottle.prefixPath, wine: unifiedWine, enabled: effective.retina)
+            var env = steamClientEnvironment(prefix: bottle.prefixPath, wine: unifiedWine)
+            env["SteamAppId"] = appId
+            env["SteamGameId"] = appId
+            for (k, v) in effective.extraEnv { env[k] = v }
+            log.log("Lanzando \((executable as NSString).lastPathComponent) vía Steam real (motor unificado, DXMT→Metal).", level: .info)
+            return try await launchWineProcess(
+                winePath: unifiedWine,
+                prefix: bottle.prefixPath,
+                arguments: [executable] + effective.launchArgs,
+                environment: env,
+                workingDirectory: gameWorkingDirectory(forExecutable: executable)
+            )
+        }
+
+        // Fallback: GPTK/D3DMetal para cliente + juego (mismo wineserver).
         try await gptkManager.ensureInstalled { msg, pct in
             Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
         }
@@ -955,22 +1029,129 @@ final class WineManager {
         )
     }
 
-    /// Abre el cliente Steam COMPLETO y conectado en **GPTK/D3DMetal** — para poder jugar
-    /// DESDE Steam (DRM real, como en Windows) con render por Metal, que funciona en Apple
-    /// Silicon nuevo (M5). Opción manual del menú "…"; también sirve para verificar la conexión.
+    /// Abre el cliente Steam COMPLETO y conectado en el **motor unificado** propio
+    /// (DXMT sobre WineHQ 11.10) — el único Wine libre que corre a la vez el CEF de
+    /// Steam (login + teclado + QR + tienda, con el wrapper SwiftShader) Y los juegos
+    /// por DXMT/Metal en el MISMO wineserver. Jugar DESDE Steam (su botón verde)
+    /// funciona porque el `d3d11` builtin del motor ES DXMT. Todo AUTO-reparable:
+    /// motor (auto-descarga), Steam (auto-instalación), deps del prefijo
+    /// (corefonts + vcrun2022, idempotente), cliente antiguo (self-update una vez)
+    /// y wrapper. Si el motor unificado no se puede instalar, cae a Gcenx (tienda).
     func openSteamClient(in bottle: Bottle) async {
-        ensureSteamConfig(in: bottle)
+        // Serialización: si otro flujo (p. ej. "Iniciar sesión" de la vista) ya está
+        // preparando Steam, esperar y reutilizar en vez de pisarnos los procesos.
+        let isOwner = await acquireSteamFlowTurn()
+        defer { if isOwner { Self.steamFlowActive = false } }
+        if !isOwner {
+            let ok = await ensureSteamConnected(in: bottle, clientWine: resolveClientWine(for: bottle))
+            log.log(ok ? "Steam abierto y conectado ✓" : "Steam abierto (la conexión se confirmará al iniciar sesión).", level: ok ? .info : .warn)
+            return
+        }
+
+        // 1) Motor unificado: auto-instalar si falta (best-effort; sin red → Gcenx).
         do {
-            try await gptkManager.ensureInstalled { msg, pct in
+            try await dependencyManager.ensureUnifiedEngine { msg, pct in
                 Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
             }
         } catch {
-            log.log("No se pudo preparar GPTK para Steam: \(error.localizedDescription)", level: .warn)
+            log.log("No se pudo instalar el motor unificado: \(error.localizedDescription). Se usará el motor disponible.", level: .warn)
         }
-        let wine = gptkManager.wineBinaryPath ?? resolveClientWine(for: bottle)
-        log.log("Abriendo el cliente Steam completo (GPTK/D3DMetal). Desde él puedes lanzar juegos con DRM real.", level: .info)
+        let wine = resolveClientWine(for: bottle)
+
+        // 2) Steam: auto-instalar en el bottle si falta.
+        if !FileManager.default.fileExists(atPath: bottle.steamPath) {
+            log.log("Steam no está instalado en este bottle; instalándolo…", level: .info)
+            do { try await installSteam(bottle: bottle) }
+            catch {
+                log.log("No se pudo instalar Steam: \(error.localizedDescription)", level: .error)
+                return
+            }
+        }
+
+        // 3) Deps del prefijo para el cliente moderno (lo que instala CrossOver):
+        //    corefonts + VC++ v14. Idempotente (marker en el prefijo); se aplican con
+        //    TODO el prefijo parado (incluidos zombis de otros motores, que colgarían
+        //    winetricks/wineboot con "version mismatch") para evitar cuelgues.
+        if WineEngineLocator.isUnifiedEngine(wine) {
+            try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
+            try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+            await applyWinetricksVerbs(["corefonts", "vcrun2022"], prefix: bottle.prefixPath, wine: wine)
+        }
+
+        // 4) Cliente antiguo (era Gcenx, sin cef.win64) → dejar que Steam se actualice
+        //    a sí mismo bajo el motor unificado (una única vez) y reconfigurar.
+        if WineEngineLocator.isUnifiedEngine(wine),
+           isSteamBootstrapped(in: bottle), !isSteamClientModern(in: bottle) {
+            await updateSteamClient(in: bottle, clientWine: wine)
+        }
+
+        // 5) Arrancar y esperar conexión (idempotente si ya corre).
+        log.log("Abriendo el cliente Steam completo. Desde él puedes instalar y jugar (DRM real).", level: .info)
         let ok = await ensureSteamConnected(in: bottle, clientWine: wine)
-        log.log(ok ? "Steam abierto y conectado ✓" : "Steam abierto (conexión aún no confirmada).", level: ok ? .info : .warn)
+        log.log(ok ? "Steam abierto y conectado ✓" : "Steam abierto (la conexión se confirmará al iniciar sesión).", level: ok ? .info : .warn)
+    }
+
+    /// Orquesta el **self-update** del cliente de Steam bajo el motor unificado: lanza
+    /// Steam en modo actualización (ver `launchSteam`: sin steam.cfg, sin wrapper, sin
+    /// `-noverifyfiles`), espera a que el updater de Valve instale el cliente moderno
+    /// (`bin/cef/cef.win64`) y lo deja configurado (wrapper SwiftShader + steam.cfg).
+    /// El login y los juegos instalados (`steamapps/`) se conservan: el updater
+    /// actualiza in-place, no borra datos de usuario.
+    private func updateSteamClient(in bottle: Bottle, clientWine: String) async {
+        do { _ = try await launchSteam(in: bottle, using: clientWine) }
+        catch {
+            log.log("No se pudo iniciar la actualización de Steam: \(error.localizedDescription)", level: .warn)
+            return
+        }
+        log.log("Actualizando el cliente de Steam (descarga de Valve, una única vez)…", level: .info)
+        // Actualizado de verdad = el paquete moderno está extraído (cef.win64) Y el
+        // cliente nuevo llegó a arrancar su webhelper (la extracción terminó).
+        var updated = false
+        for _ in 0..<900 {   // hasta 15 min (descarga ~500 MB + extracción)
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            if isSteamClientModern(in: bottle), isWineProcessRunning(matching: "steamwebhelper") {
+                updated = true
+                break
+            }
+            // Si no queda ningún proceso de Steam vivo, el updater murió o terminó:
+            // margen breve por si se está relanzando entre fases, y re-check.
+            if !isWineProcessRunning(matching: "steam.exe"), !isWineProcessRunning(matching: "steamwebhelper") {
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                if !isWineProcessRunning(matching: "steam.exe") {
+                    updated = isSteamClientModern(in: bottle)
+                    break
+                }
+            }
+        }
+        guard updated else {
+            log.log("La actualización de Steam no terminó a tiempo; se intentará abrir igualmente.", level: .warn)
+            return
+        }
+        // Margen para que el updater cierre sus escrituras, y reconfigurar en frío.
+        log.log("Cliente de Steam actualizado ✓ — aplicando wrapper y configuración…", level: .info)
+        try? await Task.sleep(nanoseconds: 10_000_000_000)
+        try? await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        ensureSteamConfig(in: bottle)
+        try? await ensureWrapperInstalled(in: bottle)
+
+        // PASADA DE ASENTAMIENTO: la primera vez que corre una build recién actualizada,
+        // el cliente hace un self-check de integridad (independiente del bootstrapper e
+        // inmune a -noverifyfiles) que puede RESTAURAR el steamwebhelper.exe original,
+        // deshaciendo el wrapper → el CEF real intenta GPU → su proceso GPU crashea en
+        // bucle y la ventana no llega a pintarse (visto in-vivo). Se arranca una vez, se
+        // le deja hacer el self-check y, si se cargó el wrapper, se re-aplica en frío.
+        do { _ = try await launchSteam(in: bottle, using: clientWine) } catch { return }
+        try? await Task.sleep(nanoseconds: 45_000_000_000)
+        if !wrapperInstaller.isInstalled(in: bottle) {
+            log.log("El self-check del cliente nuevo deshizo el wrapper; re-aplicándolo…", level: .info)
+            try? await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
+            try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            cleanCEFCache(in: bottle)                  // los crashes del GPU corrompen la caché
+            try? await ensureWrapperInstalled(in: bottle)
+        }
     }
 
     private func isWineProcessRunning(matching pattern: String) -> Bool {
@@ -1215,10 +1396,9 @@ final class WineManager {
             throw WineError.launchFailed("Steam no está instalado en este bottle.")
         }
 
-        // Por defecto el CLIENTE de Steam corre en Gcenx (Wine completo); su
-        // Chromium/webhelper funciona ahí (en wine-dxmt crashea el proceso GPU de
-        // CEF → 0x3008). Para juegos D3D12 se pasa el wine de GPTK explícitamente,
-        // de modo que Steam y el juego compartan wineserver (necesario para el DRM).
+        // Por defecto el CLIENTE de Steam corre en el motor unificado (o Gcenx si no
+        // está). Para el modo "Steam real" se puede pasar un wine explícito, de modo
+        // que Steam y el juego compartan wineserver (necesario para el DRM).
         let clientWine = winePath ?? resolveClientWine(for: bottle)
 
         // 0) Idempotencia: si Steam ya está arrancando o cargado (steam.exe vivo),
@@ -1235,15 +1415,27 @@ final class WineManager {
         // flag -skipinitialbootstrap y sin wrapper. Si no, Steam no descarga
         // steamui.dll y da "Failed to load steamui.dll".
         let bootstrapped = isSteamBootstrapped(in: bottle)
-        if bootstrapped {
+        // Cliente ANTIGUO (sin cef.win64) bajo el motor unificado → dejar que Steam se
+        // auto-actualice UNA vez. En Gcenx el updater fallaba ("http error 0") y por eso
+        // se inhibía con steam.cfg; en el unificado FUNCIONA (WINEMSYNC=0, validado). Se
+        // quita el steam.cfg y se restauran los webhelper originales para que la
+        // verificación de ficheros no vea el wrapper como "corrupto".
+        let needsSelfUpdate = bootstrapped
+            && !isSteamClientModern(in: bottle)
+            && WineEngineLocator.isUnifiedEngine(clientWine)
+        if needsSelfUpdate {
+            log.log("Cliente de Steam antiguo detectado: Steam se actualizará solo (una única vez, puede tardar unos minutos)…", level: .info)
+            removeSteamConfig(in: bottle)
+            wrapperInstaller.restoreRealWebHelpers(in: bottle)
+            cleanCEFCache(in: bottle)
+        } else if bootstrapped {
             ensureSteamConfig(in: bottle)              // inhibe el auto-update que ladrilla
             cleanCEFCache(in: bottle)                  // evita el 0x3008
             try await ensureWrapperInstalled(in: bottle)
         } else {
             // Primer arranque: quitar cualquier steam.cfg restrictivo para permitir que
             // Steam descargue steamui.dll y el resto del cliente.
-            let steamDir = "\(bottle.prefixPath)/drive_c/Program Files (x86)/Steam"
-            try? FileManager.default.removeItem(atPath: "\(steamDir)/steam.cfg")
+            removeSteamConfig(in: bottle)
             log.log("Primer arranque de Steam: descargando su cliente (deja que termine la ventana de actualización)…", level: .info)
         }
         try? await launchOptionsManager.injectLaunchOptions(in: bottle)
@@ -1252,12 +1444,24 @@ final class WineManager {
         log.log("Terminando procesos Wine/Steam previos…", level: .info)
         try await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
         try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+        // Prefijo alineado con ESTE motor (solo re-sincroniza si cambió de motor).
+        await ensurePrefixSyncedToEngine(clientWine, prefix: bottle.prefixPath)
+        // Modo Retina OFF para el CLIENTE de Steam: su UI (CEF por software) se
+        // compone por blit GDI y bajo RetinaMode la ventana queda NEGRA (el browser
+        // crea 705×440 px dentro de una ventana de 353×220 puntos y el contenido no
+        // se presenta al layer 2×; visto in-vivo — con Retina OFF pinta). Los juegos
+        // DXMT lo REACTIVAN en su propio lanzamiento (`setMacDriverRetinaMode` con
+        // `eff.retina`), así que cada camino fija su valor y no hay conflicto.
+        await setMacDriverRetinaMode(prefix: bottle.prefixPath, wine: clientWine, enabled: false)
         try? await disableSteamAutoStart(winePath: clientWine, prefix: bottle.prefixPath)
 
-        let engineLabel = clientWine.contains("/\(GPTKManager.engineName)/") ? "GPTK/CrossOver" : "Gcenx"
+        let engineLabel = WineEngineLocator.isUnifiedEngine(clientWine) ? "motor unificado Vessel"
+            : clientWine.contains("/\(GPTKManager.engineName)/") ? "GPTK/CrossOver" : "Gcenx"
         log.log("Lanzando cliente Steam (\(engineLabel)) en \(bottle.name)…", level: .info)
-        // En fresh, argumentos mínimos para no impedir el bootstrap inicial.
-        let args = bootstrapped ? Self.steamLaunchArguments : ["-no-cef-sandbox"]
+        // En fresh/actualización, argumentos mínimos: sin -noverifyfiles ni
+        // -skipinitialbootstrap, para que el bootstrap/updater pueda completarse.
+        let args = needsSelfUpdate ? ["-no-cef-sandbox", "-tcp"]
+            : bootstrapped ? Self.steamLaunchArguments : ["-no-cef-sandbox"]
         // CLAVE: cwd = carpeta de Steam (escribible). Con cwd en "/" (lo que hereda la
         // app GUI) CEF no puede crear su caché y Steam se abre y se cierra solo.
         return try await launchWineProcess(
@@ -1272,8 +1476,7 @@ final class WineManager {
     /// True si Steam ya descargó su cliente completo (existe `steamui.dll`). En una
     /// instalación nueva no existe hasta que Steam hace su primer bootstrap.
     func isSteamBootstrapped(in bottle: Bottle) -> Bool {
-        let steamDir = "\(bottle.prefixPath)/drive_c/Program Files (x86)/Steam"
-        return FileManager.default.fileExists(atPath: "\(steamDir)/steamui.dll")
+        FileManager.default.fileExists(atPath: "\(bottle.steamDirectory)/steamui.dll")
     }
 
     /// Deja Steam LISTO para iniciar sesión (login visible, sin pantalla negra):
@@ -1282,6 +1485,15 @@ final class WineManager {
     ///  2. Cierra ese Steam y lo relanza ya CON el wrapper de steamwebhelper, que es lo
     ///     que evita la pantalla negra de CEF en el login.
     func ensureSteamReadyForLogin(in bottle: Bottle, progress: @escaping @Sendable (String) -> Void) async throws {
+        // Serialización con el resto de flujos de Steam (ver `acquireSteamFlowTurn`).
+        let isOwner = await acquireSteamFlowTurn()
+        defer { if isOwner { Self.steamFlowActive = false } }
+        if !isOwner {
+            // Otro flujo ya dejó Steam preparado/arrancando; no repetir ni matarlo.
+            progress("Abriendo Steam para iniciar sesión…")
+            _ = try await launchSteam(in: bottle)   // idempotente si ya corre
+            return
+        }
         let clientWine = resolveClientWine(for: bottle)
         if !isSteamBootstrapped(in: bottle) {
             progress("Descargando el cliente de Steam…")
@@ -1352,6 +1564,37 @@ final class WineManager {
         // SIGKILL. `wineserver -k` no vale aquí porque también dialoga por protocolo y
         // falla igual con el mismatch de versión.
         await killPrefixWineservers(prefix: prefix)
+        // Los procesos Wine CLIENTE (steam.exe, steamwebhelper…) TAMPOCO llevan el
+        // prefix en su argv: Wine lo reescribe a la línea de comandos de Windows
+        // ("C:\Program Files…\steam.exe"), así que `pkill -f <prefix>` tampoco los
+        // alcanza y sobreviven entre sesiones. Un steam.exe zombi hace que
+        // `launchSteam` crea que "Steam ya está en marcha" y no lo relance jamás.
+        // Igual que con el wineserver: se localizan por `lsof` contra ESTE prefix.
+        await killPrefixWineClients(prefix: prefix)
+    }
+
+    /// Mata por SIGKILL los procesos Wine CLIENTE (argv de Windows, con `.exe`) que
+    /// tengan abierto algo bajo `prefix`. No toca CrossOver ni otros prefijos (su
+    /// `lsof` no apunta a este prefix) ni procesos nativos de macOS (no casan `.exe`).
+    private func killPrefixWineClients(prefix: String) async {
+        let shell = Process()
+        shell.executableURL = URL(fileURLWithPath: "/bin/sh")
+        let script = """
+        for pid in $(/bin/ps -axo pid=,command= | /usr/bin/grep -F '.exe' | /usr/bin/grep -v grep | /usr/bin/awk '{print $1}'); do
+          if /usr/sbin/lsof -p "$pid" 2>/dev/null | /usr/bin/grep -qF '\(prefix)'; then
+            /bin/kill -9 "$pid" 2>/dev/null
+          fi
+        done
+        """
+        shell.arguments = ["-c", script]
+        shell.standardOutput = FileHandle(forWritingAtPath: "/dev/null")
+        shell.standardError = FileHandle(forWritingAtPath: "/dev/null")
+        do {
+            try shell.run()
+            shell.waitUntilExit()
+        } catch {
+            // Sin procesos o sin lsof: nada que hacer.
+        }
     }
 
     /// Mata por SIGKILL cualquier `wineserver` ligado a `prefix`, sea cual sea el motor
@@ -1377,6 +1620,28 @@ final class WineManager {
         } catch {
             // Sin wineservers o sin lsof: nada que hacer.
         }
+    }
+
+    /// Nombre del motor (carpeta) al que pertenece un binario wine, para el marker.
+    private func engineID(forWine wine: String) -> String {
+        WineEngineLocator.engineRoot(forWineExecutable: URL(fileURLWithPath: wine))?
+            .lastPathComponent ?? (wine as NSString).lastPathComponent
+    }
+
+    /// Re-sincroniza el prefijo al motor ACTUAL si el último que lo tocó era OTRO
+    /// (marker `.vessel-prefix-engine`). Un prefijo creado/sincronizado por Gcenx y
+    /// corriendo bajo el motor unificado queda con fake-DLLs/registro desalineados →
+    /// el proceso GPU del CEF de Steam crashea en BUCLE (browser restarts) y la
+    /// ventana nunca llega a pintarse (visto in-vivo; el `wineboot -u` lo arregló).
+    /// Los juegos no lo sufrían porque su ruta re-sincroniza siempre; el cliente de
+    /// Steam ahora también, pero solo cuando cambia el motor (idempotente y barato).
+    private func ensurePrefixSyncedToEngine(_ wine: String, prefix: String) async {
+        let id = engineID(forWine: wine)
+        let marker = "\(prefix)/.vessel-prefix-engine"
+        if (try? String(contentsOfFile: marker, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) == id { return }
+        log.log("Sincronizando el prefijo al motor \(id)…", level: .info)
+        await resyncGamePrefix(gameWine: wine, prefix: prefix)
     }
 
     /// Re-sincroniza el prefix al motor de JUEGOS (`wineboot -u`). Imprescindible:
@@ -1421,10 +1686,38 @@ final class WineManager {
         // wineboot, DXMT no engancha y falla con "InitializeEngineGraphics failed".
         try? await terminateWineProcesses(winePath: gameWine, prefix: prefix)
         try? await killOrphanWineProcesses(prefix: prefix)
+        // Registrar el motor con el que quedó sincronizado el prefijo (lo consume
+        // `ensurePrefixSyncedToEngine` para el camino del cliente de Steam).
+        try? engineID(forWine: gameWine)
+            .write(toFile: "\(prefix)/.vessel-prefix-engine", atomically: true, encoding: .utf8)
         log.log("Prefijo re-sincronizado para el juego", level: .debug)
     }
 
     @discardableResult
+    /// Ejecuta `process` capturando stdout+stderr SIN congelar el MainActor y SIN el
+    /// deadlock del pipe lleno: la salida se drena en un hilo aparte MIENTRAS el
+    /// proceso corre, y la espera usa `terminationHandler` asignado ANTES de `run()`
+    /// (el único patrón sin carrera). NUNCA usar `waitUntilExit()` + `Pipe` sin
+    /// lector para procesos largos: congela la UI y con >64 KB de salida el hijo se
+    /// bloquea escribiendo (deadlock que colgaba winetricks/instaladores).
+    private func runCapturing(_ process: Process) async throws -> ProcessResult {
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        let readHandle = pipe.fileHandleForReading
+        let reader = Task.detached { readHandle.readDataToEndOfFile() }
+        let status: Int32 = try await withCheckedThrowingContinuation { cont in
+            process.terminationHandler = { cont.resume(returning: $0.terminationStatus) }
+            do { try process.run() }
+            catch {
+                process.terminationHandler = nil
+                cont.resume(throwing: error)
+            }
+        }
+        let output = String(data: await reader.value, encoding: .utf8) ?? ""
+        return ProcessResult(exitCode: status, output: output)
+    }
+
     private func runWine(
         winePath: String,
         arguments: [String],
@@ -1439,21 +1732,13 @@ final class WineManager {
             "WINEPREFIX": prefix,
             "WINEDEBUG": "-all"
         ]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
         do {
-            try process.run()
-            process.waitUntilExit()
-            let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            if process.terminationStatus != 0 {
-                if allowNonZeroExit {
-                    return ProcessResult(exitCode: process.terminationStatus, output: output)
-                }
-
-                throw WineError.launchFailed(output.isEmpty ? "Wine terminó con código \(process.terminationStatus)" : output)
+            let result = try await runCapturing(process)
+            if result.exitCode != 0, !allowNonZeroExit {
+                throw WineError.launchFailed(result.output.isEmpty
+                    ? "Wine terminó con código \(result.exitCode)" : result.output)
             }
-            return ProcessResult(exitCode: process.terminationStatus, output: output)
+            return result
         } catch let error as WineError {
             throw error
         } catch {
@@ -1471,7 +1756,7 @@ final class WineManager {
         if let toolPath = siblingTool(named: toolName, forWinePath: winePath) {
             try await runExecutable(path: toolPath, arguments: toolArguments, prefix: prefix)
         } else {
-            try await runWine(winePath: winePath, arguments: fallbackArguments, prefix: prefix)
+            _ = try await runWine(winePath: winePath, arguments: fallbackArguments, prefix: prefix)
         }
     }
 
@@ -1489,15 +1774,11 @@ final class WineManager {
             "WINEPREFIX": prefix,
             "WINEDEBUG": "-all"
         ]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
         do {
-            try process.run()
-            process.waitUntilExit()
-            if process.terminationStatus != 0 {
-                let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                throw WineError.launchFailed(output.isEmpty ? "wineboot terminó con código \(process.terminationStatus)" : output)
+            let result = try await runCapturing(process)
+            if result.exitCode != 0 {
+                throw WineError.launchFailed(result.output.isEmpty
+                    ? "wineboot terminó con código \(result.exitCode)" : result.output)
             }
         } catch let error as WineError {
             throw error
@@ -1761,22 +2042,45 @@ final class WineManager {
         env["WINE"] = wine
         env["WINEPREFIX"] = prefix
         env["WINEDEBUG"] = "-all"
+        // Motor unificado: sus libs externas (freetype/gnutls) viven en `lib/` del motor
+        // y se cargan por dlopen (SONAME sin ruta) → winetricks necesita el mismo
+        // `DYLD_FALLBACK_LIBRARY_PATH` que usa `launchWineProcess`, y su `wineserver`.
+        if WineEngineLocator.isUnifiedEngine(wine),
+           let root = WineEngineLocator.engineRoot(forWineExecutable: URL(fileURLWithPath: wine)) {
+            let libDir = root.appendingPathComponent("lib").path
+            let base = env["DYLD_FALLBACK_LIBRARY_PATH"]
+            env["DYLD_FALLBACK_LIBRARY_PATH"] = (base?.isEmpty == false) ? "\(libDir):\(base!)" : libDir
+            env["WINESERVER"] = root.appendingPathComponent("bin/wineserver").path
+        }
         process.environment = env
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        do {
-            try process.run()
-            process.waitUntilExit()
-            if process.terminationStatus == 0 {
-                let updated = already.union(pending).sorted().joined(separator: "\n")
-                try? updated.write(toFile: marker, atomically: true, encoding: .utf8)
-                log.log("✓ winetricks aplicado: \(pending.joined(separator: ", "))", level: .info)
-            } else {
-                log.log("winetricks devolvió código \(process.terminationStatus) aplicando [\(pending.joined(separator: ", "))].", level: .warn)
+        // Salida a ARCHIVO, nunca a un Pipe sin lector: winetricks es muy verboso y con
+        // el pipe lleno (64 KB) se queda BLOQUEADO escribiendo → cuelgue infinito.
+        let logDir = "\(NSHomeDirectory())/Library/Logs/Vessel"
+        try? FileManager.default.createDirectory(atPath: logDir, withIntermediateDirectories: true)
+        let outPath = "\(logDir)/winetricks.log"
+        FileManager.default.createFile(atPath: outPath, contents: nil)
+        if let handle = FileHandle(forWritingAtPath: outPath) {
+            process.standardOutput = handle
+            process.standardError = handle
+        }
+        // Espera ASÍNCRONA (terminationHandler), no `waitUntilExit()`: WineManager es
+        // @MainActor y el wait bloqueante congelaba la UI entera durante minutos.
+        let status: Int32? = await withCheckedContinuation { cont in
+            process.terminationHandler = { cont.resume(returning: $0.terminationStatus) }
+            do { try process.run() }
+            catch {
+                process.terminationHandler = nil
+                cont.resume(returning: nil)
             }
-        } catch {
-            log.log("No se pudo ejecutar winetricks: \(error.localizedDescription)", level: .warn)
+        }
+        if status == 0 {
+            let updated = already.union(pending).sorted().joined(separator: "\n")
+            try? updated.write(toFile: marker, atomically: true, encoding: .utf8)
+            log.log("✓ winetricks aplicado: \(pending.joined(separator: ", "))", level: .info)
+        } else if let status {
+            log.log("winetricks devolvió código \(status) aplicando [\(pending.joined(separator: ", "))]. Detalle: \(outPath)", level: .warn)
+        } else {
+            log.log("No se pudo ejecutar winetricks.", level: .warn)
         }
     }
 

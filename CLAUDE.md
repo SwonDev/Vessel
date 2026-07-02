@@ -65,9 +65,13 @@ Convención general: servicios de orquestación son `@MainActor @Observable fina
 - **`SteamLibraryImporter`** — descubre librerías Steam locales parseando `appmanifest_*.acf`.
 - **`SteamGridDBClient` / `ProtonDBClient` / `EngineManager` / `Updater`** — clientes de carátulas, compatibilidad ProtonDB, gestión de motores y comprobación de releases en GitHub.
 
-### Arquitectura de DOBLE MOTOR (lo más importante de entender)
+### MOTOR UNIFICADO propio (el modelo actual) + doble motor (fallback)
 
-Validado empíricamente en Apple Silicon: **ningún motor Wine libre hace bien las dos cosas**, así que Vessel usa **dos motores según la tarea**, sobre el mismo prefijo. La selección está en `WineEngineLocator` (`clientWineBinary()` / `gameWineBinary()`) y la consume `WineManager` (`resolveClientWine` / `resolveGameWine`).
+**Desde 2026-07 existe el motor unificado `wine-unified`** (DXMT compilado sobre WineHQ 11.10, build propio, publicado en el repo público `SwonDev/Vessel-Engines` release `engine-unified-v1`, ~540 MB): UN solo Wine libre que corre **a la vez** el cliente de Steam CEF completo (login + teclado + QR, con el wrapper SwiftShader y `WINEMSYNC=0`) **y** los juegos por DXMT/Metal — lo que CrossOver hace con su Wine propietario. Si está instalado, `WineEngineLocator` lo prefiere para TODO (`resolvedClientEngineName` y `resolvedGameEngineName`); "jugar desde Steam" (su botón verde) funciona porque el `d3d11` builtin del motor ES DXMT. Claves del cliente Steam en el unificado: `WINEMSYNC=0 WINEESYNC=0 WINEFSYNC=0` (msync rompe el async socket del updater → "http error 0"), `-tcp`, wrapper SwiftShader en `bin/cef/cef.win64`, deps `corefonts`+`vcrun2022` (winetricks, idempotente) y `DYLD_FALLBACK_LIBRARY_PATH` al `lib/` del motor (freetype/gnutls). `WineManager.openSteamClient` auto-repara toda la cadena: motor → Steam → deps → **self-update del cliente antiguo** (permitido SOLO en el unificado, ver `isSteamClientModern`/`updateSteamClient`) → wrapper. La ruta de Steam en el prefijo es dinámica: `Bottle.steamDirectory` (`Program Files (x86)/Steam` o `Program Files/Steam`).
+
+#### Doble motor (fallback si el unificado no está)
+
+Validado empíricamente en Apple Silicon: **ningún motor Wine libre estándar hace bien las dos cosas**, así que sin el unificado Vessel usa **dos motores según la tarea**, sobre el mismo prefijo. La selección está en `WineEngineLocator` (`clientWineBinary()` / `gameWineBinary()`) y la consume `WineManager` (`resolveClientWine` / `resolveGameWine`).
 
 | | Cliente Steam (Chromium/webhelper) | Juegos D3D11 (Unity FL 11_0) |
 |---|---|---|
@@ -85,9 +89,9 @@ Validado empíricamente en Apple Silicon: **ningún motor Wine libre hace bien l
 
 ### Hacer arrancar el cliente de Steam (3 piezas imprescindibles)
 
-El cliente de Steam (Gcenx) requiere TODO esto junto, o falla de formas distintas:
+El cliente de Steam requiere TODO esto junto, o falla de formas distintas:
 
-1. **`steam.cfg` con `BootStrapperInhibitAll=enable`** (`WineManager.ensureSteamConfig`). Sin esto, cuando Steam se relanza solo (sin `-noverifyfiles`) verifica sus ficheros, detecta el wrapper como "corrupto", intenta autoactualizar el cliente, la descarga falla bajo Wine (`http error 0`) y queda ladrillado → **`Failed to load steamui.dll`**.
+1. **`steam.cfg` con `BootStrapperInhibitAll=enable`** (`WineManager.ensureSteamConfig`). Sin esto, cuando Steam se relanza solo (sin `-noverifyfiles`) verifica sus ficheros, detecta el wrapper como "corrupto", intenta autoactualizar el cliente, la descarga falla bajo Gcenx (`http error 0`) y queda ladrillado → **`Failed to load steamui.dll`**. EXCEPCIÓN: bajo el motor unificado el updater SÍ funciona (`WINEMSYNC=0`), y `launchSteam` quita el steam.cfg a propósito (modo `needsSelfUpdate`) para actualizar un cliente antiguo una única vez.
 2. **Limpiar la caché de CEF/htmlcache** antes de lanzar (`WineManager.cleanCEFCache`). Tras crashes del proceso GPU de Chromium la caché se corrompe → **error de transporte `0x3008`**.
 3. **Wrapper de `steamwebhelper`** (`SteamWebHelperWrapperInstaller`): un PE32+ (`Resources/steamwebhelper-wrapper.exe`, fuente C en `Resources/wrapper/`) que se hace pasar por `steamwebhelper.exe` y relanza el real con `--disable-gpu --single-process` → render por CPU. El webhelper no puede usar GPU bajo Wine en macOS.
 

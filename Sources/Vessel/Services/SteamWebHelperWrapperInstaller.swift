@@ -146,7 +146,7 @@ final class SteamWebHelperWrapperInstaller {
     /// Idempotente: si el wrapper ya está instalado, lo refresca.
     func install(in bottle: Bottle) async throws {
         let wrapperPath = try await ensureWrapperCompiled()
-        let cefRoot = "\(bottle.prefixPath)/drive_c/Program Files (x86)/Steam/bin/cef"
+        let cefRoot = "\(bottle.steamDirectory)/bin/cef"
 
         guard FileManager.default.fileExists(atPath: cefRoot) else {
             throw WrapperError.steamCEFDirectoryNotFound
@@ -201,9 +201,27 @@ final class SteamWebHelperWrapperInstaller {
         }
     }
 
+    /// Restaura los `steamwebhelper.exe` ORIGINALES de Valve (deshace el wrapper) en
+    /// todos los dirs CEF del bottle. Necesario antes de dejar que Steam verifique o
+    /// actualice sus ficheros: con el wrapper puesto, la verificación lo detecta como
+    /// "corrupto". Idempotente; conserva el respaldo `steamwebhelper_real.exe`.
+    func restoreRealWebHelpers(in bottle: Bottle) {
+        let fm = FileManager.default
+        let cefRoot = "\(bottle.steamDirectory)/bin/cef"
+        guard let cefDirs = try? fm.contentsOfDirectory(atPath: cefRoot) else { return }
+        for dir in cefDirs where dir.hasPrefix("cef.win") {
+            let target = "\(cefRoot)/\(dir)/steamwebhelper.exe"
+            let real = "\(cefRoot)/\(dir)/steamwebhelper_real.exe"
+            guard isWrapperSize(atPath: target),
+                  fm.fileExists(atPath: real), !isWrapperSize(atPath: real) else { continue }
+            try? fm.removeItem(atPath: target)
+            try? fm.copyItem(atPath: real, toPath: target)
+        }
+    }
+
     /// Comprueba si el wrapper está instalado en el bottle.
     func isInstalled(in bottle: Bottle) -> Bool {
-        let cefRoot = "\(bottle.prefixPath)/drive_c/Program Files (x86)/Steam/bin/cef"
+        let cefRoot = "\(bottle.steamDirectory)/bin/cef"
         guard let cefDirs = try? FileManager.default.contentsOfDirectory(atPath: cefRoot) else {
             return false
         }

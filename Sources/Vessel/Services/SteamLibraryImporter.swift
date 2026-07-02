@@ -22,7 +22,7 @@ final class SteamLibraryImporter {
     /// que es donde Vessel los instala — no el Steam nativo de macOS. Es la fuente
     /// correcta para que los juegos aparezcan en la lista de Vessel.
     func scanBottleGames(bottle: Bottle) -> [ImportedGame] {
-        let bottleSteam = "\(bottle.prefixPath)/drive_c/Program Files (x86)/Steam"
+        let bottleSteam = bottle.steamDirectory
         guard FileManager.default.fileExists(atPath: "\(bottleSteam)/steamapps") else { return [] }
         // Filtramos los AppID de herramientas internas de Steam (Steamworks, redist…).
         let internalAppIds: Set<String> = ["228980", "1070560", "1391110", "1493710", "250820"]

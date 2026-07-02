@@ -44,7 +44,7 @@ final class SteamLaunchOptionsManager {
 
     /// Encuentra el `localconfig.vdf` del primer usuario de Steam en el bottle.
     func findLocalConfig(in bottle: Bottle) -> String? {
-        let userDataRoot = "\(bottle.prefixPath)/drive_c/Program Files (x86)/Steam/userdata"
+        let userDataRoot = "\(bottle.steamDirectory)/userdata"
         let fm = FileManager.default
         guard let userDirs = try? fm.contentsOfDirectory(atPath: userDataRoot) else {
             return nil

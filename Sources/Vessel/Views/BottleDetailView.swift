@@ -69,8 +69,9 @@ struct BottleDetailView: View {
             onReload: { Task { await loadSteamLibrary() } },
             onLogout: { NotificationCenter.default.post(name: .steamLogout, object: nil) },
             onLogin: { NotificationCenter.default.post(name: .steamLogin, object: nil) },
-            // "Abrir Steam": arranca el cliente Steam completo conectado (GPTK/D3DMetal) para
-            // jugar DESDE Steam con DRM real —el modelo que hace funcionar juegos como Grim Dawn—.
+            // "Abrir Steam": arranca el cliente Steam completo conectado en el MOTOR
+            // UNIFICADO (CEF + DXMT/Metal en un solo wineserver) para jugar DESDE Steam
+            // con DRM real —el modelo que hace funcionar juegos como Grim Dawn—.
             onOpenSteam: { Task { await wineManager.openSteamClient(in: localBottle) } }
         )
         .sheet(isPresented: $showingInstaller) {
@@ -148,11 +149,11 @@ struct BottleDetailView: View {
     /// `installPath` NO se usa: puede apuntar al prefijo entero.
     private func uninstallGame(_ game: GameInstall) {
         let fm = FileManager.default
-        let steamCommon = "\(localBottle.prefixPath)/drive_c/Program Files (x86)/Steam/steamapps/common"
+        let steamCommon = "\(localBottle.steamDirectory)/steamapps/common"
         var folderToDelete: String?
 
         if let appId = game.steamAppId, !appId.isEmpty {
-            let manifest = "\(localBottle.prefixPath)/drive_c/Program Files (x86)/Steam/steamapps/appmanifest_\(appId).acf"
+            let manifest = "\(localBottle.steamDirectory)/steamapps/appmanifest_\(appId).acf"
             if let content = try? String(contentsOfFile: manifest, encoding: .utf8),
                let installdir = installDir(in: content), !installdir.isEmpty {
                 folderToDelete = "\(steamCommon)/\(installdir)"
@@ -253,7 +254,7 @@ struct BottleDetailView: View {
         installingAppIds.insert(appId)
         defer { installingAppIds.remove(appId); installMessages[appId] = nil; installPercents[appId] = nil }
         let safeName = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "")
-        let installDir = "\(localBottle.prefixPath)/drive_c/Program Files (x86)/Steam/steamapps/common/\(safeName)"
+        let installDir = "\(localBottle.steamDirectory)/steamapps/common/\(safeName)"
         installMessages[appId] = "Iniciando descarga…"
         let ok = await steamCMD.installGame(appId: appId, user: user, installDir: installDir, validate: validate) { pct, msg in
             installMessages[appId] = msg
@@ -283,7 +284,7 @@ struct BottleDetailView: View {
     /// o desinstala un juego, re-escaneamos y la lista de Vessel se actualiza sola,
     /// sin reiniciar la app.
     private func startWatchingGames() {
-        let steamapps = "\(localBottle.prefixPath)/drive_c/Program Files (x86)/Steam/steamapps"
+        let steamapps = "\(localBottle.steamDirectory)/steamapps"
         guard FileManager.default.fileExists(atPath: steamapps) else { return }
         gamesWatcher.start(path: steamapps) {
             Task { await autoImportGames() }

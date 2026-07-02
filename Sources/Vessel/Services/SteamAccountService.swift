@@ -25,7 +25,7 @@ final class SteamAccountService {
     ///  2. cualquier SteamID64 dentro de `config/config.vdf`.
     ///  3. la carpeta `userdata/<accountID>` (AccountID → SteamID64).
     func detectAccount(bottle: Bottle) -> Account? {
-        let steamRoot = "\(bottle.prefixPath)/drive_c/Program Files (x86)/Steam"
+        let steamRoot = bottle.steamDirectory
 
         if let content = try? String(contentsOfFile: "\(steamRoot)/config/loginusers.vdf", encoding: .utf8),
            let account = Self.parseLoginUsers(content) {

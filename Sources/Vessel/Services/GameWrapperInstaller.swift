@@ -82,7 +82,7 @@ final class GameWrapperInstaller {
             throw WrapperError.wrapperBinaryNotFound
         }
 
-        let steamApps = "\(bottle.prefixPath)/drive_c/Program Files (x86)/Steam/steamapps/common"
+        let steamApps = "\(bottle.steamDirectory)/steamapps/common"
         guard fm.fileExists(atPath: steamApps) else {
             // Steam no tiene juegos instalados todavía. No es un error.
             return
@@ -229,7 +229,7 @@ final class GameWrapperInstaller {
 
     /// Comprueba si hay juegos wrappeados en el bottle.
     func hasWrappedGames(in bottle: Bottle) -> Bool {
-        let steamApps = "\(bottle.prefixPath)/drive_c/Program Files (x86)/Steam/steamapps/common"
+        let steamApps = "\(bottle.steamDirectory)/steamapps/common"
         guard let gameDirs = try? FileManager.default.contentsOfDirectory(atPath: steamApps) else {
             return false
         }

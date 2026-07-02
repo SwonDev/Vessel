@@ -43,8 +43,24 @@ struct Bottle: Identifiable, Codable, Hashable {
         "\(NSHomeDirectory())/Library/Application Support/Vessel/Bottles/\(id.uuidString)"
     }
 
+    /// Directorio de instalación de Steam dentro del prefijo. Puede ser
+    /// `Program Files (x86)/Steam` (instalador clásico de 32-bit, era Gcenx) o
+    /// `Program Files/Steam` (instalaciones bajo el motor unificado WoW64). Se
+    /// resuelve el que contenga `steam.exe`; si ninguno existe aún (instalación
+    /// pendiente), el clásico (x86), que es donde instala SteamSetup.
+    var steamDirectory: String {
+        let candidates = [
+            "\(prefixPath)/drive_c/Program Files (x86)/Steam",
+            "\(prefixPath)/drive_c/Program Files/Steam"
+        ]
+        for dir in candidates where FileManager.default.fileExists(atPath: "\(dir)/steam.exe") {
+            return dir
+        }
+        return candidates.first { FileManager.default.fileExists(atPath: $0) } ?? candidates[0]
+    }
+
     var steamPath: String {
-        "\(prefixPath)/drive_c/Program Files (x86)/Steam/steam.exe"
+        "\(steamDirectory)/steam.exe"
     }
 }
 
