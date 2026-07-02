@@ -16,6 +16,18 @@ enum WineEngineLocator {
     /// defecto. Se prefiere si está presente; si no, se usa `wine-dxmt`.
     static let mousefixEngineName = "wine-dxmt-mousefix"
 
+    /// Motor UNIFICADO propio de Vessel: **DXMT compilado sobre WineHQ Wine 11.10**
+    /// (build propio, x86_64 bajo Rosetta). A diferencia de `wine-dxmt` (3Shain,
+    /// Wine 9.9), es Wine MODERNO con `winemac.drv` completo + DXMT integrado en su
+    /// builtin (`d3d11`/`dxgi`/`winemetal`), y con el parche propio
+    /// `macdrv_dxmt_get_client_view` que arregla la pantalla negra de DXMT en Wine 11
+    /// (el `client_view` del área cliente es perezoso en Wine 11 → se crea/engancha
+    /// bajo demanda). Objetivo: un solo motor libre que corra el CEF de Steam Y los
+    /// juegos por Metal (lo que hace CrossOver con Wine propietario). Si está
+    /// instalado se prefiere para juegos D3D11. Requiere `RetinaMode` para render a
+    /// resolución física completa en pantallas Retina (ver `WineManager`).
+    static let unifiedEngineName = "wine-unified"
+
     // MARK: - Roles de motor (arquitectura de doble motor)
     //
     // Tras validación empírica en Apple Silicon:
@@ -40,13 +52,33 @@ enum WineEngineLocator {
     /// `wine-dxmt` normal. Ambos son 3Shain/DXMT; el parcheado solo cambia
     /// `win32u.so` (mismo ABI), así que es un reemplazo seguro.
     static func resolvedGameEngineName(enginesDirectory: String = VesselPaths.enginesDirectory) -> String {
-        let mf = URL(fileURLWithPath: enginesDirectory).appendingPathComponent(mousefixEngineName)
+        // 1º el motor UNIFICADO propio (WineHQ 11.10 + DXMT) si está instalado: es Wine
+        // moderno y su builtin ya trae DXMT (mismo Metal, base más nueva y capaz).
+        if engineHasWineBinary(unifiedEngineName, enginesDirectory: enginesDirectory) {
+            return unifiedEngineName
+        }
+        // 2º la variante de wine-dxmt con el fix del ratón de Unity 6.
+        if engineHasWineBinary(mousefixEngineName, enginesDirectory: enginesDirectory) {
+            return mousefixEngineName
+        }
+        // 3º wine-dxmt (3Shain, Wine 9.9) base.
+        return dxmtEngineName
+    }
+
+    /// True si el motor `name` tiene un binario `wine`/`wine64` ejecutable.
+    static func engineHasWineBinary(_ name: String, enginesDirectory: String = VesselPaths.enginesDirectory) -> Bool {
+        let base = URL(fileURLWithPath: enginesDirectory).appendingPathComponent(name)
         for bin in ["bin/wine", "bin/wine64"] {
-            if FileManager.default.isExecutableFile(atPath: mf.appendingPathComponent(bin).path) {
-                return mousefixEngineName
+            if FileManager.default.isExecutableFile(atPath: base.appendingPathComponent(bin).path) {
+                return true
             }
         }
-        return dxmtEngineName
+        return false
+    }
+
+    /// True si la ruta de Wine pertenece al motor unificado propio (`wine-unified`).
+    static func isUnifiedEngine(_ winePath: String) -> Bool {
+        winePath.contains("/\(unifiedEngineName)/")
     }
 
     /// Binario Wine del motor del CLIENTE de Steam (Gcenx wine-osx64).
@@ -73,6 +105,7 @@ enum WineEngineLocator {
     /// (`wine-dxmt` o su variante parcheada `wine-dxmt-mousefix`).
     static func isGameEngine(_ winePath: String) -> Bool {
         winePath.contains("/\(mousefixEngineName)/") || winePath.contains("/\(dxmtEngineName)/")
+            || winePath.contains("/\(unifiedEngineName)/")
     }
 
     static func portableEngineDirectory(enginesDirectory: String = VesselPaths.enginesDirectory) -> URL {
