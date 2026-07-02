@@ -1479,11 +1479,11 @@ final class WineManager {
         try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
         // Prefijo alineado con ESTE motor (solo re-sincroniza si cambió de motor).
         await ensurePrefixSyncedToEngine(clientWine, prefix: bottle.prefixPath)
-        // Modo Retina ON: el cliente Steam CEF (software, `--single-process`) se pinta bien a
-        // 2× Y los JUEGOS lanzados DESDE Steam (mismo prefijo) necesitan Retina ON para ocupar
-        // la pantalla completa — sin él, DXMT/Metal renderiza a 1× y el juego sale en un
-        // cuadradito arriba a la izquierda. Un solo valor (y) sirve para ambos.
-        await setMacDriverRetinaMode(prefix: bottle.prefixPath, wine: clientWine, enabled: true)
+        // Modo Retina OFF para el CLIENTE de Steam: su UI (CEF por software, `--single-process`)
+        // NO se compone bien a 2× — con Retina ON la ventana del cliente no aparece (verificado:
+        // login/biblioteca no pintan). Con OFF sí (así logueó el usuario). Los JUEGOS lanzados
+        // por Vessel (`launch`) REACTIVAN Retina ON en su propia ruta para ir a pantalla completa.
+        await setMacDriverRetinaMode(prefix: bottle.prefixPath, wine: clientWine, enabled: false)
         // Certificados: el cert de los servidores de Steam es EV **ECDSA** (DigiCert Global
         // Root G3). El prefijo necesita el intermedio + root en su store para validar la cadena
         // (macOS no expone DigiCert por la vía que Wine auto-importa). Idempotente.
