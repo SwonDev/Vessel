@@ -951,6 +951,11 @@ final class WineManager {
     /// `connection_log.txt` del bottle: hay conexión si el último evento relevante es
     /// "Logged On" y no hay un "Logged Off"/"ConnectionDisconnected" posterior.
     func isSteamConnected(in bottle: Bottle) -> Bool {
+        // Un "Logged On" del connection_log es HISTÓRICO: persiste en disco aunque Steam se
+        // haya cerrado/crasheado sin escribir "Logged Off". Sin comprobar que steam.exe sigue
+        // vivo, un log viejo hacía que "Abrir Steam" cortocircuitara ("Steam abierto y conectado ✓"
+        // sin lanzar ninguna ventana → "no abre nada"). Si no hay proceso, NO está conectado.
+        guard isWineProcessRunning(matching: "steam.exe") else { return false }
         let logPath = "\(bottle.steamDirectory)/logs/connection_log.txt"
         guard let data = FileManager.default.contents(atPath: logPath),
               let text = String(data: data, encoding: .utf8) else { return false }
@@ -1417,6 +1422,10 @@ final class WineManager {
             env["WINEMSYNC"] = "0"
             env["WINEESYNC"] = "0"
             env["WINEFSYNC"] = "0"
+            // Silencia el log de MoltenVK (paridad con el lanzamiento manual que renderizó).
+            // El CEF de la build moderna pinta por DXMT→Metal (D3D11 FL 11_1) con el wrapper
+            // `--single-process`; no usa Vulkan/MoltenVK para su UI, así que esto es cosmético.
+            env["MVK_CONFIG_LOG_LEVEL"] = "0"
             return env
         }
         // Gcenx (fallback): entorno normal.

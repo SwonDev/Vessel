@@ -11,16 +11,17 @@
 #include <string.h>
 #include <wchar.h>
 
-/* `--disable-gpu --single-process`: el CEF de la build MODERNA de Steam (Chrome 126+, jul-2026)
- * corre TODO en un solo proceso, por CPU (SwiftShader/Skia). Es la CLAVE del render: sin
- * `--single-process` el proceso GPU separado del CEF intenta SwANGLE (SwiftShader por Vulkan) y,
- * si algo falla en su init, la ventana queda NEGRA o el browser "unresponsive" (0x0). Con
- * `--single-process` no hay proceso GPU aparte que reviente y el login se pinta completo
- * (verificado in-vivo: login + teclado + QR nítido + biblioteca). El motor unificado debe traer
- * Vulkan (MoltenVK) para que el WebGL del CEF (el QR) inicialice SwANGLE. NO forzar
- * `--use-gl=swiftshader`/`--use-angle=swiftshader`: en la build nueva entran en conflicto con el
- * `swiftshader-webgl` propio de Steam y dan negro; basta `--disable-gpu --single-process`. */
-#define EXTRA_FLAGS  L"--disable-gpu --single-process"
+/* `--single-process` (SIN `--disable-gpu`): el CEF de la build MODERNA de Steam (Chrome 126+,
+ * jul-2026) renderiza su UI por **ANGLE→D3D11**, y en el motor unificado ese D3D11 es **DXMT→Metal**.
+ * En MULTIPROCESO cada proceso (renderer/gpu) abre su propio swapchain D3D11 cross-process, que
+ * DXMT no soporta (bug Issue #141) → `SwapChain11 … EGL_BAD_ALLOC` → ventana NEGRA. Con
+ * `--single-process` el swapchain D3D11/DXMT vive en UN solo proceso → DXMT renderiza el CEF a
+ * `D3D_FEATURE_LEVEL_11_1` y el login/biblioteca se pintan (VERIFICADO in-vivo 2026-07-02 23:31:
+ * pantalla "Iniciando sesión" + `Logged On`). NO usar `--disable-gpu`: forzaría el software
+ * (SwiftShader), que en la build nueva CRASHEA el proceso (0x80000003) bajo este Wine. NO usar
+ * `--use-gl/--use-angle=swiftshader`: chocan con el `swiftshader-webgl` de Steam y dan negro.
+ * (Requiere el `win32u.so` del build wow64, no el que hace dlopen directo de MoltenVK.) */
+#define EXTRA_FLAGS  L"--single-process"
 #define REAL_BINARY  L"steamwebhelper_real.exe"
 
 static FILE *dbg = NULL;

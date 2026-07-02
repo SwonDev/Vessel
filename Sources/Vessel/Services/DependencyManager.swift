@@ -293,8 +293,45 @@ final class DependencyManager {
     func ensureUnifiedEngine(progress: @escaping @Sendable (String, Double) -> Void = { _, _ in }) async throws {
         if WineEngineLocator.engineHasWineBinary(
             WineEngineLocator.unifiedEngineName, enginesDirectory: enginesDirectory
-        ) { return }
+        ) {
+            await applySteamRenderFix()
+            return
+        }
         try await installWineUnified(progress: progress)
+        await applySteamRenderFix()
+    }
+
+    /// Aplica el fix de RENDER + CONEXIÓN del cliente de Steam al motor unificado (idempotente y
+    /// auto-reparable). El tarball publicado trae un `win32u.so` que hace `dlopen` DIRECTO de
+    /// MoltenVK → el proceso GPU del CEF de la build moderna crashea (0x80000003) y la ventana sale
+    /// NEGRA. Se sustituye por el `win32u.so` del build **wow64** (con el wrapper `--single-process`
+    /// el CEF renderiza por **DXMT→Metal**, D3D11 FL 11_1). Además asegura `bcrypt.so`/`secur32.so`
+    /// **con gnutls** (verificación de firmas ECDSA del login TLS de Steam; sin ellas el login se
+    /// cuelga en "Iniciando sesión"). Los 3 van bundleados en `Resources/engine-steamfix/`.
+    /// Verificado in-vivo (2026-07-02): Steam pinta la UI Y conecta (`Logged On`). Idempotente por
+    /// tamaño: solo copia y re-firma si el fichero del motor difiere del bundleado.
+    func applySteamRenderFix() async {
+        let fm = FileManager.default
+        let unixDir = "\(enginesDirectory)/\(WineEngineLocator.unifiedEngineName)/lib/wine/x86_64-unix"
+        guard fm.fileExists(atPath: "\(unixDir)/win32u.so") else { return }
+        guard let resDir = Bundle.main.resourceURL?.appendingPathComponent("engine-steamfix").path,
+              fm.fileExists(atPath: "\(resDir)/win32u.so") else { return }
+        var applied = false
+        for so in ["win32u.so", "bcrypt.so", "secur32.so"] {
+            let src = "\(resDir)/\(so)", dst = "\(unixDir)/\(so)"
+            guard fm.fileExists(atPath: src) else { continue }
+            let srcSize = (try? fm.attributesOfItem(atPath: src))?[.size] as? Int
+            let dstSize = (try? fm.attributesOfItem(atPath: dst))?[.size] as? Int
+            if srcSize != dstSize || dstSize == nil {
+                try? fm.removeItem(atPath: dst)
+                if (try? fm.copyItem(atPath: src, toPath: dst)) != nil { applied = true }
+            }
+        }
+        if applied {
+            await stripQuarantineRecursive(at: unixDir)
+            await adhocSignBinaries(in: unixDir)
+            LogStore.shared.log("Fix de render/conexión del cliente de Steam aplicado al motor unificado.", level: .info)
+        }
     }
 
     private func installWineUnified(progress: @escaping @Sendable (String, Double) -> Void) async throws {
