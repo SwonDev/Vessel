@@ -37,12 +37,16 @@ final class SteamAuthService {
     // MARK: - QR login
 
     func beginQR() async throws -> QRSession {
+        // platform_type=1 (EAuthTokenPlatformType_SteamClient): el refresh_token resultante lleva
+        // `aud=[client,web,…]` → sirve PARA EL CLIENTE de Steam (auto-login sembrado por
+        // SteamClientSeeder) Y para la web (biblioteca/logros). Con WebBrowser(=2) el aud es solo
+        // `[web]` y NO sirve al cliente de escritorio. website_id vacío (propio del cliente).
         var details = Data()
         details.append(ProtoWriter.string(field: 1, "Vessel"))
-        details.append(ProtoWriter.varint(field: 2, 2))           // EAuthTokenPlatformType_WebBrowser
+        details.append(ProtoWriter.varint(field: 2, 1))           // EAuthTokenPlatformType_SteamClient
         var body = Data()
         body.append(ProtoWriter.string(field: 1, "Vessel"))
-        body.append(ProtoWriter.varint(field: 2, 2))
+        body.append(ProtoWriter.varint(field: 2, 1))
         body.append(ProtoWriter.message(field: 3, details))       // device_details
         body.append(ProtoWriter.string(field: 4, "Community"))    // website_id
 
@@ -63,14 +67,14 @@ final class SteamAuthService {
         }
         var details = Data()
         details.append(ProtoWriter.string(field: 1, "Vessel"))
-        details.append(ProtoWriter.varint(field: 2, 2))
+        details.append(ProtoWriter.varint(field: 2, 1))                           // SteamClient (ver beginQR)
         var body = Data()
         body.append(ProtoWriter.string(field: 1, "Vessel"))                       // device_friendly_name
         body.append(ProtoWriter.string(field: 2, accountName))
         body.append(ProtoWriter.string(field: 3, encrypted))                      // encrypted_password
         body.append(ProtoWriter.varint(field: 4, rsa.timestamp))                  // encryption_timestamp
         body.append(ProtoWriter.varint(field: 5, rememberLogin ? 1 : 0))          // remember_login
-        body.append(ProtoWriter.varint(field: 6, 2))                              // platform_type
+        body.append(ProtoWriter.varint(field: 6, 1))                              // platform_type=SteamClient
         body.append(ProtoWriter.varint(field: 7, rememberLogin ? 1 : 0))          // persistence (1=persistent)
         body.append(ProtoWriter.string(field: 8, "Community"))                    // website_id
         body.append(ProtoWriter.message(field: 9, details))
@@ -119,7 +123,24 @@ final class SteamAuthService {
         UserDefaults.standard.set(access, forKey: "steam.accessToken")
         UserDefaults.standard.set(account, forKey: "steam.accountName")
         UserDefaults.standard.set(refresh, forKey: "steam.refreshToken")
+        // SteamID64 (claim `sub` del JWT): lo necesita SteamClientSeeder para sembrar la sesión
+        // del cliente (loginusers.vdf + universo de la clave ConnectCache).
+        if let sid = Self.steamID64(fromJWT: refresh) {
+            UserDefaults.standard.set(String(sid), forKey: "steam.steamID64")
+        }
         return Tokens(accountName: account, accessToken: access, refreshToken: refresh)
+    }
+
+    /// Extrae el SteamID64 del claim `sub` del payload de un JWT (refresh/access token de Steam).
+    nonisolated static func steamID64(fromJWT jwt: String) -> UInt64? {
+        let parts = jwt.split(separator: ".")
+        guard parts.count >= 2 else { return nil }
+        var b64 = String(parts[1]).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        while b64.count % 4 != 0 { b64 += "=" }
+        guard let data = Data(base64Encoded: b64),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let sub = obj["sub"] as? String else { return nil }
+        return UInt64(sub)
     }
 
     // MARK: - Sesión permanente (login una vez)

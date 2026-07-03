@@ -191,6 +191,23 @@ final class WineManager {
         }
         let cfgCache = "\(bottle.steamDirectory)/config/htmlcache"
         if fm.fileExists(atPath: cfgCache) { try? fm.removeItem(atPath: cfgCache) }
+        // Estado de crashes/GPU de la CEF: tras varios crashes del proceso GPU (SwiftShader), el
+        // contador en "Local State" (+ GPUCache/Crashpad) hace que Chromium NO vuelva a arrancar el
+        // webhelper del todo y el auto-login se CUELGA (verificado in-vivo tras muchos relanzamientos).
+        // Se borran para arrancar SIEMPRE en frío. No se toca `steamapps` (juegos) ni `userdata`.
+        let steamDir = bottle.steamDirectory
+        let cefState: Set<String> = ["gpucache", "crashpad", "shadercache", "code cache", "blob_storage", "local state"]
+        if let top = try? fm.contentsOfDirectory(atPath: steamDir) {
+            for entry in top where entry.lowercased() != "steamapps" && entry.lowercased() != "userdata" {
+                let path = "\(steamDir)/\(entry)"
+                if cefState.contains(entry.lowercased()) { try? fm.removeItem(atPath: path); continue }
+                if let e = fm.enumerator(atPath: path) {
+                    for case let rel as String in e where cefState.contains(((rel as NSString).lastPathComponent).lowercased()) {
+                        try? fm.removeItem(atPath: "\(path)/\(rel)")
+                    }
+                }
+            }
+        }
     }
 
     func detectWineInstallations() -> [(name: String, path: String, version: String)] {
@@ -1156,6 +1173,24 @@ final class WineManager {
         return !(UserDefaults.standard.string(forKey: "steam.refreshToken") ?? "").isEmpty
     }
 
+    /// Siembra la sesión del cliente de Steam desde el login NATIVO de Vessel (`SteamAuthService`)
+    /// cuando el cliente NO tiene sesión guardada pero Vessel SÍ tiene un `refresh_token` (de tipo
+    /// SteamClient, `platform_type=1`). Así un usuario NUEVO puede jugar títulos con DRM que exigen
+    /// Steam abierto SIN tener que iniciar sesión en el CEF (que en el M5 no renderiza para meter
+    /// credenciales). Idempotente y best-effort: si ya hay sesión, no toca nada.
+    private func maybeSeedSteamSession(in bottle: Bottle, wine: String) async {
+        if SteamClientSeeder.shared.hasSeededSession(in: bottle) { return }
+        let d = UserDefaults.standard
+        let login = d.string(forKey: "steam.accountName") ?? ""
+        let token = d.string(forKey: "steam.refreshToken") ?? ""
+        let sid = UInt64(d.string(forKey: "steam.steamID64") ?? "") ?? 0
+        guard !login.isEmpty, !token.isEmpty, sid > 0 else { return }
+        log.log("Usuario sin sesión en el cliente de Steam; sembrando el auto-login desde el login de Vessel…", level: .info)
+        let ok = await SteamClientSeeder.shared.seed(login: login, steamID64: sid, personaName: login,
+                                                     refreshToken: token, in: bottle, wine: wine)
+        log.log(ok ? "Sesión de Steam sembrada ✓ (auto-login sin CEF)." : "No se pudo sembrar la sesión de Steam (se abrirá el login).", level: ok ? .info : .warn)
+    }
+
     /// MODO "STEAM REAL" (nuestro equivalente a CrossOver, invisible): lanza un juego DRM de
     /// Steam con el cliente Steam REAL corriendo y **conectado** en el MISMO motor/wineserver
     /// que el juego, para que `SteamAPI_Init` hable con él (DRM real, como en Windows).
@@ -1674,6 +1709,12 @@ final class WineManager {
         // flag -skipinitialbootstrap y sin wrapper. Si no, Steam no descarga
         // steamui.dll y da "Failed to load steamui.dll".
         let bootstrapped = isSteamBootstrapped(in: bottle)
+        // SEMBRAR la sesión del cliente (auto-login por JWT) si es un usuario NUEVO —cliente sin
+        // sesión guardada— pero Vessel tiene el refresh_token de su login nativo. Así el cliente
+        // auto-loguea SIN pasar por el CEF (que en el M5 no renderiza para meter credenciales), y
+        // los juegos con DRM que exigen Steam abierto funcionan. Idempotente: si ya hay sesión, no
+        // toca nada. Solo tiene sentido con el cliente ya bootstrapeado (si no, Steam lo pisaría).
+        if bootstrapped { await maybeSeedSteamSession(in: bottle, wine: clientWine) }
         // Cliente ANTIGUO (sin cef.win64) bajo el motor unificado → dejar que Steam se
         // auto-actualice UNA vez. En Gcenx el updater fallaba ("http error 0") y por eso
         // se inhibía con steam.cfg; en el unificado FUNCIONA (WINEMSYNC=0, validado). Se
