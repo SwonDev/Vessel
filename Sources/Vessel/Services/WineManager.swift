@@ -1120,13 +1120,40 @@ final class WineManager {
     /// lanzar el juego —que moriría sin DRM y sin feedback ("no abre nada")— AVISAMOS al usuario
     /// y dejamos el cliente de Steam ABIERTO (ya lo arrancó `ensureSteamConnected`) para que
     /// inicie sesión y lance el juego desde su biblioteca de Steam. Cero fricción, acción clara.
-    private func steamRealNotConnected(gameExecutable: String) -> WineError {
+    private func steamRealNotConnected(gameExecutable: String, in bottle: Bottle) -> WineError {
         let name = ((gameExecutable as NSString).lastPathComponent as NSString).deletingPathExtension
-        NotificationService.shared.alert(
-            title: "\(name) necesita Steam",
-            body: "No se pudo iniciar sesión en Steam automáticamente. Abre Steam (botón de Steam, arriba), inicia sesión y lánzalo desde tu biblioteca. Si Steam no responde, suele ser temporal: prueba de nuevo en unos minutos.")
-        log.log("El cliente Steam no inició sesión a tiempo; se avisa al usuario con acción clara.", level: .warn)
-        return WineError.launchFailed("\(name) necesita el cliente de Steam conectado. Hemos abierto Steam: inicia sesión y lánzalo desde tu biblioteca de Steam.")
+        // El juego SE LANZA SOLO desde Vessel (el usuario ya no abre Steam ni lo lanza desde su
+        // biblioteca — Steam corre invisible en segundo plano solo para el DRM). El mensaje depende
+        // de si ya hay una sesión de Steam guardada:
+        //  · CON sesión → fue transitorio (Steam aún arrancaba): reintentar, sin tocar nada.
+        //  · SIN sesión → PRIMERA vez: iniciar sesión UNA vez con el login propio de Vessel.
+        let hasSession = hasSteamSession(in: bottle)
+        if hasSession {
+            NotificationService.shared.alert(
+                title: "\(name): reintenta en un momento",
+                body: "Steam se estaba abriendo en segundo plano y aún no había iniciado sesión. Vuelve a pulsar Jugar en unos segundos — se lanza solo, no tienes que abrir nada.")
+            log.log("Steam no confirmó sesión a tiempo (sesión presente); se pide reintentar.", level: .warn)
+            return WineError.launchFailed("\(name): Steam estaba arrancando. Reintenta en unos segundos; se lanza solo.")
+        } else {
+            NotificationService.shared.alert(
+                title: "\(name): inicia sesión en Steam",
+                body: "Este juego usa el DRM de Steam. La PRIMERA vez, inicia sesión en Steam desde Vessel (botón de Steam, arriba → Iniciar sesión) una sola vez; después se lanzará automáticamente en segundo plano, sin abrir nada.")
+            log.log("Steam sin sesión guardada; se guía al usuario al login propio de Vessel.", level: .warn)
+            return WineError.launchFailed("\(name) necesita tu sesión de Steam. Inicia sesión en Steam desde Vessel la primera vez; luego se lanza solo.")
+        }
+    }
+
+    /// ¿Hay una sesión de Steam disponible para auto-login por JWT? True si el cliente tiene una
+    /// cuenta recordada (`loginusers.vdf` con `MostRecent`/`RememberPassword`) o si el login propio
+    /// de Vessel guardó un `refresh_token`. Distingue "primera vez" (guiar al login) de un fallo
+    /// transitorio (Steam aún arrancando → reintentar).
+    private func hasSteamSession(in bottle: Bottle) -> Bool {
+        let loginusers = "\(bottle.steamDirectory)/config/loginusers.vdf"
+        if let s = try? String(contentsOfFile: loginusers, encoding: .utf8),
+           s.contains("\"MostRecent\"") || s.contains("\"RememberPassword\"") {
+            return true
+        }
+        return !(UserDefaults.standard.string(forKey: "steam.refreshToken") ?? "").isEmpty
     }
 
     /// MODO "STEAM REAL" (nuestro equivalente a CrossOver, invisible): lanza un juego DRM de
@@ -1160,7 +1187,7 @@ final class WineManager {
             // silencio → "no abre nada"), AVISAMOS al usuario y dejamos el cliente Steam
             // ABIERTO para que inicie sesión y lo lance desde su biblioteca de Steam (cero
             // fricción, acción clara — como haría CrossOver).
-            if !connected { throw steamRealNotConnected(gameExecutable: executable) }
+            if !connected { throw steamRealNotConnected(gameExecutable: executable, in: bottle) }
             log.log("Cliente Steam conectado; lanzando el juego con DRM real.", level: .info)
 
             // Juego en el MISMO wineserver que el cliente → la sincronización DEBE
@@ -1208,7 +1235,7 @@ final class WineManager {
         ensureSteamConfig(in: bottle)
         log.log("Modo Steam real: preparando el cliente Steam (conectado) para el DRM…", level: .info)
         let connected = await ensureSteamConnected(in: bottle, clientWine: gptkWine)
-        if !connected { throw steamRealNotConnected(gameExecutable: executable) }
+        if !connected { throw steamRealNotConnected(gameExecutable: executable, in: bottle) }
         log.log("Cliente Steam conectado; lanzando el juego con DRM real.", level: .info)
 
         // 4) Lanzar el juego en GPTK, MISMO wineserver que Steam (NO se mata Steam ni se

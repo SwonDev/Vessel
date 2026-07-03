@@ -123,9 +123,9 @@ enum LaunchDiagnostics {
             if usesRealSteam {
                 if !alive {
                     NotificationService.shared.alert(
-                        title: "\(gameTitle) necesita Steam",
-                        body: "No se pudo lanzar automáticamente. Abre Steam (botón de Steam, arriba), inicia sesión y lánzalo desde tu biblioteca. Si Steam no responde, suele ser temporal: prueba de nuevo en unos minutos.")
-                    LogStore.shared.log("⚠️ \(gameTitle): necesita el cliente de Steam conectado; se avisó al usuario y se dejó Steam abierto (sin reintentos de capa gráfica).", level: .warn)
+                        title: "\(gameTitle): no arrancó del todo",
+                        body: "El juego se cerró al arrancar. Steam corre en segundo plano para el DRM (no tienes que abrir nada): vuelve a pulsar Jugar. Si es la primera vez, inicia sesión en Steam desde Vessel (botón de Steam, arriba) una sola vez.")
+                    LogStore.shared.log("⚠️ \(gameTitle): el juego (Steam real) se cerró al arrancar; se avisó al usuario para reintentar (Steam sigue en segundo plano).", level: .warn)
                 }
                 return
             }
