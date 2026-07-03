@@ -119,7 +119,7 @@ enum LaunchDiagnostics {
                 if !alive {
                     NotificationService.shared.alert(
                         title: "\(gameTitle) necesita Steam",
-                        body: "No se pudo lanzar automáticamente. Hemos abierto el cliente de Steam: inicia sesión y pulsa Jugar en tu biblioteca de Steam para jugarlo.")
+                        body: "No se pudo lanzar automáticamente. Abre Steam (botón de Steam, arriba), inicia sesión y lánzalo desde tu biblioteca. Si Steam no responde, suele ser temporal: prueba de nuevo en unos minutos.")
                     LogStore.shared.log("⚠️ \(gameTitle): necesita el cliente de Steam conectado; se avisó al usuario y se dejó Steam abierto (sin reintentos de capa gráfica).", level: .warn)
                 }
                 return

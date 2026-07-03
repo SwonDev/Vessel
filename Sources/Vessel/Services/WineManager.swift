@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 @MainActor
 @Observable
@@ -989,6 +990,20 @@ final class WineManager {
         return connected
     }
 
+    /// ¿Está en pantalla el diálogo de Wine **"Steamwebhelper no responde"**? Señala que el
+    /// webhelper (la UI de Steam) se colgó (caché CEF corrupta): `launchSteam` reusaría ese
+    /// cliente roto y el login no llegaría nunca. Detectado por el título de la ventana, permite
+    /// auto-repararlo AL INSTANTE (reinicio limpio) en vez de esperar la ventana de gracia — y de
+    /// paso el propio reinicio CIERRA el diálogo, para que el usuario no se quede mirándolo.
+    private func isSteamWebHelperHung() -> Bool {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return false }
+        for w in list {
+            let name = (w[kCGWindowName as String] as? String ?? "").lowercased()
+            if name.contains("no responde") || name.contains("not responding") { return true }
+        }
+        return false
+    }
+
     /// Asegura que el cliente Steam está CORRIENDO y **conectado** en `clientWine` (mismo
     /// motor que usará el juego, para compartir wineserver → DRM). Lo arranca si hace falta y
     /// espera hasta `timeoutSeconds` a que el `connection_log` confirme el logon. Devuelve si
@@ -1011,15 +1026,22 @@ final class WineManager {
         // wrapper `--single-process`) para que el webhelper renderice y el login complete.
         let graceSeconds = 30
         var restarts = 0
+        var lastRestartElapsed = -100
         for elapsed in 0..<timeoutSeconds {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             if isSteamConnected(in: bottle) { NotificationService.shared.status(nil); return true }
-            // Reintento limpio al llegar a la gracia y luego cada `graceSeconds` (máx 2 veces):
-            // el webhelper colgado ("no responde") no se recupera solo reusándolo.
-            if restarts < 2, elapsed > 0, elapsed % graceSeconds == 0, isWineProcessRunning(matching: "steam.exe") {
+            // Reinicio limpio del cliente (máx 2 veces): AL INSTANTE si aparece el diálogo
+            // "Steamwebhelper no responde" (webhelper colgado → el reinicio lo CIERRA y da caché
+            // CEF limpia), o si simplemente tarda demasiado (cada `graceSeconds`). `settled` deja
+            // ~15 s tras cada reinicio para que el nuevo cliente arranque antes de re-evaluar.
+            let settled = elapsed - lastRestartElapsed >= 15
+            let hung = settled && isSteamWebHelperHung()
+            let tooSlow = elapsed > 0 && elapsed % graceSeconds == 0
+            if restarts < 2, hung || tooSlow, isWineProcessRunning(matching: "steam.exe") {
                 restarts += 1
+                lastRestartElapsed = elapsed
                 NotificationService.shared.status("Steam no responde; reiniciándolo automáticamente…")
-                log.log("El cliente Steam no ha iniciado sesión en \(elapsed)s (webhelper posiblemente colgado); reinicio limpio del cliente (intento \(restarts))…", level: .warn)
+                log.log("Reinicio limpio del cliente Steam (intento \(restarts); \(hung ? "webhelper colgado" : "sin login en \(elapsed)s"))…", level: .warn)
                 try? await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
                 try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
                 cleanCEFCache(in: bottle)
@@ -1027,6 +1049,13 @@ final class WineManager {
                 catch { log.log("No se pudo relanzar el cliente Steam: \(error.localizedDescription)", level: .error) }
                 NotificationService.shared.status("Esperando a que Steam inicie sesión…")
             }
+        }
+        // Al rendirnos, si el webhelper sigue colgado, cerramos ese Steam roto: dejar el diálogo
+        // "no responde" abierto no sirve de nada y solo confunde. El aviso lo da el llamante.
+        if isSteamWebHelperHung() {
+            log.log("Steam no llegó a iniciar sesión y su webhelper sigue colgado; se cierra el cliente roto.", level: .warn)
+            try? await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
+            try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
         }
         NotificationService.shared.status(nil)
         return isSteamConnected(in: bottle)
@@ -1041,8 +1070,8 @@ final class WineManager {
         let name = ((gameExecutable as NSString).lastPathComponent as NSString).deletingPathExtension
         NotificationService.shared.alert(
             title: "\(name) necesita Steam",
-            body: "Hemos abierto el cliente de Steam. Inicia sesión y pulsa Jugar en tu biblioteca de Steam para lanzar el juego.")
-        log.log("El cliente Steam no inició sesión a tiempo; se avisa al usuario y se deja Steam abierto para lanzar el juego desde ahí.", level: .warn)
+            body: "No se pudo iniciar sesión en Steam automáticamente. Abre Steam (botón de Steam, arriba), inicia sesión y lánzalo desde tu biblioteca. Si Steam no responde, suele ser temporal: prueba de nuevo en unos minutos.")
+        log.log("El cliente Steam no inició sesión a tiempo; se avisa al usuario con acción clara.", level: .warn)
         return WineError.launchFailed("\(name) necesita el cliente de Steam conectado. Hemos abierto Steam: inicia sesión y lánzalo desde tu biblioteca de Steam.")
     }
 
