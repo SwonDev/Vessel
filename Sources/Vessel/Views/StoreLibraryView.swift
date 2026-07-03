@@ -224,7 +224,11 @@ struct StoreLibraryView: View {
     /// suave (deslizándose), lo que da la transición premium que `HSplitView` no permitía.
     @AppStorage("vessel.sidebarWidth") private var sidebarWidthRaw: Double = 244
     @State private var sidebarDragStart: Double? = nil
-    private var sidebarWidth: CGFloat { CGFloat(min(360, max(200, sidebarWidthRaw))) }
+    /// Ancho EN VIVO durante el arrastre: en memoria (`@State`), para NO escribir en `UserDefaults`
+    /// (@AppStorage) en cada frame — esa I/O síncrona por frame era una de las causas del stutter.
+    /// Se persiste una sola vez al soltar. `nil` = no se está arrastrando (manda el persistido).
+    @State private var liveSidebarWidth: Double? = nil
+    private var sidebarWidth: CGFloat { CGFloat(min(360, max(200, liveSidebarWidth ?? sidebarWidthRaw))) }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -306,14 +310,21 @@ struct StoreLibraryView: View {
         .frame(maxHeight: .infinity)
         .contentShape(Rectangle())
         .onHover { $0 ? NSCursor.resizeLeftRight.push() : NSCursor.pop() }
+        // Coordenadas GLOBALES: el divisor vive DENTRO del HStack que se redimensiona, así que en
+        // coordenadas locales su espacio se desplaza al moverlo → la `translation` se realimenta y
+        // el arrastre VIBRA. En global, la `translation` es estable (espacio de pantalla) → 1:1 fluido.
         .gesture(
-            DragGesture(minimumDistance: 1)
+            DragGesture(minimumDistance: 1, coordinateSpace: .global)
                 .onChanged { value in
                     if sidebarDragStart == nil { sidebarDragStart = sidebarWidthRaw }
                     let base = sidebarDragStart ?? sidebarWidthRaw
-                    sidebarWidthRaw = Double(min(360, max(200, CGFloat(base) + value.translation.width)))
+                    liveSidebarWidth = Double(min(360, max(200, CGFloat(base) + value.translation.width)))
                 }
-                .onEnded { _ in sidebarDragStart = nil }
+                .onEnded { _ in
+                    if let w = liveSidebarWidth { sidebarWidthRaw = w }  // persistir UNA vez, al soltar
+                    liveSidebarWidth = nil
+                    sidebarDragStart = nil
+                }
         )
         .accessibilityHidden(true)
     }
