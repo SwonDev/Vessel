@@ -1023,6 +1023,20 @@ final class WineManager {
         return isSteamConnected(in: bottle)
     }
 
+    /// El modo Steam real no pudo confirmar la sesión del cliente Steam (login no completado:
+    /// primera vez, Steam Guard, o límite temporal de Steam tras muchos arranques). En vez de
+    /// lanzar el juego —que moriría sin DRM y sin feedback ("no abre nada")— AVISAMOS al usuario
+    /// y dejamos el cliente de Steam ABIERTO (ya lo arrancó `ensureSteamConnected`) para que
+    /// inicie sesión y lance el juego desde su biblioteca de Steam. Cero fricción, acción clara.
+    private func steamRealNotConnected(gameExecutable: String) -> WineError {
+        let name = ((gameExecutable as NSString).lastPathComponent as NSString).deletingPathExtension
+        NotificationService.shared.notify(
+            title: "\(name) necesita Steam",
+            body: "Hemos abierto el cliente de Steam. Inicia sesión y pulsa Jugar en tu biblioteca de Steam para lanzar el juego.")
+        log.log("El cliente Steam no inició sesión a tiempo; se avisa al usuario y se deja Steam abierto para lanzar el juego desde ahí.", level: .warn)
+        return WineError.launchFailed("\(name) necesita el cliente de Steam conectado. Hemos abierto Steam: inicia sesión y lánzalo desde tu biblioteca de Steam.")
+    }
+
     /// MODO "STEAM REAL" (nuestro equivalente a CrossOver, invisible): lanza un juego DRM de
     /// Steam con el cliente Steam REAL corriendo y **conectado** en el MISMO motor/wineserver
     /// que el juego, para que `SteamAPI_Init` hable con él (DRM real, como en Windows).
@@ -1047,10 +1061,12 @@ final class WineManager {
             ensureSteamConfig(in: bottle)
             log.log("Modo Steam real (motor unificado): preparando el cliente Steam conectado…", level: .info)
             let connected = await ensureSteamConnected(in: bottle, clientWine: unifiedWine)
-            log.log(connected
-                ? "Cliente Steam conectado; lanzando el juego con DRM real."
-                : "El cliente Steam no confirmó conexión a tiempo; se intenta lanzar igualmente.",
-                level: connected ? .info : .warn)
+            // Sin sesión en Steam no hay DRM: en vez de lanzar el juego (que moriría en
+            // silencio → "no abre nada"), AVISAMOS al usuario y dejamos el cliente Steam
+            // ABIERTO para que inicie sesión y lo lance desde su biblioteca de Steam (cero
+            // fricción, acción clara — como haría CrossOver).
+            if !connected { throw steamRealNotConnected(gameExecutable: executable) }
+            log.log("Cliente Steam conectado; lanzando el juego con DRM real.", level: .info)
 
             // Juego en el MISMO wineserver que el cliente → la sincronización DEBE
             // coincidir (WINEMSYNC/ESYNC/FSYNC=0, como el cliente): mezclar esync entre
@@ -1084,10 +1100,8 @@ final class WineManager {
         ensureSteamConfig(in: bottle)
         log.log("Modo Steam real: preparando el cliente Steam (conectado) para el DRM…", level: .info)
         let connected = await ensureSteamConnected(in: bottle, clientWine: gptkWine)
-        log.log(connected
-            ? "Cliente Steam conectado; lanzando el juego con DRM real."
-            : "El cliente Steam no confirmó conexión a tiempo; se intenta lanzar igualmente.",
-            level: connected ? .info : .warn)
+        if !connected { throw steamRealNotConnected(gameExecutable: executable) }
+        log.log("Cliente Steam conectado; lanzando el juego con DRM real.", level: .info)
 
         // 4) Lanzar el juego en GPTK, MISMO wineserver que Steam (NO se mata Steam ni se
         //    resincroniza el prefijo, que lo tumbaría). SteamAPI_Init encuentra el cliente vivo.
