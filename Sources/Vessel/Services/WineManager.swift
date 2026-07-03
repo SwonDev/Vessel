@@ -901,6 +901,30 @@ final class WineManager {
         return nil
     }
 
+    /// Siembra los `d3dcompiler_43`/`d3dx9_43`/`d3dx9_42` **NATIVOS de Microsoft**
+    /// (Resources/redist) en el prefijo. IMPRESCINDIBLE para juegos **DX11 en el motor
+    /// unificado**: DXMT aporta el `d3d11` builtin, pero muchos juegos (p. ej. Grim Dawn)
+    /// compilan sus shaders con `d3dcompiler_43`, y el builtin de Wine **importa
+    /// `wined3d.dll`**, que el motor unificado NO tiene (lo reemplazó DXMT) → el
+    /// `d3dcompiler` builtin no carga → "Couldn't initialize graphics engine" / pantalla
+    /// negra (verificado in-vivo con Grim Dawn). El de Microsoft es autocontenido (compila
+    /// HLSL sin GPU) y va perfecto bajo DXMT. Debe acompañarse del override `native` (ver
+    /// `shaderCompilerOverrides`) o Wine seguiría prefiriendo su builtin. Idempotente.
+    private func ensureNativeShaderCompiler(in bottle: Bottle) {
+        guard let redist = Self.d3dx9RedistDirectory() else {
+            log.log("d3dcompiler nativo no encontrado en Resources/redist; algunos juegos DX11 podrían no iniciar.", level: .warn)
+            return
+        }
+        let syswow = "\(bottle.prefixPath)/drive_c/windows/syswow64"
+        let system32 = "\(bottle.prefixPath)/drive_c/windows/system32"
+        try? FileManager.default.createDirectory(atPath: syswow, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(atPath: system32, withIntermediateDirectories: true)
+        for dll in ["d3dcompiler_43.dll", "d3dx9_43.dll", "d3dx9_42.dll"] {
+            copyDLLOverwrite(from: "\(redist)/x32/\(dll)", to: "\(syswow)/\(dll)")
+            copyDLLOverwrite(from: "\(redist)/x64/\(dll)", to: "\(system32)/\(dll)")
+        }
+    }
+
     /// Lanza un juego **D3D12** con **GPTK / D3DMetal** (D3D12→Metal nativo de
     /// Apple), la misma vía que CrossOver/Whisky/Mythic. Es lo único que ejecuta de
     /// forma fiable juegos D3D12 AAA con DirectX 12 Agility SDK (como FF Tactics):
@@ -1032,14 +1056,14 @@ final class WineManager {
     /// motor que usará el juego, para compartir wineserver → DRM). Lo arranca si hace falta y
     /// espera hasta `timeoutSeconds` a que el `connection_log` confirme el logon. Devuelve si
     /// llegó a conectar. Con `-tcp` la conexión al CM es estable bajo Wine (el UDP se caía).
-    func ensureSteamConnected(in bottle: Bottle, clientWine: String, timeoutSeconds: Int = 90) async -> Bool {
+    func ensureSteamConnected(in bottle: Bottle, clientWine: String, timeoutSeconds: Int = 90, background: Bool = false) async -> Bool {
         if isSteamConnected(in: bottle) { return true }
         // Estado EN VIVO para el usuario (banner no bloqueante): que SIEMPRE sepa qué pasa.
         NotificationService.shared.status("Abriendo el cliente de Steam…")
         // Arrancar Steam SIEMPRE que no esté conectado: `launchSteam` ya es idempotente (si
         // `steam.exe` corre, se reutiliza). NO gatear en `steamwebhelper` — pgrep lista zombies
         // que `pkill` no puede reapear, y eso hacía que se SALTARA el arranque (Steam nunca abría).
-        do { _ = try await launchSteam(in: bottle, using: clientWine) }
+        do { _ = try await launchSteam(in: bottle, using: clientWine, background: background) }
         catch { log.log("No se pudo arrancar el cliente Steam: \(error.localizedDescription)", level: .error) }
         NotificationService.shared.status("Esperando a que Steam inicie sesión (la primera vez puede tardar un poco)…")
         // Espera al login. AUTO-REPARACIÓN: si Steam sigue vivo pero SIN iniciar sesión tras una
@@ -1054,6 +1078,10 @@ final class WineManager {
         for elapsed in 0..<timeoutSeconds {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             if isSteamConnected(in: bottle) { NotificationService.shared.status(nil); return true }
+            // MODO BACKGROUND (DRM): NO reiniciar. El multiproceso muestra "Steamwebhelper no
+            // responde" (su subproceso GPU crashea) pero el cliente LOGUEA por JWT igualmente;
+            // reiniciar solo reinicia el reloj del login y nunca converge. Solo esperamos.
+            if background { continue }
             // Reinicio limpio del cliente (máx 2 veces): AL INSTANTE si aparece el diálogo
             // "Steamwebhelper no responde" (webhelper colgado → el reinicio lo CIERRA y da caché
             // CEF limpia), o si simplemente tarda demasiado (cada `graceSeconds`). `settled` deja
@@ -1076,7 +1104,9 @@ final class WineManager {
         }
         // Al rendirnos, si el webhelper sigue colgado, cerramos ese Steam roto: dejar el diálogo
         // "no responde" abierto no sirve de nada y solo confunde. El aviso lo da el llamante.
-        if isSteamWebHelperHung() {
+        // EXCEPCIÓN: en modo background NO se cierra — el "no responde" es cosmético (multiproceso)
+        // y el cliente puede estar ya logueado/logueándose por JWT; matarlo tumbaría el DRM.
+        if !background, isSteamWebHelperHung() {
             log.log("Steam no llegó a iniciar sesión y su webhelper sigue colgado; se cierra el cliente roto.", level: .warn)
             try? await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
             try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
@@ -1122,7 +1152,10 @@ final class WineManager {
            WineEngineLocator.isUnifiedEngine(unifiedWine) {
             ensureSteamConfig(in: bottle)
             log.log("Modo Steam real (motor unificado): preparando el cliente Steam conectado…", level: .info)
-            let connected = await ensureSteamConnected(in: bottle, clientWine: unifiedWine)
+            // Cliente en SEGUNDO PLANO (multiproceso `-silent`): loguea por JWT sin ventana ni
+            // colgarse (a diferencia del wrapper single-process del CEF). Para el DRM basta con
+            // Steam vivo + logueado; la UI no se necesita. Timeout amplio (el login tarda ~45-60s).
+            let connected = await ensureSteamConnected(in: bottle, clientWine: unifiedWine, timeoutSeconds: 120, background: true)
             // Sin sesión en Steam no hay DRM: en vez de lanzar el juego (que moriría en
             // silencio → "no abre nada"), AVISAMOS al usuario y dejamos el cliente Steam
             // ABIERTO para que inicie sesión y lo lance desde su biblioteca de Steam (cero
@@ -1136,9 +1169,19 @@ final class WineManager {
             // a launchWineProcess (su overlay pisaría el sync); lo esencial del perfil
             // (args y entorno extra) se aplica a mano.
             await setMacDriverRetinaMode(prefix: bottle.prefixPath, wine: unifiedWine, enabled: effective.retina)
+            // Juegos DX11 por DXMT: el `d3d11` builtin del motor ES DXMT, pero muchos juegos
+            // compilan shaders con `d3dcompiler_43` (cuyo builtin de Wine importa `wined3d`,
+            // ausente en el motor unificado → "Couldn't initialize graphics engine"). Sembramos
+            // el d3dcompiler/d3dx9 NATIVO de Microsoft + lo forzamos por override. También
+            // dejamos las DLLs de DXMT junto al exe (idempotente). Verificado con Grim Dawn.
+            ensureNativeShaderCompiler(in: bottle)
+            ensureGameDXMTDLLs(gameExecutable: executable, gameWine: unifiedWine)
             var env = steamClientEnvironment(prefix: bottle.prefixPath, wine: unifiedWine)
             env["SteamAppId"] = appId
             env["SteamGameId"] = appId
+            let baseOverrides = env["WINEDLLOVERRIDES"]
+            env["WINEDLLOVERRIDES"] = (baseOverrides?.isEmpty == false)
+                ? "\(baseOverrides!);\(Self.shaderCompilerOverrides)" : Self.shaderCompilerOverrides
             for (k, v) in effective.extraEnv { env[k] = v }
             log.log("Lanzando \((executable as NSString).lastPathComponent) vía Steam real (motor unificado, DXMT→Metal).", level: .info)
             NotificationService.shared.status("Steam conectado. Lanzando el juego…")
@@ -1567,7 +1610,7 @@ final class WineManager {
     }
 
     @discardableResult
-    func launchSteam(in bottle: Bottle, using winePath: String? = nil) async throws -> Process {
+    func launchSteam(in bottle: Bottle, using winePath: String? = nil, background: Bool = false) async throws -> Process {
         guard FileManager.default.fileExists(atPath: bottle.steamPath) else {
             throw WineError.launchFailed("Steam no está instalado en este bottle.")
         }
@@ -1602,6 +1645,16 @@ final class WineManager {
         if needsSelfUpdate {
             log.log("Cliente de Steam antiguo detectado: Steam se actualizará solo (una única vez, puede tardar unos minutos)…", level: .info)
             removeSteamConfig(in: bottle)
+            wrapperInstaller.restoreRealWebHelpers(in: bottle)
+            cleanCEFCache(in: bottle)
+        } else if bootstrapped && background {
+            // MODO BACKGROUND (DRM real, p. ej. Grim Dawn): solo hace falta Steam VIVO +
+            // LOGUEADO (JWT), NO su UI. El wrapper single-process del CEF se CUELGA en el M5
+            // (ni rinde ni loguea → "Steamwebhelper no responde"); en MULTIPROCESO (webhelper
+            // real) el subproceso GPU crashea (UI negra) pero el cliente LOGUEA por JWT y el
+            // DRM funciona (verificado: Grim Dawn cargó cuenta + personajes). `-silent` = sin
+            // ventana negra, solo el icono en la barra.
+            ensureSteamConfig(in: bottle)
             wrapperInstaller.restoreRealWebHelpers(in: bottle)
             cleanCEFCache(in: bottle)
         } else if bootstrapped {
@@ -1639,7 +1692,8 @@ final class WineManager {
         // En fresh/actualización, argumentos mínimos: sin -noverifyfiles ni
         // -skipinitialbootstrap, para que el bootstrap/updater pueda completarse.
         let args = needsSelfUpdate ? ["-no-cef-sandbox", "-tcp"]
-            : bootstrapped ? Self.steamLaunchArguments : ["-no-cef-sandbox"]
+            : bootstrapped ? (background ? Self.steamLaunchArguments + ["-silent"] : Self.steamLaunchArguments)
+            : ["-no-cef-sandbox"]
         // CLAVE: cwd = carpeta de Steam (escribible). Con cwd en "/" (lo que hereda la
         // app GUI) CEF no puede crear su caché y Steam se abre y se cierra solo.
         return try await launchWineProcess(
@@ -2023,6 +2077,13 @@ final class WineManager {
     /// - nvapi64/nvngx: DXMT (NVIDIA API shim para que Unity no fallé)
     nonisolated static let dxmtDllOverrides =
         "d3d8=n,b; d3d9=n,b; d3d10=n,b; d3d10_1=n,b; d3d10core=n,b; d3d11=n,b; d3d12=b; d3d12core=b; dxgi=n,b; winemetal=n,b; nvapi64=n,b; nvngx=n,b; winedbg.exe=d"
+
+    /// Fuerza los `d3dcompiler_43`/`d3dx9_43`/`d3dx9_42` **NATIVOS** (los builtin de Wine
+    /// importan `wined3d`, ausente en el motor unificado → fallan). Va SIEMPRE con
+    /// `ensureNativeShaderCompiler`, que los siembra en el prefijo. No toca `d3d11`/`dxgi`
+    /// (los provee DXMT como builtin del motor).
+    nonisolated static let shaderCompilerOverrides =
+        "d3dcompiler_47=n;d3dcompiler_43=n;d3dx9_43=n;d3dx9_42=n"
 
     /// Override de DLLs legacy (solo DXVK, sin DXMT). Se usa cuando el bottle
     /// tiene DXVK pero no DXMT activado.
