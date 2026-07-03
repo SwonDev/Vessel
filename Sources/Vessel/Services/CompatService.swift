@@ -50,7 +50,14 @@ final class CompatService {
     func reload() {
         var merged: [String: CompatProfile] = [:]
         for p in loadBundled() { merged[p.id] = p }
-        for p in loadCachedRemote() { merged[p.id] = p }   // la remota gana
+        for p in loadCachedRemote() {
+            // La remota (comunidad) gana SOLO si NO es más ANTIGUA que la del bundle. Antes ganaba
+            // siempre, y una entrada comunitaria vieja PISABA un fix recién shippeado en el bundle
+            // (p. ej. `useRealSteam` de FFT se perdía → no arrancaba). Comparación por `date`
+            // (YYYY-MM-DD, ordenable como string). Si alguna no tiene fecha, gana la remota (comportamiento previo).
+            if let bundled = merged[p.id], let bd = bundled.date, let rd = p.date, rd < bd { continue }
+            merged[p.id] = p
+        }
         profiles = Array(merged.values)
         rebuildIndices()
         LogStore.shared.log("Compatibilidad: \(profiles.count) perfil(es) cargados", level: .debug)
