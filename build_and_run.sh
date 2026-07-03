@@ -21,6 +21,7 @@ cp "$BIN_PATH" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 [ -f "$ICON_PATH" ] && cp "$ICON_PATH" "$APP_BUNDLE/Contents/Resources/icon.icns"
 [ -f "Resources/steamwebhelper-wrapper.exe" ] && cp "Resources/steamwebhelper-wrapper.exe" "$APP_BUNDLE/Contents/Resources/steamwebhelper-wrapper.exe"
 [ -f "Resources/game-wrapper.exe" ] && cp "Resources/game-wrapper.exe" "$APP_BUNDLE/Contents/Resources/game-wrapper.exe"
+[ -f "Resources/dpapi-seal.exe" ] && cp "Resources/dpapi-seal.exe" "$APP_BUNDLE/Contents/Resources/dpapi-seal.exe"
 # Certificados raíz DigiCert (validación TLS del login/CM de Steam — cadena EV ECDSA)
 [ -f "Resources/steam-certs.reg" ] && cp "Resources/steam-certs.reg" "$APP_BUNDLE/Contents/Resources/steam-certs.reg"
 # Logos oficiales de las tiendas (sidebar)
