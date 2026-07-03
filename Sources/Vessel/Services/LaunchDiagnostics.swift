@@ -45,10 +45,15 @@ enum LaunchDiagnostics {
         Signature(
             markers: ["InitializeEngineGraphics failed", "Failed to initialize graphics",
                       "D3D11CreateDevice failed", "Direct3D 11 device creation failed",
-                      "no usable GPU adapter", "GfxDevice: no device", "Failed to create D3D"],
+                      "no usable GPU adapter", "GfxDevice: no device", "Failed to create D3D",
+                      // Unreal Engine / Unity: no obtuvieron un device D3D11 con Feature Level 11.0
+                      // (usaron wined3d en vez de DXMT). El reintento con DXMT lo resuelve. Común en
+                      // juegos Unreal cuyo exe REAL vive en `Binaries/Win64` (ver SteamLibraryImporter).
+                      "A D3D11-compatible GPU", "is required to run the engine",
+                      "Feature Level 11.0, Shader Model 5.0"],
             category: .graphics,
             title: "No se pudieron iniciar los gráficos",
-            body: "El juego no logró inicializar Direct3D (Metal). Prueba a «Verificar / reparar» o cambia la capa gráfica en sus Ajustes."),
+            body: "El juego no logró inicializar Direct3D 11 (Metal). Lo reintentamos con otra capa gráfica automáticamente; si persiste, prueba «Verificar / reparar»."),
         Signature(
             markers: ["c0000135", "could not load kernel32", "was not found", "The program can't start",
                       "api-ms-win", "VCRUNTIME140", "MSVCP140", "vcruntime"],

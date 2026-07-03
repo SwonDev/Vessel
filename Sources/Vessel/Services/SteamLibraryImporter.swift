@@ -165,6 +165,16 @@ final class SteamLibraryImporter {
             if serverLike { s -= 1000 }
             // Launchers de terceros: penalizar (pero por encima de un servidor).
             if rel.contains("launcher") { s -= 200 }
+            // **Unreal Engine**: el juego REAL vive en `<Proyecto>/Binaries/Win64/…-Shipping.exe`;
+            // el `.exe` de la raíz es un LANZADOR que lo arranca. Si Vessel lanza el lanzador, DXMT
+            // no llega al exe real y Unreal muere con "A D3D11-compatible GPU (Feature Level 11.0,
+            // Shader Model 5.0) is required to run the engine". Se prefiere el exe de `Binaries/Win64`
+            // con fuerza (supera al lanzador de la raíz pese a la penalización de profundidad).
+            if comps.dropLast().contains("binaries"),
+               comps.dropLast().contains(where: { $0 == "win64" || $0 == "win32" || $0 == "wingdk" }) {
+                s += 400
+                if base.contains("shipping") { s += 100 }   // el Shipping ES el build de release
+            }
             // Marcador de cliente Unity: existe la carpeta hermana `<base>_Data`.
             let sibling = (full as NSString).deletingLastPathComponent
             let exeStem = ((base as NSString).deletingPathExtension)

@@ -469,6 +469,18 @@ final class WineManager {
             }
             return .d3d11
         }
+        // **Unreal Engine** (el exe real vive en `Binaries/Win64|Win32|WinGDK`): UE5 importa d3d12
+        // (su RHI por defecto en Windows) Y d3d11. Pero en Mac, GPTK/D3DMetal (D3D12) se reporta como
+        // GPU **AMD** y UE avisa "AMD graphics driver has known issues in D3D11" (fricción) o rinde
+        // peor; por **DXMT (d3d11)** arranca LIMPIO (validado con Dwarven Realms: FL 11.1, sin avisos).
+        // Se trata como D3D11 → DXMT, y `launch()` le añade `-d3d11` para forzar el RHI D3D11 de UE.
+        let dirLower = dir.lowercased()
+        let isUnreal = dirLower.contains("/binaries/win64")
+            || dirLower.contains("/binaries/win32")
+            || dirLower.contains("/binaries/wingdk")
+        if isUnreal, exeImports(executable, anyOf: ["d3d11.dll", "dxgi.dll"]) {
+            return .d3d11
+        }
         if fm.fileExists(atPath: "\(dir)/D3D12/D3D12Core.dll")
             || fm.fileExists(atPath: "\(dir)/D3D12Core.dll") {
             return .d3d12
@@ -649,8 +661,9 @@ final class WineManager {
             env["SteamGameId"] = appId
         }
 
-        // Flags Unity (modo borderless fullscreen + DXMT). Solo se añaden a Unity.
+        // Flags de motor: Unity (borderless fullscreen) o Unreal (`-d3d11`). Solo el que aplique.
         let engineArgs = unityLaunchArguments(forExecutable: executable)
+            + unrealLaunchArguments(forExecutable: executable)
         let gameEngineLabel = WineEngineLocator.isUnifiedEngine(gameWine)
             ? "motor unificado" : "wine-dxmt"
         log.log("Lanzando juego con \(gameEngineLabel) (DXMT→Metal): \((executable as NSString).lastPathComponent)", level: .info)
@@ -1323,6 +1336,20 @@ final class WineManager {
         let fm = FileManager.default
         return fm.fileExists(atPath: "\(dir)/UnityPlayer.dll")
             || fm.fileExists(atPath: "\(dir)/\(exeName)_Data")
+    }
+
+    /// ¿Es un juego **Unreal Engine**? Su exe real vive en `…/Binaries/Win64|Win32|WinGDK/…-Shipping.exe`.
+    /// UE se lanza por DXMT (d3d11) con el flag `-d3d11` (ver `detectGraphicsAPI` / `unrealLaunchArguments`).
+    func isUnrealGame(_ executable: String) -> Bool {
+        let d = (executable as NSString).deletingLastPathComponent.lowercased()
+        return d.contains("/binaries/win64") || d.contains("/binaries/win32") || d.contains("/binaries/wingdk")
+    }
+
+    /// Flags para juegos Unreal Engine en el path DXMT: `-d3d11` fuerza el RHI D3D11 de UE (su default
+    /// es D3D12, que en Mac via GPTK/D3DMetal se reporta como GPU AMD y provoca el aviso "AMD driver
+    /// known issues"). Con DXMT+`-d3d11` arranca limpio. Para juegos no-UE, vacío.
+    func unrealLaunchArguments(forExecutable executable: String) -> [String] {
+        isUnrealGame(executable) ? ["-d3d11"] : []
     }
 
     /// Flags de motor Unity para el path **DXMT (64-bit)**. Para juegos no Unity, vacío.
