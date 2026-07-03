@@ -481,6 +481,17 @@ final class WineManager {
         if isUnreal, exeImports(executable, anyOf: ["d3d11.dll", "dxgi.dll"]) {
             return .d3d11
         }
+        // **Vulkan NATIVO** (el exe importa `vulkan-1.dll` directamente: Godot 4, id Tech, etc.).
+        // El motor UNIFICADO trae MoltenVK (Vulkan→Metal), así que estos juegos renderizan por su
+        // Vulkan nativo. Se enrutan como .d3d11 (usan el motor unificado y `ensureGameDXMTDLLs` copia
+        // `dxgi.dll`, que Godot IMPORTA para enumerar salidas/VSync aunque pinte por Vulkan — sin
+        // ella el juego ni arranca: c0000135). NO se fuerza D3D11: el juego usa su Vulkan por defecto.
+        // Va ANTES del check de d3d12 porque Godot tambien importa d3d12/opengl32. Validado con Godot
+        // 4.3 (Project Manager renderiza por Vulkan en el motor unificado). Un juego DXVK NO importa
+        // `vulkan-1` directamente (DXVK lo usa por dentro), asi que no cae aqui por error.
+        if exeImports(executable, anyOf: ["vulkan-1.dll"]) {
+            return .d3d11
+        }
         if fm.fileExists(atPath: "\(dir)/D3D12/D3D12Core.dll")
             || fm.fileExists(atPath: "\(dir)/D3D12Core.dll") {
             return .d3d12
