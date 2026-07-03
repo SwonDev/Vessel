@@ -11,6 +11,7 @@ struct SteamOfficialLoginView: View {
 
     @State private var auth = SteamAuthService()
     @State private var qrImage: NSImage?
+    @State private var qrError: String?
 
     @State private var user = ""
     @State private var password = ""
@@ -134,7 +135,16 @@ struct SteamOfficialLoginView: View {
                 .font(.caption.weight(.bold)).foregroundStyle(steamBlue)
 
             Group {
-                if let qrImage {
+                if let err = qrError {
+                    VStack(spacing: 8) {
+                        Image(systemName: "qrcode").font(.largeTitle).foregroundStyle(.black.opacity(0.35))
+                        Text(err).font(.caption2).foregroundStyle(.black.opacity(0.6))
+                            .multilineTextAlignment(.center)
+                        Button("Reintentar") { qrError = nil; Task { await startQR() } }
+                            .font(.caption.weight(.semibold)).tint(steamBlue)
+                    }
+                    .padding(8).frame(width: 180, height: 180)
+                } else if let qrImage {
                     Image(nsImage: qrImage).interpolation(.none).resizable().frame(width: 180, height: 180)
                 } else {
                     ProgressView().frame(width: 180, height: 180)
@@ -154,16 +164,30 @@ struct SteamOfficialLoginView: View {
     // MARK: - Lógica de autenticación
 
     private func startQR() async {
-        do {
-            let session = try await auth.beginQR()
-            qrImage = makeQR(session.challengeURL)
-            for _ in 0..<120 {
-                try? await Task.sleep(nanoseconds: UInt64(max(2.0, session.handle.interval) * 1_000_000_000))
-                if let tokens = try await auth.poll(handle: session.handle) {
-                    onLoggedIn(tokens); dismiss(); return
+        // El challenge de Steam CADUCA (~1 min): si no se regenera, el usuario mira un QR muerto que
+        // ya no valida (parecía que "no pasa nada"). Bucle exterior que pide un QR NUEVO al caducar.
+        while !Task.isCancelled {
+            do {
+                let session = try await auth.beginQR()
+                qrImage = makeQR(session.challengeURL)
+                qrError = nil
+                // Sondear ~50 s (antes de que caduque) y luego regenerar en la siguiente vuelta.
+                let interval = max(2.0, session.handle.interval)
+                let iterations = max(6, Int(50.0 / interval))
+                for _ in 0..<iterations {
+                    try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                    if Task.isCancelled { return }
+                    if let tokens = try await auth.poll(handle: session.handle) {
+                        onLoggedIn(tokens); dismiss(); return
+                    }
                 }
+            } catch {
+                // No dejar un spinner eterno: avisar y permitir reintentar (o usar credenciales).
+                qrImage = nil
+                qrError = "No se pudo generar el código QR. Usa usuario y contraseña, o reintenta."
+                return
             }
-        } catch { /* el usuario puede usar la columna de credenciales */ }
+        }
     }
 
     private func doCredentials() async {

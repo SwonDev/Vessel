@@ -4,6 +4,9 @@ struct LogsView: View {
     @Environment(\.dismiss) private var dismiss
     private var logStore = LogStore.shared
     @State private var filter: LogStore.Level?
+    /// Lista filtrada MEMOIZADA: se recalcula solo al cambiar entradas o filtro (antes se computaba
+    /// 2-3× por render — ForEach + contador — filtrando hasta 1000 entradas cada vez).
+    @State private var filteredEntries: [LogStore.Entry] = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -55,9 +58,20 @@ struct LogsView: View {
                 }
                 .background(Color.black.opacity(0.35))
                 .onChange(of: logStore.entries.count) { _, _ in
-                    if let last = logStore.entries.last {
-                        withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
-                    }
+                    filteredEntries = computeFilteredLogs()
+                    // Sin `withAnimation`: con Wine emitiendo cientos de líneas/seg, animar cada
+                    // scroll encolaba animaciones que nunca asentaban → tirones. Y se sigue al ÚLTIMO
+                    // de la lista FILTRADA (no `entries.last`, que con un filtro activo podía no estar
+                    // en pantalla → el auto-follow dejaba de funcionar sin avisar).
+                    if let last = filteredEntries.last { proxy.scrollTo(last.id, anchor: .bottom) }
+                }
+                .onChange(of: filter) { _, _ in
+                    filteredEntries = computeFilteredLogs()
+                    if let last = filteredEntries.last { proxy.scrollTo(last.id, anchor: .bottom) }
+                }
+                .onAppear {
+                    filteredEntries = computeFilteredLogs()
+                    if let last = filteredEntries.last { proxy.scrollTo(last.id, anchor: .bottom) }
                 }
             }
 
@@ -78,7 +92,7 @@ struct LogsView: View {
         .vesselBackground()
     }
 
-    private var filteredEntries: [LogStore.Entry] {
+    private func computeFilteredLogs() -> [LogStore.Entry] {
         guard let filter = filter else { return logStore.entries }
         return logStore.entries.filter { $0.level == filter }
     }

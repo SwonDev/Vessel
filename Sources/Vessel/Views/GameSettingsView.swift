@@ -72,10 +72,23 @@ struct GameSettingsView: View {
     var store: StoreKind = .steam
     var onClose: () -> Void = {}
 
-    @State private var config = GameConfig()
+    @State private var config: GameConfig
     @State private var profile: CompatProfile?
     @State private var copied = false
     @State private var saveBackupDate: Date?
+
+    // Carga la config guardada EN EL INIT (no en `onAppear`): así el sheet abre ya con el valor
+    // real (antes pintaba un frame con los defaults — "Automático" y toggles por defecto — y saltaba
+    // al guardado, un parpadeo visible). También evita el re-guardado redundante que disparaba el
+    // `onChange(of: config)` al asignar en `onAppear`.
+    init(game: StoreGame, tint: Color, installPath: String? = nil, store: StoreKind = .steam, onClose: @escaping () -> Void = {}) {
+        self.game = game
+        self.tint = tint
+        self.installPath = installPath
+        self.store = store
+        self.onClose = onClose
+        _config = State(initialValue: GameConfigStore.load(game.id))
+    }
 
     private var sbStore: SaveBackupManager.Store {
         switch store { case .steam: return .steam; case .epic: return .epic; case .gog: return .gog }
@@ -220,7 +233,7 @@ struct GameSettingsView: View {
         .frame(width: 580, height: 560)
         .vesselBackground(tint: tint)
         .onAppear {
-            config = GameConfigStore.load(game.id)
+            // `config` ya se cargó en el init (sin flash). Aquí solo lo que no bloquea el primer frame.
             profile = CompatService.shared.profile(steam: game.steamAppId, title: game.title)
             saveBackupDate = SaveBackupManager.shared.lastBackupDate(store: sbStore, id: sbId)
         }

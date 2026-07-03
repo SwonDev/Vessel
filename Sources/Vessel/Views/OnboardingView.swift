@@ -7,7 +7,9 @@ struct OnboardingView: View {
     @State private var isWorking = true
     @State private var statusText: String = "Configurando tu Mac…"
     @State private var progress: Double = 0
-    @State private var logStore = LogStore()
+    // El LOG COMPARTIDO (no una instancia nueva): si el onboarding falla y el usuario abre
+    // "Ver logs" para diagnosticar, encuentra lo ocurrido (Rosetta, descarga de Wine, errores).
+    @State private var logStore = LogStore.shared
     @State private var setupSucceeded = false
 
     let onComplete: () -> Void

@@ -180,15 +180,18 @@ struct StoreLibraryView: View {
     /// Juegos enriquecidos con las estadísticas persistidas (`PlayStatsStore`): última sesión y
     /// tiempo jugado. La UI (orden Recientes/Más jugado, carrusel, ficha) ya espera estos campos
     /// en `StoreGame`; aquí es donde se rellenan, en UN solo sitio, sin tocar las 3 tiendas.
-    private var enriched: [StoreGame] {
-        games.map { g in
-            var e = g
-            let k = statsKey(g)
-            if let lp = PlayStatsStore.shared.lastPlayed(k) { e.lastPlayed = lp }
-            if let pm = PlayStatsStore.shared.playtimeMinutes(k) { e.playtimeMinutes = pm }
-            return e
-        }
+    /// Un juego con sus estadísticas persistidas (última sesión + tiempo jugado) resueltas EN VIVO
+    /// desde `PlayStatsStore` (@Observable). O(1): para el juego seleccionado, sin reconstruir toda
+    /// la biblioteca (la ficha usaba `enriched.first`, que rehacía los ~miles de juegos para sacar 1).
+    private func enrichedGame(_ g: StoreGame) -> StoreGame {
+        var e = g
+        let k = statsKey(g)
+        if let lp = PlayStatsStore.shared.lastPlayed(k) { e.lastPlayed = lp }
+        if let pm = PlayStatsStore.shared.playtimeMinutes(k) { e.playtimeMinutes = pm }
+        return e
     }
+
+    private var enriched: [StoreGame] { games.map(enrichedGame) }
 
     /// Lista mostrada (filtrada + ordenada) MEMOIZADA: se recalcula solo cuando cambian las
     /// entradas (juegos/búsqueda/filtro/orden/favoritos), NO en cada render — así con miles de
@@ -293,7 +296,10 @@ struct StoreLibraryView: View {
         .onChange(of: dockProgressSnapshot) { _, _ in updateDockProgress() }
         // Pre-descarga TODAS las carátulas de la tienda a disco en 2º plano (cuando la lista carga),
         // para que ninguna cargue de red al hacer scroll: instantáneas siempre. Idempotente.
-        .task(id: games.count) {
+        // `id: games` (no `games.count`): al instalar/actualizar un juego el TOTAL no cambia, pero
+        // sí su estado (installed/updateAvailable/título) — como StoreGame es Equatable, esto
+        // recalcula la lista y refresca ficha/grid/sidebar (antes seguía diciendo "Sin instalar").
+        .task(id: games) {
             displayed = computeFiltered()
             CoverCache.shared.prefetch(games.map { ($0.id, $0.coverCandidates) })
         }
@@ -347,9 +353,10 @@ struct StoreLibraryView: View {
 
     @ViewBuilder private var detailPane: some View {
         if let selected = selectedGame {
-            // Re-resolver desde `enriched` por id: así la ficha refleja el tiempo jugado y la
-            // última sesión EN VIVO cuando el juego se cierra (PlayStatsStore es @Observable).
-            let game = enriched.first(where: { $0.id == selected.id }) ?? selected
+            // Enriquecer SOLO el seleccionado (O(1)): la ficha refleja el tiempo jugado y la última
+            // sesión EN VIVO al cerrar el juego (PlayStatsStore es @Observable) sin reconstruir toda
+            // la biblioteca en cada render.
+            let game = enrichedGame(selected)
             GameDetailView(
                 game: game, tint: tint, store: store,
                 installing: installingIDs.contains(game.id),
@@ -895,12 +902,16 @@ struct RecentlyPlayedCard: View {
     let tint: Color
     var onOpen: () -> Void = {}
 
-    private var bannerURL: URL? {
-        if let appId = game.steamAppId, !appId.isEmpty {
-            return URL(string: "https://cdn.cloudflare.steamstatic.com/steam/apps/\(appId)/header.jpg")
-        }
-        if let s = game.heroURL, let u = URL(string: s) { return u }
-        return game.resolvedCoverURL
+    /// Cascada de banners horizontales (el primero que cargue gana). Se sirve por `GameCoverImage`
+    /// (caché memoria+disco) en vez de `AsyncImage`, que re-descargaba de red cada vez que el home
+    /// se reconstruía → parpadeo gris. Así el banner es instantáneo, como las carátulas del grid.
+    private var bannerCandidates: [URL] {
+        var urls: [URL] = []
+        if let appId = game.steamAppId, !appId.isEmpty,
+           let u = URL(string: "https://cdn.cloudflare.steamstatic.com/steam/apps/\(appId)/header.jpg") { urls.append(u) }
+        if let s = game.heroURL, let u = URL(string: s) { urls.append(u) }
+        if let c = game.resolvedCoverURL { urls.append(c) }
+        return urls
     }
 
     private var playtimeText: String? {
@@ -910,13 +921,8 @@ struct RecentlyPlayedCard: View {
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            ZStack {
+            GameCoverImage(cacheKey: "\(game.id)-banner", candidates: bannerCandidates) {
                 game.placeholderColor
-                if let url = bannerURL {
-                    AsyncImage(url: url) { phase in
-                        if let img = phase.image { img.resizable().scaledToFill() } else { Color.clear }
-                    }
-                }
             }
             .frame(width: 280, height: 130).clipped()
             LinearGradient(colors: [.clear, .black.opacity(0.2), .black.opacity(0.8)],
