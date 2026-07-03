@@ -1169,9 +1169,14 @@ final class WineManager {
         let gameDir = (executable as NSString).deletingLastPathComponent
         try? appId.write(toFile: "\(gameDir)/steam_appid.txt", atomically: true, encoding: .utf8)
 
-        // 2) Motor: preferir el UNIFICADO (auto-instalable). Cliente y juego comparten
-        //    wineserver → el DRM ve el cliente vivo, y el juego renderiza por DXMT
-        //    (el `d3d11` builtin del motor ES DXMT).
+        // 2) Motor según la API gráfica del juego:
+        //    · D3D11 (Unity/Unreal/…) → motor UNIFICADO (DXMT→Metal); cliente y juego en su
+        //      wineserver. Es lo que valida Grim Dawn.
+        //    · D3D12 (Agility SDK, p. ej. FFT: The Ivalice Chronicles, AppID 1004640) → el
+        //      unificado NO lo corre (solo D3D11); va por GPTK/D3DMetal (D3D12→Metal), con el
+        //      cliente Steam en el MISMO wineserver de GPTK para el DRM. Se salta la rama unificada.
+        let isD3D12 = detectGraphicsAPI(forExecutable: executable) == .d3d12
+        if !isD3D12 {
         try? await dependencyManager.ensureUnifiedEngine { msg, pct in
             Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
         }
@@ -1222,8 +1227,10 @@ final class WineManager {
             NotificationService.shared.status(nil)
             return proc
         }
+        }   // fin de `if !isD3D12` (rama motor unificado)
 
-        // Fallback: GPTK/D3DMetal para cliente + juego (mismo wineserver).
+        // GPTK/D3DMetal para cliente + juego (mismo wineserver): juegos D3D12, o fallback si no
+        // hay motor unificado disponible.
         try await gptkManager.ensureInstalled { msg, pct in
             Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
         }
@@ -1231,14 +1238,20 @@ final class WineManager {
             throw WineError.launchFailed("No se encontró GPTK/D3DMetal para el modo Steam real.")
         }
 
-        // 3) Cliente Steam corriendo y CONECTADO (para el DRM). steam.cfg evita autoupdate.
+        // 3) Cliente Steam corriendo y CONECTADO (para el DRM), en SEGUNDO PLANO (multiproceso
+        //    -silent → loguea por JWT sin ventana ni colgarse). steam.cfg evita autoupdate.
         ensureSteamConfig(in: bottle)
-        log.log("Modo Steam real: preparando el cliente Steam (conectado) para el DRM…", level: .info)
-        let connected = await ensureSteamConnected(in: bottle, clientWine: gptkWine)
+        log.log("Modo Steam real (GPTK/D3DMetal): preparando el cliente Steam conectado…", level: .info)
+        let connected = await ensureSteamConnected(in: bottle, clientWine: gptkWine, timeoutSeconds: 120, background: true)
         if !connected { throw steamRealNotConnected(gameExecutable: executable, in: bottle) }
         log.log("Cliente Steam conectado; lanzando el juego con DRM real.", level: .info)
 
-        // 4) Lanzar el juego en GPTK, MISMO wineserver que Steam (NO se mata Steam ni se
+        // 4) D3D12: que mande el `d3d12`/`dxgi` builtin de D3DMetal — quitar del game dir las DLLs
+        //    de DXMT que un intento previo dejara junto al exe (chocan con D3DMetal). NO se toca la
+        //    subcarpeta `D3D12/` del Agility SDK (D3DMetal la ignora por diseño).
+        if isD3D12 { cleanExeAdjacentDXMTDLLs(gameExecutable: executable) }
+
+        // 5) Lanzar el juego en GPTK, MISMO wineserver que Steam (NO se mata Steam ni se
         //    resincroniza el prefijo, que lo tumbaría). SteamAPI_Init encuentra el cliente vivo.
         var env = gptkManager.d3dMetalEnvironment(prefix: bottle.prefixPath)
         env["SteamAppId"] = appId

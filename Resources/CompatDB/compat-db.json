@@ -52,10 +52,11 @@
       "engine": "gptk",
       "graphicsLayer": "gptk",
       "windowsArch": "win64",
-      "notes": "D3D12 vía GPTK/D3DMetal renderiza, pero el anti-tamper CodeFusion bloquea el arranque (error de transporte 0x3008). Pendiente de solución del DRM.",
-      "testedOn": { "macOS": "26.0", "chip": "M5 Pro", "vesselVersion": "0.1.0" },
+      "useRealSteam": true,
+      "notes": "D3D12 (Agility SDK) + anti-tamper CodeFusion. Con Goldberg, CodeFusion detecta la emulación → «Failed to load SteamAPI». Se lanza en modo «Steam real» (como Grim Dawn): steam_api ORIGINAL + cliente Steam REAL conectado en GPTK/D3DMetal (mismo wineserver) → CodeFusion valida contra la propiedad real y el juego renderiza por D3D12→Metal. Requiere poseer el juego (AppID 1004640) y sesión iniciada en el Steam de Vessel.",
+      "testedOn": { "macOS": "26.5", "chip": "M5 Pro", "vesselVersion": "0.1.0" },
       "author": "vessel-team",
-      "date": "2026-06-30",
+      "date": "2026-07-03",
       "verified": false
     }
   ]
