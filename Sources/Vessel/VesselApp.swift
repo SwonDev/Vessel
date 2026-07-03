@@ -61,4 +61,6 @@ extension Notification.Name {
     static let openSettings = Notification.Name("vessel.openSettings")
     static let openLogs = Notification.Name("vessel.openLogs")
     static let openAbout = Notification.Name("vessel.openAbout")
+    /// Aviso de lanzamiento visible in-app (p. ej. "el juego necesita Steam"). userInfo: title, body.
+    static let launchMessage = Notification.Name("vessel.launchMessage")
 }

@@ -102,6 +102,7 @@ enum LaunchDiagnostics {
     static func monitorAndMaybeRetry(
         prefix: String, gameId: String, gameTitle: String,
         currentLayer: GameConfig.GraphicsLayer, attempt: Int,
+        usesRealSteam: Bool = false,
         isRunning: @escaping @MainActor () -> Bool = { false },
         relaunch: @escaping @MainActor (GameConfig.GraphicsLayer) async -> Void
     ) {
@@ -109,6 +110,20 @@ enum LaunchDiagnostics {
             try? await Task.sleep(for: .seconds(15))
             let failure = detect(prefix: prefix)
             let alive = isRunning()
+
+            // Juego en modo "Steam real" (DRM real): el motor es el unificado FIJO, así que si se
+            // cerró NO es un problema de capa gráfica → reintentar con otra capa es INÚTIL y provoca
+            // el bucle "ejecutándose→jugar→ejecutándose". Avisamos UNA vez con acción clara (alerta
+            // in-app visible) y NO reintentamos; el cliente de Steam queda abierto para lanzar desde ahí.
+            if usesRealSteam {
+                if !alive {
+                    NotificationService.shared.alert(
+                        title: "\(gameTitle) necesita Steam",
+                        body: "No se pudo lanzar automáticamente. Hemos abierto el cliente de Steam: inicia sesión y pulsa Jugar en tu biblioteca de Steam para jugarlo.")
+                    LogStore.shared.log("⚠️ \(gameTitle): necesita el cliente de Steam conectado; se avisó al usuario y se dejó Steam abierto (sin reintentos de capa gráfica).", level: .warn)
+                }
+                return
+            }
 
             @MainActor func retry(_ next: GameConfig.GraphicsLayer, reason: String) async {
                 LogStore.shared.log("\(gameTitle): \(reason) con la capa \(currentLayer.rawValue). Reintentando con \(next.rawValue)…", level: .info)

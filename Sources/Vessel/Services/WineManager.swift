@@ -1030,7 +1030,7 @@ final class WineManager {
     /// inicie sesión y lance el juego desde su biblioteca de Steam. Cero fricción, acción clara.
     private func steamRealNotConnected(gameExecutable: String) -> WineError {
         let name = ((gameExecutable as NSString).lastPathComponent as NSString).deletingPathExtension
-        NotificationService.shared.notify(
+        NotificationService.shared.alert(
             title: "\(name) necesita Steam",
             body: "Hemos abierto el cliente de Steam. Inicia sesión y pulsa Jugar en tu biblioteca de Steam para lanzar el juego.")
         log.log("El cliente Steam no inició sesión a tiempo; se avisa al usuario y se deja Steam abierto para lanzar el juego desde ahí.", level: .warn)

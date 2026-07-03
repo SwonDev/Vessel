@@ -365,6 +365,7 @@ struct BottleDetailView: View {
         LaunchDiagnostics.monitorAndMaybeRetry(
             prefix: localBottle.prefixPath, gameId: trackId, gameTitle: game.name,
             currentLayer: usedLayer, attempt: attempt,
+            usesRealSteam: eff.useRealSteam,
             isRunning: { GameLaunchTracker.shared.state(trackId) == .running }
         ) { next in await launchGame(game, forcedLayer: next, attempt: attempt + 1) }
     }

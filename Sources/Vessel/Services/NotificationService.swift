@@ -24,4 +24,14 @@ final class NotificationService {
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
     }
+
+    /// Aviso IMPORTANTE que el usuario DEBE ver (p. ej. "el juego necesita Steam"): notificación
+    /// del sistema **+** alerta dentro de la app. La alerta in-app es imprescindible porque en una
+    /// app firmada ad-hoc las notificaciones del sistema no siempre aparecen; así el usuario recibe
+    /// SIEMPRE el mensaje y la acción a tomar (cero fricción).
+    func alert(title: String, body: String) {
+        notify(title: title, body: body)
+        NotificationCenter.default.post(name: .launchMessage, object: nil,
+                                        userInfo: ["title": title, "body": body])
+    }
 }

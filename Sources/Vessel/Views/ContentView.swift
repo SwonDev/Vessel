@@ -11,6 +11,11 @@ struct ContentView: View {
     @State private var showingAbout = false
     /// Alto de la zona del header (área segura superior), medido en runtime.
     @State private var headerHeight: CGFloat = 52
+    /// Aviso de lanzamiento (p. ej. "el juego necesita Steam"): alerta in-app SIEMPRE visible
+    /// (las notificaciones del sistema en app firmada ad-hoc no siempre aparecen).
+    @State private var showingLaunchAlert = false
+    @State private var launchAlertTitle = ""
+    @State private var launchAlertBody = ""
 
     var body: some View {
         NavigationStack {
@@ -62,6 +67,16 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .openSettings)) { _ in showingSettings = true }
         .onReceive(NotificationCenter.default.publisher(for: .openLogs)) { _ in showingLogs = true }
         .onReceive(NotificationCenter.default.publisher(for: .openAbout)) { _ in showingAbout = true }
+        .onReceive(NotificationCenter.default.publisher(for: .launchMessage)) { note in
+            launchAlertTitle = note.userInfo?["title"] as? String ?? "Vessel"
+            launchAlertBody = note.userInfo?["body"] as? String ?? ""
+            showingLaunchAlert = true
+        }
+        .alert(launchAlertTitle, isPresented: $showingLaunchAlert) {
+            Button("Entendido", role: .cancel) { }
+        } message: {
+            Text(launchAlertBody)
+        }
     }
 
     /// Barra de **Liquid Glass** en la zona del header. En macOS 26 usa `glassEffect` (refracta y
