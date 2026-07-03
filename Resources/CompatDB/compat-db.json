@@ -31,6 +31,21 @@
     },
     {
       "schemaVersion": 1,
+      "title": "Grim Dawn",
+      "stores": { "steam": "219990" },
+      "rating": "bronze",
+      "engine": "auto",
+      "graphicsLayer": "auto",
+      "windowsArch": "win64",
+      "useRealSteam": true,
+      "notes": "No arranca standalone ni con Goldberg (exit 53 en la init de su Engine.dll, antes de tocar D3D, en TODOS los motores en M5/macOS 26.5). Vessel lo lanza en modo «Steam real»: cliente Steam REAL conectado en el motor unificado + steam_api original, mismo wineserver → el juego renderiza por DXMT→Metal (como CrossOver). Requiere sesión iniciada en el Steam de Vessel.",
+      "testedOn": { "macOS": "26.5", "chip": "M5 Pro", "vesselVersion": "0.1.0" },
+      "author": "vessel-team",
+      "date": "2026-07-03",
+      "verified": false
+    },
+    {
+      "schemaVersion": 1,
       "title": "FINAL FANTASY TACTICS - The Ivalice Chronicles",
       "stores": { "steam": "1004640" },
       "rating": "bronze",

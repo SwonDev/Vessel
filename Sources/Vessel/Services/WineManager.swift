@@ -522,6 +522,19 @@ final class WineManager {
         if eff.fromProfile, let r = eff.rating {
             log.log("Perfil de compatibilidad aplicado: \(r.label)\(eff.verified ? " ✓ verificado" : " (sin verificar)")", level: .info)
         }
+        // MODO "STEAM REAL" (DRM real, como CrossOver): algunos juegos NO arrancan standalone
+        // ni con Goldberg — se cierran en la init de su propio engine antes de tocar D3D
+        // (p. ej. Grim Dawn, AppID 219990: exit 53 en la init de Engine.dll, sin llegar a los
+        // gráficos, en TODOS los motores). Para ellos, en vez de emular la API, se arranca el
+        // cliente Steam REAL conectado en el motor unificado y se lanza el juego en el MISMO
+        // wineserver con su `steam_api` original → `SteamAPI_Init` habla con el cliente vivo y
+        // el juego renderiza por DXMT→Metal. Es exactamente lo que hace CrossOver con su Wine
+        // propietario. Se activa por perfil de compatibilidad (`useRealSteam`). Requiere sesión
+        // iniciada en el Steam de Vessel; si no conecta, `launchViaRealSteam` lo avisa e intenta igual.
+        if eff.useRealSteam, let appId = steamAppId, !appId.isEmpty {
+            log.log("Modo Steam real para este juego (DRM real con el cliente Steam conectado).", level: .info)
+            return try await launchViaRealSteam(executable: executable, in: bottle, appId: appId, effective: eff)
+        }
         // DRM Steamworks AUTO: muchos juegos de Steam exigen que Steam esté corriendo (SteamAPI_Init)
         // y, si no, se cierran o intentan RELANZARSE por Steam (el "abre Steam y se cierra" clásico).
         // Como Vessel NO abre el cliente Steam para jugar, EMULAMOS la Steamworks API con Goldberg,
@@ -959,8 +972,16 @@ final class WineManager {
         let logPath = "\(bottle.steamDirectory)/logs/connection_log.txt"
         guard let data = FileManager.default.contents(atPath: logPath),
               let text = String(data: data, encoding: .utf8) else { return false }
+        // Acotar a la SESIÓN ACTUAL. El `connection_log` ACUMULA entre arranques: un
+        // "Logged On" HISTÓRICO (de una sesión previa que quedó en la ventana) daba un
+        // FALSO POSITIVO — `isSteamConnected` devolvía `true` con la sesión actual aún en
+        // "Logged Off, 0, 0" (SteamID vacío `[U:1:0]`). En el modo Steam real eso hacía que
+        // el juego se lanzara ANTES de que Steam iniciara sesión → el DRM real fallaba. Cada
+        // arranque del cliente escribe "Client version:"; escaneamos SOLO desde el último.
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let sessionStart = lines.lastIndex(where: { $0.contains("Client version") }) ?? lines.startIndex
         var connected = false
-        for line in text.split(separator: "\n").suffix(80) {
+        for line in lines[sessionStart...] {
             if line.contains("Logged On,") { connected = true }
             else if line.contains("Logged Off,") || line.contains("ConnectionDisconnected") { connected = false }
         }
@@ -978,9 +999,26 @@ final class WineManager {
         // que `pkill` no puede reapear, y eso hacía que se SALTARA el arranque (Steam nunca abría).
         do { _ = try await launchSteam(in: bottle, using: clientWine) }
         catch { log.log("No se pudo arrancar el cliente Steam: \(error.localizedDescription)", level: .error) }
-        for _ in 0..<timeoutSeconds {
+        // Espera al login. AUTO-REPARACIÓN: si Steam sigue vivo pero SIN iniciar sesión tras una
+        // ventana de gracia, el webhelper puede estar colgado/con la caché CEF corrupta (ventana
+        // "Steamwebhelper no responde"). `launchSteam` por sí solo REUSA ese Steam roto sin
+        // arreglarlo (idempotencia por `steam.exe` vivo), así que el login no llega nunca. Aquí
+        // forzamos UN reinicio limpio (matar + limpiar caché CEF + relanzar, que reinstala el
+        // wrapper `--single-process`) para que el webhelper renderice y el login complete.
+        let graceSeconds = 45
+        var didCleanRestart = false
+        for elapsed in 0..<timeoutSeconds {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             if isSteamConnected(in: bottle) { return true }
+            if !didCleanRestart, elapsed == graceSeconds, isWineProcessRunning(matching: "steam.exe") {
+                didCleanRestart = true
+                log.log("El cliente Steam no ha iniciado sesión en \(graceSeconds)s (webhelper posiblemente colgado); reinicio limpio del cliente…", level: .warn)
+                try? await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
+                try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+                cleanCEFCache(in: bottle)
+                do { _ = try await launchSteam(in: bottle, using: clientWine) }
+                catch { log.log("No se pudo relanzar el cliente Steam: \(error.localizedDescription)", level: .error) }
+            }
         }
         return isSteamConnected(in: bottle)
     }

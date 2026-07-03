@@ -134,6 +134,7 @@ final class CompatService {
             cfg.windowsVersion = p.windowsVersion
             cfg.rating = p.rating
             cfg.verified = p.verified
+            cfg.useRealSteam = p.useRealSteam
             cfg.fromProfile = true
         }
 

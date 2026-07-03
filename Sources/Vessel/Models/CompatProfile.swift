@@ -122,6 +122,14 @@ struct CompatProfile: Codable, Equatable, Identifiable, Sendable {
     var date: String? = nil
     var verified: Bool = false
 
+    /// Modo **"Steam real"**: el juego necesita el cliente Steam REAL corriendo y
+    /// conectado (DRM real, como CrossOver) porque NO arranca standalone con Goldberg.
+    /// Vessel arranca el cliente Steam en el motor unificado y lanza el juego en el
+    /// MISMO wineserver con su `steam_api` original → `SteamAPI_Init` habla con el
+    /// cliente vivo y el juego renderiza por DXMT→Metal. P. ej. Grim Dawn (muere en la
+    /// init de su Engine.dll con exit 53 en modo standalone). Requiere sesión iniciada.
+    var useRealSteam: Bool = false
+
     /// Id estable para de-duplicar (preferimos Steam AppID por universalidad).
     var id: String { stores.steam ?? stores.gog ?? stores.epic ?? title.lowercased() }
 
@@ -135,6 +143,7 @@ struct CompatProfile: Codable, Equatable, Identifiable, Sendable {
         case schemaVersion, title, stores, rating, engine, graphicsLayer
         case windowsVersion, windowsArch, dllOverrides, envVars, launchArgs
         case winetricksVerbs, notes, testedOn, author, date, verified
+        case useRealSteam
     }
 
     /// Decodificación TOLERANTE: solo `title` es obligatorio; todo lo demás usa su
@@ -159,6 +168,7 @@ struct CompatProfile: Codable, Equatable, Identifiable, Sendable {
         author = try c.decodeIfPresent(String.self, forKey: .author)
         date = try c.decodeIfPresent(String.self, forKey: .date)
         verified = try c.decodeIfPresent(Bool.self, forKey: .verified) ?? false
+        useRealSteam = try c.decodeIfPresent(Bool.self, forKey: .useRealSteam) ?? false
     }
 }
 
@@ -192,6 +202,11 @@ struct EffectiveLaunchConfig: Sendable {
     var rating: CompatProfile.Rating? = nil
     var verified: Bool = false
     var fromProfile: Bool = false
+
+    /// Modo **"Steam real"**: lanzar con el cliente Steam conectado + `steam_api` original
+    /// (DRM real, como CrossOver) en vez de Goldberg standalone. Para juegos que NO arrancan
+    /// standalone (p. ej. Grim Dawn). Enruta `launch()` a `launchViaRealSteam`.
+    var useRealSteam: Bool = false
 
     /// Construye el fragmento de `WINEDLLOVERRIDES` de los overrides de DLL del perfil.
     /// Formato Wine: `dll1=mode;dll2=mode` (mode admite `n`,`b`,`n,b`, etc.).
