@@ -117,12 +117,26 @@ struct BottleDetailView: View {
             }
         }
         .sheet(isPresented: $showOfficialLogin) {
-            SteamOfficialLoginView { _ in
+            SteamOfficialLoginView { tokens in
                 // NO marcamos `steamCMDUser` aquí: el login oficial (web/RSA) carga la biblioteca
                 // pero NO crea sesión de SteamCMD (que es lo que DESCARGA). Si lo marcáramos, el
                 // install creería tener sesión y fallaría/se colgaba ("hacía como que instala").
                 // La sesión real de SteamCMD se obtiene en su propio login (showSteamCMDLogin).
-                Task { await loadSteamLibrary() }
+                //
+                // SEMBRAR la sesión del CLIENTE de Steam con el token FRESCO (SteamClient) → el
+                // cliente auto-loguea por JWT SIN pasar por el CEF (que no renderiza en el M5), y
+                // los juegos con DRM que exigen Steam abierto funcionan. FORZADO: reemplaza cualquier
+                // sesión sembrada previa (clave para recuperar una sesión caducada/marcada para
+                // re-auth, y para el primer login de un usuario nuevo).
+                Task {
+                    if let sid = SteamAuthService.steamID64(fromJWT: tokens.refreshToken) {
+                        let wine = WineEngineLocator.clientWineBinary() ?? wineManager.resolveClientWine(for: localBottle)
+                        _ = await SteamClientSeeder.shared.seed(
+                            login: tokens.accountName, steamID64: sid, personaName: tokens.accountName,
+                            refreshToken: tokens.refreshToken, in: localBottle, wine: wine)
+                    }
+                    await loadSteamLibrary()
+                }
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .steamLogin)) { _ in
