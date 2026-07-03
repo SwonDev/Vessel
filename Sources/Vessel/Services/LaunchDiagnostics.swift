@@ -16,12 +16,12 @@ import Foundation
 enum LaunchDiagnostics {
     /// Categoría del fallo detectado.
     enum Category {
-        case graphics, missingLibrary, dotNet, crash, vulkan, mouse
+        case graphics, missingLibrary, dotNet, crash, vulkan, mouse, steam
         /// ¿Se puede intentar arreglar reintentando con OTRO motor/capa gráfica?
         var isEngineRetryable: Bool {
             switch self {
             case .graphics, .crash, .vulkan: return true
-            case .missingLibrary, .dotNet, .mouse: return false
+            case .missingLibrary, .dotNet, .mouse, .steam: return false
             }
         }
     }
@@ -42,6 +42,16 @@ enum LaunchDiagnostics {
 
     /// Firmas en ORDEN DE PRIORIDAD (la primera que casa se reporta). Las más graves/específicas antes.
     private static let signatures: [Signature] = [
+        // API de Steam: el juego usa Steamworks y `SteamAPI_Init` devolvió false (no había cliente
+        // conectado NI Goldberg aplicado en el sitio correcto). Va PRIMERO porque es muy específico
+        // y su mensaje debe ser exacto (antes lo pillaba la firma .NET/Mono por error). Auto-repara:
+        // Vessel aplica Goldberg (ahora recursivo, cubre Unity) o el modo Steam-real según el juego.
+        Signature(
+            markers: ["SteamApi_Init returned false", "SteamAPI_Init() failed", "Platform init Steam failed",
+                      "Steam must be running", "Unable to initialize SteamAPI", "Steamworks is not initialized"],
+            category: .steam,
+            title: "El juego necesita la API de Steam",
+            body: "El juego usa Steamworks y no pudo inicializar su API. Vessel aplica la emulación (Goldberg) automáticamente; si el juego tiene DRM estricto, actívalo en modo «Steam real» en Ajustes. Prueba «Verificar / reparar»."),
         Signature(
             markers: ["InitializeEngineGraphics failed", "Failed to initialize graphics",
                       "D3D11CreateDevice failed", "Direct3D 11 device creation failed",
@@ -61,8 +71,12 @@ enum LaunchDiagnostics {
             title: "Falta una librería del sistema",
             body: "El juego pide una dependencia que no está en el entorno (normalmente Visual C++ o .NET). Prueba a «Verificar / reparar»."),
         Signature(
-            markers: ["mscoree.dll", "clr.dll", ".NET Framework", "Mono path", "il2cpp",
-                      "Could not load type", "FileNotFoundException: Could not load file or assembly"],
+            // OJO: NO usar "Mono path" ni "il2cpp" como marcadores — TODOS los juegos Unity los
+            // imprimen normalmente (no son errores) y daban un falso positivo de ".NET/Mono missing"
+            // (visto en Core Keeper, cuyo fallo real era SteamAPI). Solo marcadores de ERROR reales.
+            markers: ["mscoree.dll", "clr.dll", ".NET Framework not found",
+                      "Could not load type", "FileNotFoundException: Could not load file or assembly",
+                      "Failed to load mono", "mono_jit_init failed"],
             category: .dotNet,
             title: "Falta el runtime .NET/Mono",
             body: "El juego necesita .NET o Mono y no está disponible. «Verificar / reparar» puede ayudar."),
