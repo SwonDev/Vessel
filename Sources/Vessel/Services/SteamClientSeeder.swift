@@ -110,7 +110,10 @@ final class SteamClientSeeder {
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: wine)
-        proc.arguments = [sealExe, "seal", entropy]
+        // Descripción EXACTA que usa el cliente de Steam al cifrar el ConnectCache (verificado
+        // descifrando el blob real: `CryptUnprotectData` devolvió `BObfuscateBuffer`). Replicarla
+        // hace que nuestro blob sea estructuralmente idéntico (misma longitud) al de Steam.
+        proc.arguments = [sealExe, "seal", entropy, "BObfuscateBuffer"]
         var env = ProcessInfo.processInfo.environment
         env["WINEPREFIX"] = bottle.prefixPath
         env["WINEDEBUG"] = "-all"

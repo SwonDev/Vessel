@@ -55,11 +55,25 @@ int main(int argc, char **argv) {
     DATA_BLOB entropy = { (DWORD)strlen(argv[2]), (BYTE *)argv[2] };
     DATA_BLOB dataOut = { 0, NULL };
 
+    /* En SEAL, la descripción se pasa por argv[3] (para replicar EXACTAMENTE la que usa Steam);
+     * si no se pasa, NULL. En UNSEAL, se recupera la descripción real y se imprime por stderr. */
+    LPWSTR descrOut = NULL;
+    wchar_t descrIn[256] = {0};
+    if (seal && argc >= 4) {
+        int i = 0; for (; argv[3][i] && i < 255; i++) descrIn[i] = (wchar_t)(unsigned char)argv[3][i];
+        descrIn[i] = 0;
+    }
     BOOL ok = seal
-        ? CryptProtectData(&dataIn, L"Steam", &entropy, NULL, NULL, 0, &dataOut)
-        : CryptUnprotectData(&dataIn, NULL, &entropy, NULL, NULL, 0, &dataOut);
+        ? CryptProtectData(&dataIn, (argc >= 4 ? descrIn : NULL), &entropy, NULL, NULL, 0, &dataOut)
+        : CryptUnprotectData(&dataIn, &descrOut, &entropy, NULL, NULL, 0, &dataOut);
 
     if (!ok) { fprintf(stderr, "crypt %s fallo: %lu\n", argv[1], (unsigned long)GetLastError()); return 1; }
+    if (!seal && descrOut) {
+        fprintf(stderr, "DESCR=");
+        for (LPWSTR d = descrOut; *d; d++) fputc((int)(*d & 0xff), stderr);
+        fprintf(stderr, "\n");
+        LocalFree(descrOut);
+    }
 
     for (DWORD i = 0; i < dataOut.cbData; i++) printf("%02x", dataOut.pbData[i]);
     printf("\n");
