@@ -972,18 +972,19 @@ final class WineManager {
         let logPath = "\(bottle.steamDirectory)/logs/connection_log.txt"
         guard let data = FileManager.default.contents(atPath: logPath),
               let text = String(data: data, encoding: .utf8) else { return false }
-        // Acotar a la SESIÓN ACTUAL. El `connection_log` ACUMULA entre arranques: un
-        // "Logged On" HISTÓRICO (de una sesión previa que quedó en la ventana) daba un
-        // FALSO POSITIVO — `isSteamConnected` devolvía `true` con la sesión actual aún en
-        // "Logged Off, 0, 0" (SteamID vacío `[U:1:0]`). En el modo Steam real eso hacía que
-        // el juego se lanzara ANTES de que Steam iniciara sesión → el DRM real fallaba. Cada
-        // arranque del cliente escribe "Client version:"; escaneamos SOLO desde el último.
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-        let sessionStart = lines.lastIndex(where: { $0.contains("Client version") }) ?? lines.startIndex
+        // Estado real = el ÚLTIMO evento relevante del log COMPLETO. El `connection_log` ACUMULA
+        // entre arranques, así que un "Logged On" de una sesión previa daba un FALSO POSITIVO
+        // (isSteamConnected=true con el cliente recién arrancado aún SIN sesión). Se corrige
+        // tomando el último evento y tratando "Client version" (arranque del cliente) como
+        // "aún sin sesión": si lo último es un arranque o un "Logged Off"/desconexión → NO
+        // conectado; solo un "Logged On," posterior cuenta como conectado.
         var connected = false
-        for line in lines[sessionStart...] {
-            if line.contains("Logged On,") { connected = true }
-            else if line.contains("Logged Off,") || line.contains("ConnectionDisconnected") { connected = false }
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            if line.contains("Logged On,") {
+                connected = true
+            } else if line.contains("Client version") || line.contains("Logged Off,") || line.contains("ConnectionDisconnected") {
+                connected = false
+            }
         }
         return connected
     }
@@ -994,32 +995,40 @@ final class WineManager {
     /// llegó a conectar. Con `-tcp` la conexión al CM es estable bajo Wine (el UDP se caía).
     func ensureSteamConnected(in bottle: Bottle, clientWine: String, timeoutSeconds: Int = 90) async -> Bool {
         if isSteamConnected(in: bottle) { return true }
+        // Estado EN VIVO para el usuario (banner no bloqueante): que SIEMPRE sepa qué pasa.
+        NotificationService.shared.status("Abriendo el cliente de Steam…")
         // Arrancar Steam SIEMPRE que no esté conectado: `launchSteam` ya es idempotente (si
         // `steam.exe` corre, se reutiliza). NO gatear en `steamwebhelper` — pgrep lista zombies
         // que `pkill` no puede reapear, y eso hacía que se SALTARA el arranque (Steam nunca abría).
         do { _ = try await launchSteam(in: bottle, using: clientWine) }
         catch { log.log("No se pudo arrancar el cliente Steam: \(error.localizedDescription)", level: .error) }
+        NotificationService.shared.status("Esperando a que Steam inicie sesión (la primera vez puede tardar un poco)…")
         // Espera al login. AUTO-REPARACIÓN: si Steam sigue vivo pero SIN iniciar sesión tras una
         // ventana de gracia, el webhelper puede estar colgado/con la caché CEF corrupta (ventana
         // "Steamwebhelper no responde"). `launchSteam` por sí solo REUSA ese Steam roto sin
         // arreglarlo (idempotencia por `steam.exe` vivo), así que el login no llega nunca. Aquí
-        // forzamos UN reinicio limpio (matar + limpiar caché CEF + relanzar, que reinstala el
+        // forzamos reinicios limpios (matar + limpiar caché CEF + relanzar, que reinstala el
         // wrapper `--single-process`) para que el webhelper renderice y el login complete.
-        let graceSeconds = 45
-        var didCleanRestart = false
+        let graceSeconds = 30
+        var restarts = 0
         for elapsed in 0..<timeoutSeconds {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
-            if isSteamConnected(in: bottle) { return true }
-            if !didCleanRestart, elapsed == graceSeconds, isWineProcessRunning(matching: "steam.exe") {
-                didCleanRestart = true
-                log.log("El cliente Steam no ha iniciado sesión en \(graceSeconds)s (webhelper posiblemente colgado); reinicio limpio del cliente…", level: .warn)
+            if isSteamConnected(in: bottle) { NotificationService.shared.status(nil); return true }
+            // Reintento limpio al llegar a la gracia y luego cada `graceSeconds` (máx 2 veces):
+            // el webhelper colgado ("no responde") no se recupera solo reusándolo.
+            if restarts < 2, elapsed > 0, elapsed % graceSeconds == 0, isWineProcessRunning(matching: "steam.exe") {
+                restarts += 1
+                NotificationService.shared.status("Steam no responde; reiniciándolo automáticamente…")
+                log.log("El cliente Steam no ha iniciado sesión en \(elapsed)s (webhelper posiblemente colgado); reinicio limpio del cliente (intento \(restarts))…", level: .warn)
                 try? await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
                 try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
                 cleanCEFCache(in: bottle)
                 do { _ = try await launchSteam(in: bottle, using: clientWine) }
                 catch { log.log("No se pudo relanzar el cliente Steam: \(error.localizedDescription)", level: .error) }
+                NotificationService.shared.status("Esperando a que Steam inicie sesión…")
             }
         }
+        NotificationService.shared.status(nil)
         return isSteamConnected(in: bottle)
     }
 
@@ -1079,13 +1088,16 @@ final class WineManager {
             env["SteamGameId"] = appId
             for (k, v) in effective.extraEnv { env[k] = v }
             log.log("Lanzando \((executable as NSString).lastPathComponent) vía Steam real (motor unificado, DXMT→Metal).", level: .info)
-            return try await launchWineProcess(
+            NotificationService.shared.status("Steam conectado. Lanzando el juego…")
+            let proc = try await launchWineProcess(
                 winePath: unifiedWine,
                 prefix: bottle.prefixPath,
                 arguments: [executable] + effective.launchArgs,
                 environment: env,
                 workingDirectory: gameWorkingDirectory(forExecutable: executable)
             )
+            NotificationService.shared.status(nil)
+            return proc
         }
 
         // Fallback: GPTK/D3DMetal para cliente + juego (mismo wineserver).
@@ -1109,7 +1121,8 @@ final class WineManager {
         env["SteamAppId"] = appId
         env["SteamGameId"] = appId
         log.log("Lanzando \((executable as NSString).lastPathComponent) vía Steam real (GPTK/D3DMetal).", level: .info)
-        return try await launchWineProcess(
+        NotificationService.shared.status("Steam conectado. Lanzando el juego…")
+        let proc = try await launchWineProcess(
             winePath: gptkWine,
             prefix: bottle.prefixPath,
             arguments: [executable] + effective.launchArgs,
@@ -1117,6 +1130,8 @@ final class WineManager {
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: effective
         )
+        NotificationService.shared.status(nil)
+        return proc
     }
 
     /// Abre el cliente Steam COMPLETO y conectado en el **motor unificado** propio

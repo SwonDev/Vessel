@@ -34,4 +34,12 @@ final class NotificationService {
         NotificationCenter.default.post(name: .launchMessage, object: nil,
                                         userInfo: ["title": title, "body": body])
     }
+
+    /// Estado EN VIVO no bloqueante (banner in-app): informa de fases largas como abrir Steam,
+    /// esperar el login o reiniciar el cliente. Así el usuario SIEMPRE sabe qué está pasando
+    /// (cero fricción). Pasar `nil` para ocultar el banner. No emite notificación del sistema.
+    func status(_ message: String?) {
+        NotificationCenter.default.post(name: .launchStatus, object: nil,
+                                        userInfo: message.map { ["message": $0] } ?? [:])
+    }
 }

@@ -16,6 +16,8 @@ struct ContentView: View {
     @State private var showingLaunchAlert = false
     @State private var launchAlertTitle = ""
     @State private var launchAlertBody = ""
+    /// Estado EN VIVO no bloqueante (abrir Steam, esperar login…): banner inferior con spinner.
+    @State private var launchStatus: String?
 
     var body: some View {
         NavigationStack {
@@ -71,11 +73,26 @@ struct ContentView: View {
             launchAlertTitle = note.userInfo?["title"] as? String ?? "Vessel"
             launchAlertBody = note.userInfo?["body"] as? String ?? ""
             showingLaunchAlert = true
+            launchStatus = nil   // un aviso terminal oculta el banner de progreso
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .launchStatus)) { note in
+            withAnimation(.smooth(duration: 0.25)) {
+                launchStatus = note.userInfo?["message"] as? String
+            }
         }
         .alert(launchAlertTitle, isPresented: $showingLaunchAlert) {
             Button("Entendido", role: .cancel) { }
         } message: {
             Text(launchAlertBody)
+        }
+        // Banner de estado EN VIVO (no bloqueante): el usuario SIEMPRE sabe qué pasa
+        // (abriendo Steam, esperando login, reiniciando…). Ver mensaje de la fase actual.
+        .overlay(alignment: .bottom) {
+            if let launchStatus {
+                LaunchStatusBanner(message: launchStatus)
+                    .padding(.bottom, 28)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
     }
 
@@ -145,6 +162,35 @@ private struct VesselWindowStyler: NSViewRepresentable {
         // lo que movía la ventana al arrastrar sobre el grid/lista/ficha. Ver DESIGN.md §7.
         window.isMovableByWindowBackground = false
         window.titlebarSeparatorStyle = .none
+    }
+}
+
+/// Banner de estado EN VIVO (no bloqueante) para fases largas de lanzamiento: abrir Steam,
+/// esperar el login, reiniciar el cliente… Aparece abajo con un spinner y el mensaje de la
+/// fase, para que el usuario SIEMPRE sepa qué está pasando (cero fricción). Estilo Liquid Glass.
+private struct LaunchStatusBanner: View {
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(.white)
+            Text(message)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+        .frame(maxWidth: 460)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.35), radius: 18, y: 8)
     }
 }
 
