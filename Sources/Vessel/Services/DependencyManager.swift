@@ -312,25 +312,34 @@ final class DependencyManager {
     /// tamaño: solo copia y re-firma si el fichero del motor difiere del bundleado.
     func applySteamRenderFix() async {
         let fm = FileManager.default
-        let unixDir = "\(enginesDirectory)/\(WineEngineLocator.unifiedEngineName)/lib/wine/x86_64-unix"
+        let engineDir = "\(enginesDirectory)/\(WineEngineLocator.unifiedEngineName)"
+        let unixDir = "\(engineDir)/lib/wine/x86_64-unix"
         guard fm.fileExists(atPath: "\(unixDir)/win32u.so") else { return }
         guard let resDir = Bundle.main.resourceURL?.appendingPathComponent("engine-steamfix").path,
               fm.fileExists(atPath: "\(resDir)/win32u.so") else { return }
+        // Marcador de VERSIÓN (no tamaño): el `winemac.so` con el fix de fullscreen de juegos pesa
+        // casi lo mismo que el original, así que un chequeo por tamaño no lo detectaría. Con el
+        // marcador re-aplicamos solo cuando cambia la versión del fix (o si el motor se re-descarga
+        // y pierde el marcador). Bump de versión = obliga a re-aplicar en instalaciones existentes.
+        let marker = "\(engineDir)/.vessel-steam-render-fix"
+        let fixVersion = "v2-winemac-game-fullscreen"
+        let current = (try? String(contentsOfFile: marker, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if current == fixVersion { return }
+
         var applied = false
-        for so in ["win32u.so", "bcrypt.so", "secur32.so"] {
+        // win32u (render CEF por DXMT) + bcrypt/secur32 (login ECDSA) + winemac (fullscreen de
+        // juegos: reescala el client_view Metal al ir la ventana a pantalla completa).
+        for so in ["win32u.so", "bcrypt.so", "secur32.so", "winemac.so"] {
             let src = "\(resDir)/\(so)", dst = "\(unixDir)/\(so)"
             guard fm.fileExists(atPath: src) else { continue }
-            let srcSize = (try? fm.attributesOfItem(atPath: src))?[.size] as? Int
-            let dstSize = (try? fm.attributesOfItem(atPath: dst))?[.size] as? Int
-            if srcSize != dstSize || dstSize == nil {
-                try? fm.removeItem(atPath: dst)
-                if (try? fm.copyItem(atPath: src, toPath: dst)) != nil { applied = true }
-            }
+            try? fm.removeItem(atPath: dst)
+            if (try? fm.copyItem(atPath: src, toPath: dst)) != nil { applied = true }
         }
         if applied {
             await stripQuarantineRecursive(at: unixDir)
             await adhocSignBinaries(in: unixDir)
-            LogStore.shared.log("Fix de render/conexión del cliente de Steam aplicado al motor unificado.", level: .info)
+            try? fixVersion.write(toFile: marker, atomically: true, encoding: .utf8)
+            LogStore.shared.log("Fix de render/conexión de Steam + fullscreen de juegos aplicado al motor unificado.", level: .info)
         }
     }
 
