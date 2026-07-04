@@ -28,6 +28,16 @@ enum WineEngineLocator {
     /// resolución física completa en pantallas Retina (ver `WineManager`).
     static let unifiedEngineName = "wine-unified"
 
+    /// Motor D3DMetal propio: el UNIFICADO (WineHQ 11.10) **+ D3DMetal de Apple trasplantado**
+    /// (D3D12→Metal) sobre el modelo de `%gs` de CrossOver (nunca mueve el GSBASE; TEB por
+    /// indirección `%gs:0x30`) para que los hilos nativos de D3DMetal no crasheen bajo Rosetta,
+    /// + la tabla `macdrv_functions` portada al `winemac.so` (para que D3DMetal presente a ventana).
+    /// Resultado: UN solo motor libre que corre **a la vez** el CEF de Steam (login), los juegos
+    /// **D3D12 por D3DMetal** y los D3D11 por DXMT — exactamente lo que hace CrossOver con su Wine
+    /// propietario. Se prefiere para juegos **D3D12 + DRM real de Steam** (Steam y juego en el MISMO
+    /// wineserver). Si no está instalado, se cae a GPTK/D3DMetal (que no corre el CEF moderno).
+    static let d3dmetalEngineName = "wine-d3dmetal"
+
     // MARK: - Roles de motor (arquitectura de doble motor)
     //
     // Tras validación empírica en Apple Silicon:
@@ -89,6 +99,29 @@ enum WineEngineLocator {
     /// True si la ruta de Wine pertenece al motor unificado propio (`wine-unified`).
     static func isUnifiedEngine(_ winePath: String) -> Bool {
         winePath.contains("/\(unifiedEngineName)/")
+    }
+
+    /// True si la ruta de Wine pertenece al motor D3DMetal propio (`wine-d3dmetal`).
+    static func isD3DMetalEngine(_ winePath: String) -> Bool {
+        winePath.contains("/\(d3dmetalEngineName)/")
+    }
+
+    /// True si el motor corre el **CEF moderno de Steam** con el modelo unificado
+    /// (`WINEMSYNC=0` + `DYLD_FALLBACK_LIBRARY_PATH` a su `lib/` para freetype/gnutls, wrapper
+    /// SwiftShader, self-update permitido). Lo cumplen tanto el unificado como el D3DMetal
+    /// (que es el unificado + D3DMetal). Se usa para compartir la ruta del cliente Steam.
+    static func isModernSteamEngine(_ winePath: String) -> Bool {
+        isUnifiedEngine(winePath) || isD3DMetalEngine(winePath)
+    }
+
+    /// True si el motor D3DMetal propio está instalado (tiene binario `wine`).
+    static func isD3DMetalEngineInstalled(enginesDirectory: String = VesselPaths.enginesDirectory) -> Bool {
+        engineHasWineBinary(d3dmetalEngineName, enginesDirectory: enginesDirectory)
+    }
+
+    /// Binario Wine del motor D3DMetal propio (`wine-d3dmetal`), o `nil` si no está instalado.
+    static func d3dmetalWineBinary(enginesDirectory: String = VesselPaths.enginesDirectory) -> String? {
+        wineBinary(in: d3dmetalEngineName, enginesDirectory: enginesDirectory)
     }
 
     /// Binario Wine del motor del CLIENTE de Steam (unificado si está, si no Gcenx).

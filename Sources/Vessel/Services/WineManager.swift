@@ -954,13 +954,23 @@ final class WineManager {
         let gameDir = (executable as NSString).deletingLastPathComponent
         let fm = FileManager.default
 
-        // 1) Asegurar GPTK/D3DMetal (auto-descarga del Mythic Engine si falta).
-        log.log("Preparando GPTK/D3DMetal para juego D3D12…", level: .info)
-        try await gptkManager.ensureInstalled { msg, pct in
-            Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
-        }
-        guard let gptkWine = gptkManager.wineBinaryPath else {
-            throw WineError.launchFailed("No se pudo localizar el wine de GPTK/D3DMetal.")
+        // 1) Motor D3D12: PREFERIR el motor D3DMetal propio (`wine-d3dmetal`, WineHQ 11.10 + D3DMetal
+        //    de Apple), que corre D3D12→Metal en Wine MODERNO. Si no está instalado, GPTK/D3DMetal
+        //    (Mythic Engine, Wine 9.0) como fallback auto-descargable.
+        let useD3DMetalEngine = WineEngineLocator.isD3DMetalEngineInstalled()
+        let d3d12Wine: String
+        if useD3DMetalEngine, let w = WineEngineLocator.d3dmetalWineBinary() {
+            log.log("Preparando el motor D3DMetal propio (WineHQ 11.10) para juego D3D12…", level: .info)
+            d3d12Wine = w
+        } else {
+            log.log("Preparando GPTK/D3DMetal para juego D3D12…", level: .info)
+            try await gptkManager.ensureInstalled { msg, pct in
+                Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
+            }
+            guard let gptkWine = gptkManager.wineBinaryPath else {
+                throw WineError.launchFailed("No se pudo localizar el wine de GPTK/D3DMetal.")
+            }
+            d3d12Wine = gptkWine
         }
 
         // 2) Limpiar el game dir de DLLs gráficas que un lanzamiento previo dejara
@@ -983,27 +993,31 @@ final class WineManager {
             try? appId.write(toFile: "\(gameDir)/steam_appid.txt", atomically: true, encoding: .utf8)
         }
 
-        // 4) Re-sincronizar el prefijo al motor GPTK y cerrar cualquier wine previo
-        //    (p.ej. el cliente Steam en Gcenx). El juego corre solo en GPTK/D3DMetal.
-        log.log("Preparando el prefijo para GPTK…", level: .info)
-        try? await terminateWineProcesses(winePath: gptkWine, prefix: bottle.prefixPath)
+        // 4) Re-sincronizar el prefijo al motor D3D12 elegido y cerrar cualquier wine previo
+        //    (p.ej. el cliente Steam en otro motor). El juego corre solo en D3DMetal.
+        log.log("Preparando el prefijo para el motor D3D12…", level: .info)
+        try? await terminateWineProcesses(winePath: d3d12Wine, prefix: bottle.prefixPath)
         try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
-        await resyncGamePrefix(gameWine: gptkWine, prefix: bottle.prefixPath)
+        await resyncGamePrefix(gameWine: d3d12Wine, prefix: bottle.prefixPath)
 
-        // 5) Lanzar el juego con el entorno de D3DMetal.
-        var env = gptkManager.d3dMetalEnvironment(prefix: bottle.prefixPath)
+        // 5) Lanzar el juego con el entorno de D3DMetal (del motor propio o de GPTK).
+        var env = useD3DMetalEngine
+            ? d3dMetalUnifiedEnvironment(prefix: bottle.prefixPath)
+            : gptkManager.d3dMetalEnvironment(prefix: bottle.prefixPath)
         if let appId = steamAppId, !appId.isEmpty {
             env["SteamAppId"] = appId
             env["SteamGameId"] = appId
         }
-        log.log("Lanzando juego D3D12 con GPTK/D3DMetal + Goldberg: \((executable as NSString).lastPathComponent)", level: .info)
+        let engineLbl = useD3DMetalEngine ? "motor D3DMetal Vessel (WineHQ 11.10)" : "GPTK/D3DMetal + Goldberg"
+        log.log("Lanzando juego D3D12 con \(engineLbl): \((executable as NSString).lastPathComponent)", level: .info)
         return try await launchWineProcess(
-            winePath: gptkWine,
+            winePath: d3d12Wine,
             prefix: bottle.prefixPath,
             arguments: [executable] + effective.launchArgs,
             environment: env,
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
-            effective: effective
+            effective: effective,
+            d3dMetalGame: useD3DMetalEngine
         )
     }
 
@@ -1264,8 +1278,48 @@ final class WineManager {
         }
         }   // fin de `if !isD3D12` (rama motor unificado)
 
-        // GPTK/D3DMetal para cliente + juego (mismo wineserver): juegos D3D12, o fallback si no
-        // hay motor unificado disponible.
+        // ── D3D12 + DRM real: PREFERIR el motor D3DMetal propio (`wine-d3dmetal`) ──
+        // Es el UNIFICADO + D3DMetal de Apple: corre el CEF de Steam (login por JWT) Y el juego
+        // D3D12 por D3DMetal en el MISMO wineserver — exactamente lo que hace CrossOver. GPTK
+        // (abajo) NO corre el CEF moderno (loopback 0x3008/0x3009), así que con él el DRM no podía
+        // conectar; por eso este motor es EL correcto para D3D12+Steam. Validado a mano: FFT
+        // (AppID 1004640) supera el DRM, carga D3DMetal y renderiza (solo lo frena su anti-tamper
+        // Denuvo); juegos D3D12 SIN Denuvo funcionan de principio a fin.
+        if isD3D12, let d3dmWine = WineEngineLocator.d3dmetalWineBinary() {
+            ensureSteamConfig(in: bottle)
+            log.log("Modo Steam real (motor D3DMetal): preparando el cliente Steam conectado…", level: .info)
+            // Cliente en 2º plano (multiproceso -silent → loguea por JWT sin ventana). El motor
+            // D3DMetal corre el CEF igual que el unificado (WINEMSYNC=0, wrapper SwiftShader).
+            let connected = await ensureSteamConnected(in: bottle, clientWine: d3dmWine, timeoutSeconds: 120, background: true)
+            if !connected { throw steamRealNotConnected(gameExecutable: executable, in: bottle) }
+            log.log("Cliente Steam conectado; lanzando el juego D3D12 con DRM real (D3DMetal).", level: .info)
+            // Que mande el d3d12/dxgi builtin de D3DMetal: quitar del game dir las DLLs de DXMT que
+            // un intento previo dejara junto al exe (chocan). NO se toca la subcarpeta D3D12/ (Agility SDK).
+            cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
+            // Modo Retina para render a resolución física completa en pantallas Retina.
+            await setMacDriverRetinaMode(prefix: bottle.prefixPath, wine: d3dmWine, enabled: effective.retina)
+            var env = d3dMetalUnifiedEnvironment(prefix: bottle.prefixPath)
+            env["SteamAppId"] = appId
+            env["SteamGameId"] = appId
+            for (k, v) in effective.extraEnv { env[k] = v }
+            log.log("Lanzando \((executable as NSString).lastPathComponent) vía Steam real (motor D3DMetal, D3D12→Metal).", level: .info)
+            NotificationService.shared.status("Steam conectado. Lanzando el juego…")
+            let proc = try await launchWineProcess(
+                winePath: d3dmWine,
+                prefix: bottle.prefixPath,
+                arguments: [executable] + effective.launchArgs,
+                environment: env,
+                workingDirectory: gameWorkingDirectory(forExecutable: executable),
+                forceSyncOff: true,      // mismo wineserver que el cliente Steam → sync=0 obligatorio
+                d3dMetalGame: true       // añade el DYLD a lib/external:lib (D3DMetal)
+            )
+            NotificationService.shared.status(nil)
+            return proc
+        }
+
+        // GPTK/D3DMetal para cliente + juego (mismo wineserver): fallback si no está el motor
+        // D3DMetal propio (o para D3D12 en equipos sin él). GPTK no corre el CEF moderno, así que
+        // el DRM real solo conecta de forma fiable con el motor D3DMetal de arriba.
         try await gptkManager.ensureInstalled { msg, pct in
             Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
         }
@@ -1289,6 +1343,13 @@ final class WineManager {
         // 5) Lanzar el juego en GPTK, MISMO wineserver que Steam (NO se mata Steam ni se
         //    resincroniza el prefijo, que lo tumbaría). SteamAPI_Init encuentra el cliente vivo.
         var env = gptkManager.d3dMetalEnvironment(prefix: bottle.prefixPath)
+        // La sincronización DEBE coincidir con la del cliente Steam del mismo wineserver
+        // (sync=0, ver steamClientEnvironment): mezclar esync entre procesos del mismo
+        // wineserver rompe el socket del cliente (→ conn:0) o aborta Wine. D3DMetal rinde
+        // igual con el sync apagado (verificado), así que el juego también va a sync=0.
+        env["WINEMSYNC"] = "0"
+        env["WINEESYNC"] = "0"
+        env["WINEFSYNC"] = "0"
         env["SteamAppId"] = appId
         env["SteamGameId"] = appId
         log.log("Lanzando \((executable as NSString).lastPathComponent) vía Steam real (GPTK/D3DMetal).", level: .info)
@@ -1299,7 +1360,8 @@ final class WineManager {
             arguments: [executable] + effective.launchArgs,
             environment: env,
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
-            effective: effective
+            effective: effective,
+            forceSyncOff: true   // mismo wineserver que el cliente Steam → sync=0 obligatorio
         )
         NotificationService.shared.status(nil)
         return proc
@@ -1659,6 +1721,17 @@ final class WineManager {
         // GPTK/D3DMetal: entorno de D3DMetal (Steam en el mismo motor que un juego Metal).
         if wine.contains("/\(GPTKManager.engineName)/") {
             var env = gptkManager.d3dMetalEnvironment(prefix: prefix)
+            // CLAVE (reconciliación Steam+D3DMetal en un solo wineserver GPTK): el cliente
+            // necesita el DYLD de D3DMetal para no cerrarse al instante, PERO su async socket
+            // (conexión al CM / updater) se ROMPE bajo msync/esync → connect 0xc00000a3 →
+            // "http error 0" → `conn:0` (nunca loguea). D3DMetal, en cambio, funciona IGUAL con
+            // TODO el sync apagado (verificado: D3D12CreateDevice+CommandQueue OK con
+            // esync/msync/fsync=0). Por eso forzamos sync=0: es el terreno común que deja a
+            // Steam conectar (login por JWT vía CM, que la red de GPTK SÍ alcanza) y al juego
+            // D3D12 renderizar por Metal, ambos en el MISMO wineserver (necesario para el DRM).
+            env["WINEMSYNC"] = "0"
+            env["WINEESYNC"] = "0"
+            env["WINEFSYNC"] = "0"
             env["SteamAppId"] = "753"
             env["SteamGameId"] = "753"
             return env
@@ -1669,7 +1742,22 @@ final class WineManager {
         // 0 el updater descarga bien y el cliente carga. El wrapper SwiftShader (ver
         // SteamWebHelperWrapperInstaller) + `DYLD_FALLBACK_LIBRARY_PATH` (lo añade
         // launchWineProcess para isUnifiedEngine) completan el flujo. VALIDADO in-vivo.
+        // Motor D3DMetal (juegos D3D12+DRM tipo FFT): el cliente comparte wineserver con el JUEGO,
+        // que EXIGE msync ON (su DirectStorage async no completa con sync=0 → pantalla negra). El
+        // cliente Steam ya logueado funciona igual con msync ON (el sync=0 solo hacía falta para el
+        // updater/bootstrap del cliente). Así cliente y juego van con el MISMO sync (ON).
+        if WineEngineLocator.isD3DMetalEngine(wine) {
+            var env = steamClientEnvironment(prefix: prefix)
+            env["WINEMSYNC"] = "1"
+            env["WINEESYNC"] = "1"
+            env["WINEFSYNC"] = "1"
+            env["MVK_CONFIG_LOG_LEVEL"] = "0"
+            return env
+        }
         if WineEngineLocator.isUnifiedEngine(wine) {
+            // Motor UNIFICADO (cliente Steam CEF general, juegos D3D11 por DXMT): WINEMSYNC=0 —
+            // msync rompe el async socket del updater HTTP (→ "http error 0"). `launchWineProcess`
+            // añade el DYLD del motor; el wrapper SwiftShader completa el CEF.
             var env = steamClientEnvironment(prefix: prefix)
             env["WINEMSYNC"] = "0"
             env["WINEESYNC"] = "0"
@@ -1682,6 +1770,34 @@ final class WineManager {
         }
         // Gcenx (fallback): entorno normal.
         return steamClientEnvironment(prefix: prefix)
+    }
+
+    /// Entorno de JUEGO para el motor **D3DMetal** propio (`wine-d3dmetal`). El DYLD hacia
+    /// `lib/external:lib` (D3DMetal.framework + libd3dshared) lo añade `launchWineProcess` con
+    /// `d3dMetalGame: true`; aquí van el resto de variables.
+    ///
+    /// **Sync = ON (msync/esync/fsync = 1).** Validado in-vivo con FFT: The Ivalice Chronicles
+    /// (Denuvo): con el sync APAGADO el juego arranca pero se queda en pantalla negra de carga y su
+    /// I/O async de **DirectStorage** (dstorage.dll, que FFT exige) NO completa → ni crea la ventana.
+    /// Con **msync ON** renderiza el splash y llega al menú. El cliente Steam de este motor LOGUEA
+    /// igual con msync ON (el requisito sync=0 era solo del updater/bootstrap del cliente, no del
+    /// cliente ya logueado que se usa para el DRM). Cliente y juego comparten wineserver, así que
+    /// AMBOS van con el mismo sync (msync ON) — ver `steamClientEnvironment(prefix:wine:)`.
+    private func d3dMetalUnifiedEnvironment(prefix: String) -> [String: String] {
+        var env: [String: String] = [
+            "WINEPREFIX": prefix,
+            "WINEDEBUG": "-all",
+            "WINEMSYNC": "1",
+            "WINEESYNC": "1",
+            "WINEFSYNC": "1",
+            "MVK_CONFIG_LOG_LEVEL": "0",
+            "MTL_HUD_ENABLED": "0",
+            // Silencia el instalador de Mono/Gecko al re-sincronizar el prefijo.
+            "WINEDLLOVERRIDES": "mscoree,mshtml=d"
+        ]
+        // Exponer AVX a Rosetta (algunos juegos comprueban CPUID y crashean sin él). macOS 15+.
+        if #available(macOS 15, *) { env["ROSETTA_ADVERTISE_AVX"] = "1" }
+        return env
     }
 
     @discardableResult
@@ -1722,7 +1838,7 @@ final class WineManager {
         // verificación de ficheros no vea el wrapper como "corrupto".
         let needsSelfUpdate = bootstrapped
             && !isSteamClientModern(in: bottle)
-            && WineEngineLocator.isUnifiedEngine(clientWine)
+            && WineEngineLocator.isModernSteamEngine(clientWine)
         if needsSelfUpdate {
             log.log("Cliente de Steam antiguo detectado: Steam se actualizará solo (una única vez, puede tardar unos minutos)…", level: .info)
             removeSteamConfig(in: bottle)
@@ -1767,7 +1883,8 @@ final class WineManager {
         await ensureSteamRootCertificates(prefix: bottle.prefixPath, wine: clientWine)
         try? await disableSteamAutoStart(winePath: clientWine, prefix: bottle.prefixPath)
 
-        let engineLabel = WineEngineLocator.isUnifiedEngine(clientWine) ? "motor unificado Vessel"
+        let engineLabel = WineEngineLocator.isD3DMetalEngine(clientWine) ? "motor D3DMetal Vessel"
+            : WineEngineLocator.isUnifiedEngine(clientWine) ? "motor unificado Vessel"
             : clientWine.contains("/\(GPTKManager.engineName)/") ? "GPTK/CrossOver" : "Gcenx"
         log.log("Lanzando cliente Steam (\(engineLabel)) en \(bottle.name)…", level: .info)
         // En fresh/actualización, argumentos mínimos: sin -noverifyfiles ni
@@ -2234,7 +2351,9 @@ final class WineManager {
         arguments: [String],
         environment: [String: String],
         workingDirectory: String? = nil,
-        effective: EffectiveLaunchConfig? = nil
+        effective: EffectiveLaunchConfig? = nil,
+        forceSyncOff: Bool = false,
+        d3dMetalGame: Bool = false
     ) async throws -> Process {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: winePath)
@@ -2259,19 +2378,40 @@ final class WineManager {
         // no encuentra FreeType (texto del sistema / CEF de Steam) ni gnutls (TLS). Es
         // inofensivo para juegos que no las usan. `arch` borraría esta var (SIP), pero aquí el
         // binario x86_64 se lanza directo (Rosetta), así que se preserva.
-        if WineEngineLocator.isUnifiedEngine(winePath),
+        if WineEngineLocator.isModernSteamEngine(winePath),
            let root = WineEngineLocator.engineRoot(forWineExecutable: URL(fileURLWithPath: winePath)) {
             let libDir = root.appendingPathComponent("lib").path
+            // El motor D3DMetal necesita su `lib/external` (D3DMetal.framework + libd3dshared.dylib,
+            // a los que apuntan los symlinks d3d12.so/dxgi.so) por delante SOLO para el JUEGO D3D12.
+            // El cliente Steam va con `lib/` a secas: su CEF renderiza por DXMT/CPU y meterle
+            // `external` en el DYLD podría enredar la resolución de dxgi (validado: cliente=lib,
+            // juego=external:lib). En el motor unificado siempre es `lib/`.
+            let extDir = root.appendingPathComponent("lib/external").path
+            let engineDyld = (d3dMetalGame
+                              && WineEngineLocator.isD3DMetalEngine(winePath)
+                              && FileManager.default.fileExists(atPath: extDir))
+                ? "\(extDir):\(libDir)" : libDir
             let base = fullEnv["DYLD_FALLBACK_LIBRARY_PATH"]
-            fullEnv["DYLD_FALLBACK_LIBRARY_PATH"] = (base?.isEmpty == false) ? "\(libDir):\(base!)" : libDir
+            fullEnv["DYLD_FALLBACK_LIBRARY_PATH"] = (base?.isEmpty == false) ? "\(engineDyld):\(base!)" : engineDyld
         }
         // Overlay de la config EFECTIVA (perfil de compatibilidad + ajustes del usuario).
         // Solo para lanzamientos de JUEGO (effective != nil); Steam pasa nil → intacto.
         if let eff = effective {
             // Sincronización (cableada de verdad). msync implica esync para engañar a D3DMetal.
-            fullEnv["WINEMSYNC"] = eff.msync ? "1" : "0"
-            fullEnv["WINEESYNC"] = (eff.esync || eff.msync) ? "1" : "0"
-            fullEnv["WINEFSYNC"] = eff.fsync ? "1" : "0"
+            // EXCEPCIÓN `forceSyncOff` (modo Steam real, GPTK): el juego comparte wineserver con
+            // el cliente Steam, cuya sincronización DEBE ser 0 (msync/esync rompen su async socket
+            // → conn:0 / "http error 0"). D3DMetal rinde igual con TODO el sync apagado (verificado:
+            // D3D12CreateDevice+CommandQueue OK con esync/msync/fsync=0), así que forzamos sync=0 e
+            // IGNORAMOS el sync del perfil — reconcilia cliente Steam + juego D3D12 en un wineserver.
+            if forceSyncOff {
+                fullEnv["WINEMSYNC"] = "0"
+                fullEnv["WINEESYNC"] = "0"
+                fullEnv["WINEFSYNC"] = "0"
+            } else {
+                fullEnv["WINEMSYNC"] = eff.msync ? "1" : "0"
+                fullEnv["WINEESYNC"] = (eff.esync || eff.msync) ? "1" : "0"
+                fullEnv["WINEFSYNC"] = eff.fsync ? "1" : "0"
+            }
             // HUD de rendimiento de Metal (ajuste del usuario). Se aplica AQUÍ, en el overlay
             // efectivo, para que pise el `MTL_HUD_ENABLED=0` que fija el entorno base de D3DMetal
             // (GPTKManager) — así el toggle también funciona en juegos D3D12.
