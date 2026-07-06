@@ -121,6 +121,7 @@ enum LaunchDiagnostics {
     static func monitorAndMaybeRetry(
         prefix: String, gameId: String, gameTitle: String,
         currentLayer: GameConfig.GraphicsLayer, attempt: Int,
+        fallbackLayers: [GameConfig.GraphicsLayer] = [],
         usesRealSteam: Bool = false,
         isRunning: @escaping @MainActor () -> Bool = { false },
         relaunch: @escaping @MainActor (GameConfig.GraphicsLayer) async -> Void
@@ -154,13 +155,13 @@ enum LaunchDiagnostics {
             }
 
             // 1) Fallo con firma CONOCIDA y recuperable → reintentar con la siguiente capa.
-            if let failure, failure.category.isEngineRetryable, attempt < 2, let next = nextLayer(after: currentLayer) {
+            if let failure, failure.category.isEngineRetryable, attempt < 2, let next = nextSensibleLayer(after: currentLayer, in: fallbackLayers) {
                 await retry(next, reason: "falló el arranque (\(failure.title))"); return
             }
             // 2) SALIDA SILENCIOSA: el juego ya NO corre y no hay firma (ni de éxito ni de fallo
             //    conocido). Típico de juegos que importan D3D11 pero renderizan por D3D9 (Grim Dawn):
             //    wine-dxmt cierra al instante sin log. Probamos la siguiente capa (hasta Gcenx/D3D9).
-            if failure == nil, !alive, attempt < 2, let next = nextLayer(after: currentLayer) {
+            if failure == nil, !alive, attempt < 2, let next = nextSensibleLayer(after: currentLayer, in: fallbackLayers) {
                 await retry(next, reason: "se cerró sin renderizar"); return
             }
             // 3) Fallo no recuperable (o ya sin más capas): avisar.
@@ -171,6 +172,19 @@ enum LaunchDiagnostics {
     private static func report(_ f: Failure, gameTitle: String) {
         LogStore.shared.log("⚠️ \(gameTitle): \(f.title). \(f.body)", level: .warn)
         NotificationService.shared.notify(title: "\(f.title) — \(gameTitle)", body: f.body)
+    }
+
+    /// Siguiente capa a probar RESPETANDO la lista de capas con sentido para ESTE juego
+    /// (`WineManager.fallbackLayers`): devuelve la capa que sigue a `layer` en `allowed`, o `nil`
+    /// si ya se agotaron. Así un Unity D3D11 (`allowed = [.dxmt]`) NO salta a GPTK/Gcenx —
+    /// arregla el churn por capas incompatibles. Si `allowed` viene vacía (llamador sin actualizar),
+    /// cae al ciclo antiguo `nextLayer` para no desactivar el fallback por accidente.
+    private static func nextSensibleLayer(after layer: GameConfig.GraphicsLayer,
+                                          in allowed: [GameConfig.GraphicsLayer]) -> GameConfig.GraphicsLayer? {
+        guard !allowed.isEmpty else { return nextLayer(after: layer) }
+        guard let idx = allowed.firstIndex(of: layer) else { return allowed.first { $0 != layer } }
+        let next = idx + 1
+        return next < allowed.count ? allowed[next] : nil
     }
 
     /// Siguiente capa gráfica a probar tras un fallo. Las 3 vías de 64-bit de Vessel forman un

@@ -289,6 +289,8 @@ final class GogStore {
         LaunchDiagnostics.monitorAndMaybeRetry(
             prefix: prefix, gameId: game.appId, gameTitle: game.title,
             currentLayer: usedLayer, attempt: attempt,
+            fallbackLayers: gogdl.primaryExecutable(appId: game.appId, installDir: dir)
+                .map { wineManager.fallbackLayers(forExecutable: $0, effective: eff) } ?? [],
             isRunning: { GameLaunchTracker.shared.state(game.appId) == .running }
         ) { [weak self] next in await self?.play(game, forcedLayer: next, attempt: attempt + 1) }
     }

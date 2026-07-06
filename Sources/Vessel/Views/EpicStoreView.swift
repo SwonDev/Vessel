@@ -274,6 +274,7 @@ final class EpicStore {
         LaunchDiagnostics.monitorAndMaybeRetry(
             prefix: prefix, gameId: game.appName, gameTitle: game.title,
             currentLayer: usedLayer, attempt: attempt,
+            fallbackLayers: wineManager.fallbackLayers(forExecutable: exe, effective: eff),
             isRunning: { GameLaunchTracker.shared.state(game.appName) == .running }
         ) { [weak self] next in await self?.play(game, forcedLayer: next, attempt: attempt + 1) }
     }

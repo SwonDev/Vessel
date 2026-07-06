@@ -107,10 +107,30 @@ final class WineManager {
 
     /// Motor para JUEGOS D3D11: wine-dxmt (DXMT builtin → Metal nativo, FL 11_0).
     /// Fallback: motor cliente o bottle.winePath.
-    func resolveGameWine(for bottle: Bottle) -> String {
-        WineEngineLocator.gameWineBinary()
+    /// EXCEPCIÓN por juego: los juegos con **Epic Online Services (EOS)** CRASHEAN al inicializar su
+    /// SDK bajo el motor unificado (WineHQ 11.10) — el crash cae en `UnityPlayer.dll` justo en la init
+    /// de la plataforma (visto en AK-xolotl y Dragon Is Dead). En `wine-dxmt-mousefix` (Wine 9.9)
+    /// arrancan bien (es donde funcionaban antes de que el unificado pasara a ser el motor por defecto).
+    /// Por eso, si el ejecutable trae EOS, se ruta a mousefix. Aethermancer (sin EOS) sigue en el unificado.
+    func resolveGameWine(for bottle: Bottle, executable: String? = nil) -> String {
+        if let exe = executable, usesEpicOnlineServices(exe),
+           let mousefix = WineEngineLocator.wineBinary(in: WineEngineLocator.mousefixEngineName) {
+            log.log("Juego con Epic Online Services (EOS): se usa wine-dxmt-mousefix (el motor unificado crashea su SDK).", level: .info)
+            return mousefix
+        }
+        return WineEngineLocator.gameWineBinary()
             ?? WineEngineLocator.clientWineBinary()
             ?? bottle.winePath
+    }
+
+    /// `true` si el juego integra **Epic Online Services (EOS)**: trae `EOSSDK-Win64-Shipping.dll`
+    /// (junto al exe o en `<exe>_Data/Plugins/x86_64/`). Su init crashea bajo el motor unificado.
+    func usesEpicOnlineServices(_ executable: String) -> Bool {
+        let dir = (executable as NSString).deletingLastPathComponent
+        let fm = FileManager.default
+        if fm.fileExists(atPath: "\(dir)/EOSSDK-Win64-Shipping.dll") { return true }
+        let exeName = ((executable as NSString).lastPathComponent as NSString).deletingPathExtension
+        return fm.fileExists(atPath: "\(dir)/\(exeName)_Data/Plugins/x86_64/EOSSDK-Win64-Shipping.dll")
     }
 
     /// Importa en el prefijo los **root CAs + intermedios de DigiCert** que la cadena de
@@ -539,6 +559,36 @@ final class WineManager {
         return .dxmt                                          // D3D11 → wine-dxmt
     }
 
+    /// Lista ORDENADA de capas gráficas que tiene SENTIDO probar para este juego, empezando por la
+    /// de arranque. La usa el fallback automático (`LaunchDiagnostics`) para NO enrutar un juego a
+    /// una capa arquitectónicamente incompatible con su tipo — el bug que dejaba a un Unity D3D11
+    /// probando GPTK (D3D12) y Gcenx (D3D9), fallando las tres y sin arrancar. Reglas:
+    ///  - Override de usuario/perfil (`.gptk`/`.dxmt`/`.gcenx`) → SOLO esa capa (respeta su elección; nada de ciclo ciego).
+    ///  - D3D12 real (FFT/AAA) → solo GPTK/D3DMetal (si falla es DRM, no capa).
+    ///  - D3D9 → solo Gcenx (wine-dxmt no resuelve d3d9).
+    ///  - Unity D3D11 → solo DXMT (GPTK mata el ratón de Unity; Gcenx es D3D9). Si DXMT falla, es cosa del motor, no de la capa.
+    ///  - D3D11 64-bit no-Unity → DXMT y, como respaldo, Gcenx (juegos que importan d3d11 pero renderizan por d3d9, p. ej. Grim Dawn).
+    ///  - 32-bit no-D3D9 → CrossOver/Gcenx y, como respaldo, DXMT.
+    ///  - Carga dinámica (`.other`) → Gcenx primero, DXMT de respaldo (el gate ya existente para M-series nuevos).
+    func fallbackLayers(forExecutable executable: String, effective eff: EffectiveLaunchConfig = EffectiveLaunchConfig()) -> [GameConfig.GraphicsLayer] {
+        switch eff.graphicsOverride {
+        case .gptk:  return [.gptk]
+        case .dxmt:  return [.dxmt]
+        case .gcenx: return [.gcenx]
+        case .auto:  break
+        }
+        let api = detectGraphicsAPI(forExecutable: executable)
+        switch api {
+        case .d3d12: return [.gptk]
+        case .d3d9:  return [.gcenx]
+        case .other: return [.gcenx, .dxmt]
+        case .d3d11:
+            if isUnityGame(executable) { return [.dxmt] }
+            if isExecutable32Bit(executable) { return [.gcenx, .dxmt] }
+            return [.dxmt, .gcenx]
+        }
+    }
+
     /// ¿El .exe importa alguna de estas DLL? Escanea el binario (mapeado en memoria)
     /// buscando los nombres en la tabla de imports. Heurístico pero fiable: los nombres
     /// de import aparecen como ASCII terminado en nulo. Comprueba minúsculas y mayúsculas.
@@ -650,7 +700,7 @@ final class WineManager {
         }
         // D3D11 → wine-dxmt (DXMT→Metal). Aseguramos DXMT en el builtin del motor; si
         // no, los juegos usarían wined3d y fallarían con "InitializeEngineGraphics".
-        let gameWine = resolveGameWine(for: bottle)
+        let gameWine = resolveGameWine(for: bottle, executable: executable)
         try await ensureGameEngineDXMT(gameWine: gameWine)
         // GARANTÍA de carga de DXMT: copiar las DLLs de DXMT JUNTO al ejecutable.
         // Wine busca DLLs primero en la carpeta del exe; el builtin del motor NO se
@@ -1544,17 +1594,21 @@ final class WineManager {
     }
 
     /// Flags de motor Unity para el path **DXMT (64-bit)**. Para juegos no Unity, vacío.
-    func unityLaunchArguments(forExecutable executable: String) -> [String] {
+    func unityLaunchArguments(forExecutable executable: String, singleThreaded: Bool = false) -> [String] {
         // Combinación validada para Unity + DXMT en Apple Silicon:
-        //  - `-force-d3d11-no-singlethreaded`: estabilidad de DXMT.
+        //  - `-force-d3d11-no-singlethreaded`: estabilidad de DXMT (render MULTIHILO, rápido).
         //  - `-screen-fullscreen 1 -window-mode borderless`: pantalla completa SIN
         //    bordes. El fullscreen EXCLUSIVO (modo por defecto del juego) sí revienta
         //    el swapchain de DXMT (InitializeEngineGraphics failed); el borderless se
         //    ve a pantalla completa y funciona. Los avisos `unsupported swap effect`
         //    / `DeviceTexture` de DXMT son inofensivos (el juego renderiza igual).
-        return isUnityGame(executable)
-            ? ["-force-d3d11-no-singlethreaded", "-screen-fullscreen", "1", "-window-mode", "borderless"]
-            : []
+        // MONOHILO (`singleThreaded`): `-force-gfx-direct` mantiene D3D11 pero corre el render en un
+        // solo hilo → elimina los crashes por CARRERA del render multihilo sobre DXMT (p. ej. Unity 6.3
+        // con EOS/plugins nativos, como Dragon Is Dead, que revientan en `UnityPlayer.dll` al arrancar).
+        // Más lento pero estable; es el mismo fix raíz que ya usamos en Unity 32-bit (ver `unity32BitGLArguments`).
+        guard isUnityGame(executable) else { return [] }
+        let renderMode = singleThreaded ? "-force-gfx-direct" : "-force-d3d11-no-singlethreaded"
+        return [renderMode, "-screen-fullscreen", "1", "-window-mode", "borderless"]
     }
 
     /// Flags de motor Unity para el path **OpenGL de 32-bit** (CrossOver). En Apple
