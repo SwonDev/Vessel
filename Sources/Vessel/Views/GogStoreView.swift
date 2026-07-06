@@ -291,7 +291,12 @@ final class GogStore {
             currentLayer: usedLayer, attempt: attempt,
             fallbackLayers: gogdl.primaryExecutable(appId: game.appId, installDir: dir)
                 .map { wineManager.fallbackLayers(forExecutable: $0, effective: eff) } ?? [],
-            isRunning: { GameLaunchTracker.shared.state(game.appId) == .running }
+            isRunning: { GameLaunchTracker.shared.state(game.appId) == .running },
+            persistWinningLayer: { winLayer in
+                var c = GameConfigStore.load(game.appId)
+                c.graphicsLayer = winLayer
+                GameConfigStore.save(game.appId, c)
+            }
         ) { [weak self] next in await self?.play(game, forcedLayer: next, attempt: attempt + 1) }
     }
 }

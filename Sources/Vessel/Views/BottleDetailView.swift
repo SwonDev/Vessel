@@ -381,7 +381,14 @@ struct BottleDetailView: View {
             currentLayer: usedLayer, attempt: attempt,
             fallbackLayers: wineManager.fallbackLayers(forExecutable: exePath, effective: eff),
             usesRealSteam: eff.useRealSteam,
-            isRunning: { GameLaunchTracker.shared.state(trackId) == .running }
+            isRunning: { GameLaunchTracker.shared.state(trackId) == .running },
+            // Al reparar con éxito, recordar la capa ganadora como override del juego → la próxima
+            // vez arranca directa en el motor que funciona (el arreglo PERSISTE, no se repite el crash).
+            persistWinningLayer: { winLayer in
+                var c = GameConfigStore.load(trackId)
+                c.graphicsLayer = winLayer
+                GameConfigStore.save(trackId, c)
+            }
         ) { next in await launchGame(game, forcedLayer: next, attempt: attempt + 1) }
     }
 

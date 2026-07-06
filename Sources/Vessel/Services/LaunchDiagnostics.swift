@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 /// Diagnóstico POST-LANZAMIENTO + **fallback automático de motor**: unos segundos después de
 /// arrancar un juego, revisa la EVIDENCIA que el propio juego/Wine escriben en sus logs (el
@@ -74,7 +75,11 @@ enum LaunchDiagnostics {
             // OJO: NO usar "Mono path" ni "il2cpp" como marcadores — TODOS los juegos Unity los
             // imprimen normalmente (no son errores) y daban un falso positivo de ".NET/Mono missing"
             // (visto en Core Keeper, cuyo fallo real era SteamAPI). Solo marcadores de ERROR reales.
-            markers: ["mscoree.dll", "clr.dll", ".NET Framework not found",
+            // OJO: NO usar "mscoree.dll" ni "clr.dll" como marcadores — aparecen en el `loaddll`
+            // NORMAL de cualquier juego .NET (y "clr.dll" casa como subcadena con "coreCLR.dll" de
+            // los .NET Core self-contained → falso positivo ".NET/Mono falta" en juegos que traen su
+            // PROPIO runtime, como Romestead). Solo cadenas de ERROR reales.
+            markers: [".NET Framework not found", "You must install .NET",
                       "Could not load type", "FileNotFoundException: Could not load file or assembly",
                       "Failed to load mono", "mono_jit_init failed"],
             category: .dotNet,
@@ -124,12 +129,35 @@ enum LaunchDiagnostics {
         fallbackLayers: [GameConfig.GraphicsLayer] = [],
         usesRealSteam: Bool = false,
         isRunning: @escaping @MainActor () -> Bool = { false },
+        persistWinningLayer: (@MainActor (GameConfig.GraphicsLayer) -> Void)? = nil,
         relaunch: @escaping @MainActor (GameConfig.GraphicsLayer) async -> Void
     ) {
         Task { @MainActor in
-            try? await Task.sleep(for: .seconds(15))
-            let failure = detect(prefix: prefix)
-            let alive = isRunning()
+            // SONDEO CONTINUO (no un único chequeo): un juego puede crashear MUCHO después de los
+            // primeros segundos (los .NET/coreclr y los motores lentos como gptk-mythic —que compila
+            // shaders— tardan >20 s en llegar a los gráficos). Un chequeo único a los 15 s se los perdía.
+            // Sondeamos hasta `deadline` s buscando: (a) el diálogo de CRASH de Wine (winedbg) —señal
+            // universal, sirve para CUALQUIER juego, no solo Unity—, (b) una firma de fallo en logs, o
+            // (c) que el proceso haya MUERTO. Cualquiera de las tres = fallo recuperable.
+            let deadline = 75
+            var failure: Failure? = nil
+            var crashed = false
+            var elapsed = 0
+            while elapsed < deadline {
+                try? await Task.sleep(for: .seconds(3)); elapsed += 3
+                if hasWineCrashDialog() { crashed = true; break }
+                if let f = detect(prefix: prefix) { failure = f; break }
+                // Solo tras una gracia inicial (el tracker tarda en marcar .running al arrancar).
+                if elapsed >= 9, !isRunning() { break }
+            }
+            if crashed { killWineCrashUI() }                 // cerrar el diálogo winedbg colgado
+            // Un juego se considera FALLIDO si: crasheó (winedbg), YA no corre, o hay una FIRMA de
+            // fallo conocida en logs — aunque el proceso figure "vivo" un instante (una firma fatal
+            // como `System.Runtime.dll Module not found` o `InitializeEngineGraphics failed` significa
+            // que va a morir; NO esperar a que el tracker lo note para reintentar). `alive` = lo
+            // contrario, y se usa para el éxito.
+            let failed = crashed || failure != nil || !isRunning()
+            let alive = !failed
 
             // Juego en modo "Steam real" (DRM real): el motor es el unificado FIJO, así que si se
             // cerró NO es un problema de capa gráfica → reintentar con otra capa es INÚTIL y provoca
@@ -147,26 +175,69 @@ enum LaunchDiagnostics {
 
             @MainActor func retry(_ next: GameConfig.GraphicsLayer, reason: String) async {
                 LogStore.shared.log("\(gameTitle): \(reason) con la capa \(currentLayer.rawValue). Reintentando con \(next.rawValue)…", level: .info)
-                NotificationService.shared.notify(title: "Reintentando: \(gameTitle)",
+                NotificationService.shared.notify(title: "Reintentando automáticamente: \(gameTitle)",
                                                   body: "\(reason). Probando con otra capa gráfica…")
                 GameLaunchTracker.shared.stop(gameId)
                 try? await Task.sleep(for: .seconds(2))
                 await relaunch(next)
             }
 
-            // 1) Fallo con firma CONOCIDA y recuperable → reintentar con la siguiente capa.
-            if let failure, failure.category.isEngineRetryable, attempt < 2, let next = nextSensibleLayer(after: currentLayer, in: fallbackLayers) {
-                await retry(next, reason: "falló el arranque (\(failure.title))"); return
+            // REINTENTO UNIVERSAL (la raíz del arreglo): si el juego NO quedó vivo —crash de Wine,
+            // firma de fallo, o salida temprana— se prueba la SIGUIENTE capa con sentido, y así hasta
+            // AGOTAR las capas del juego. NO se descarta por categoría: un crash bajo un motor casi
+            // siempre arranca con otro (Metal/DXMT ↔ D3DMetal ↔ wined3d). Excepción: `.steam` y
+            // `.mouse` tienen su propia reparación (Goldberg / relanzar), no ciclo de motores.
+            let dedicatedRepair = failure?.category == .steam || failure?.category == .mouse
+            let maxAttempts = max(3, fallbackLayers.count)
+            if !alive, !dedicatedRepair, attempt < maxAttempts,
+               let next = nextSensibleLayer(after: currentLayer, in: fallbackLayers) {
+                await retry(next, reason: "falló el arranque (\(failure?.title ?? "se cerró sin renderizar"))")
+                return
             }
-            // 2) SALIDA SILENCIOSA: el juego ya NO corre y no hay firma (ni de éxito ni de fallo
-            //    conocido). Típico de juegos que importan D3D11 pero renderizan por D3D9 (Grim Dawn):
-            //    wine-dxmt cierra al instante sin log. Probamos la siguiente capa (hasta Gcenx/D3D9).
-            if failure == nil, !alive, attempt < 2, let next = nextSensibleLayer(after: currentLayer, in: fallbackLayers) {
-                await retry(next, reason: "se cerró sin renderizar"); return
+            // ÉXITO tras auto-reparación: el juego quedó vivo en un reintento → recordar esta capa
+            // como override para que la PRÓXIMA vez arranque directa (que el arreglo PERSISTA).
+            if alive, attempt > 0 {
+                persistWinningLayer?(currentLayer)
+                LogStore.shared.log("✅ \(gameTitle): arrancó con la capa \(currentLayer.rawValue) tras la auto-reparación; se recuerda para la próxima.", level: .info)
+                NotificationService.shared.notify(title: "\(gameTitle): reparado",
+                                                  body: "Arrancó tras ajustar la capa gráfica automáticamente.")
+                return
             }
-            // 3) Fallo no recuperable (o ya sin más capas): avisar.
-            if let failure { report(failure, gameTitle: gameTitle) }
+            // Agotadas las capas (o reparación dedicada): avisar con la causa detectada.
+            if let failure {
+                report(failure, gameTitle: gameTitle)
+            } else if !alive {
+                report(Failure(category: .crash,
+                               title: "\(gameTitle) no llegó a arrancar",
+                               body: "Se probaron todas las capas gráficas y ninguna funcionó. Prueba «Verificar / reparar»."),
+                       gameTitle: gameTitle)
+            }
         }
+    }
+
+    /// ¿Hay en pantalla el diálogo de CRASH de Wine (`winedbg` / "Program Error Details")? Es la
+    /// señal UNIVERSAL de que un juego crasheó al arrancar, funcione con Unity, .NET, GameMaker o lo
+    /// que sea — a diferencia del `Player.log`, que solo existe en Unity. Detección por título de
+    /// ventana (CGWindowList), igual que `WineManager.isSteamWebHelperHung`.
+    private static func hasWineCrashDialog() -> Bool {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return false }
+        for w in list {
+            let name = (w[kCGWindowName as String] as? String ?? "")
+            if name.contains("Program Error") || name.contains("Wine Debugger")
+                || name.contains("Wine-Programmfehler") || name.contains("Errore del programma") {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Cierra el diálogo de crash de Wine (mata `winedbg`) para que no quede colgado tapando la app
+    /// mientras se reintenta con otra capa. El relanzado (`launch`) ya limpia el resto de procesos wine.
+    private static func killWineCrashUI() {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        p.arguments = ["-9", "-f", "winedbg"]
+        try? p.run(); p.waitUntilExit()
     }
 
     private static func report(_ f: Failure, gameTitle: String) {

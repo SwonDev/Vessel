@@ -538,6 +538,12 @@ final class WineManager {
         if exeImports(executable, anyOf: ["d3d12.dll"]) { return .d3d12 }
         if exeImports(executable, anyOf: ["d3d11.dll", "dxgi.dll", "d3d10.dll", "d3d10core.dll"]) { return .d3d11 }
         if exeImports(executable, anyOf: ["d3d9.dll", "d3d8.dll", "ddraw.dll"]) { return .d3d9 }
+        // Juegos **.NET Core self-contained** (traen `coreclr.dll`): `.other` → Gcenx, el ÚNICO motor
+        // que ejecuta su runtime .NET 8 (los motores Metal —gptk/DXMT/unificado— rompen la carga de
+        // assemblies de coreclr: `System.Runtime.dll … Module not found`). Los knobs .NET de
+        // `launchWineProcess` (ReadyToRun/W^X/ICU) hacen arrancar el runtime bajo Gcenx. ⚠️ MURO
+        // conocido: si además el juego EXIGE D3D11 (Romestead), Gcenx no da device D3D11 en el M5 y
+        // NINGÚN motor cumple .NET + D3D11-Metal a la vez (ver memoria del muro .NET↔Metal).
         return .other
     }
 
@@ -577,6 +583,10 @@ final class WineManager {
         case .gcenx: return [.gcenx]
         case .auto:  break
         }
+        // Juegos .NET Core self-contained: SOLO Gcenx ejecuta su runtime .NET 8 (los motores Metal
+        // —gptk/DXMT/unificado— rompen la carga de assemblies de coreclr). No se cicla a otros: solo
+        // empeora (crash del CLR en vez de un error de gráficos limpio).
+        if isDotNetCoreGame(executable) { return [.gcenx] }
         let api = detectGraphicsAPI(forExecutable: executable)
         switch api {
         case .d3d12: return [.gptk]
@@ -1652,6 +1662,16 @@ final class WineManager {
         return major >= 6000
     }
 
+    /// ¿Es un juego **.NET Core / .NET 5+ self-contained** (trae su propio runtime: `coreclr.dll` +
+    /// `hostfxr.dll`)? Estos SOLO arrancan con un Wine ESTÁNDAR y completo (Gcenx/gptk); el motor
+    /// DXMT/unificado propio (con parches Denuvo/gsbase y sin Vulkan) rompe la carga de assemblies de
+    /// coreclr (`System.Runtime.dll … Module not found`). Se usa para elegir motor y cadena de fallback.
+    func isDotNetCoreGame(_ executable: String) -> Bool {
+        let dir = (executable as NSString).deletingLastPathComponent
+        let fm = FileManager.default
+        return fm.fileExists(atPath: "\(dir)/coreclr.dll") && fm.fileExists(atPath: "\(dir)/hostfxr.dll")
+    }
+
     /// ¿Es un juego **Unreal Engine**? Su exe real vive en `…/Binaries/Win64|Win32|WinGDK/…-Shipping.exe`.
     /// UE se lanza por DXMT (d3d11) con el flag `-d3d11` (ver `detectGraphicsAPI` / `unrealLaunchArguments`).
     func isUnrealGame(_ executable: String) -> Bool {
@@ -2500,6 +2520,26 @@ final class WineManager {
         var fullEnv = ProcessInfo.processInfo.environment
         for (key, value) in Self.userShellEnvironment { fullEnv[key] = value }
         for (key, value) in environment { fullEnv[key] = value }
+        // ── Fix de RAÍZ y de CLASE para juegos .NET Core / .NET 5+ (Romestead y cualquier otro) ──
+        // Estos crashean al arrancar en Wine/Rosetta por DOS motivos, ambos a nivel del runtime .NET:
+        //  1) **ReadyToRun (R2R)**: los assemblies se publican con código NATIVO precompilado (AOT
+        //     parcial). El loader PE de Wine NO carga bien esas secciones nativas → el CLR aborta con
+        //     `System.IO.FileNotFoundException: … System.Runtime.dll. Module not found` +
+        //     `Internal CLR error (0x80131506)`. `DOTNET_ReadyToRun=0` fuerza JIT puro desde el IL
+        //     (que Wine sí ejecuta) → arranca. ESTE es el fix que hizo funcionar Romestead.
+        //  2) **W^X (Write-Xor-Execute)** del JIT: permutar permisos RW↔RX crashea bajo Rosetta (el
+        //     mismo problema que CrossOver parchea con CW Hack 24945/25719). Se desactiva a nivel .NET.
+        // Todo esto es INOFENSIVO para juegos no-.NET (ignoran las variables) y para .NET que ya
+        // funcionaban. No se sobrescribe si el propio entorno ya las trae.
+        if fullEnv["DOTNET_ReadyToRun"] == nil { fullEnv["DOTNET_ReadyToRun"] = "0" }
+        if fullEnv["DOTNET_TieredCompilation"] == nil { fullEnv["DOTNET_TieredCompilation"] = "0" }
+        if fullEnv["DOTNET_EnableWriteXorExecute"] == nil { fullEnv["DOTNET_EnableWriteXorExecute"] = "0" }
+        if fullEnv["COMPlus_EnableWriteXorExecute"] == nil { fullEnv["COMPlus_EnableWriteXorExecute"] = "0" }
+        //  3) **ICU (globalización)**: .NET carga los datos Unicode de ICU al arrancar; bajo Wine el
+        //     mapeo del `icudt*.dat` falla → `Unhandled exception. Could not load ICU data`. El modo
+        //     **invariant globalization** salta ICU (usa cultura invariante) → arranca. Suficiente
+        //     para juegos (no necesitan localización por cultura del SO).
+        if fullEnv["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] == nil { fullEnv["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] = "1" }
         // El motor UNIFICADO propio (WineHQ 11.10) carga freetype/gnutls por `dlopen` desde su
         // `lib/` (SONAME sin ruta). Necesita `DYLD_FALLBACK_LIBRARY_PATH` a esa carpeta o Wine
         // no encuentra FreeType (texto del sistema / CEF de Steam) ni gnutls (TLS). Es
