@@ -7,3 +7,7 @@ DerivedData/
 
 # Código fuente FOSS de CrossOver — referencia local, NO subir
 docs/CrossOver_SourceCode_NO_SUBIR_a_Github/
+
+# Marcador web a CrossOver (referencia local, NO subir)
+*CrossOver*.webloc
+*CodeWeavers*.webloc

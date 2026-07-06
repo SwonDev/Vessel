@@ -583,6 +583,9 @@ final class WineManager {
         case .d3d9:  return [.gcenx]
         case .other: return [.gcenx, .dxmt]
         case .d3d11:
+            // Unity 6.x (6000.x+): SOLO D3DMetal de Apple (gptk). DXMT/mousefix cuelgan su init
+            // gráfica, así que NUNCA se reintenta en DXMT (sería un cuelgue asegurado).
+            if isUnity6OrNewer(executable) { return [.gptk] }
             if isUnityGame(executable) { return [.dxmt] }
             if isExecutable32Bit(executable) { return [.gcenx, .dxmt] }
             return [.dxmt, .gcenx]
@@ -697,6 +700,20 @@ final class WineManager {
             log.log("El juego carga Direct3D dinámicamente (sin imports PE) → Gcenx (wined3d), la capa más compatible.", level: .info)
             return try await launchD3D9Game(executable: executable, in: bottle,
                                             arguments: allArgs, steamAppId: steamAppId, effective: eff)
+        }
+        // Unity 6.x (6000.x+) de 64-bit → **D3DMetal de APPLE (gptk-mythic)**, NO DXMT. Su init
+        // gráfica se CUELGA con DXMT (bucle de creación de IOSurfaces: falta el `d3d11` real sobre
+        // Metal), y con wine-dxmt-mousefix (la ruta EOS) igual. El `d3d11` builtin de gptk-mythic ES
+        // el D3DMetal de Apple → renderiza (validado con Dragon Is Dead, Unity 6000.3.9f1 + EOS,
+        // hasta el menú). Es exactamente lo que hace CrossOver con Unity 6 + EOS. Se IGNORA un
+        // override DXMT (colgaría igual), igual que en las ramas D3D9/32-bit. Unity ≤2023 (p. ej.
+        // AK-xolotl 2022.3) NO entra aquí: va por DXMT/mousefix abajo, donde funciona.
+        if isUnity6OrNewer(executable) {
+            if go == .dxmt {
+                log.log("Override DXMT ignorado en Unity 6.x: se usa D3DMetal de Apple (gptk-mythic), lo único que corre su init gráfica.", level: .info)
+            }
+            log.log("Unity 6.x (6000.x+) detectado → D3DMetal de Apple (gptk-mythic); DXMT cuelga su init gráfica.", level: .info)
+            return try await launchD3D12Game(executable: executable, in: bottle, steamAppId: steamAppId, effective: eff, forceGPTK: true)
         }
         // D3D11 → wine-dxmt (DXMT→Metal). Aseguramos DXMT en el builtin del motor; si
         // no, los juegos usarían wined3d y fallarían con "InitializeEngineGraphics".
@@ -1000,20 +1017,31 @@ final class WineManager {
     /// de Microsoft (lo que hacía vkd3d) es lo que provocaba el crash con puntero
     /// corrupto dentro del juego. El cliente de Steam se lanza EN el mismo wine de
     /// GPTK (mismo wineserver) para que el DRM de Steamworks funcione.
-    private func launchD3D12Game(executable: String, in bottle: Bottle, steamAppId: String?, effective: EffectiveLaunchConfig = EffectiveLaunchConfig()) async throws -> Process {
+    private func launchD3D12Game(executable: String, in bottle: Bottle, steamAppId: String?, effective: EffectiveLaunchConfig = EffectiveLaunchConfig(), forceGPTK: Bool = false) async throws -> Process {
         let gameDir = (executable as NSString).deletingLastPathComponent
         let fm = FileManager.default
 
-        // 1) Motor D3D12: PREFERIR el motor D3DMetal propio (`wine-d3dmetal`, WineHQ 11.10 + D3DMetal
-        //    de Apple), que corre D3D12→Metal en Wine MODERNO. Si no está instalado, GPTK/D3DMetal
-        //    (Mythic Engine, Wine 9.0) como fallback auto-descargable.
-        let useD3DMetalEngine = WineEngineLocator.isD3DMetalEngineInstalled()
+        // 1) Motor: por defecto el motor D3DMetal propio (`wine-d3dmetal`, WineHQ 11.10 + D3DMetal
+        //    de Apple), que corre D3D12→Metal en Wine MODERNO. EXCEPCIÓN: **Unity 6.x (6000.x+)
+        //    que renderiza por D3D11** (no D3D12), o `forceGPTK` → GPTK/D3DMetal (gptk-mythic): su
+        //    `d3d11` builtin ES el D3DMetal de Apple, mientras que en wine-d3dmetal el `d3d11` es
+        //    DXMT y se CUELGA en la init gráfica de Unity 6 (bucle de IOSurfaces). Es la receta con
+        //    la que CrossOver corre Unity 6 + EOS (Dragon Is Dead). Si wine-d3dmetal no está, GPTK
+        //    como fallback auto-descargable igualmente.
+        let unity6NeedsAppleD3D11 = isUnity6OrNewer(executable)
+            && detectGraphicsAPI(forExecutable: executable) != .d3d12
+        let preferGPTK = forceGPTK || unity6NeedsAppleD3D11
+        let useD3DMetalEngine = !preferGPTK && WineEngineLocator.isD3DMetalEngineInstalled()
         let d3d12Wine: String
         if useD3DMetalEngine, let w = WineEngineLocator.d3dmetalWineBinary() {
             log.log("Preparando el motor D3DMetal propio (WineHQ 11.10) para juego D3D12…", level: .info)
             d3d12Wine = w
         } else {
-            log.log("Preparando GPTK/D3DMetal para juego D3D12…", level: .info)
+            if preferGPTK {
+                log.log("Unity 6.x (D3D11) → GPTK/D3DMetal (gptk-mythic): usa el d3d11 REAL de Apple, no DXMT (que cuelga la init).", level: .info)
+            } else {
+                log.log("Preparando GPTK/D3DMetal para juego D3D12…", level: .info)
+            }
             try await gptkManager.ensureInstalled { msg, pct in
                 Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
             }
@@ -1058,12 +1086,16 @@ final class WineManager {
             env["SteamAppId"] = appId
             env["SteamGameId"] = appId
         }
+        // Unity sobre GPTK/D3DMetal: fullscreen borderless + render MONOHILO (`-force-gfx-direct`),
+        // igual que el resto de paths Unity — el fullscreen EXCLUSIVO revienta el swapchain y el
+        // multihilo casca en Unity 6 + EOS (Dragon Is Dead). Para D3D12 no-Unity (FFT), vacío.
+        let unityArgs = preferGPTK ? unityLaunchArguments(forExecutable: executable, singleThreaded: true) : []
         let engineLbl = useD3DMetalEngine ? "motor D3DMetal Vessel (WineHQ 11.10)" : "GPTK/D3DMetal + Goldberg"
         log.log("Lanzando juego D3D12 con \(engineLbl): \((executable as NSString).lastPathComponent)", level: .info)
         return try await launchWineProcess(
             winePath: d3d12Wine,
             prefix: bottle.prefixPath,
-            arguments: [executable] + effective.launchArgs,
+            arguments: [executable] + unityArgs + effective.launchArgs,
             environment: env,
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: effective,
@@ -1577,6 +1609,47 @@ final class WineManager {
         let fm = FileManager.default
         return fm.fileExists(atPath: "\(dir)/UnityPlayer.dll")
             || fm.fileExists(atPath: "\(dir)/\(exeName)_Data")
+    }
+
+    /// Versión MAYOR de Unity del juego (6000 para Unity 6, 2022 para Unity 2022…), o `nil` si no
+    /// es Unity / no se puede leer. La cadena "6000.3.9f1" vive tanto al inicio de
+    /// `<Juego>_Data/globalgamemanagers` (cadena limpia) como dentro de `UnityPlayer.dll`.
+    func unityMajorVersion(forExecutable executable: String) -> Int? {
+        let dir = (executable as NSString).deletingLastPathComponent
+        let exeName = ((executable as NSString).lastPathComponent as NSString).deletingPathExtension
+        let fm = FileManager.default
+        // Patrón de versión Unity: AAAA.M.PfN (p. ej. 6000.3.9f1, 2022.3.58f1). `f/p/a/b` = fase.
+        let regex = try? NSRegularExpression(pattern: "([0-9]{4,})\\.[0-9]+\\.[0-9]+[fpab][0-9]+")
+        // El globalgamemanagers trae la versión en los primeros bytes (barato y fiable);
+        // UnityPlayer.dll como respaldo (la versión está en su recurso, más adentro).
+        let candidates: [(path: String, bytes: Int)] = [
+            ("\(dir)/\(exeName)_Data/globalgamemanagers", 4096),
+            ("\(dir)/UnityPlayer.dll", 3_000_000)
+        ]
+        for (path, bytes) in candidates {
+            guard fm.fileExists(atPath: path),
+                  let handle = FileHandle(forReadingAtPath: path) else { continue }
+            defer { try? handle.close() }
+            guard let data = try? handle.read(upToCount: bytes),
+                  // isoLatin1: cada byte → char, así el string ASCII de la versión se localiza en binario.
+                  let text = String(data: data, encoding: .isoLatin1) else { continue }
+            let range = NSRange(text.startIndex..., in: text)
+            if let m = regex?.firstMatch(in: text, range: range),
+               let g = Range(m.range(at: 1), in: text),
+               let major = Int(text[g]) {
+                return major
+            }
+        }
+        return nil
+    }
+
+    /// ¿Es **Unity 6 o superior** (versión 6000.x+)? Estos NO arrancan con DXMT ni con
+    /// wine-dxmt-mousefix: su init gráfica se cuelga (bucle de IOSurfaces; falta el `d3d11` real
+    /// sobre Metal). Necesitan el **D3DMetal de Apple (gptk-mythic)**, cuyo `d3d11` builtin sí es
+    /// Metal nativo. Unity ≤2023 (año.x) va bien por DXMT. Validado: Dragon Is Dead (6000.3.9f1).
+    func isUnity6OrNewer(_ executable: String) -> Bool {
+        guard let major = unityMajorVersion(forExecutable: executable) else { return false }
+        return major >= 6000
     }
 
     /// ¿Es un juego **Unreal Engine**? Su exe real vive en `…/Binaries/Win64|Win32|WinGDK/…-Shipping.exe`.
