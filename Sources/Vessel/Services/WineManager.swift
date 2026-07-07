@@ -476,7 +476,7 @@ final class WineManager {
     }
 
     /// API gráfica detectada de un juego, para enrutar a la capa correcta.
-    enum GameGraphicsAPI { case d3d9, d3d11, d3d12, other }
+    enum GameGraphicsAPI { case d3d9, d3d11, d3d12, opengl, other }
 
     /// Auto-detecta la API gráfica del juego. Lo más fiable es mirar las DLL que
     /// **importa el propio .exe** (tabla de imports del PE), con respaldo en la
@@ -538,6 +538,13 @@ final class WineManager {
         if exeImports(executable, anyOf: ["d3d12.dll"]) { return .d3d12 }
         if exeImports(executable, anyOf: ["d3d11.dll", "dxgi.dll", "d3d10.dll", "d3d10core.dll"]) { return .d3d11 }
         if exeImports(executable, anyOf: ["d3d9.dll", "d3d8.dll", "ddraw.dll"]) { return .d3d9 }
+        // Juegos con motor **OpenGL puro** (importan `opengl32.dll` y NINGÚN Direct3D): p. ej. Heroes
+        // of Hammerwatch II (bgfx GL 3.2). En Apple Silicon bajo Wine el contexto GL 3.2 core se crea
+        // por `winemac.so` (OpenGL→Metal de Apple) SOLO si es forward-compatible; muchos motores (bgfx)
+        // piden 3.2 core sin ese bit → Wine lo rechaza (`ERROR_INVALID_VERSION_ARB`). El motor UNIFICADO
+        // trae un `winemac.so` parcheado (CW Hack 24834) que, con `CX_FWD_COMPAT_GL_CTX=1`, inyecta el
+        // bit y el contexto se crea. Se enruta como `.opengl` → motor unificado (ver `launch`).
+        if exeImports(executable, anyOf: ["opengl32.dll"]) { return .opengl }
         // Juegos **.NET Core self-contained** (traen `coreclr.dll`) que renderizan por D3D en runtime
         // (helper `D3DCompiler_*`/`cimgui`/`Vortice` junto al exe, cargado desde código managed): NO
         // importan d3d en el PE → sin esto caerían a `.other` → Gcenx, cuyo wined3d NO da device D3D11
@@ -605,6 +612,7 @@ final class WineManager {
         case .d3d12: return [.gptk]
         case .d3d9:  return [.gcenx]
         case .other: return [.gcenx, .dxmt]
+        case .opengl: return [.dxmt]   // motor unificado (winemac.so parcheado); no ciclar motores
         case .d3d11:
             // Unity 6.x (6000.x+): SOLO D3DMetal de Apple (gptk). DXMT/mousefix cuelgan su init
             // gráfica, así que NUNCA se reintenta en DXMT (sería un cuelgue asegurado).
@@ -675,6 +683,12 @@ final class WineManager {
             try? await goldbergManager.ensureInstalled { _, _ in }
             if goldbergManager.applyToGame(gameExecutable: executable, appId: appId) {
                 log.log("DRM Steamworks emulado con Goldberg (jugar sin abrir Steam).", level: .info)
+                // Goldberg = jugar SIN Steam. Un cliente Steam REAL corriendo en el prefijo (residual de
+                // un intento previo de Steam-real) ROMPE el `SteamAPI_Init` de Goldberg: el juego detecta
+                // el Steam vivo, intenta usarlo y falla con "Steam must be running". Validado con HoH2 y
+                // Cross Blitz: con Steam apagado + Goldberg arrancan; con Steam vivo, no. Matamos aquí el
+                // cliente Steam del prefijo para garantizar que Goldberg emule limpio.
+                try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
             }
         }
         // Capa gráfica: override por juego (Ajustes/perfil) o auto-detección por API.
@@ -785,6 +799,25 @@ final class WineManager {
         // Steamworks API arranque en modo standalone (sin el cliente Steam abierto,
         // que además correría en otro motor). Sin esto algunos juegos no arrancan.
         var env = gameLaunchEnvironment(prefix: bottle.prefixPath)
+        // Motor UNIFICADO (WineHQ 11.10): (a) desactivar Media Foundation — no trae backend GStreamer,
+        // así que `winegstreamer.dll` CRASHEA al decodificar vídeo por MF y tira el proceso (validado
+        // con Cross Blitz: crashea en el vídeo de intro tras crear el device); desactivarlo lo OMITE
+        // limpio. (b) Para juegos OpenGL, activar `CX_FWD_COMPAT_GL_CTX=1`: el `winemac.so` del unificado
+        // trae el CW Hack 24834 que inyecta el bit forward-compatible que bgfx omite en su contexto GL
+        // 3.2 core (sin él, Wine-macOS lo rechaza con ERROR_INVALID_VERSION_ARB → HoH2 no arranca).
+        if WineEngineLocator.isUnifiedEngine(gameWine) {
+            let base = env["WINEDLLOVERRIDES"] ?? ""
+            let mfOff = "winegstreamer=d;mfplat=d;mf=d;mfreadwrite=d;mfmp4srcsnk=d;winedmo=d"
+            env["WINEDLLOVERRIDES"] = base.isEmpty ? mfOff : "\(base);\(mfOff)"
+            // Sync SERVER-SIDE (msync/esync/fsync=0) en el unificado: msync rompe el async socket
+            // completion → Goldberg (que usa red local) falla `SteamAPI_Init` → el juego se cierra con
+            // "Steam must be running". Validado: HoH2 con Goldberg + msync=0 llega al menú; con msync on,
+            // no. Es el mismo motivo por el que el cliente Steam del unificado corre con sync off.
+            env["WINEMSYNC"] = "0"; env["WINEESYNC"] = "0"; env["WINEFSYNC"] = "0"
+        }
+        if detectGraphicsAPI(forExecutable: executable) == .opengl {
+            env["CX_FWD_COMPAT_GL_CTX"] = "1"
+        }
         // Juegos **.NET Core**: NO deshabilitar `mscoree`. Aunque .NET Core usa `coreclr` (no el Mono
         // de Wine), el loader de Wine necesita `mscoree` PRESENTE para mapear los assemblies managed
         // (`System.Runtime.dll`, etc.); con `mscoree=d` el CLR aborta con "Could not load … Module not
@@ -1485,8 +1518,16 @@ final class WineManager {
             env["SteamAppId"] = appId
             env["SteamGameId"] = appId
             let baseOverrides = env["WINEDLLOVERRIDES"]
+            // El motor unificado NO trae backend GStreamer → `winegstreamer.dll` CRASHEA al decodificar
+            // cualquier vídeo por Media Foundation (worker de rtworkq) y tira el proceso ENTERO, aunque
+            // el juego ya haya creado el device y renderizado toda la init. Validado con Cross Blitz
+            // (Unity reproduce un vídeo de intro por MF). Deshabilitar MF hace que el VideoPlayer falle
+            // limpio y OMITA el vídeo (no es fatal; el audio va por FMOD, no por MF). Solo aquí: los
+            // motores de juego (wine-dxmt*/gptk*) SÍ traen GStreamer y reproducen cutscenes legítimas.
+            let mfOff = "winegstreamer=d;mfplat=d;mf=d;mfreadwrite=d;mfmp4srcsnk=d;winedmo=d"
             env["WINEDLLOVERRIDES"] = (baseOverrides?.isEmpty == false)
-                ? "\(baseOverrides!);\(Self.shaderCompilerOverrides)" : Self.shaderCompilerOverrides
+                ? "\(baseOverrides!);\(Self.shaderCompilerOverrides);\(mfOff)"
+                : "\(Self.shaderCompilerOverrides);\(mfOff)"
             for (k, v) in effective.extraEnv { env[k] = v }
             log.log("Lanzando \((executable as NSString).lastPathComponent) vía Steam real (motor unificado, DXMT→Metal).", level: .info)
             NotificationService.shared.status("Steam conectado. Lanzando el juego…")
@@ -2117,8 +2158,14 @@ final class WineManager {
             "WINEFSYNC": "1",
             "MVK_CONFIG_LOG_LEVEL": "0",
             "MTL_HUD_ENABLED": "0",
-            // Silencia el instalador de Mono/Gecko al re-sincronizar el prefijo.
-            "WINEDLLOVERRIDES": "mscoree,mshtml=d"
+            // Silencia el instalador de Mono/Gecko al re-sincronizar el prefijo. + Desactiva Media
+            // Foundation: el motor unificado NO trae backend GStreamer → `winegstreamer.dll` CRASHEA al
+            // decodificar cualquier vídeo por MF (worker de rtworkq) y tira el proceso entero, aunque
+            // el juego ya haya creado el device y renderizado toda la init. Validado con Cross Blitz
+            // (Unity reproduce un vídeo de intro por MF). Desactivarlo hace que el vídeo se OMITA limpio
+            // (no es fatal; el audio suele ir por FMOD). Solo aquí (el unificado nunca reproduce vídeo);
+            // los motores wine-dxmt*/gptk* SÍ traen GStreamer y reproducen cutscenes.
+            "WINEDLLOVERRIDES": "mscoree,mshtml=d;winegstreamer=d;mfplat=d;mf=d;mfreadwrite=d;mfmp4srcsnk=d;winedmo=d"
         ]
         // Exponer AVX a Rosetta (algunos juegos comprueban CPUID y crashean sin él). macOS 15+.
         if #available(macOS 15, *) { env["ROSETTA_ADVERTISE_AVX"] = "1" }

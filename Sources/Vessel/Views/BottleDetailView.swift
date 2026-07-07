@@ -395,7 +395,11 @@ struct BottleDetailView: View {
             // SOLO para juegos de 64-bit: el `steam_api` de 32-bit no conecta al cliente de 64-bit por
             // IPC en WoW64, así que Steam-real nunca le funcionaría — su vía es Goldberg + interfaces
             // (ver CaveBlazers). Grim Dawn NO se ve afectado: su exe lanzado (`x64/…`) ES de 64-bit.
-            retryWithRealSteam: wineManager.isExecutable32Bit(exePath) ? nil : ({
+            // NO Steam-real para juegos de 32-bit (IPC imposible) ni OpenGL (funcionan con Goldberg
+            // sobre el motor unificado; mandarlos a Steam-real arranca un cliente Steam que ROMPE
+            // Goldberg → bucle de fallo). Su vía es Goldberg, no Steam-real.
+            retryWithRealSteam: (wineManager.isExecutable32Bit(exePath)
+                                 || wineManager.detectGraphicsAPI(forExecutable: exePath) == .opengl) ? nil : ({
                 var c = GameConfigStore.load(trackId)
                 c.useRealSteam = true
                 GameConfigStore.save(trackId, c)
