@@ -656,11 +656,12 @@ final class WineManager {
         // el juego renderiza por DXMT→Metal. Es exactamente lo que hace CrossOver con su Wine
         // propietario. Se activa por perfil de compatibilidad (`useRealSteam`). Requiere sesión
         // iniciada en el Steam de Vessel; si no conecta, `launchViaRealSteam` lo avisa e intenta igual.
-        // Steam real NO aplica a juegos de 32-bit: su `steam_api` de 32-bit no puede hablar por IPC
-        // con el cliente Steam de 64-bit en el WoW64 de Wine (y menos cross-engine). Para 32-bit la
-        // vía correcta es Goldberg + la capa gráfica de `launch32BitGame`. Ignorar aquí un perfil
-        // `useRealSteam` obsoleto (que el auto-repair pudo fijar antes de tener el fix de interfaces).
-        if eff.useRealSteam, !isExecutable32Bit(executable), let appId = steamAppId, !appId.isEmpty {
+        // Steam real (DRM real con el cliente conectado). Aplica también a juegos cuyo lanzador es de
+        // 32-bit pero arrancan un proceso de 64-bit (p. ej. Grim Dawn: `Grim Dawn.exe` de 32-bit lanza
+        // `x64/Grim Dawn.exe`): NO filtrar por bitness aquí — se rompería. La decisión de usar Steam
+        // real la marca el perfil (`useRealSteam`); si es un perfil obsoleto para un 32-bit puro que
+        // ahora funciona con Goldberg, se limpia ese perfil, no se filtra por bitness a ciegas.
+        if eff.useRealSteam, let appId = steamAppId, !appId.isEmpty {
             log.log("Modo Steam real para este juego (DRM real con el cliente Steam conectado).", level: .info)
             return try await launchViaRealSteam(executable: executable, in: bottle, appId: appId, effective: eff)
         }
@@ -774,7 +775,7 @@ final class WineManager {
         // (el juego falla con InitializeEngineGraphics). `wineboot -u` lo restaura.
         await resyncGamePrefix(gameWine: gameWine, prefix: bottle.prefixPath)
         // Quitar DLLs nativas del prefix para que mande el DXMT builtin del motor.
-        cleanPrefixNativeGraphicsDLLs(in: bottle)
+        cleanPrefixNativeGraphicsDLLs(prefixPath: bottle.prefixPath)
         // Modo Retina: sin él, DXMT/Metal renderiza a 1× y el juego ocupa un cuarto de la
         // pantalla (esquina superior izquierda) en pantallas Retina. Con él, resolución
         // física completa a pantalla completa. Respeta el flag del perfil (por defecto ON).
@@ -877,13 +878,63 @@ final class WineManager {
     /// Silicon); con Vulkan va por el MoltenVK de CrossOver → Metal y renderiza.
     /// D3DMetal (GPTK) NO se usa: es de 64-bit. Se dejan los builtins de CrossOver
     /// (`cleanPrefixNativeGraphicsDLLs` quita DLLs nativas de otros motores).
-    private func launch32BitGame(executable: String, in bottle: Bottle, arguments: [String], steamAppId: String?, effective: EffectiveLaunchConfig = EffectiveLaunchConfig()) async throws -> Process {
+    // MARK: - Prefijos AISLADOS por motor (nada se solapa)
+
+    /// Prefijo AISLADO para un motor concreto, hermano del prefijo base (`<base>__<motor>`).
+    /// Tiene su PROPIO `drive_c/windows` (DLLs de sistema del motor) y su propio registro, pero
+    /// COMPARTE por symlink `Program Files (x86)`, `Program Files` y `users` con el prefijo base
+    /// (mismos juegos y partidas, sin duplicar). Así dos motores de DISTINTA versión de Wine
+    /// (p. ej. gptk = Wine 9 y el unificado = Wine 11) nunca se pisan las DLLs ni la sincronización
+    /// del otro — la causa raíz de que reparar un juego rompiera otro. Idempotente.
+    ///
+    /// El motor unificado (que hospeda el cliente de Steam y el login) usa SIEMPRE el prefijo base;
+    /// por eso este scoping se aplica solo a los demás motores (gptk, etc.), preservando Steam.
+    private func engineScopedPrefix(base: String, engineTag: String, engineWine: String) async -> String {
+        let fm = FileManager.default
+        let scoped = "\(base)__\(engineTag)"
+        let marker = "\(scoped)/.vessel-scoped-ready"
+        if !fm.fileExists(atPath: marker) {
+            try? fm.createDirectory(atPath: "\(scoped)/drive_c", withIntermediateDirectories: true)
+            // Inicializa windows/ + registro PROPIOS del motor (wineboot en un prefijo limpio).
+            await resyncGamePrefix(gameWine: engineWine, prefix: scoped)
+            try? "ready".write(toFile: marker, atomically: true, encoding: .utf8)
+        }
+        linkSharedPrefixData(scoped: scoped, base: base)   // (re)enlaza juegos + partidas (idempotente)
+        return scoped
+    }
+
+    /// Reemplaza en el prefijo scoped las carpetas de datos compartidos por symlinks al prefijo base,
+    /// para que ambos vean los MISMOS juegos y partidas (sin duplicar disco) manteniendo `windows/`
+    /// separado. Quita el directorio real que `wineboot` hubiera creado antes de enlazar.
+    private func linkSharedPrefixData(scoped: String, base: String) {
+        let fm = FileManager.default
+        for rel in ["Program Files (x86)", "Program Files", "users"] {
+            let link = "\(scoped)/drive_c/\(rel)"
+            let target = "\(base)/drive_c/\(rel)"
+            guard fm.fileExists(atPath: target) else { continue }
+            if (try? fm.destinationOfSymbolicLink(atPath: link)) == target { continue } // ya enlazado
+            try? fm.removeItem(atPath: link)
+            try? fm.createSymbolicLink(atPath: link, withDestinationPath: target)
+        }
+    }
+
+    /// Traduce una ruta bajo el prefijo base a su equivalente bajo el prefijo scoped (mismo archivo
+    /// vía symlink, pero con la unidad C: consistente DENTRO del prefijo del motor).
+    private func scopedPath(_ path: String, base: String, scoped: String) -> String {
+        guard path.hasPrefix("\(base)/") else { return path }
+        return scoped + String(path.dropFirst(base.count))
+    }
+
+    private func launch32BitGame(executable rawExecutable: String, in bottle: Bottle, arguments: [String], steamAppId: String?, effective: EffectiveLaunchConfig = EffectiveLaunchConfig()) async throws -> Process {
         try await gptkManager.ensureInstalled { msg, pct in
             Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
         }
         guard let gptkWine = gptkManager.wineBinaryPath else {
             throw WineError.launchFailed("No se encontró el motor CrossOver (gptk-mythic) para juegos de 32-bit.")
         }
+        // Prefijo AISLADO de gptk: nunca toca el prefijo unificado (Wine 11) de Steam/Grim Dawn.
+        let prefix = await engineScopedPrefix(base: bottle.prefixPath, engineTag: "gptk", engineWine: gptkWine)
+        let executable = scopedPath(rawExecutable, base: bottle.prefixPath, scoped: prefix)
         let isUnity = isUnityGame(executable)
         // Elección del backend de wined3d según el motor del juego (ver `setWined3dRenderer`):
         //  - Unity 32-bit → `vulkan` (MoltenVK; el GL legacy sale negro). Validado: A Short Hike.
@@ -894,20 +945,20 @@ final class WineManager {
             ? "Capa gráfica: wined3d → Vulkan/MoltenVK → Metal (Unity 32-bit, render monohilo) con CrossOver"
             : "Capa gráfica: wined3d → OpenGL de Apple (GLD→Metal) (juego 32-bit) con CrossOver", level: .info)
         log.log("Preparando prefijo para el juego…", level: .info)
-        try? await terminateWineProcesses(winePath: gptkWine, prefix: bottle.prefixPath)
-        try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
-        await resyncGamePrefix(gameWine: gptkWine, prefix: bottle.prefixPath)
-        // Quitar DLLs de traducción gráfica de OTROS motores (DXMT/vkd3d) del prefijo Y de la carpeta
-        // del juego (una DXMT local pisaría wined3d y forzaría MoltenVK → `vkCreateBufferView` aborta).
-        cleanPrefixNativeGraphicsDLLs(in: bottle)
+        try? await terminateWineProcesses(winePath: gptkWine, prefix: prefix)
+        try? await killOrphanWineProcesses(prefix: prefix)
+        await resyncGamePrefix(gameWine: gptkWine, prefix: prefix)
+        // Quitar DLLs de traducción gráfica de OTROS motores (DXMT/vkd3d) del prefijo AISLADO Y de la
+        // carpeta del juego (una DXMT local pisaría wined3d y forzaría MoltenVK → `vkCreateBufferView`).
+        cleanPrefixNativeGraphicsDLLs(prefixPath: prefix, subdirs: ["syswow64"])
         cleanGameFolderGraphicsDLLs(forExecutable: executable)
         // Instalar el d3d11/dxgi/wined3d de gptk como archivos NATIVOS en el prefijo. El builtin de
         // 32-bit no carga solo en el WoW64 experimental de gptk (c0000135), como en la ruta D3D9.
-        ensureD3D11NativeDLLs(in: bottle, engineWine: gptkWine)
-        await setWined3dRenderer(prefix: bottle.prefixPath, wine: gptkWine, renderer: renderer)
+        ensureD3D11NativeDLLs(prefixPath: prefix, engineWine: gptkWine)
+        await setWined3dRenderer(prefix: prefix, wine: gptkWine, renderer: renderer)
 
         var env: [String: String] = [
-            "WINEPREFIX": bottle.prefixPath,
+            "WINEPREFIX": prefix,
             "WINEDEBUG": "-all",
             "MVK_CONFIG_LOG_LEVEL": "0",
             // d3d10*/d3d11/dxgi/wined3d como nativos (los que instaló `ensureD3D11NativeDLLs`).
@@ -933,7 +984,7 @@ final class WineManager {
         log.log("Lanzando juego de 32-bit con CrossOver: \((executable as NSString).lastPathComponent)", level: .info)
         return try await launchWineProcess(
             winePath: gptkWine,
-            prefix: bottle.prefixPath,
+            prefix: prefix,
             arguments: [executable] + arguments + extraArgs,
             environment: env,
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
@@ -1032,22 +1083,23 @@ final class WineManager {
     }
 
     /// Prepara el prefijo para juegos **D3D11 de 32-bit** en gptk (ver `launch32BitGame`): copia
-    /// `d3d10*`/`d3d11`/`dxgi`/`wined3d` *builtin* del motor como **archivos nativos** en
-    /// syswow64/system32. Es el mismo problema que en D3D9: el override `=b` por sí solo NO carga
-    /// el d3d11 builtin de 32-bit en el WoW64 experimental de gptk (`c0000135 "d3d11.dll not found"`,
-    /// sobre todo tras sincronizar el prefijo con otro motor). Con los archivos presentes, wined3d
-    /// renderiza por el backend elegido (`gl` para GameMaker, `vulkan` para Unity). Idempotente.
-    private func ensureD3D11NativeDLLs(in bottle: Bottle, engineWine: String) {
+    /// `d3d10*`/`d3d11`/`dxgi`/`wined3d` *builtin* del motor como **archivos nativos** en **syswow64**
+    /// (SOLO 32-bit). Es el mismo problema que en D3D9: el override `=b` por sí solo NO carga el d3d11
+    /// builtin de 32-bit en el WoW64 experimental de gptk (`c0000135 "d3d11.dll not found"`, sobre todo
+    /// tras sincronizar el prefijo con otro motor). Con los archivos presentes, wined3d renderiza por
+    /// el backend elegido (`gl` para GameMaker, `vulkan` para Unity). Idempotente.
+    ///
+    /// ⚠️ NUNCA toca `system32` (64-bit): el bottle es COMPARTIDO por todos los juegos de la tienda, y
+    /// un juego de 64-bit (p. ej. Grim Dawn por DXMT) tiene ahí su propio d3d11 — pisarlo lo rompería.
+    /// Un juego de 32-bit solo carga DLLs de syswow64, así que con eso basta.
+    private func ensureD3D11NativeDLLs(prefixPath: String, engineWine: String) {
         let binDir = (engineWine as NSString).deletingLastPathComponent
         let engineRoot = (binDir as NSString).deletingLastPathComponent
         let i386 = "\(engineRoot)/lib/wine/i386-windows"
-        let x64w = "\(engineRoot)/lib/wine/x86_64-windows"
-        let syswow = "\(bottle.prefixPath)/drive_c/windows/syswow64"
-        let system32 = "\(bottle.prefixPath)/drive_c/windows/system32"
+        let syswow = "\(prefixPath)/drive_c/windows/syswow64"
         try? FileManager.default.createDirectory(atPath: syswow, withIntermediateDirectories: true)
         for dll in ["wined3d.dll", "dxgi.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll"] {
             copyDLLOverwrite(from: "\(i386)/\(dll)", to: "\(syswow)/\(dll)")
-            copyDLLOverwrite(from: "\(x64w)/\(dll)", to: "\(system32)/\(dll)")
         }
     }
 
@@ -1895,13 +1947,16 @@ final class WineManager {
     /// Incluye `wined3d`/`vulkan-1`/`winevulkan`: como archivos NATIVOS en el prefix
     /// rompen el binding WoW64 de Vulkan (no enlazan con su `.so` unix de 64-bit), lo
     /// que impide cargar d3d11 y deja el prefijo en un estado mixto frágil.
-    func cleanPrefixNativeGraphicsDLLs(in bottle: Bottle) {
+    /// `subdirs` limita qué carpetas del prefijo se limpian. Por defecto ambas (juegos 64-bit por
+    /// DXMT). Los juegos de 32-bit pasan SOLO `["syswow64"]`. Opera sobre `prefixPath` (no un Bottle)
+    /// para poder actuar sobre el prefijo AISLADO del motor (ver `engineScopedPrefix`).
+    func cleanPrefixNativeGraphicsDLLs(prefixPath: String, subdirs: [String] = ["system32", "syswow64"]) {
         let fm = FileManager.default
         let dlls = ["d3d8", "d3d9", "d3d10", "d3d10_1", "d3d10core", "d3d11",
                     "d3d12", "d3d12core", "dxgi", "winemetal", "nvapi64", "nvngx",
                     "wined3d", "vulkan-1", "winevulkan"]
-        for sub in ["system32", "syswow64"] {
-            let dir = "\(bottle.prefixPath)/drive_c/windows/\(sub)"
+        for sub in subdirs {
+            let dir = "\(prefixPath)/drive_c/windows/\(sub)"
             for dll in dlls {
                 let path = "\(dir)/\(dll).dll"
                 // Solo borrar si es una DLL "real" (>20 KB); respetar las fake de Wine.

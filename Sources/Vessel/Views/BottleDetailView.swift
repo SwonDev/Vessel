@@ -393,14 +393,12 @@ struct BottleDetailView: View {
             // Auto-reparación de Steam: el juego pide una interfaz de Steam que la emulación no provee
             // (Steam Input/Controller). Activamos el modo Steam-real PERSISTENTE y relanzamos: Vessel
             // arranca el cliente Steam conectado en segundo plano y el juego se conecta a él.
-            // NO para juegos de 32-bit: su `steam_api` de 32-bit no conecta al cliente de 64-bit por IPC
-            // (ver `launch`), así que Steam-real nunca funcionaría → su vía es Goldberg + interfaces.
-            retryWithRealSteam: wineManager.isExecutable32Bit(exePath) ? nil : ({
+            retryWithRealSteam: {
                 var c = GameConfigStore.load(trackId)
                 c.useRealSteam = true
                 GameConfigStore.save(trackId, c)
                 await launchGame(game, attempt: attempt + 1)
-            } as @MainActor () async -> Void)
+            }
         ) { next in await launchGame(game, forcedLayer: next, attempt: attempt + 1) }
     }
 
