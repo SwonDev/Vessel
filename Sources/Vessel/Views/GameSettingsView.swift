@@ -30,10 +30,15 @@ struct GameConfig: Codable, Equatable {
     var fsync: Bool = true
     /// Muestra el HUD de rendimiento de Metal (FPS / tiempos de frame) superpuesto en el juego.
     var metalHUD: Bool = false
+    /// Modo "Steam real": el juego necesita la API COMPLETA de Steam (DRM, Steam Input/Controller,
+    /// interfaces como STEAMUNIFIEDMESSAGES que Goldberg no implementa) → Vessel arranca el cliente
+    /// Steam conectado en segundo plano y lanza el juego en su mismo wineserver. Lo pone el usuario o,
+    /// automáticamente, el auto-repair cuando detecta un fallo de interfaz de Steam.
+    var useRealSteam: Bool = false
 
     init() {}
 
-    enum CodingKeys: String, CodingKey { case graphicsLayer, launchArguments, esync, fsync, metalHUD }
+    enum CodingKeys: String, CodingKey { case graphicsLayer, launchArguments, esync, fsync, metalHUD, useRealSteam }
 
     /// Decodificación TOLERANTE: los campos ausentes usan su valor por defecto. El decoder
     /// sintetizado de Swift NO lo hace y RESETEABA todos los ajustes guardados al añadir un campo
@@ -45,6 +50,7 @@ struct GameConfig: Codable, Equatable {
         esync = try c.decodeIfPresent(Bool.self, forKey: .esync) ?? true
         fsync = try c.decodeIfPresent(Bool.self, forKey: .fsync) ?? true
         metalHUD = try c.decodeIfPresent(Bool.self, forKey: .metalHUD) ?? false
+        useRealSteam = try c.decodeIfPresent(Bool.self, forKey: .useRealSteam) ?? false
     }
 }
 

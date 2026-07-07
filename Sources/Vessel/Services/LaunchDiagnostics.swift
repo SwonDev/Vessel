@@ -49,7 +49,13 @@ enum LaunchDiagnostics {
         // Vessel aplica Goldberg (ahora recursivo, cubre Unity) o el modo Steam-real según el juego.
         Signature(
             markers: ["SteamApi_Init returned false", "SteamAPI_Init() failed", "Platform init Steam failed",
-                      "Steam must be running", "Unable to initialize SteamAPI", "Steamworks is not initialized"],
+                      "Steam must be running", "Unable to initialize SteamAPI", "Steamworks is not initialized",
+                      // Interfaces de Steam que Goldberg NO implementa (Steam Input/Controller): el
+                      // juego las pide y muere. Solo el cliente Steam REAL las provee → auto-repair las
+                      // enruta a modo Steam-real. Visto en CaveBlazers (GetSteamController →
+                      // STEAMUNIFIEDMESSAGES_INTERFACE_VERSION001).
+                      "STEAMUNIFIEDMESSAGES", "GetSteamController", "Missing interface",
+                      "SteamInput", "STEAMINPUT_INTERFACE_VERSION"],
             category: .steam,
             title: "El juego necesita la API de Steam",
             body: "El juego usa Steamworks y no pudo inicializar su API. Vessel aplica la emulación (Goldberg) automáticamente; si el juego tiene DRM estricto, actívalo en modo «Steam real» en Ajustes. Prueba «Verificar / reparar»."),
@@ -130,8 +136,10 @@ enum LaunchDiagnostics {
         currentLayer: GameConfig.GraphicsLayer, attempt: Int,
         fallbackLayers: [GameConfig.GraphicsLayer] = [],
         usesRealSteam: Bool = false,
+        usesSteamworks: Bool = false,
         isRunning: @escaping @MainActor () -> Bool = { false },
         persistWinningLayer: (@MainActor (GameConfig.GraphicsLayer) -> Void)? = nil,
+        retryWithRealSteam: (@MainActor () async -> Void)? = nil,
         relaunch: @escaping @MainActor (GameConfig.GraphicsLayer) async -> Void
     ) {
         Task { @MainActor in
@@ -148,6 +156,13 @@ enum LaunchDiagnostics {
             while elapsed < deadline {
                 try? await Task.sleep(for: .seconds(3)); elapsed += 3
                 if hasWineCrashDialog() { crashed = true; break }
+                // Diálogo "Missing interface" de Steam (Steam Input/Controller) — señal directa aunque
+                // el log no lo capture. El juego lo muestra y muere; solo el Steam real lo resuelve.
+                if hasSteamInterfaceDialog() {
+                    failure = Failure(category: .steam, title: "El juego necesita la API de Steam",
+                                      body: "Usa Steam Input/Controller (interfaces que la emulación no provee). Activando modo Steam real.")
+                    break
+                }
                 if let f = detect(prefix: prefix) { failure = f; break }
                 // Solo tras una gracia inicial (el tracker tarda en marcar .running al arrancar).
                 if elapsed >= 9, !isRunning() { break }
@@ -172,6 +187,30 @@ enum LaunchDiagnostics {
                         body: "El juego se cerró al arrancar. Steam corre en segundo plano para el DRM (no tienes que abrir nada): vuelve a pulsar Jugar. Si es la primera vez, inicia sesión en Steam desde Vessel (botón de Steam, arriba) una sola vez.")
                     LogStore.shared.log("⚠️ \(gameTitle): el juego (Steam real) se cerró al arrancar; se avisó al usuario para reintentar (Steam sigue en segundo plano).", level: .warn)
                 }
+                return
+            }
+
+            // AUTO-REPARACIÓN DE STEAM: el juego pide interfaces de Steam que la emulación (Goldberg)
+            // NO implementa (Steam Input/Controller, STEAMUNIFIEDMESSAGES) → solo el cliente Steam REAL
+            // las provee. Si aún NO está en modo Steam-real, se ACTIVA automáticamente y se relanza
+            // (como Grim Dawn, pero solo). Validado con CaveBlazers (32-bit GameMaker, corre en el
+            // motor unificado que usa Steam-real). Persistir el modo lo hace el propio `retryWithRealSteam`.
+            let steamSignature = failure?.category == .steam
+            let engineExhausted = nextSensibleLayer(after: currentLayer, in: fallbackLayers) == nil
+            if failed, !usesRealSteam, let retrySteam = retryWithRealSteam,
+               steamSignature || (usesSteamworks && engineExhausted) {
+                // Se activa si: (a) hay FIRMA de Steam (interfaz que falta: CaveBlazers), o (b) es un
+                // juego Steamworks que falló y YA se agotaron sus capas gráficas (heurística: muchos
+                // fallos de Steamworks son de DRM/interfaz, no de motor — Grim Dawn, CaveBlazers).
+                let why = steamSignature ? failure!.title : "no arrancó tras probar sus capas gráficas"
+                LogStore.shared.log("\(gameTitle): \(why) → activando modo Steam real (cliente conectado) y relanzando…", level: .info)
+                NotificationService.shared.notify(title: "Reparando automáticamente: \(gameTitle)",
+                                                  body: "El juego necesita Steam conectado. Activando el modo Steam real…")
+                if crashed { killWineCrashUI() }
+                killSteamInterfaceDialog()
+                GameLaunchTracker.shared.stop(gameId)
+                try? await Task.sleep(for: .seconds(2))
+                await retrySteam()
                 return
             }
 
@@ -240,6 +279,31 @@ enum LaunchDiagnostics {
         p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
         p.arguments = ["-9", "-f", "winedbg"]
         try? p.run(); p.waitUntilExit()
+    }
+
+    /// ¿Hay en pantalla el diálogo "Missing interface" de Steam? (Steam Input/Controller —
+    /// STEAMUNIFIEDMESSAGES). Lo muestra el propio juego (p. ej. CaveBlazers) cuando la emulación no
+    /// implementa una interfaz de Steam que necesita. Señal directa para auto-activar el Steam real.
+    private static func hasSteamInterfaceDialog() -> Bool {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return false }
+        for w in list {
+            let name = (w[kCGWindowName as String] as? String ?? "")
+            if name.contains("Missing interface") || name.contains("Missing inter") { return true }
+        }
+        return false
+    }
+
+    /// Cierra el proceso que muestra el diálogo "Missing interface" (por el PID dueño de la ventana),
+    /// para que no quede colgado mientras se relanza en modo Steam real.
+    private static func killSteamInterfaceDialog() {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return }
+        for w in list {
+            let name = (w[kCGWindowName as String] as? String ?? "")
+            if (name.contains("Missing interface") || name.contains("Missing inter")),
+               let pid = w[kCGWindowOwnerPID as String] as? pid_t {
+                kill(pid, SIGKILL)
+            }
+        }
     }
 
     private static func report(_ f: Failure, gameTitle: String) {

@@ -381,6 +381,7 @@ struct BottleDetailView: View {
             currentLayer: usedLayer, attempt: attempt,
             fallbackLayers: wineManager.fallbackLayers(forExecutable: exePath, effective: eff),
             usesRealSteam: eff.useRealSteam,
+            usesSteamworks: wineManager.usesSteamworks(exePath),
             isRunning: { GameLaunchTracker.shared.state(trackId) == .running },
             // Al reparar con éxito, recordar la capa ganadora como override del juego → la próxima
             // vez arranca directa en el motor que funciona (el arreglo PERSISTE, no se repite el crash).
@@ -388,6 +389,15 @@ struct BottleDetailView: View {
                 var c = GameConfigStore.load(trackId)
                 c.graphicsLayer = winLayer
                 GameConfigStore.save(trackId, c)
+            },
+            // Auto-reparación de Steam: el juego pide una interfaz de Steam que la emulación no provee
+            // (Steam Input/Controller). Activamos el modo Steam-real PERSISTENTE y relanzamos: Vessel
+            // arranca el cliente Steam conectado en segundo plano y el juego se conecta a él.
+            retryWithRealSteam: {
+                var c = GameConfigStore.load(trackId)
+                c.useRealSteam = true
+                GameConfigStore.save(trackId, c)
+                await launchGame(game, attempt: attempt + 1)
             }
         ) { next in await launchGame(game, forcedLayer: next, attempt: attempt + 1) }
     }

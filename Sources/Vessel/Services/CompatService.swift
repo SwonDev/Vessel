@@ -150,6 +150,8 @@ final class CompatService {
         cfg.esync = user.esync
         cfg.fsync = user.fsync
         cfg.metalHUD = user.metalHUD
+        // Steam-real: el override del usuario/auto-repair SUMA (nunca desactiva lo que pida el perfil).
+        if user.useRealSteam { cfg.useRealSteam = true }
         let userArgs = user.launchArguments.split(separator: " ").map(String.init)
         cfg.launchArgs += userArgs
 

@@ -595,6 +595,11 @@ final class WineManager {
         // runtime .NET 8 Y da D3D11→Metal (validado: Romestead renderiza). Gcenx de respaldo (corre
         // .NET pero sin D3D11 en el M5). NUNCA gptk (Wine 9.0, viejo, rompe el loader de .NET 8).
         if isDotNetCoreGame(executable) { return [.dxmt, .gcenx] }
+        // Juegos 32-bit: SIEMPRE van a CrossOver/gptk (launch32BitGame ignora la capa) y
+        // `resolvedGraphicsLayer` devuelve `.gcenx` fijo → una lista de UN elemento evita el BUCLE de
+        // reintentos (la capa nunca cambia, así que ciclar es inútil). Si falla, el auto-repair pasa a
+        // Steam-real (juegos como CaveBlazers) o avisa; no gira en vano.
+        if isExecutable32Bit(executable) { return [.gcenx] }
         let api = detectGraphicsAPI(forExecutable: executable)
         switch api {
         case .d3d12: return [.gptk]
@@ -1694,6 +1699,26 @@ final class WineManager {
         let dir = (executable as NSString).deletingLastPathComponent
         let fm = FileManager.default
         return fm.fileExists(atPath: "\(dir)/coreclr.dll") && fm.fileExists(atPath: "\(dir)/hostfxr.dll")
+    }
+
+    /// ¿El juego usa la API de Steam (Steamworks)? Tiene `steam_api.dll`/`steam_api64.dll` (junto al
+    /// exe o en subcarpetas — Unity los mete en `*_Data/Plugins/`). Lo usa el auto-repair para, si el
+    /// juego falla, probar el modo Steam-real (algunos exigen el cliente Steam vivo / interfaces que
+    /// la emulación no implementa: DRM, Steam Input). Búsqueda superficial y barata.
+    func usesSteamworks(_ executable: String) -> Bool {
+        let dir = (executable as NSString).deletingLastPathComponent
+        let fm = FileManager.default
+        if fm.fileExists(atPath: "\(dir)/steam_api.dll") || fm.fileExists(atPath: "\(dir)/steam_api64.dll") { return true }
+        // Unity: `<Juego>_Data/Plugins/x86_64/steam_api64.dll`.
+        if let walker = fm.enumerator(atPath: dir) {
+            var checked = 0
+            for case let rel as String in walker {
+                checked += 1; if checked > 4000 { break }   // tope de seguridad
+                let low = (rel as NSString).lastPathComponent.lowercased()
+                if low == "steam_api64.dll" || low == "steam_api.dll" { return true }
+            }
+        }
+        return false
     }
 
     /// ¿Es un juego **Unreal Engine**? Su exe real vive en `…/Binaries/Win64|Win32|WinGDK/…-Shipping.exe`.
