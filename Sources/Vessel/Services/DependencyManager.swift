@@ -238,6 +238,69 @@ final class DependencyManager {
         }
     }
 
+    /// Crea/repara `gptk-mythic-mousefix`: clon COW del **gptk-mythic** (CrossOver 9.0) con SOLO el
+    /// `win32u.so` parcheado (fix del ratón de Unity 6, `EnableMouseInPointer`→`WM_POINTER`). Es el
+    /// mismo parche que `wine-dxmt-mousefix` pero compilado desde **Wine 9.0** para casar el ABI de
+    /// gptk (validado: carga y ejecuta sin fork-bomb; Ancient Kingdoms responde al ratón). Todos los
+    /// juegos gptk (Unity 6, D3D12) lo heredan vía `GPTKManager.launchEngineRootPath`; es inerte para
+    /// los que no llaman a EnableMouseInPointer. El gptk base queda intacto como fallback.
+    ///
+    /// **Guarda de versión**: el win32u parcheado se compiló desde Wine 9.0. Si gptk reportara otra
+    /// versión, se omite (y se borra un mousefix obsoleto) para no romper el ABI. Idempotente/auto-
+    /// reparable: recrea si falta, si el win32u.so no es el parcheado (por tamaño), o si quedó más
+    /// viejo que el gptk base.
+    func ensureGptkMousefixEngine(progress: (@Sendable (String, Double) -> Void)? = nil) async {
+        let fm = FileManager.default
+        let gptkDir = "\(enginesDirectory)/\(GPTKManager.engineName)"
+        let gptkWine = "\(gptkDir)/wine/bin/wine"
+        let mfDir = "\(enginesDirectory)/\(GPTKManager.mousefixEngineName)"
+        let mfWine = "\(mfDir)/wine/bin/wine"
+        let mfWin32u = "\(mfDir)/wine/lib/wine/x86_64-unix/win32u.so"
+
+        guard fm.isExecutableFile(atPath: gptkWine) else { return }
+
+        guard let patched = Bundle.main.resourceURL?
+            .appendingPathComponent("mousefix-gptk/win32u.so").path,
+              fm.fileExists(atPath: patched) else {
+            LogStore.shared.log("No se encontró el win32u.so (gptk) parcheado en Resources; Unity 6 usará gptk normal.", level: .warn)
+            return
+        }
+
+        // Guarda de versión: el parche se compiló desde Wine 9.0 (gptk = CrossOver 9.0).
+        let version = (await runCapture(executable: gptkWine, arguments: ["--version"]))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard version.contains("wine-9.0") else {
+            LogStore.shared.log("gptk reporta '\(version)' (no 9.0): se omite el gptk-mousefix para no romper el ABI. Unity 6 usará gptk normal.", level: .warn)
+            try? fm.removeItem(atPath: mfDir)
+            return
+        }
+
+        // Idempotente: ¿ya existe, con el win32u.so parcheado, y no más viejo que gptk?
+        if fm.isExecutableFile(atPath: mfWine) {
+            let patchedSize = (try? fm.attributesOfItem(atPath: patched))?[.size] as? Int
+            let curSize = (try? fm.attributesOfItem(atPath: mfWin32u))?[.size] as? Int
+            let gptkDate = (try? fm.attributesOfItem(atPath: gptkWine))?[.modificationDate] as? Date
+            let mfDate = (try? fm.attributesOfItem(atPath: mfWine))?[.modificationDate] as? Date
+            if let ps = patchedSize, let cs = curSize, ps == cs, ps > 0,
+               let gd = gptkDate, let md = mfDate, md >= gd {
+                return  // al día
+            }
+        }
+
+        progress?("Preparando fix del ratón de Unity 6 (gptk)…", 0.95)
+        do {
+            try? fm.removeItem(atPath: mfDir)
+            try fm.copyItem(atPath: gptkDir, toPath: mfDir)      // clon COW (APFS)
+            try? fm.removeItem(atPath: mfWin32u)
+            try fm.copyItem(atPath: patched, toPath: mfWin32u)   // swap del win32u parcheado
+            await stripQuarantineRecursive(at: mfDir)
+            LogStore.shared.log("Motor 'gptk-mythic-mousefix' listo (fix del ratón de Unity 6 en gptk).", level: .info)
+        } catch {
+            LogStore.shared.log("No se pudo crear el gptk-mousefix: \(error.localizedDescription). Unity 6 usará gptk normal.", level: .warn)
+            try? fm.removeItem(atPath: mfDir)
+        }
+    }
+
     /// Descarga 3Shain/wine v9.9-mingw con soporte DXMT integrado.
     private func installWineDXMT(progress: @escaping @Sendable (String, Double) -> Void) async throws {
         progress("Descargando Wine-DXMT (3Shain v9.9, ~311 MB)…", 0.05)

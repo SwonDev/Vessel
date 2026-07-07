@@ -19,6 +19,11 @@ import Foundation
 final class GPTKManager {
     /// Carpeta del motor dentro de `Engines/`.
     static let engineName = "gptk-mythic"
+    /// Variante con el fix del ratón de Unity 6 (`EnableMouseInPointer`→`WM_POINTER`): clon COW del
+    /// gptk base con SOLO el `win32u.so` parcheado. Se prefiere para lanzar (inerte para juegos que
+    /// no llaman a `EnableMouseInPointer`). El gptk base queda intacto como fallback. Ver
+    /// `ensureMousefixEngine`. La descarga/actualización/versión siguen apuntando al gptk base.
+    static let mousefixEngineName = "gptk-mythic-mousefix"
 
     /// Catálogo de versiones del Mythic Engine (se sirve por https aunque las URLs
     /// internas vengan como http: forzamos https para cumplir ATS).
@@ -34,19 +39,27 @@ final class GPTKManager {
 
     // MARK: - Localización
 
+    /// Raíz del motor gptk BASE (para instalar/actualizar/versión).
     var engineRootPath: String { "\(VesselPaths.enginesDirectory)/\(Self.engineName)" }
+    /// Raíz del motor a usar para LANZAR: la variante con fix de ratón si existe y es válida, si no
+    /// el base. Así todos los juegos gptk (D3D12/Unity 6) heredan el ratón sin conflicto de enrutado.
+    var launchEngineRootPath: String {
+        let mf = "\(VesselPaths.enginesDirectory)/\(Self.mousefixEngineName)"
+        if FileManager.default.isExecutableFile(atPath: "\(mf)/wine/bin/wine") { return mf }
+        return engineRootPath
+    }
 
     /// Binario `wine` real (CrossOver 9.0). El `wine64` del engine es solo un script
-    /// que reenvía a este; usamos el binario directo.
+    /// que reenvía a este; usamos el binario directo. Prefiere la variante con fix de ratón.
     var wineBinaryPath: String? {
-        let candidate = "\(engineRootPath)/wine/bin/wine"
+        let candidate = "\(launchEngineRootPath)/wine/bin/wine"
         return FileManager.default.isExecutableFile(atPath: candidate) ? candidate : nil
     }
 
     /// Carpeta con `D3DMetal.framework` + `libd3dshared.dylib`. El binario wine ya
     /// la resuelve por rpath (`@executable_path/../lib/external`), pero la pasamos
     /// también por `DYLD_FALLBACK_LIBRARY_PATH` como cinturón y tirantes.
-    var externalLibsPath: String { "\(engineRootPath)/wine/lib/external" }
+    var externalLibsPath: String { "\(launchEngineRootPath)/wine/lib/external" }
 
     var isInstalled: Bool {
         wineBinaryPath != nil
@@ -70,13 +83,17 @@ final class GPTKManager {
     /// Asegura que GPTK/D3DMetal está instalado. Si no, descarga la ÚLTIMA versión
     /// disponible del catálogo de Mythic. Idempotente.
     func ensureInstalled(progress: @escaping @Sendable (String, Double) -> Void) async throws {
-        if isInstalled { return }
-        try await install(progress: progress)
-        guard isInstalled else {
-            throw NSError(domain: "Vessel", code: 20, userInfo: [
-                NSLocalizedDescriptionKey: "GPTK/D3DMetal se instaló pero no se pudo autodetectar."
-            ])
+        if !isInstalled {
+            try await install(progress: progress)
+            guard isInstalled else {
+                throw NSError(domain: "Vessel", code: 20, userInfo: [
+                    NSLocalizedDescriptionKey: "GPTK/D3DMetal se instaló pero no se pudo autodetectar."
+                ])
+            }
         }
+        // Auto-crear/reparar el motor con fix del ratón de Unity 6 (clon COW de gptk + win32u
+        // parcheado). Best-effort e idempotente; si falla, Unity 6 usa gptk normal (sin ratón).
+        await dependencyManager.ensureGptkMousefixEngine(progress: progress)
     }
 
     func install(progress: @escaping @Sendable (String, Double) -> Void) async throws {
