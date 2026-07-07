@@ -9,6 +9,9 @@ struct SettingsView: View {
     @State private var wineDownloading = false
     @State private var wineStatusText = ""
     @AppStorage(CompatService.autoUpdateKey) private var compatAutoUpdate = true
+    /// Modo Steam real GLOBAL: todos los juegos de Steam se lanzan con el cliente de Steam conectado
+    /// (nube de Steam/updates/DLC/logros nativos, como CrossOver). Anulable por juego en sus Ajustes.
+    @AppStorage("vessel.steamRealGlobal") private var steamRealGlobal = false
     /// Clave Web API de Steam (opcional): habilita iconos por logro y garantiza el estado de logros
     /// aunque el perfil sea privado. Se guarda en `SteamAccountService.webAPIKey`.
     @State private var steamApiKey = SteamAccountService.webAPIKey
@@ -174,6 +177,13 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Link("Obtener mi clave Web API", destination: URL(string: "https://steamcommunity.com/dev/apikey")!)
                     .font(.caption.weight(.medium))
+
+                Divider().overlay(.white.opacity(0.08)).padding(.vertical, 4)
+                Toggle("Modo Steam real para todos los juegos de Steam", isOn: $steamRealGlobal)
+                    .font(.callout)
+                Text("Con esto activado, tus juegos de Steam se lanzan con el cliente de Steam conectado: **nube de Steam (Steam Cloud), actualizaciones, DLC y logros nativos**, igual que CrossOver. Puedes anularlo por juego en sus Ajustes. Nota: usa el motor unificado del cliente Steam; algunos juegos (p. ej. Palworld) rinden mejor en modo Vessel (motor gráfico óptimo + copia de partida local).")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .vesselCard(padding: 12)
         }

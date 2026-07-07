@@ -689,8 +689,13 @@ final class WineManager {
         // `x64/Grim Dawn.exe`): NO filtrar por bitness aquí — se rompería. La decisión de usar Steam
         // real la marca el perfil (`useRealSteam`); si es un perfil obsoleto para un 32-bit puro que
         // ahora funciona con Goldberg, se limpia ese perfil, no se filtra por bitness a ciegas.
-        if eff.useRealSteam, let appId = steamAppId, !appId.isEmpty {
-            log.log("Modo Steam real para este juego (DRM real con el cliente Steam conectado).", level: .info)
+        // El modo Steam real se activa por el toggle del JUEGO (`useRealSteam`) o por el ajuste GLOBAL
+        // "Modo Steam real para todos los juegos de Steam" (Ajustes). El global da la nube de Steam +
+        // updates + DLC + logros nativos a toda la biblioteca de Steam, como CrossOver; el toggle por
+        // juego permite anularlo (p. ej. Palworld, mejor en modo Vessel por D3DMetal).
+        let steamRealGlobal = UserDefaults.standard.bool(forKey: "vessel.steamRealGlobal")
+        if (eff.useRealSteam || steamRealGlobal), let appId = steamAppId, !appId.isEmpty {
+            log.log("Modo Steam real para este juego (cliente Steam conectado: nube/updates/DLC/logros nativos)\(steamRealGlobal && !eff.useRealSteam ? " [global]" : "").", level: .info)
             return try await launchViaRealSteam(executable: executable, in: bottle, appId: appId, effective: eff)
         }
         // DRM Steamworks AUTO: muchos juegos de Steam exigen que Steam esté corriendo (SteamAPI_Init)

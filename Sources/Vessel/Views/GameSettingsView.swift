@@ -192,6 +192,19 @@ struct GameSettingsView: View {
                         }
                     }
 
+                    if game.steamAppId != nil {
+                        section("Nube de Steam y actualizaciones") {
+                            Text("En **modo Steam real**, Vessel abre el cliente de Steam conectado y lanza el juego con él: obtienes la **nube de Steam (Steam Cloud)**, actualizaciones, DLC y logros NATIVOS —como en un PC, igual que CrossOver—. En **modo Vessel** (por defecto) el juego usa el motor gráfico óptimo (mejor rendimiento; p. ej. Palworld por D3DMetal) y tus partidas se respaldan con la copia local de arriba.")
+                                .font(.caption).foregroundStyle(.white.opacity(0.5)).fixedSize(horizontal: false, vertical: true)
+                            Toggle("Modo Steam real (nube de Steam, actualizaciones, DLC y logros)", isOn: $config.useRealSteam)
+                                .tint(tint).foregroundStyle(.white)
+                            Text(config.useRealSteam
+                                 ? "Activo: el juego corre con el cliente de Steam (motor unificado) y Steam sincroniza tus partidas en la nube. El render puede diferir del modo Vessel óptimo."
+                                 : "Modo Vessel: motor gráfico óptimo por juego + tu copia de partida local (arriba). Sin nube de Steam.")
+                                .font(.caption2).foregroundStyle(.white.opacity(0.45)).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
                     if let path = installPath, !path.isEmpty {
                         Button {
                             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
