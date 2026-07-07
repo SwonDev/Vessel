@@ -516,15 +516,21 @@ final class WineManager {
             return .d3d11
         }
         // **Unreal Engine** (el exe real vive en `Binaries/Win64|Win32|WinGDK`): UE5 importa d3d12
-        // (su RHI por defecto en Windows) Y d3d11. Pero en Mac, GPTK/D3DMetal (D3D12) se reporta como
-        // GPU **AMD** y UE avisa "AMD graphics driver has known issues in D3D11" (fricción) o rinde
-        // peor; por **DXMT (d3d11)** arranca LIMPIO (validado con Dwarven Realms: FL 11.1, sin avisos).
-        // Se trata como D3D11 → DXMT, y `launch()` le añade `-d3d11` para forzar el RHI D3D11 de UE.
+        // (su RHI por defecto en Windows) Y d3d11.
+        //  - UE5 que importa **d3d12** (AAA con Agility SDK: Palworld, etc.) → **D3D12 / D3DMetal de
+        //    Apple**. D3DMetal es el traductor D3D12→Metal COMPLETO de Apple (GPTK): renderiza el juego
+        //    entero — HUD, WebViews internos (notas del parche), efectos avanzados — y el audio va fino.
+        //    Por **DXMT (D3D11)**, en cambio, UE5 AAA renderiza INCOMPLETO: paneles web en BLANCO,
+        //    gráficos que no aparecen y **audio que PETARDEA**. Validado con Palworld: PERFECTO por
+        //    D3DMetal, defectuoso por DXMT. (Antes «funcionaba» solo porque DXMT moría y el fallback
+        //    caía a D3DMetal; al arreglar el arranque de DXMT se quedaba en él, defectuoso.)
+        //  - UE sin d3d12 (solo D3D11, títulos más simples) → DXMT, que arranca limpio y le basta.
         let dirLower = dir.lowercased()
         let isUnreal = dirLower.contains("/binaries/win64")
             || dirLower.contains("/binaries/win32")
             || dirLower.contains("/binaries/wingdk")
         if isUnreal, exeImports(executable, anyOf: ["d3d11.dll", "dxgi.dll"]) {
+            if exeImports(executable, anyOf: ["d3d12.dll"]) { return .d3d12 }
             return .d3d11
         }
         // **Vulkan NATIVO** (el exe importa `vulkan-1.dll` directamente: Godot 4, id Tech, etc.).
@@ -724,7 +730,14 @@ final class WineManager {
         }
         if useD3D12 {
             log.log("Capa gráfica: GPTK/D3DMetal (D3D12→Metal)\(go == .gptk ? " [forzado]" : "")", level: .info)
-            return try await launchD3D12Game(executable: executable, in: bottle, steamAppId: steamAppId, effective: eff)
+            // `forceGPTK`: usar el **GPTK/D3DMetal de Apple** (gptk-mythic), NO el motor propio
+            // `wine-d3dmetal`. Este último MUERE al arrancar desde el botón de Vessel (~1 s) por el
+            // contexto de spawn de la `.app` (identidad de bundle GUI que rompe la creación del device
+            // Metal), mientras que el GPTK de Apple renderiza el juego COMPLETO desde la app (validado
+            // con Dragon Is Dead, y con Palworld: menú, WebViews internos y audio correctos). El
+            // wine-d3dmetal queda para el modo Steam-real (que ya se gestiona arriba y comparte
+            // wineserver con el cliente Steam).
+            return try await launchD3D12Game(executable: executable, in: bottle, steamAppId: steamAppId, effective: eff, forceGPTK: true)
         }
         // Juegos D3D9/D3D8/DDraw → Gcenx (wine-osx64, Wine 11 completo, wined3d→Metal).
         // wine-dxmt no resuelve el d3d9 (falla con c0000135 "d3d9.dll not found"); Gcenx sí.
@@ -813,15 +826,20 @@ final class WineManager {
         // Steamworks API arranque en modo standalone (sin el cliente Steam abierto,
         // que además correría en otro motor). Sin esto algunos juegos no arrancan.
         var env = gameLaunchEnvironment(prefix: bottle.prefixPath)
-        // Motor UNIFICADO (WineHQ 11.10): (a) desactivar Media Foundation — no trae backend GStreamer,
-        // así que `winegstreamer.dll` CRASHEA al decodificar vídeo por MF y tira el proceso (validado
-        // con Cross Blitz: crashea en el vídeo de intro tras crear el device); desactivarlo lo OMITE
-        // limpio. (b) Para juegos OpenGL, activar `CX_FWD_COMPAT_GL_CTX=1`: el `winemac.so` del unificado
-        // trae el CW Hack 24834 que inyecta el bit forward-compatible que bgfx omite en su contexto GL
-        // 3.2 core (sin él, Wine-macOS lo rechaza con ERROR_INVALID_VERSION_ARB → HoH2 no arranca).
+        // Motor UNIFICADO (WineHQ 11.10): (a) desactivar SOLO `winegstreamer` — el motor no trae backend
+        // GStreamer, así que `winegstreamer.dll` (el backend de Media Foundation) CRASHEA al decodificar
+        // vídeo por MF y tira el proceso (validado con Cross Blitz: crashea en el vídeo de intro tras
+        // crear el device). ⚠️ NO desactivar el resto de la pila MF (`mfplat`/`mf`/`mfreadwrite`): el
+        // builtin de **XAudio2** (que muchos juegos usan, p. ej. Palworld con `XAudio2_9Redist`) DEPENDE
+        // de `mfplat`+`mfreadwrite` para decodificar audio — con ellos desactivados el audio degrada y
+        // PETARDEA (validado con Palworld). Con solo `winegstreamer=d`, el decode de vídeo falla LIMPIO
+        // (sin backend) pero XAudio2 conserva su MF → audio correcto Y sin el crash de Cross Blitz.
+        // (b) Para juegos OpenGL, activar `CX_FWD_COMPAT_GL_CTX=1`: el `winemac.so` del unificado trae el
+        // CW Hack 24834 que inyecta el bit forward-compatible que bgfx omite en su contexto GL 3.2 core
+        // (sin él, Wine-macOS lo rechaza con ERROR_INVALID_VERSION_ARB → HoH2 no arranca).
         if WineEngineLocator.isUnifiedEngine(gameWine) {
             let base = env["WINEDLLOVERRIDES"] ?? ""
-            let mfOff = "winegstreamer=d;mfplat=d;mf=d;mfreadwrite=d;mfmp4srcsnk=d;winedmo=d"
+            let mfOff = "winegstreamer=d"
             env["WINEDLLOVERRIDES"] = base.isEmpty ? mfOff : "\(base);\(mfOff)"
             // Sync SERVER-SIDE (msync/esync/fsync=0) en el unificado: msync rompe el async socket
             // completion → Goldberg (que usa red local) falla `SteamAPI_Init` → el juego se cierra con
@@ -1965,7 +1983,17 @@ final class WineManager {
         let srcDir = engineRoot.appendingPathComponent("lib/wine/x86_64-windows").path
         let gameDir = (gameExecutable as NSString).deletingLastPathComponent
         let fm = FileManager.default
-        for dll in ["d3d11.dll", "dxgi.dll", "d3d10core.dll", "d3d10.dll", "d3d10_1.dll", "winemetal.dll"] {
+        var dlls = ["d3d11.dll", "dxgi.dll", "d3d10core.dll", "d3d10.dll", "d3d10_1.dll", "winemetal.dll"]
+        // Juegos que IMPORTAN d3d9 estáticamente aunque rendericen por D3D11 (muchos Unreal, p. ej.
+        // Palworld): con el lanzamiento `env -i` (entorno limpio) los builtins wined3d-based NO se
+        // resuelven → `d3d9.dll not found` / `wined3d.dll not found` (c0000135) y el juego no carga.
+        // Se copian d3d9 + su dependencia wined3d LOCALES (native) → cargan y satisfacen el import
+        // (wined3d solo importa opengl32/ucrtbase, que sí resuelven como builtin). Solo si el exe
+        // los importa (wined3d pesa ~31 MB): no se copian a juegos que no usan d3d9.
+        if exeImports(gameExecutable, anyOf: ["d3d9.dll"]) {
+            dlls.append(contentsOf: ["d3d9.dll", "wined3d.dll"])
+        }
+        for dll in dlls {
             let src = "\(srcDir)/\(dll)"
             let dst = "\(gameDir)/\(dll)"
             guard fm.fileExists(atPath: src) else { continue }
@@ -1985,7 +2013,7 @@ final class WineManager {
     func cleanExeAdjacentDXMTDLLs(gameExecutable: String) {
         let gameDir = (gameExecutable as NSString).deletingLastPathComponent
         let fm = FileManager.default
-        for dll in ["d3d11.dll", "dxgi.dll", "d3d10core.dll", "d3d10.dll", "d3d10_1.dll", "winemetal.dll"] {
+        for dll in ["d3d9.dll", "wined3d.dll", "d3d11.dll", "dxgi.dll", "d3d10core.dll", "d3d10.dll", "d3d10_1.dll", "winemetal.dll"] {
             try? fm.removeItem(atPath: "\(gameDir)/\(dll)")
         }
     }
@@ -1998,7 +2026,17 @@ final class WineManager {
         let exeDir = (executable as NSString).deletingLastPathComponent
         let last = (exeDir as NSString).lastPathComponent.lowercased()
         let bin64: Set<String> = ["x64", "win64", "bin64", "binaries64", "x86_64", "amd64"]
-        return bin64.contains(last) ? (exeDir as NSString).deletingLastPathComponent : exeDir
+        guard bin64.contains(last) else { return exeDir }
+        // El exe vive en una subcarpeta de binarios (x64/Win64/…). Subir UN nivel es correcto cuando
+        // esa subcarpeta cuelga DIRECTAMENTE de la raíz del juego (p. ej. Grim Dawn `x64/Grim Dawn.exe`
+        // → raíz). PERO en el patrón **Unreal** `…/Binaries/Win64/Juego.exe`, subir un nivel da
+        // `…/Binaries` — una carpeta INTERMEDIA sin los datos del juego → el juego arranca pero su
+        // WebView interno (notas del parche) sale en BLANCO y el audio/recursos degradan (validado con
+        // Palworld: con CWD=Win64 va bien, con CWD=Binaries no). En ese caso el CWD correcto es la
+        // carpeta del exe (Win64), no la intermedia.
+        let parent = (exeDir as NSString).deletingLastPathComponent
+        if (parent as NSString).lastPathComponent.lowercased() == "binaries" { return exeDir }
+        return parent
     }
 
     /// Elimina del prefix las DLLs gráficas nativas (DXVK/DXMT/wined3d) que un setup
@@ -2885,6 +2923,31 @@ final class WineManager {
             // de la app GUI seguía fallando, pero a través de bash el juego RENDERIZA (bash rompe el
             // contexto de spawn de la .app que arrastra Metal/DXMT). Comillas simples para paths con
             // espacios. `exec` para no dejar bash colgado (el PID final es Wine, para el tracker).
+            func shq(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+            let assignments = clean.map { "\($0.key)=\(shq($0.value))" }.joined(separator: " ")
+            let cmdline = ([winePath] + arguments).map { shq($0) }.joined(separator: " ")
+            process.executableURL = URL(fileURLWithPath: "/bin/bash")
+            process.arguments = ["-c", "exec /usr/bin/env -i \(assignments) \(cmdline)"]
+            process.environment = fullEnv
+        } else if WineEngineLocator.isUnifiedEngine(winePath), !forceSyncOff, !d3dMetalGame, effective != nil {
+            // Juegos DXMT del motor UNIFICADO (Palworld/Unreal, Cross Blitz/Unity, etc.): MISMO problema
+            // de contexto que los .NET. Al ser Vessel una `.app`, el spawn del subproceso arrastra la
+            // IDENTIDAD DE BUNDLE (`__CFBundleIdentifier`/`XPC_*`) y macOS stripea `DYLD_*` de los hijos
+            // DIRECTOS → en ese contexto **DXMT NO crea el device D3D11**: el juego muere en ~1 s con
+            // `d3d11.dll not found` (c0000135) y el auto-reparador cae a otras capas (que borran las
+            // DLLs locales de DXMT) → nunca arranca. VALIDADO con Palworld: lanzado a mano RENDERIZA,
+            // desde la app (hijo directo) MUERE. Se lanza vía `/bin/bash -c 'exec env -i …'` con un env
+            // LIMPIO (whitelist DXMT) → corre como desde terminal, el ÚNICO contexto donde DXMT crea el
+            // device. EXCLUYE el modo Steam-real (`forceSyncOff`) y D3DMetal, que comparten wineserver
+            // con el cliente Steam y NO deben aislarse. Los juegos que ya arrancaban lo hacen igual (el
+            // contexto terminal es donde funcionan); los que morían (Palworld) ahora arrancan.
+            log.log("Juego DXMT (motor unificado): lanzando con entorno LIMPIO (env -i) para que DXMT cree el device D3D11.", level: .info)
+            var clean: [String: String] = [:]
+            for k in ["HOME", "USER", "TMPDIR", "WINEPREFIX", "WINEDEBUG", "MVK_CONFIG_LOG_LEVEL",
+                      "WINEDLLOVERRIDES", "DYLD_FALLBACK_LIBRARY_PATH", "SteamAppId", "SteamGameId",
+                      "WINEMSYNC", "WINEESYNC", "WINEFSYNC", "CX_FWD_COMPAT_GL_CTX", "MTL_HUD_ENABLED"] {
+                if let v = fullEnv[k] { clean[k] = v }
+            }
             func shq(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
             let assignments = clean.map { "\($0.key)=\(shq($0.value))" }.joined(separator: " ")
             let cmdline = ([winePath] + arguments).map { shq($0) }.joined(separator: " ")
