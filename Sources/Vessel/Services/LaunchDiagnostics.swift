@@ -153,8 +153,15 @@ enum LaunchDiagnostics {
             var failure: Failure? = nil
             var crashed = false
             var elapsed = 0
+            // ¿El juego llegó a ESTAR CORRIENDO de verdad? Si el tracker lo marcó `.running` en algún
+            // sondeo, arrancó bien; una salida POSTERIOR sin crash es un CIERRE DEL USUARIO, no un
+            // fallo de arranque. Sin esto, cerrar un juego que funciona mientras el monitor vigila se
+            // interpretaba como fallo → relanzar → nuevo monitor → cerrar → relanzar = bucle infinito
+            // "cerrar→reabrir" (reportado con Aethermancer). El grace inicial evita falsos negativos.
+            var everRunning = false
             while elapsed < deadline {
                 try? await Task.sleep(for: .seconds(3)); elapsed += 3
+                if elapsed >= 9, isRunning() { everRunning = true }
                 if hasWineCrashDialog() { crashed = true; break }
                 // Diálogo "Missing interface" de Steam (Steam Input/Controller) — señal directa aunque
                 // el log no lo capture. El juego lo muestra y muere; solo el Steam real lo resuelve.
@@ -168,12 +175,10 @@ enum LaunchDiagnostics {
                 if elapsed >= 9, !isRunning() { break }
             }
             if crashed { killWineCrashUI() }                 // cerrar el diálogo winedbg colgado
-            // Un juego se considera FALLIDO si: crasheó (winedbg), YA no corre, o hay una FIRMA de
-            // fallo conocida en logs — aunque el proceso figure "vivo" un instante (una firma fatal
-            // como `System.Runtime.dll Module not found` o `InitializeEngineGraphics failed` significa
-            // que va a morir; NO esperar a que el tracker lo note para reintentar). `alive` = lo
-            // contrario, y se usa para el éxito.
-            let failed = crashed || failure != nil || !isRunning()
+            // FALLIDO si: crasheó (winedbg), hay FIRMA de fallo conocida, o salió SIN haber llegado a
+            // correr (arranque fallido). Si SÍ llegó a correr (`everRunning`) y salió limpio, es que el
+            // USUARIO lo cerró — NO es un fallo y NO se relanza (evita el bucle cerrar→reabrir).
+            let failed = crashed || failure != nil || (!isRunning() && !everRunning)
             let alive = !failed
 
             // Juego en modo "Steam real" (DRM real): el motor es el unificado FIJO, así que si se
