@@ -628,7 +628,12 @@ final class WineManager {
             if isUnity6OrNewer(executable) { return [.gptk] }
             if isUnityGame(executable) { return [.dxmt] }
             if isExecutable32Bit(executable) { return [.gcenx, .dxmt] }
-            return [.dxmt, .gcenx]
+            // D3D11 64-bit no-Unity (Unreal Engine: Palworld, etc.): DXMT→Metal, con D3DMetal de
+            // Apple (gptk) como respaldo REAL. **NUNCA Gcenx**: para D3D11 64-bit moderno wined3d→
+            // Vulkan→MoltenVK falla feature level en el M5 (inútil) Y `cleanExeAdjacentDXMTDLLs`
+            // BORRARÍA las d3d11/dxgi locales de DXMT del juego → lo dejaría roto en el siguiente
+            // lanzamiento (`__wine_unix_call unimplemented`). Regresión que rompió Palworld.
+            return [.dxmt, .gptk]
         }
     }
 
