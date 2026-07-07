@@ -54,8 +54,10 @@ final class GoldbergManager {
         let dlls = Self.findSteamApiDLLs(under: root, fm: fm)
         for dll in dlls {
             let is64 = (dll as NSString).lastPathComponent.lowercased() == "steam_api64.dll"
-            if replaceDLL(at: dll, with: is64 ? steamApi64Path : steamApi32Path, fm: fm) { applied = true }
+            // Generar `steam_interfaces.txt` desde el DLL ORIGINAL **antes** de reemplazarlo por Goldberg.
             let dir = (dll as NSString).deletingLastPathComponent
+            generateSteamInterfaces(fromDLL: dll, intoSettingsDir: "\(dir)/steam_settings", fm: fm)
+            if replaceDLL(at: dll, with: is64 ? steamApi64Path : steamApi32Path, fm: fm) { applied = true }
             if !appId.isEmpty {
                 try? appId.write(toFile: "\(dir)/steam_appid.txt", atomically: true, encoding: .utf8)
             }
@@ -64,6 +66,8 @@ final class GoldbergManager {
         // Fallback defensivo: si no se halló ningún DLL, aplicar en la carpeta del exe (como antes).
         if dlls.isEmpty {
             let gameDir = (gameExecutable as NSString).deletingLastPathComponent
+            generateSteamInterfaces(fromDLL: "\(gameDir)/steam_api64.dll", intoSettingsDir: "\(gameDir)/steam_settings", fm: fm)
+            generateSteamInterfaces(fromDLL: "\(gameDir)/steam_api.dll", intoSettingsDir: "\(gameDir)/steam_settings", fm: fm)
             if replaceDLL(at: "\(gameDir)/steam_api64.dll", with: steamApi64Path, fm: fm) { applied = true }
             if replaceDLL(at: "\(gameDir)/steam_api.dll", with: steamApi32Path, fm: fm) { applied = true }
             if !appId.isEmpty { try? appId.write(toFile: "\(gameDir)/steam_appid.txt", atomically: true, encoding: .utf8) }
@@ -128,9 +132,63 @@ final class GoldbergManager {
         }
     }
 
-    /// Escribe `steam_settings/` junto al exe con un usuario por defecto. La versión
-    /// experimental de gbe_fork autodetecta las interfaces, así que no hace falta
-    /// generar `steam_interfaces.txt`.
+    /// Genera `steam_settings/steam_interfaces.txt` extrayendo TODAS las versiones de interfaz
+    /// Steamworks del `steam_api(64).dll` **ORIGINAL** del juego (tanto las CamelCase tipo
+    /// `SteamClient017`/`SteamUser018` como las UPPERCASE `STEAMXXX_INTERFACE_VERSIONNNN`).
+    ///
+    /// Es IMPRESCINDIBLE, al contrario de lo que asumíamos: gbe_fork usa este archivo para
+    /// exponer la vtable de la **versión EXACTA** de `ISteamClient` que el juego espera. Si falta
+    /// la línea `SteamClientNNN` correcta, gbe_fork expone su vtable por defecto (más nueva) y los
+    /// slots se desalinean → el juego pide una interfaz por el slot equivocado (p. ej. CaveBlazers
+    /// pedía `STEAMUNIFIEDMESSAGES` a través de `GetISteamController`) → diálogo modal fatal
+    /// "Missing interface" que congela y mata el juego. gbe_fork NO autodetecta esto.
+    ///
+    /// Replica en Swift lo que hace el `generate_interfaces` oficial. Si el DLL ya fue reemplazado
+    /// por Goldberg (~20 MB), lee del respaldo `.vessel-orig`; nunca extrae del propio Goldberg.
+    private func generateSteamInterfaces(fromDLL dll: String, intoSettingsDir settingsDir: String, fm: FileManager) {
+        // Elegir el DLL ORIGINAL real. El de Goldberg contiene TODAS las versiones (las más nuevas):
+        // extraer de él reintroduciría justo la desalineación de vtable que queremos evitar.
+        let backup = "\(dll).vessel-orig"
+        let source: String
+        if fm.fileExists(atPath: backup) {
+            source = backup
+        } else if fm.fileExists(atPath: dll) {
+            let attrs = try? fm.attributesOfItem(atPath: dll)
+            let sz = (attrs?[.size] as? UInt64) ?? 0
+            if sz > 5_000_000 { return } // es Goldberg, no el original → sin fuente fiable
+            source = dll
+        } else {
+            return
+        }
+        guard let data = fm.contents(atPath: source),
+              let text = String(bytes: data, encoding: .isoLatin1) else { return }
+        // Prefijos de interfaz conocidos; los más largos primero para el alternador del regex
+        // (p. ej. `SteamMatchMakingServers` debe intentarse antes que `SteamMatchMaking`).
+        let camel = [
+            "SteamMatchMakingServers", "SteamMatchMaking",
+            "SteamGameServerStats", "SteamGameServer",
+            "SteamNetworkingUtils", "SteamNetworkingMessages", "SteamNetworkingSockets", "SteamNetworking",
+            "SteamMasterServerUpdater", "SteamRemoteStorage", "SteamRemotePlay",
+            "SteamMusicRemote", "SteamMusic", "SteamParentalSettings", "SteamGameSearch",
+            "SteamHTMLSurface", "SteamScreenshots", "SteamController", "SteamInventory", "SteamUserStats",
+            "SteamClient", "SteamUser", "SteamFriends", "SteamUtils", "SteamApps",
+            "SteamHTTP", "SteamUGC", "SteamAppList", "SteamVideo", "SteamInput", "SteamParties",
+        ].joined(separator: "|")
+        let pattern = "(?:\(camel))[0-9]{3}|STEAM[A-Z]+_INTERFACE_VERSION[0-9]{3}"
+        guard let rx = try? NSRegularExpression(pattern: pattern) else { return }
+        let ns = text as NSString
+        var found = Set<String>()
+        rx.enumerateMatches(in: text, range: NSRange(location: 0, length: ns.length)) { m, _, _ in
+            if let m = m { found.insert(ns.substring(with: m.range)) }
+        }
+        guard !found.isEmpty else { return }
+        try? fm.createDirectory(atPath: settingsDir, withIntermediateDirectories: true)
+        let content = found.sorted().joined(separator: "\n") + "\n"
+        try? content.write(toFile: "\(settingsDir)/steam_interfaces.txt", atomically: true, encoding: .utf8)
+    }
+
+    /// Escribe `steam_settings/` junto al exe con un usuario por defecto (+ desactiva los diálogos
+    /// de warning de gbe_fork, que son modales y bloquean el hilo del juego).
     private func writeSteamSettings(inDir dir: String, appId: String, accountName: String) {
         let settingsDir = "\(dir)/steam_settings"
         try? FileManager.default.createDirectory(atPath: settingsDir, withIntermediateDirectories: true)
@@ -141,5 +199,18 @@ final class GoldbergManager {
         ip_country=ES
         """
         try? userIni.write(toFile: "\(settingsDir)/configs.user.ini", atomically: true, encoding: .utf8)
+        // Desactivar los diálogos de aviso de gbe_fork: son `MessageBox` modales que congelan el
+        // hilo del juego (el usuario no los ve venir y el juego parece colgado). Sin red (offline).
+        let mainIni = """
+        [main::misc]
+        disable_warning_any=1
+        disable_warning_bad_appid=1
+        disable_warning_local_save=1
+
+        [main::connectivity]
+        disable_networking=1
+        offline=1
+        """
+        try? mainIni.write(toFile: "\(settingsDir)/configs.main.ini", atomically: true, encoding: .utf8)
     }
 }

@@ -656,7 +656,11 @@ final class WineManager {
         // el juego renderiza por DXMT→Metal. Es exactamente lo que hace CrossOver con su Wine
         // propietario. Se activa por perfil de compatibilidad (`useRealSteam`). Requiere sesión
         // iniciada en el Steam de Vessel; si no conecta, `launchViaRealSteam` lo avisa e intenta igual.
-        if eff.useRealSteam, let appId = steamAppId, !appId.isEmpty {
+        // Steam real NO aplica a juegos de 32-bit: su `steam_api` de 32-bit no puede hablar por IPC
+        // con el cliente Steam de 64-bit en el WoW64 de Wine (y menos cross-engine). Para 32-bit la
+        // vía correcta es Goldberg + la capa gráfica de `launch32BitGame`. Ignorar aquí un perfil
+        // `useRealSteam` obsoleto (que el auto-repair pudo fijar antes de tener el fix de interfaces).
+        if eff.useRealSteam, !isExecutable32Bit(executable), let appId = steamAppId, !appId.isEmpty {
             log.log("Modo Steam real para este juego (DRM real con el cliente Steam conectado).", level: .info)
             return try await launchViaRealSteam(executable: executable, in: bottle, appId: appId, effective: eff)
         }
@@ -881,25 +885,41 @@ final class WineManager {
             throw WineError.launchFailed("No se encontró el motor CrossOver (gptk-mythic) para juegos de 32-bit.")
         }
         let isUnity = isUnityGame(executable)
+        // Elección del backend de wined3d según el motor del juego (ver `setWined3dRenderer`):
+        //  - Unity 32-bit → `vulkan` (MoltenVK; el GL legacy sale negro). Validado: A Short Hike.
+        //  - Resto (GameMaker, etc.) → `gl` (Apple GLD→Metal). MoltenVK aborta con `vkCreateBufferView`
+        //    en sus texel buffers. Validado: CaveBlazers renderiza con `gl` y muere con `vulkan`.
+        let renderer = isUnity ? "vulkan" : "gl"
         log.log(isUnity
-            ? "Capa gráfica: OpenGL → Metal (juego Unity 32-bit, render monohilo) con CrossOver"
-            : "Capa gráfica: wined3d → Metal (juego 32-bit) con CrossOver", level: .info)
+            ? "Capa gráfica: wined3d → Vulkan/MoltenVK → Metal (Unity 32-bit, render monohilo) con CrossOver"
+            : "Capa gráfica: wined3d → OpenGL de Apple (GLD→Metal) (juego 32-bit) con CrossOver", level: .info)
         log.log("Preparando prefijo para el juego…", level: .info)
         try? await terminateWineProcesses(winePath: gptkWine, prefix: bottle.prefixPath)
         try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
         await resyncGamePrefix(gameWine: gptkWine, prefix: bottle.prefixPath)
-        // Que CrossOver use SUS builtins (d3d11/wined3d): quitar DLLs nativas de otros motores.
+        // Quitar DLLs de traducción gráfica de OTROS motores (DXMT/vkd3d) del prefijo Y de la carpeta
+        // del juego (una DXMT local pisaría wined3d y forzaría MoltenVK → `vkCreateBufferView` aborta).
         cleanPrefixNativeGraphicsDLLs(in: bottle)
-        await setWined3dRendererVulkan(prefix: bottle.prefixPath, wine: gptkWine)
+        cleanGameFolderGraphicsDLLs(forExecutable: executable)
+        // Instalar el d3d11/dxgi/wined3d de gptk como archivos NATIVOS en el prefijo. El builtin de
+        // 32-bit no carga solo en el WoW64 experimental de gptk (c0000135), como en la ruta D3D9.
+        ensureD3D11NativeDLLs(in: bottle, engineWine: gptkWine)
+        await setWined3dRenderer(prefix: bottle.prefixPath, wine: gptkWine, renderer: renderer)
 
         var env: [String: String] = [
             "WINEPREFIX": bottle.prefixPath,
             "WINEDEBUG": "-all",
-            "WINEMSYNC": "1",
-            "WINEESYNC": "1",
             "MVK_CONFIG_LOG_LEVEL": "0",
-            "WINEDLLOVERRIDES": "mscoree,mshtml=d;winemenubuilder.exe=d"
+            // d3d10*/d3d11/dxgi/wined3d como nativos (los que instaló `ensureD3D11NativeDLLs`).
+            "WINEDLLOVERRIDES": "d3d11,d3d10,d3d10core,d3d10_1,dxgi,wined3d=n,b;mscoree,mshtml=d;winemenubuilder.exe=d"
         ]
+        // Sincronización: Unity → msync/esync (validado con A Short Hike). Resto (GameMaker, etc.) →
+        // sync server-side (msync/esync/fsync = 0), validado con CaveBlazers; msync le da problemas.
+        if isUnity {
+            env["WINEMSYNC"] = "1"; env["WINEESYNC"] = "1"
+        } else {
+            env["WINEMSYNC"] = "0"; env["WINEESYNC"] = "0"; env["WINEFSYNC"] = "0"
+        }
         if #available(macOS 15, *) { env["ROSETTA_ADVERTISE_AVX"] = "1" }
         if let appId = steamAppId, !appId.isEmpty {
             let gameDir = (executable as NSString).deletingLastPathComponent
@@ -935,18 +955,25 @@ final class WineManager {
         return machine == 0x14c
     }
 
-    /// Fuerza `renderer=vulkan` en wined3d (HKCU\Software\Wine\Direct3D). Sin esto wined3d
-    /// cae al backend OpenGL legacy de Apple Silicon (roto → pantalla negra o crash al crear
-    /// el device); con Vulkan va por MoltenVK→Metal. Inocuo para DXMT/GPTK/Steam (no usan wined3d).
-    private func setWined3dRendererVulkan(prefix: String, wine: String) async {
+    /// Fuerza el backend de wined3d (`HKCU\Software\Wine\Direct3D` → `renderer`).
+    ///  - `vulkan`: wined3d → MoltenVK → Metal (Unity 32-bit; sin él cae al GL legacy roto → negro).
+    ///  - `gl`: wined3d → OpenGL de Apple (GLD → Metal). IMPRESCINDIBLE para juegos D3D11 de 32-bit
+    ///    cuyo uso de *texel buffers* MoltenVK no soporta (GameMaker: `vkCreateBufferView` aborta el
+    ///    juego). En gptk-mythic el GL de Apple SÍ funciona (validado con CaveBlazers).
+    private func setWined3dRenderer(prefix: String, wine: String, renderer: String) async {
         _ = try? await runWine(
             winePath: wine,
             arguments: ["reg", "add", #"HKCU\Software\Wine\Direct3D"#, "/v", "renderer",
-                        "/t", "REG_SZ", "/d", "vulkan", "/f"],
+                        "/t", "REG_SZ", "/d", renderer, "/f"],
             prefix: prefix,
             environment: ["WINEPREFIX": prefix, "WINEDEBUG": "-all", "WINEDLLOVERRIDES": "winedbg.exe=d"],
             allowNonZeroExit: true
         )
+    }
+
+    /// Atajo histórico: `renderer=vulkan` (usado por la ruta D3D9 de 32-bit en Gcenx).
+    private func setWined3dRendererVulkan(prefix: String, wine: String) async {
+        await setWined3dRenderer(prefix: prefix, wine: wine, renderer: "vulkan")
     }
 
     /// Activa/desactiva el modo Retina de Wine (`HKCU\Software\Wine\Mac Driver\RetinaMode`).
@@ -1002,6 +1029,26 @@ final class WineManager {
         }
         // 3) Forzar renderer=vulkan en wined3d.
         await setWined3dRendererVulkan(prefix: bottle.prefixPath, wine: engineWine)
+    }
+
+    /// Prepara el prefijo para juegos **D3D11 de 32-bit** en gptk (ver `launch32BitGame`): copia
+    /// `d3d10*`/`d3d11`/`dxgi`/`wined3d` *builtin* del motor como **archivos nativos** en
+    /// syswow64/system32. Es el mismo problema que en D3D9: el override `=b` por sí solo NO carga
+    /// el d3d11 builtin de 32-bit en el WoW64 experimental de gptk (`c0000135 "d3d11.dll not found"`,
+    /// sobre todo tras sincronizar el prefijo con otro motor). Con los archivos presentes, wined3d
+    /// renderiza por el backend elegido (`gl` para GameMaker, `vulkan` para Unity). Idempotente.
+    private func ensureD3D11NativeDLLs(in bottle: Bottle, engineWine: String) {
+        let binDir = (engineWine as NSString).deletingLastPathComponent
+        let engineRoot = (binDir as NSString).deletingLastPathComponent
+        let i386 = "\(engineRoot)/lib/wine/i386-windows"
+        let x64w = "\(engineRoot)/lib/wine/x86_64-windows"
+        let syswow = "\(bottle.prefixPath)/drive_c/windows/syswow64"
+        let system32 = "\(bottle.prefixPath)/drive_c/windows/system32"
+        try? FileManager.default.createDirectory(atPath: syswow, withIntermediateDirectories: true)
+        for dll in ["wined3d.dll", "dxgi.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll"] {
+            copyDLLOverwrite(from: "\(i386)/\(dll)", to: "\(syswow)/\(dll)")
+            copyDLLOverwrite(from: "\(x64w)/\(dll)", to: "\(system32)/\(dll)")
+        }
     }
 
     /// Copia `src`→`dst` sobrescribiendo (si `src` existe). Para sembrar DLLs en el prefix.
@@ -1862,6 +1909,29 @@ final class WineManager {
                     try? fm.removeItem(atPath: path)
                 }
             }
+        }
+    }
+
+    /// Aparta las DLLs de traducción gráfica (DXMT/wined3d/vulkan) que puedan estar **en la carpeta
+    /// del juego** (nunca forman parte legítima de un juego). Si están, sobrescriben el builtin del
+    /// motor por precedencia de búsqueda de DLLs de Windows: una DXMT local fuerza MoltenVK y aborta
+    /// los juegos D3D11 de 32-bit en gptk (`vkCreateBufferView`). Se **mueven** a un backup (no se
+    /// borran) para ser reversible. Idempotente.
+    private func cleanGameFolderGraphicsDLLs(forExecutable executable: String) {
+        let fm = FileManager.default
+        let gameDir = (executable as NSString).deletingLastPathComponent
+        let names = ["d3d10", "d3d10_1", "d3d10core", "d3d11", "d3d12", "d3d12core",
+                     "dxgi", "winemetal", "wined3d", "vulkan-1", "winevulkan"]
+        let bakDir = "\(gameDir)/_vessel_graphics_bak"
+        for name in names {
+            let path = "\(gameDir)/\(name).dll"
+            // Solo apartar DLLs "reales" (>100 KB): las DXMT/wined3d pesan MB; nunca una fake de Wine.
+            guard let size = try? fm.attributesOfItem(atPath: path)[.size] as? UInt64, size > 100_000 else { continue }
+            try? fm.createDirectory(atPath: bakDir, withIntermediateDirectories: true)
+            let dst = "\(bakDir)/\(name).dll"
+            try? fm.removeItem(atPath: dst)
+            try? fm.moveItem(atPath: path, toPath: dst)
+            log.log("Apartada DLL gráfica local del juego que pisaba el builtin: \(name).dll", level: .info)
         }
     }
 
