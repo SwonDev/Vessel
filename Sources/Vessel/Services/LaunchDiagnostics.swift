@@ -79,8 +79,10 @@ enum LaunchDiagnostics {
             // NORMAL de cualquier juego .NET (y "clr.dll" casa como subcadena con "coreCLR.dll" de
             // los .NET Core self-contained → falso positivo ".NET/Mono falta" en juegos que traen su
             // PROPIO runtime, como Romestead). Solo cadenas de ERROR reales.
+            // Solo el crash FATAL de .NET (con "Unhandled exception"), NO el probing normal de
+            // assemblies que .NET registra y CAPTURA (daría un reintento falso en juegos .NET sanos).
             markers: [".NET Framework not found", "You must install .NET",
-                      "Could not load type", "FileNotFoundException: Could not load file or assembly",
+                      "Unhandled exception. System.IO.FileNotFoundException",
                       "Failed to load mono", "mono_jit_init failed"],
             category: .dotNet,
             title: "Falta el runtime .NET/Mono",

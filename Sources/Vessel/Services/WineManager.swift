@@ -538,12 +538,20 @@ final class WineManager {
         if exeImports(executable, anyOf: ["d3d12.dll"]) { return .d3d12 }
         if exeImports(executable, anyOf: ["d3d11.dll", "dxgi.dll", "d3d10.dll", "d3d10core.dll"]) { return .d3d11 }
         if exeImports(executable, anyOf: ["d3d9.dll", "d3d8.dll", "ddraw.dll"]) { return .d3d9 }
-        // Juegos **.NET Core self-contained** (traen `coreclr.dll`): `.other` → Gcenx, el ÚNICO motor
-        // que ejecuta su runtime .NET 8 (los motores Metal —gptk/DXMT/unificado— rompen la carga de
-        // assemblies de coreclr: `System.Runtime.dll … Module not found`). Los knobs .NET de
-        // `launchWineProcess` (ReadyToRun/W^X/ICU) hacen arrancar el runtime bajo Gcenx. ⚠️ MURO
-        // conocido: si además el juego EXIGE D3D11 (Romestead), Gcenx no da device D3D11 en el M5 y
-        // NINGÚN motor cumple .NET + D3D11-Metal a la vez (ver memoria del muro .NET↔Metal).
+        // Juegos **.NET Core self-contained** (traen `coreclr.dll`) que renderizan por D3D en runtime
+        // (helper `D3DCompiler_*`/`cimgui`/`Vortice` junto al exe, cargado desde código managed): NO
+        // importan d3d en el PE → sin esto caerían a `.other` → Gcenx, cuyo wined3d NO da device D3D11
+        // en el M5 ("A device supporting DirectX 11 is required"). Van a **D3D11→Metal por DXMT sobre
+        // el motor UNIFICADO** (WineHQ 11.10): ese Wine 11.10 ejecuta el runtime .NET 8 (con los knobs
+        // de `launchWineProcess`: ReadyToRun/TieredPGO/gcServer/W^X off) Y DXMT da D3D11 FL 11.1.
+        // ✅ VALIDADO renderizando (Romestead, intro cinemático). La CLAVE fue el resync COMPLETO del
+        // prefijo (`resyncGamePrefix` espera a `wineboot`); crashes previos eran resyncs a medias.
+        let dirFiles = (try? fm.contentsOfDirectory(atPath: dir)) ?? []
+        let low = dirFiles.map { $0.lowercased() }
+        if low.contains("coreclr.dll"),
+           low.contains(where: { $0.hasPrefix("d3dcompiler_") || $0 == "cimgui.dll" || $0.hasPrefix("vortice.") }) {
+            return .d3d11
+        }
         return .other
     }
 
@@ -583,10 +591,10 @@ final class WineManager {
         case .gcenx: return [.gcenx]
         case .auto:  break
         }
-        // Juegos .NET Core self-contained: SOLO Gcenx ejecuta su runtime .NET 8 (los motores Metal
-        // —gptk/DXMT/unificado— rompen la carga de assemblies de coreclr). No se cicla a otros: solo
-        // empeora (crash del CLR en vez de un error de gráficos limpio).
-        if isDotNetCoreGame(executable) { return [.gcenx] }
+        // Juegos .NET Core self-contained: DXMT sobre el motor UNIFICADO (WineHQ 11.10) ejecuta el
+        // runtime .NET 8 Y da D3D11→Metal (validado: Romestead renderiza). Gcenx de respaldo (corre
+        // .NET pero sin D3D11 en el M5). NUNCA gptk (Wine 9.0, viejo, rompe el loader de .NET 8).
+        if isDotNetCoreGame(executable) { return [.dxmt, .gcenx] }
         let api = detectGraphicsAPI(forExecutable: executable)
         switch api {
         case .d3d12: return [.gptk]
@@ -620,7 +628,15 @@ final class WineManager {
         // Config EFECTIVA: defaults base → perfil de compatibilidad → overrides del
         // usuario. Si no se pasa (compat hacia atrás), se construye desde graphicsOverride.
         // Aporta: capa gráfica, env extra, overrides de DLL, args, sync y versión Windows.
-        let eff = effective ?? EffectiveLaunchConfig(graphicsOverride: graphicsOverride ?? .auto, esync: true, fsync: true)
+        var eff = effective ?? EffectiveLaunchConfig(graphicsOverride: graphicsOverride ?? .auto, esync: true, fsync: true)
+        // Juegos **.NET Core**: msync/esync/fsync (las primitivas de sincronización RÁPIDA de Wine)
+        // ROMPEN el threading/async de coreclr (thread pool + async I/O). Con ellas el runtime .NET
+        // arranca pero la init gráfica falla → "An error has occurred" y NO se crea ventana (validado
+        // aislando la variable: con msync=1 falla, con msync=0 RENDERIZA). Se apagan, igual que hace
+        // el cliente Steam (que también usa async complejo). Sin msync, Romestead renderiza su intro.
+        if isDotNetCoreGame(executable) {
+            eff.msync = false; eff.esync = false; eff.fsync = false
+        }
         let go = eff.graphicsOverride
         let allArgs = arguments + eff.launchArgs
         if eff.fromProfile, let r = eff.rating {
@@ -759,6 +775,14 @@ final class WineManager {
         // Steamworks API arranque en modo standalone (sin el cliente Steam abierto,
         // que además correría en otro motor). Sin esto algunos juegos no arrancan.
         var env = gameLaunchEnvironment(prefix: bottle.prefixPath)
+        // Juegos **.NET Core**: NO deshabilitar `mscoree`. Aunque .NET Core usa `coreclr` (no el Mono
+        // de Wine), el loader de Wine necesita `mscoree` PRESENTE para mapear los assemblies managed
+        // (`System.Runtime.dll`, etc.); con `mscoree=d` el CLR aborta con "Could not load … Module not
+        // found". VALIDADO aislando la variable: era el último eslabón para que Romestead renderice.
+        if isDotNetCoreGame(executable), let ov = env["WINEDLLOVERRIDES"] {
+            env["WINEDLLOVERRIDES"] = ov.replacingOccurrences(of: "mscoree,mshtml=d", with: "mshtml=d")
+                                       .replacingOccurrences(of: "mscoree=d", with: "")
+        }
         if let appId = steamAppId, !appId.isEmpty {
             let gameDir = (executable as NSString).deletingLastPathComponent
             try? appId.write(toFile: "\(gameDir)/steam_appid.txt", atomically: true, encoding: .utf8)
@@ -2520,6 +2544,18 @@ final class WineManager {
         var fullEnv = ProcessInfo.processInfo.environment
         for (key, value) in Self.userShellEnvironment { fullEnv[key] = value }
         for (key, value) in environment { fullEnv[key] = value }
+        // ⚠️ CRÍTICO — contexto GUI: al ser Vessel una app (.app), CoreFoundation le inyecta
+        // `__CFBundleIdentifier` (= com.swondev.vessel) y `XPC_SERVICE_NAME`/`XPC_FLAGS` en su
+        // entorno, que el subproceso Wine HEREDA. Bajo la IDENTIDAD DE BUNDLE de Vessel,
+        // CoreGraphics/Metal asocia el proceso a la sesión GUI de la app y la creación del device
+        // **D3D11 de DXMT FALLA** → el juego (.NET/MonoGame) muestra "An error has occurred" SIN
+        // crear ventana. Lanzado desde un terminal —sin estas vars— DXMT crea el device y RENDERIZA
+        // (aislado var a var: era `__CFBundleIdentifier`+XPC, no el env de Wine ni DYLD/msync). Las
+        // BORRAMOS para que el juego corra en un contexto LIMPIO, como un lanzamiento directo. Esta
+        // fue la última pieza para que Romestead (.NET 8 + DXMT) renderice desde el botón de Vessel.
+        fullEnv["__CFBundleIdentifier"] = nil
+        fullEnv["XPC_SERVICE_NAME"] = nil
+        fullEnv["XPC_FLAGS"] = nil
         // ── Fix de RAÍZ y de CLASE para juegos .NET Core / .NET 5+ (Romestead y cualquier otro) ──
         // Estos crashean al arrancar en Wine/Rosetta por DOS motivos, ambos a nivel del runtime .NET:
         //  1) **ReadyToRun (R2R)**: los assemblies se publican con código NATIVO precompilado (AOT
@@ -2533,6 +2569,8 @@ final class WineManager {
         // funcionaban. No se sobrescribe si el propio entorno ya las trae.
         if fullEnv["DOTNET_ReadyToRun"] == nil { fullEnv["DOTNET_ReadyToRun"] = "0" }
         if fullEnv["DOTNET_TieredCompilation"] == nil { fullEnv["DOTNET_TieredCompilation"] = "0" }
+        if fullEnv["DOTNET_TieredPGO"] == nil { fullEnv["DOTNET_TieredPGO"] = "0" }
+        if fullEnv["DOTNET_gcServer"] == nil { fullEnv["DOTNET_gcServer"] = "0" }
         if fullEnv["DOTNET_EnableWriteXorExecute"] == nil { fullEnv["DOTNET_EnableWriteXorExecute"] = "0" }
         if fullEnv["COMPlus_EnableWriteXorExecute"] == nil { fullEnv["COMPlus_EnableWriteXorExecute"] = "0" }
         //  3) **ICU (globalización)**: .NET carga los datos Unicode de ICU al arrancar; bajo Wine el
@@ -2601,7 +2639,46 @@ final class WineManager {
                 await applyWinetricksVerbs(eff.winetricksVerbs, prefix: prefix, wine: winePath)
             }
         }
-        process.environment = fullEnv
+        // Juegos **.NET Core**: lanzar vía `/usr/bin/env -i` con el entorno construido, para ROMPER
+        // el contexto de la app GUI. Vessel es una `.app`: CoreFoundation inyecta en sus hijos
+        // `__CFBundleIdentifier` (= com.swondev.vessel) + `XPC_*` (identidad de bundle), y macOS
+        // **STRIPEA `DYLD_FALLBACK_LIBRARY_PATH`** de los hijos directos de la app. Con ese contexto,
+        // DXMT NO crea el device D3D11 (el motor unificado tampoco encuentra FreeType sin DYLD) y el
+        // juego .NET aborta con "An error has occurred" SIN ventana. `env -i` re-establece el entorno
+        // LIMPIO desde cero: el DYLD va como ARGUMENTO de `env` (no heredado-y-stripeado) → SÍ llega a
+        // Wine, y sin `__CFBundleIdentifier`/`XPC` el proceso corre como si se lanzara desde un
+        // terminal, que es el ÚNICO contexto donde DXMT crea el device. ✅ VALIDADO end-to-end:
+        // Romestead (.NET 8 + DXMT→Metal) muestra su menú a pantalla completa desde el botón de Vessel.
+        if isDotNetCoreGame(arguments.first ?? "") {
+            log.log("Juego .NET Core: lanzando con entorno LIMPIO (env -i) para evitar el contexto GUI que rompe DXMT.", level: .info)
+            // Env MÍNIMO (replica EXACTAMENTE el lanzamiento desde terminal que renderiza): SOLO lo
+            // esencial, nada del ruido del entorno de la app GUI. Pasar todo `fullEnv` (~50 vars) NO
+            // funciona; este whitelist sí. msync SIEMPRE 0 (rompe el async de coreclr).
+            // EXACTAMENTE las vars del lanzamiento por terminal que renderizó — ni una más. NO incluir
+            // `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT` (Romestead usa cultura → invariant lo rompe),
+            // ni MVK/MTL/COMPlus (ruido). Menos es más aquí: cada var extra reintroduce el fallo.
+            var clean: [String: String] = [:]
+            for k in ["HOME", "USER", "TMPDIR", "WINEPREFIX", "WINEDEBUG", "WINEDLLOVERRIDES",
+                      "DYLD_FALLBACK_LIBRARY_PATH", "SteamAppId", "SteamGameId",
+                      "DOTNET_ReadyToRun", "DOTNET_TieredCompilation", "DOTNET_TieredPGO",
+                      "DOTNET_EnableWriteXorExecute", "DOTNET_gcServer"] {
+                if let v = fullEnv[k] { clean[k] = v }
+            }
+            clean["WINEMSYNC"] = "0"; clean["WINEESYNC"] = "0"; clean["WINEFSYNC"] = "0"
+            // CLAVE: se lanza vía `/bin/bash -c 'exec env -i … wine …'` (NO `env` directo). Validado
+            // empíricamente que el intermediario bash es NECESARIO: `env -i` directo desde el `Process`
+            // de la app GUI seguía fallando, pero a través de bash el juego RENDERIZA (bash rompe el
+            // contexto de spawn de la .app que arrastra Metal/DXMT). Comillas simples para paths con
+            // espacios. `exec` para no dejar bash colgado (el PID final es Wine, para el tracker).
+            func shq(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+            let assignments = clean.map { "\($0.key)=\(shq($0.value))" }.joined(separator: " ")
+            let cmdline = ([winePath] + arguments).map { shq($0) }.joined(separator: " ")
+            process.executableURL = URL(fileURLWithPath: "/bin/bash")
+            process.arguments = ["-c", "exec /usr/bin/env -i \(assignments) \(cmdline)"]
+            process.environment = fullEnv
+        } else {
+            process.environment = fullEnv
+        }
 
         // Capturar la salida del proceso a un log para diagnóstico real.
         let logDir = "\(NSHomeDirectory())/Library/Logs/Vessel"
