@@ -118,6 +118,15 @@ final class WineManager {
             log.log("Juego con Epic Online Services (EOS): se usa wine-dxmt-mousefix (el motor unificado crashea su SDK).", level: .info)
             return mousefix
         }
+        // Juegos OpenGL (motor GL propio, p. ej. Heroes of Hammerwatch II): motor ESPECÍFICO
+        // `wine-unified-opengl` (clon con `winemac.so` parcheado, CW Hack 24834) para NO tocar el
+        // `wine-unified` compartido. Si aún no está creado, cae al unificado normal (que fallará el
+        // contexto GL 3.2 → el auto-instalador debería haberlo creado antes de jugar).
+        if let exe = executable, detectGraphicsAPI(forExecutable: exe) == .opengl,
+           let opengl = WineEngineLocator.openglGameWineBinary() {
+            log.log("Juego OpenGL: se usa el motor específico wine-unified-opengl (winemac.so con forward-compat GL).", level: .info)
+            return opengl
+        }
         return WineEngineLocator.gameWineBinary()
             ?? WineEngineLocator.clientWineBinary()
             ?? bottle.winePath

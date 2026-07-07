@@ -93,6 +93,8 @@ final class DependencyManager {
             // Auto-reparación: crear el motor con fix del ratón si falta (p. ej. si el
             // usuario ya tenía Wine instalado de una versión anterior de Vessel).
             await ensureMousefixEngine(progress: progress)
+            // Y el motor OpenGL específico (winemac.so forward-compat GL) para HoH2 y similares.
+            await ensureUnifiedOpenGLEngine(progress: progress)
             return path
         }
 
@@ -167,7 +169,12 @@ final class DependencyManager {
         //    wine-dxmt + win32u.so parcheado. Best-effort (fallback: wine-dxmt).
         await ensureMousefixEngine(progress: progress)
 
-        progress("✓ Motores listos (cliente + juegos D3D11)", 1.0)
+        // 5) Motor OpenGL específico (wine-unified-opengl): clon del unificado con el winemac.so
+        //    parcheado (forward-compat GL, CW Hack 24834) para HoH2 y juegos GL, sin tocar el
+        //    unificado compartido. Best-effort (fallback: unificado normal).
+        await ensureUnifiedOpenGLEngine(progress: progress)
+
+        progress("✓ Motores listos (cliente + juegos D3D11 + OpenGL)", 1.0)
     }
 
     /// Crea o repara el motor `wine-dxmt-mousefix`: una COPIA de `wine-dxmt` con el
@@ -298,6 +305,65 @@ final class DependencyManager {
         } catch {
             LogStore.shared.log("No se pudo crear el gptk-mousefix: \(error.localizedDescription). Unity 6 usará gptk normal.", level: .warn)
             try? fm.removeItem(atPath: mfDir)
+        }
+    }
+
+    /// Crea/repara el motor `wine-unified-opengl`: clon COW de `wine-unified` con SOLO el
+    /// `winemac.so` reemplazado por la versión parcheada (CW Hack 24834, forward-compat GL) que va
+    /// bundleada en `Resources/opengl-engine/`. Aísla el parche de OpenGL del motor unificado
+    /// COMPARTIDO (que corre el cliente Steam y los juegos D3D11): así reparar los juegos OpenGL
+    /// (Heroes of Hammerwatch II y similares) no pisa nada de lo que ya funciona. Idempotente y
+    /// auto-reparable (se recrea si falta, si el winemac.so no es el parcheado, o si quedó más viejo
+    /// que el unificado). Se llama tras instalar/verificar el motor unificado.
+    func ensureUnifiedOpenGLEngine(progress: (@Sendable (String, Double) -> Void)? = nil) async {
+        let fm = FileManager.default
+        let uniDir = "\(enginesDirectory)/\(WineEngineLocator.unifiedEngineName)"
+        let uniWine = "\(uniDir)/bin/wine"
+        let oglDir = "\(enginesDirectory)/\(WineEngineLocator.unifiedOpenGLEngineName)"
+        let oglWine = "\(oglDir)/bin/wine"
+        let oglWinemac = "\(oglDir)/lib/wine/x86_64-unix/winemac.so"
+
+        guard fm.isExecutableFile(atPath: uniWine) else { return }
+
+        guard let patched = Bundle.main.resourceURL?
+            .appendingPathComponent("opengl-engine/winemac.so").path,
+              fm.fileExists(atPath: patched) else {
+            LogStore.shared.log("No se encontró el winemac.so (OpenGL) parcheado en Resources; los juegos OpenGL usarán el motor unificado normal.", level: .warn)
+            return
+        }
+
+        // Guarda de versión: el winemac.so parcheado se compiló contra WineHQ 11.x.
+        let version = (await runCapture(executable: uniWine, arguments: ["--version"]))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard version.contains("wine-11") else {
+            LogStore.shared.log("wine-unified reporta '\(version)' (no 11.x): se omite el motor OpenGL para no romper el ABI del winemac.so. Los juegos OpenGL usarán el unificado normal.", level: .warn)
+            try? fm.removeItem(atPath: oglDir)
+            return
+        }
+
+        // Idempotente: ¿ya existe, con el winemac.so parcheado, y no más viejo que el unificado?
+        if fm.isExecutableFile(atPath: oglWine) {
+            let patchedSize = (try? fm.attributesOfItem(atPath: patched))?[.size] as? Int
+            let curSize = (try? fm.attributesOfItem(atPath: oglWinemac))?[.size] as? Int
+            let uniDate = (try? fm.attributesOfItem(atPath: uniWine))?[.modificationDate] as? Date
+            let oglDate = (try? fm.attributesOfItem(atPath: oglWine))?[.modificationDate] as? Date
+            if let ps = patchedSize, let cs = curSize, ps == cs, ps > 0,
+               let ud = uniDate, let od = oglDate, od >= ud {
+                return  // al día
+            }
+        }
+
+        progress?("Preparando motor OpenGL (Heroes of Hammerwatch II y similares)…", 0.95)
+        do {
+            try? fm.removeItem(atPath: oglDir)
+            try fm.copyItem(atPath: uniDir, toPath: oglDir)      // clon COW (APFS)
+            try? fm.removeItem(atPath: oglWinemac)
+            try fm.copyItem(atPath: patched, toPath: oglWinemac) // swap del winemac.so parcheado
+            await stripQuarantineRecursive(at: oglDir)
+            LogStore.shared.log("Motor 'wine-unified-opengl' listo (forward-compat GL para juegos OpenGL).", level: .info)
+        } catch {
+            LogStore.shared.log("No se pudo crear el motor OpenGL: \(error.localizedDescription). Los juegos OpenGL usarán el unificado normal.", level: .warn)
+            try? fm.removeItem(atPath: oglDir)
         }
     }
 

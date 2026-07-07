@@ -28,6 +28,17 @@ enum WineEngineLocator {
     /// resolución física completa en pantallas Retina (ver `WineManager`).
     static let unifiedEngineName = "wine-unified"
 
+    /// Variante del motor UNIFICADO para juegos **OpenGL** (p. ej. Heroes of Hammerwatch II,
+    /// motor BGFX/GL propio). Es un clon COW de `wine-unified` IDÉNTICO con SOLO `winemac.so`
+    /// reemplazado por una versión parcheada (backport de **CW Hack 24834**): Wine-macOS rechaza
+    /// los contextos GL 3.2 core sin `WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB` (→ `ERROR_INVALID_VERSION_ARB`
+    /// `0x2095`); el parche inyecta el bit cuando el juego pide `CX_FWD_COMPAT_GL_CTX=1`. El parche
+    /// solo actúa con ESA env var → inerte para el resto, PERO `winemac.so` lo carga TODA ventana Wine
+    /// (incluido el CEF de Steam), así que se AÍSLA en su propio motor para NO tocar el `wine-unified`
+    /// compartido que ya corre el cliente Steam y los juegos D3D11. Se recrea desde `wine-unified` con
+    /// `DependencyManager.ensureUnifiedOpenGLEngine` (clon COW + swap del `winemac.so` de Resources).
+    static let unifiedOpenGLEngineName = "wine-unified-opengl"
+
     /// Motor D3DMetal propio: el UNIFICADO (WineHQ 11.10) **+ D3DMetal de Apple trasplantado**
     /// (D3D12→Metal) sobre el modelo de `%gs` de CrossOver (nunca mueve el GSBASE; TEB por
     /// indirección `%gs:0x30`) para que los hilos nativos de D3DMetal no crasheen bajo Rosetta,
@@ -96,9 +107,17 @@ enum WineEngineLocator {
         return false
     }
 
-    /// True si la ruta de Wine pertenece al motor unificado propio (`wine-unified`).
+    /// True si la ruta de Wine pertenece al motor unificado propio (`wine-unified`) o a su
+    /// variante OpenGL (`wine-unified-opengl`). Ambos comparten base (WineHQ 11.10 + DXMT) y el
+    /// mismo modelo de entorno (MF off, `WINEMSYNC=0`), así que para el gating de env cuentan igual.
     static func isUnifiedEngine(_ winePath: String) -> Bool {
-        winePath.contains("/\(unifiedEngineName)/")
+        winePath.contains("/\(unifiedEngineName)/") || winePath.contains("/\(unifiedOpenGLEngineName)/")
+    }
+
+    /// Binario Wine del motor OpenGL (`wine-unified-opengl`), o `nil` si no está instalado.
+    static func openglGameWineBinary(enginesDirectory: String = VesselPaths.enginesDirectory) -> String? {
+        guard engineHasWineBinary(unifiedOpenGLEngineName, enginesDirectory: enginesDirectory) else { return nil }
+        return wineBinary(in: unifiedOpenGLEngineName, enginesDirectory: enginesDirectory)
     }
 
     /// True si la ruta de Wine pertenece al motor D3DMetal propio (`wine-d3dmetal`).
@@ -148,7 +167,7 @@ enum WineEngineLocator {
     /// (`wine-dxmt` o su variante parcheada `wine-dxmt-mousefix`).
     static func isGameEngine(_ winePath: String) -> Bool {
         winePath.contains("/\(mousefixEngineName)/") || winePath.contains("/\(dxmtEngineName)/")
-            || winePath.contains("/\(unifiedEngineName)/")
+            || winePath.contains("/\(unifiedEngineName)/") || winePath.contains("/\(unifiedOpenGLEngineName)/")
     }
 
     static func portableEngineDirectory(enginesDirectory: String = VesselPaths.enginesDirectory) -> URL {
