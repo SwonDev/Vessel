@@ -956,6 +956,10 @@ final class WineManager {
         // 32-bit no carga solo en el WoW64 experimental de gptk (c0000135), como en la ruta D3D9.
         ensureD3D11NativeDLLs(prefixPath: prefix, engineWine: gptkWine)
         await setWined3dRenderer(prefix: prefix, wine: gptkWine, renderer: renderer)
+        // Modo Retina en el prefijo AISLADO (el base lo tiene, el scoped se crea sin él): sin esto el
+        // display de algunos juegos (GameMaker) falla al crear el swapchain (`DXGI_ERROR_UNSUPPORTED
+        // 0x887a0004`) o renderiza a 1×. Idempotente. Respeta el flag del perfil (por defecto ON).
+        await setMacDriverRetinaMode(prefix: prefix, wine: gptkWine, enabled: effective.retina)
 
         var env: [String: String] = [
             "WINEPREFIX": prefix,
