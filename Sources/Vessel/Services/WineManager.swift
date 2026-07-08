@@ -2491,7 +2491,10 @@ final class WineManager {
         // -skipinitialbootstrap, para que el bootstrap/updater pueda completarse.
         let args: [String]
         if WineEngineLocator.isFullEngine(clientWine), bootstrapped {
-            args = ["-no-cef-sandbox", "-tcp"]   // CEF nativo, sin flags de inhibición del updater
+            // Flags de arranque RÁPIDO: -skipinitialbootstrap + -noverifyfiles saltan la verificación de
+            // ficheros y el bootstrap del cliente, que tardaban MINUTOS en el motor completo (el usuario
+            // veía "tarda una salvajada"). El cliente ya está instalado y actualizado.
+            args = Self.steamLaunchArguments
         } else if needsSelfUpdate {
             args = ["-no-cef-sandbox", "-tcp"]
         } else if bootstrapped {
