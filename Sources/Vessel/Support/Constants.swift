@@ -9,9 +9,11 @@ enum VesselPaths {
     static let bottlesDirectory: String = "\(appSupport)/Bottles"
     static let enginesDirectory: String = "\(appSupport)/Engines"
     static let cacheDirectory: String = "\(appSupport)/Cache"
+    /// Juegos DRM‑free descargados por Vessel (itch.io, Humble…), un subdirectorio por juego.
+    static let drmFreeDirectory: String = "\(appSupport)/DRMFree"
 
     static func ensureDirectories() {
-        let paths = [appSupport, bottlesDirectory, enginesDirectory, cacheDirectory]
+        let paths = [appSupport, bottlesDirectory, enginesDirectory, cacheDirectory, drmFreeDirectory]
         for path in paths {
             try? FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
         }
