@@ -3251,11 +3251,15 @@ final class WineManager {
             let cmdFile = "\(NSHomeDirectory())/Library/Application Support/Vessel/.steam-launch.sh"
             try? script.write(toFile: cmdFile, atomically: true, encoding: .utf8)
             if let launcher = Self.steamLauncherAppPath {
-                log.log("Motor completo: lanzando vía launcher independiente (open) para que el CEF cree su ventana.", level: .info)
-                // `-n`: SIEMPRE una instancia NUEVA. Sin él, `open` reutiliza/no relanza si LaunchServices
-                // cree que la launcher sigue registrada → arranque inconsistente (a veces no lanza nada).
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-                process.arguments = ["-n", launcher]
+                log.log("Motor completo: lanzando vía Finder (launcher independiente) para que el CEF cree su ventana.", level: .info)
+                // CLAVE: la launcher se lanza a través de FINDER (osascript), NO con `open` directo desde
+                // Vessel. Cuando Vessel.app es el ORIGINADOR (`Process(open)`), LaunchServices asocia la
+                // launcher a Vessel (hereda su "responsible process") y el CEF no pinta / es inconsistente.
+                // Con Finder como originador, la launcher es REALMENTE independiente (PPID=1) y el CEF crea
+                // su ventana de forma fiable (validado in-vivo: `open` desde Vessel fallaba, Finder no).
+                let appleScript = "tell application \"Finder\" to open (POSIX file \"\(launcher)\")"
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+                process.arguments = ["-e", appleScript]
             } else {
                 log.log("Motor completo: launcher no encontrada; lanzando con bash directo (el CEF puede no pintar).", level: .warn)
                 process.executableURL = URL(fileURLWithPath: "/bin/bash")
