@@ -1495,7 +1495,11 @@ final class WineManager {
             // gobierna `connectedNoWindow` con su propio margen → no reiniciamos prematuramente un CEF
             // que está pintando.
             let tooSlow = !connected && elapsed > 0 && elapsed % graceSeconds == 0
-            if restarts < 2, hung || connectedNoWindow || tooSlow, isWineProcessRunning(matching: "steam.exe") {
+            // El motor completo (wine-full) lanza el cliente como app INDEPENDIENTE (open/launcher):
+            // Vessel NO debe reiniciarlo/matarlo (rompería el proceso desacoplado y duplicaría). Solo
+            // se espera a que el CEF pinte (la launcher lo crea de forma fiable). Sin auto-reparación.
+            if restarts < 2, !WineEngineLocator.isFullEngine(clientWine),
+               hung || connectedNoWindow || tooSlow, isWineProcessRunning(matching: "steam.exe") {
                 restarts += 1
                 lastRestartElapsed = elapsed
                 NotificationService.shared.status("Steam no responde; reiniciándolo automáticamente…")
@@ -2425,12 +2429,16 @@ final class WineManager {
             && !isSteamClientModern(in: bottle)
             && WineEngineLocator.isModernSteamEngine(clientWine)
         if WineEngineLocator.isFullEngine(clientWine), bootstrapped {
-            // Motor COMPLETO de Vessel: CEF NATIVO (webhelper REAL, sin wrapper), SIN steam.cfg
-            // (Steam se actualiza con normalidad). El winemac/DXMT del motor renderiza el CEF de
-            // fábrica — no hacen falta los parches (wrapper SwiftShader / steam.cfg) del unificado.
-            removeSteamConfig(in: bottle)
-            wrapperInstaller.restoreRealWebHelpers(in: bottle)
+            // Motor COMPLETO de Vessel: el CEF se lanza en SINGLE-PROCESS (wrapper) porque, lanzado
+            // desde la `.app`, el CEF NATIVO MULTIPROCESO no crea su ventana Cocoa: el proceso
+            // "browser" de Chromium pierde el contexto al hacer fork/exec bajo la sesión de la app
+            // (validado in-vivo: el cliente carga la UI —library.js, FriendsUI ReadyToRender— y loguea
+            // por JWT, pero la ventana nunca aparece; desde un terminal el CEF nativo SÍ pinta). El
+            // single-process crea la ventana igual que un juego (proceso único) y renderiza por el DXMT
+            // maduro del motor. steam.cfg inhibe el auto-update para no ladrillar el wrapper.
+            ensureSteamConfig(in: bottle)
             cleanCEFCache(in: bottle)
+            try await ensureWrapperInstalled(in: bottle)
         } else if needsSelfUpdate {
             log.log("Cliente de Steam antiguo detectado: Steam se actualizará solo (una única vez, puede tardar unos minutos)…", level: .info)
             removeSteamConfig(in: bottle)
@@ -2953,6 +2961,57 @@ final class WineManager {
         return ProcessResult(exitCode: process.terminationStatus, output: output)
     }
 
+    /// Ruta al helper `vessel-spawn` (desacopla el subproceso de la identidad de la app con
+    /// `responsibility_spawnattrs_setdisclaim`, como el cx_loader de CrossOver). En el `.app` está en
+    /// `Contents/Resources`; en dev, junto al ejecutable. `nil` si no se encuentra (se cae a bash directo).
+    static var vesselSpawnHelperPath: String? {
+        let fm = FileManager.default
+        var candidates: [String] = []
+        if let res = Bundle.main.resourcePath { candidates.append("\(res)/vessel-spawn") }
+        if let exec = Bundle.main.executablePath {
+            let macOS = (exec as NSString).deletingLastPathComponent          // …/Contents/MacOS
+            let contents = (macOS as NSString).deletingLastPathComponent      // …/Contents
+            candidates.append("\(contents)/Resources/vessel-spawn")           // …/Contents/Resources
+            candidates.append("\(macOS)/vessel-spawn")                        // junto al ejecutable
+        }
+        // Fallback DEV (swift run): junto al cwd del proyecto.
+        candidates.append("\(fm.currentDirectoryPath)/Resources/vessel-spawn")
+        for p in candidates where fm.isExecutableFile(atPath: p) { return p }
+        return nil
+    }
+
+    /// Ruta a la mini-app launcher `SteamLauncher.app` (en `Contents/Resources`). Vessel la lanza con
+    /// `open` para que el motor completo corra como app INDEPENDIENTE (LaunchServices, con su propia
+    /// responsible process) — única forma validada de que el CEF de Steam cree su ventana desde la app.
+    static var steamLauncherAppPath: String? {
+        let fm = FileManager.default
+        // Plantilla en el bundle (o en el proyecto en modo dev).
+        var candidates: [String] = []
+        if let res = Bundle.main.resourcePath { candidates.append("\(res)/SteamLauncher.app") }
+        if let exec = Bundle.main.executablePath {
+            let contents = ((exec as NSString).deletingLastPathComponent as NSString).deletingLastPathComponent
+            candidates.append("\(contents)/Resources/SteamLauncher.app")
+        }
+        candidates.append("\(fm.currentDirectoryPath)/Resources/SteamLauncher.app")
+        guard let template = candidates.first(where: { fm.fileExists(atPath: $0) }) else { return nil }
+        // ⚠️ LaunchServices NO lanza bien una `.app` ANIDADA dentro de otra `.app`
+        // (Vessel.app/Contents/Resources/SteamLauncher.app) — `open` no hace nada. Se copia a un sitio
+        // SUELTO (Application Support) y se lanza desde ahí (validado). Se re-copia si la plantilla es
+        // más nueva, para propagar cambios de la launcher entre versiones de Vessel.
+        let runRel = "Contents/MacOS/run"
+        let dst = "\(NSHomeDirectory())/Library/Application Support/Vessel/SteamLauncher.app"
+        let srcDate = (try? fm.attributesOfItem(atPath: "\(template)/\(runRel)")[.modificationDate]) as? Date
+        let dstDate = (try? fm.attributesOfItem(atPath: "\(dst)/\(runRel)")[.modificationDate]) as? Date
+        let needsCopy = !fm.fileExists(atPath: "\(dst)/\(runRel)")
+            || (srcDate != nil && dstDate != nil && srcDate! > dstDate!)
+        if needsCopy {
+            try? fm.createDirectory(atPath: (dst as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            try? fm.removeItem(atPath: dst)
+            try? fm.copyItem(atPath: template, toPath: dst)
+        }
+        return fm.isExecutableFile(atPath: "\(dst)/\(runRel)") ? dst : nil
+    }
+
     private func launchWineProcess(
         winePath: String,
         prefix: String,
@@ -3176,8 +3235,29 @@ final class WineManager {
             func shq(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
             let assignments = clean.map { "\($0.key)=\(shq($0.value))" }.joined(separator: " ")
             let cmdline = ([winePath] + arguments).map { shq($0) }.joined(separator: " ")
-            process.executableURL = URL(fileURLWithPath: "/bin/bash")
-            process.arguments = ["-c", "exec /usr/bin/env -i \(assignments) \(cmdline)"]
+            let bashCmd = "exec /usr/bin/env -i \(assignments) \(cmdline)"
+            // Lanzar vía `open` de una mini-app launcher (LaunchServices → app INDEPENDIENTE, con su
+            // propia "responsible process"/session): el CEF de Steam del motor completo crea su ventana
+            // SÓLO así. Como subproceso anidado de Vessel (Foundation.Process, incluso con `env -i`, un
+            // bash intermedio o el disclaim de vessel-spawn) el CEF arranca, carga la UI y loguea por
+            // JWT, pero NO pinta (validado exhaustivamente in-vivo — el disclaim no basta desde un hijo
+            // anidado; `open` sí porque LaunchServices lanza una app nueva). El comando (cd + `exec env
+            // -i wine`) se deja en un archivo que la launcher ejecuta.
+            let cwd = workingDirectory ?? (prefix as NSString).deletingLastPathComponent
+            let script = "cd \(shq(cwd))\n\(bashCmd)\n"
+            let cmdFile = "\(NSHomeDirectory())/Library/Application Support/Vessel/.steam-launch.sh"
+            try? script.write(toFile: cmdFile, atomically: true, encoding: .utf8)
+            if let launcher = Self.steamLauncherAppPath {
+                log.log("Motor completo: lanzando vía launcher independiente (open) para que el CEF cree su ventana.", level: .info)
+                // `-n`: SIEMPRE una instancia NUEVA. Sin él, `open` reutiliza/no relanza si LaunchServices
+                // cree que la launcher sigue registrada → arranque inconsistente (a veces no lanza nada).
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+                process.arguments = ["-n", launcher]
+            } else {
+                log.log("Motor completo: launcher no encontrada; lanzando con bash directo (el CEF puede no pintar).", level: .warn)
+                process.executableURL = URL(fileURLWithPath: "/bin/bash")
+                process.arguments = ["-c", bashCmd]
+            }
             process.environment = fullEnv
         } else {
             process.environment = fullEnv

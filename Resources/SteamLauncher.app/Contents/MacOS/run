@@ -1,0 +1,7 @@
+#!/bin/bash
+# Launcher INDEPENDIENTE (lanzado por `open`/LaunchServices → identidad de app propia, nueva
+# responsible process/session). Ejecuta el comando que Vessel dejó en el archivo fijo. Esto permite
+# al CEF de Steam del motor completo crear su ventana desde la app — lo que un subproceso anidado de
+# Vessel (Foundation.Process) no logra ni con el disclaim.
+CMD_FILE="$HOME/Library/Application Support/Vessel/.steam-launch.sh"
+[ -f "$CMD_FILE" ] && exec /bin/bash "$CMD_FILE"

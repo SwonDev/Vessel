@@ -20,6 +20,12 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 cp "$BIN_PATH" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 [ -f "$ICON_PATH" ] && cp "$ICON_PATH" "$APP_BUNDLE/Contents/Resources/icon.icns"
 [ -f "Resources/steamwebhelper-wrapper.exe" ] && cp "Resources/steamwebhelper-wrapper.exe" "$APP_BUNDLE/Contents/Resources/steamwebhelper-wrapper.exe"
+# Helper vessel-spawn: desacopla los procesos Wine de la identidad de la app (responsible process),
+# imprescindible para que el CEF de Steam del motor completo cree su ventana desde la .app.
+[ -f "Resources/vessel-spawn" ] && cp "Resources/vessel-spawn" "$APP_BUNDLE/Contents/Resources/vessel-spawn" && chmod +x "$APP_BUNDLE/Contents/Resources/vessel-spawn" && codesign --force --sign - "$APP_BUNDLE/Contents/Resources/vessel-spawn" 2>/dev/null
+# Mini-app launcher: Vessel la lanza con `open` (LaunchServices → app independiente) para que el CEF
+# de Steam del motor completo cree su ventana desde la app.
+[ -d "Resources/SteamLauncher.app" ] && cp -R "Resources/SteamLauncher.app" "$APP_BUNDLE/Contents/Resources/SteamLauncher.app" && codesign --force --deep --sign - "$APP_BUNDLE/Contents/Resources/SteamLauncher.app" 2>/dev/null
 [ -f "Resources/game-wrapper.exe" ] && cp "Resources/game-wrapper.exe" "$APP_BUNDLE/Contents/Resources/game-wrapper.exe"
 [ -f "Resources/dpapi-seal.exe" ] && cp "Resources/dpapi-seal.exe" "$APP_BUNDLE/Contents/Resources/dpapi-seal.exe"
 # Certificados raíz DigiCert (validación TLS del login/CM de Steam — cadena EV ECDSA)
