@@ -3236,6 +3236,19 @@ final class WineManager {
                       "DOTNET_EnableWriteXorExecute", "DOTNET_gcServer", "ROSETTA_ADVERTISE_AVX"] {
                 if let v = fullEnv[k] { clean[k] = v }
             }
+            // ⭐ CrossOver cxcompatdb — LA clave de que los juegos vayan PERFECTOS desde el Steam de
+            // wine (como CrossOver; NO era D3DMetal, como se creyó al principio). `CX_ROOT` activa el
+            // módulo `cxcompatdb.so`, que aplica los "hacks" de compatibilidad POR JUEGO (dll_overrides,
+            // env_vars, cmdline…). Los juegos que el cliente Steam lanza HEREDAN estas vars → cxcompatdb
+            // activo → render correcto SIN ir juego a juego. Validado in-vivo: Palworld (UE5/D3D12)
+            // renderiza perfecto y el CEF del cliente NO se rompe (el webhelper va por CPU, ajeno a
+            // CX_GRAPHICS_BACKEND). `WINEMSYNC=1` (ya en la whitelist) DEBE coincidir con el cliente.
+            let cxRoot = WineEngineLocator.fullEngineDir()
+            clean["CX_ROOT"] = cxRoot
+            clean["CX_GRAPHICS_BACKEND"] = "d3dmetal"
+            let cxLibd3d = "\(cxRoot)/lib64/apple_gptk/external/libd3dshared.dylib"
+            if FileManager.default.fileExists(atPath: cxLibd3d) { clean["CX_APPLEGPTK_LIBD3DSHARED_PATH"] = cxLibd3d }
+            if let cxHome = ensureCXCompatDB() { clean["CX_HOME"] = cxHome }
             func shq(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
             let assignments = clean.map { "\($0.key)=\(shq($0.value))" }.joined(separator: " ")
             let cmdline = ([winePath] + arguments).map { shq($0) }.joined(separator: " ")
@@ -3327,6 +3340,33 @@ final class WineManager {
             try? await terminateWineProcesses(winePath: winePath, prefix: prefix)
             throw WineError.launchFailed(error.localizedDescription)
         }
+    }
+
+    /// Asegura la base de datos de compatibilidad de CrossOver (`compatdb-<N>.dat`) que consume el
+    /// módulo `cxcompatdb.so` del motor completo y devuelve el directorio que la contiene (para
+    /// `CX_HOME`), o `nil` si no hay ninguna (entonces el cxcompatdb usa su base por defecto embebida,
+    /// de menor cobertura). La EMPAQUETA en el motor la primera vez: si el motor no la trae y CrossOver
+    /// está instalado en el sistema, copia su `compatdb-<N>.dat` (un dato firmado por CodeWeavers que
+    /// se verifica con el `tie.pub` que el motor ya trae en `share/crossover/data`). Tras esa primera
+    /// copia el equipo queda AUTÓNOMO (no vuelve a necesitar CrossOver). Es idempotente.
+    private func ensureCXCompatDB() -> String? {
+        let fm = FileManager.default
+        let engineHome = "\(WineEngineLocator.fullEngineDir())/cxcompatdb-home"
+        func firstDB(in dir: String) -> String? {
+            (try? fm.contentsOfDirectory(atPath: dir))?
+                .first { $0.hasPrefix("compatdb-") && $0.hasSuffix(".dat") }
+        }
+        if firstDB(in: engineHome) != nil { return engineHome }          // ya empaquetada
+        let sysHome = "\(NSHomeDirectory())/Library/Application Support/CrossOver"
+        if let dat = firstDB(in: sysHome) {                              // copiar del sistema (1 vez)
+            try? fm.createDirectory(atPath: engineHome, withIntermediateDirectories: true)
+            try? fm.copyItem(atPath: "\(sysHome)/\(dat)", toPath: "\(engineHome)/\(dat)")
+            if firstDB(in: engineHome) != nil {
+                log.log("cxcompatdb: base de compatibilidad empaquetada en el motor (\(dat)).", level: .info)
+                return engineHome
+            }
+        }
+        return nil                                                       // sin db → default embebida
     }
 
     /// Fija la versión de Windows del prefijo (`HKCU\Software\Wine\Version`) que pide el perfil
