@@ -2491,10 +2491,11 @@ final class WineManager {
         // -skipinitialbootstrap, para que el bootstrap/updater pueda completarse.
         let args: [String]
         if WineEngineLocator.isFullEngine(clientWine), bootstrapped {
-            // Flags de arranque RÁPIDO: -skipinitialbootstrap + -noverifyfiles saltan la verificación de
-            // ficheros y el bootstrap del cliente, que tardaban MINUTOS en el motor completo (el usuario
-            // veía "tarda una salvajada"). El cliente ya está instalado y actualizado.
-            args = Self.steamLaunchArguments
+            // Flags MÍNIMOS (como el Wine de referencia). ⚠️ NO usar `-skipinitialbootstrap`: el CEF NATIVO
+            // necesita el bootstrap del cliente para crear su ventana — con él, steam.exe arranca pero el
+            // CEF NO pinta (validado: con estos flags mínimos la ventana SÍ aparece, con los rápidos no).
+            // `-noverifyfiles` acelera (no re-verifica ficheros) sin romper el CEF.
+            args = ["-no-cef-sandbox", "-noverifyfiles", "-tcp"]
         } else if needsSelfUpdate {
             args = ["-no-cef-sandbox", "-tcp"]
         } else if bootstrapped {
