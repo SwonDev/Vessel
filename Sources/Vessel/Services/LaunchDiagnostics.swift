@@ -253,9 +253,12 @@ enum LaunchDiagnostics {
             if let failure {
                 report(failure, gameTitle: gameTitle)
             } else if !alive {
+                // Incluir la CAUSA RAÍZ real si `launch()` lanzó una excepción (fallo de motor/disco/
+                // permisos), en vez de un mensaje genérico de "capas agotadas".
+                let cause = GameLaunchTracker.shared.lastError(gameId).map { " Causa: \($0)." } ?? ""
                 report(Failure(category: .crash,
                                title: "\(gameTitle) no llegó a arrancar",
-                               body: "Se probaron todas las capas gráficas y ninguna funcionó. Prueba «Verificar / reparar»."),
+                               body: "Se probaron todas las capas gráficas y ninguna funcionó.\(cause) Prueba «Verificar / reparar»."),
                        gameTitle: gameTitle)
             }
         }

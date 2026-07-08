@@ -18,6 +18,11 @@ final class GameLaunchTracker {
     /// acumular el tiempo jugado en `PlayStatsStore` al terminar el proceso.
     private var statsKeys: [String: String] = [:]
     private var startTimes: [String: Date] = [:]
+    /// Último error REAL de `launch()` por id (si lanzó una excepción antes de arrancar). Antes se
+    /// tragaba solo en el log; ahora `LaunchDiagnostics` lo incluye en el aviso final para que el
+    /// usuario vea la causa raíz (fallo de motor/disco/permisos) en vez de un mensaje genérico.
+    private var lastErrors: [String: String] = [:]
+    func lastError(_ id: String) -> String? { lastErrors[id] }
     /// Acción a ejecutar cuando el juego termina (p. ej. subir cloud saves). Por id en curso.
     private var onExits: [String: @MainActor () -> Void] = [:]
 
@@ -35,6 +40,7 @@ final class GameLaunchTracker {
                _ body: () async throws -> Process) async {
         guard state(id) == .idle else { return }
         states[id] = .launching
+        lastErrors[id] = nil
         do {
             let proc = try await body()
             processes[id] = proc
@@ -50,6 +56,7 @@ final class GameLaunchTracker {
             }
         } catch {
             states[id] = .idle
+            lastErrors[id] = error.localizedDescription
             LogStore.shared.log("No se pudo iniciar el juego: \(error.localizedDescription)", level: .error)
         }
     }
