@@ -372,66 +372,56 @@ final class DependencyManager {
         }
     }
 
-    /// Crea/repara el motor DEDICADO del cliente de Steam `wine-steam`: clon COW de `wine-unified` (el
-    /// único motor que renderiza el CEF: cliente + biblioteca) con SOLO el `winemac.so` reemplazado por
-    /// la versión con **CW HACK 22435** (una superficie Metal por cada swapchain del compositor CEF → la
-    /// **TIENDA** de Steam también se compone, no sale negra), bundleada en `Resources/steam-engine/`. Es
-    /// EXCLUSIVO del cliente de Steam; NO toca los motores de juegos del modo Vessel (solo se une con
-    /// ellos en la biblioteca instalada). Se basa en el unificado (SIN D3DMetal) a PROPÓSITO: en
-    /// `wine-d3dmetal` el `dxgi`/D3DMetal hace que el proceso GPU del webhelper CRASHEE en bucle (~87
-    /// steamwebhelper); en el unificado el CEF va estable. Idempotente y auto-reparable (se recrea si
-    /// falta, si el winemac.so no es el de la tienda, o si quedó más viejo que el unificado).
+    /// Crea/repara el motor DEDICADO del cliente de Steam `wine-steam`: clon COW de **`wine-d3dmetal`**
+    /// (Wine 11 con **DXMT** para D3D11 Y **D3DMetal** para D3D12), para que TODOS los juegos —D3D11
+    /// (DXMT→Metal) y D3D12 (D3DMetal→Metal)— se puedan jugar DESDE Steam, exactamente como CrossOver.
+    /// El cliente y la TIENDA (CEF) corren **por CPU** (`GPUAccelWebViews=0`, ver `applySteamGameRegistry`),
+    /// así que meter D3DMetal NO rompe el CEF: el crash de ~87 steamwebhelper venía del CEF usando
+    /// `dxgi`/D3DMetal por GPU; sin GPU en el CEF, D3DMetal solo lo usan los juegos. EXCLUSIVO del cliente
+    /// de Steam; NO toca los motores de juegos del modo Vessel (solo se une con ellos en la biblioteca
+    /// instalada). Fallback: si `wine-d3dmetal` no está, clona `wine-unified` (juegos D3D11 + tienda por
+    /// CPU igualmente). Idempotente (se recrea si falta o si la fuente cambió).
     func ensureSteamEngine(progress: (@Sendable (String, Double) -> Void)? = nil) async {
         let fm = FileManager.default
-        let uniDir = "\(enginesDirectory)/\(WineEngineLocator.unifiedEngineName)"
-        let uniWine = "\(uniDir)/bin/wine"
+        let d3dmWine = "\(enginesDirectory)/\(WineEngineLocator.d3dmetalEngineName)/bin/wine"
+        // Fuente preferida: wine-d3dmetal (DXMT + D3DMetal); si no está, wine-unified (solo DXMT).
+        let sourceDir = fm.isExecutableFile(atPath: d3dmWine)
+            ? "\(enginesDirectory)/\(WineEngineLocator.d3dmetalEngineName)"
+            : "\(enginesDirectory)/\(WineEngineLocator.unifiedEngineName)"
+        let sourceWine = "\(sourceDir)/bin/wine"
         let steamDir = "\(enginesDirectory)/\(WineEngineLocator.steamEngineName)"
         let steamWine = "\(steamDir)/bin/wine"
-        let steamWinemac = "\(steamDir)/lib/wine/x86_64-unix/winemac.so"
 
-        guard fm.isExecutableFile(atPath: uniWine) else { return }
+        guard fm.isExecutableFile(atPath: sourceWine) else { return }
 
-        guard let patched = Bundle.main.resourceURL?
-            .appendingPathComponent("steam-engine/winemac.so").path,
-              fm.fileExists(atPath: patched) else {
-            LogStore.shared.log("No se encontró el winemac.so (tienda) en Resources; el cliente Steam usará el unificado (sin la tienda).", level: .warn)
-            return
-        }
-
-        // Guarda de versión: el winemac.so con CW HACK 22435 se compiló contra WineHQ 11.x.
-        let version = (await runCapture(executable: uniWine, arguments: ["--version"]))?
+        // Guarda de versión: WineHQ 11.x (ABI del winemac.so/DXMT/D3DMetal).
+        let version = (await runCapture(executable: sourceWine, arguments: ["--version"]))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard version.contains("wine-11") else {
-            LogStore.shared.log("wine-unified reporta '\(version)' (no 11.x): se omite el motor Steam para no romper el ABI del winemac.so.", level: .warn)
-            try? fm.removeItem(atPath: steamDir)
+            LogStore.shared.log("El motor fuente reporta '\(version)' (no 11.x): se omite el motor de Steam.", level: .warn)
             return
         }
 
-        // Idempotente: ¿ya existe, con el winemac.so de la tienda, y no más viejo que el unificado?
+        // Idempotente: mismo tamaño del `d3d11.dll` que la fuente (mismo motor) y no más viejo.
+        let srcMark = "\(sourceDir)/lib/wine/x86_64-windows/d3d11.dll"
+        let steamMark = "\(steamDir)/lib/wine/x86_64-windows/d3d11.dll"
         if fm.isExecutableFile(atPath: steamWine) {
-            let patchedSize = (try? fm.attributesOfItem(atPath: patched))?[.size] as? Int
-            let curSize = (try? fm.attributesOfItem(atPath: steamWinemac))?[.size] as? Int
-            let uniDate = (try? fm.attributesOfItem(atPath: uniWine))?[.modificationDate] as? Date
-            let steamDate = (try? fm.attributesOfItem(atPath: steamWine))?[.modificationDate] as? Date
-            if let ps = patchedSize, let cs = curSize, ps == cs, ps > 0,
-               let ud = uniDate, let sd = steamDate, sd >= ud {
-                return  // al día
-            }
+            let s1 = (try? fm.attributesOfItem(atPath: srcMark))?[.size] as? Int
+            let s2 = (try? fm.attributesOfItem(atPath: steamMark))?[.size] as? Int
+            let d1 = (try? fm.attributesOfItem(atPath: sourceWine))?[.modificationDate] as? Date
+            let d2 = (try? fm.attributesOfItem(atPath: steamWine))?[.modificationDate] as? Date
+            if let s1, let s2, s1 == s2, s1 > 0, let d1, let d2, d2 >= d1 { return }  // al día
         }
 
-        progress?("Preparando motor de Steam (cliente + biblioteca + tienda)…", 0.96)
+        progress?("Preparando motor de Steam (cliente + biblioteca + tienda + juegos)…", 0.96)
         do {
             try? fm.removeItem(atPath: steamDir)
-            try fm.copyItem(atPath: uniDir, toPath: steamDir)          // clon COW (APFS)
-            try? fm.removeItem(atPath: steamWinemac)
-            try fm.copyItem(atPath: patched, toPath: steamWinemac)     // swap del winemac.so (CW HACK 22435)
-            // NO re-firmar: el `winemac.so` de Resources ya viene firmado ad-hoc (build_and_run firma la
-            // .app con `--deep`); re-firmarlo cambiaría su tamaño y rompería la guarda de idempotencia
-            // de arriba (que compara tamaños) → recrearía el motor en cada arranque. Igual que el OpenGL.
+            try fm.copyItem(atPath: sourceDir, toPath: steamDir)   // clon COW (APFS, instantáneo)
             await stripQuarantineRecursive(at: steamDir)
-            LogStore.shared.log("Motor 'wine-steam' listo (cliente Steam + biblioteca + TIENDA).", level: .info)
+            let kind = sourceWine.contains("/\(WineEngineLocator.d3dmetalEngineName)/") ? "DXMT + D3DMetal" : "DXMT"
+            LogStore.shared.log("Motor 'wine-steam' listo (cliente + biblioteca + tienda + juegos desde Steam: \(kind)).", level: .info)
         } catch {
-            LogStore.shared.log("No se pudo crear el motor Steam: \(error.localizedDescription). El cliente usará el unificado (sin tienda).", level: .warn)
+            LogStore.shared.log("No se pudo crear el motor de Steam: \(error.localizedDescription).", level: .warn)
             try? fm.removeItem(atPath: steamDir)
         }
     }
