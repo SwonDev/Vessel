@@ -3490,6 +3490,17 @@ final class WineManager {
         )
     }
 
+    /// Auto-reparación de RUNTIME: cuando `LaunchDiagnostics` detecta que falta una librería del
+    /// sistema (firma `missingLibrary`/`dotNet`), instala en el prefijo del juego los redistribuibles
+    /// que suelen faltar — **Visual C++ 2015-2022** (`vcrun2022`, idempotente vía winetricks). El .NET
+    /// Framework lo cubre `wine-mono` (que Wine auto-instala); el .NET moderno lo trae el propio juego.
+    /// Best-effort: si winetricks no está, `applyWinetricksVerbs` avisa sin bloquear. Cambiar de motor
+    /// NO arregla un runtime que falta, por eso esto es una reparación DEDICADA (no un ciclo de capas).
+    func installMissingRuntimes(in bottle: Bottle, forExecutable executable: String) async {
+        let wine = resolveGameWine(for: bottle, executable: executable)
+        await applyWinetricksVerbs(["vcrun2022"], prefix: bottle.prefixPath, wine: wine)
+    }
+
     /// Aplica los verbos de winetricks que pide el perfil (vcrun, d3dx9…) de forma IDEMPOTENTE:
     /// lleva un registro en `<prefix>/.vessel-winetricks-applied` y solo aplica los que falten.
     ///

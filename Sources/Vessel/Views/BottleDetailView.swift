@@ -418,7 +418,12 @@ struct BottleDetailView: View {
                 c.useRealSteam = true
                 GameConfigStore.save(trackId, c)
                 await launchGame(game, attempt: attempt + 1)
-            } as @MainActor () async -> Void)
+            } as @MainActor () async -> Void),
+            // Auto-reparación de RUNTIME: si falta VC++/.NET, instálalo (winetricks) y relanza (una vez).
+            retryWithRuntimeFix: {
+                await wineManager.installMissingRuntimes(in: localBottle, forExecutable: exePath)
+                await launchGame(game, attempt: attempt + 1)
+            }
         ) { next in await launchGame(game, forcedLayer: next, attempt: attempt + 1) }
     }
 

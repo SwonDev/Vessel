@@ -140,6 +140,7 @@ enum LaunchDiagnostics {
         isRunning: @escaping @MainActor () -> Bool = { false },
         persistWinningLayer: (@MainActor (GameConfig.GraphicsLayer) -> Void)? = nil,
         retryWithRealSteam: (@MainActor () async -> Void)? = nil,
+        retryWithRuntimeFix: (@MainActor () async -> Void)? = nil,
         relaunch: @escaping @MainActor (GameConfig.GraphicsLayer) async -> Void
     ) {
         Task { @MainActor in
@@ -219,6 +220,19 @@ enum LaunchDiagnostics {
                 return
             }
 
+            // AUTO-REPARACIÓN DE RUNTIME: falta VC++/.NET (missingLibrary/dotNet). Cambiar de capa
+            // gráfica NO lo arregla → se instala el runtime (winetricks vcrun2022) y se relanza UNA vez.
+            if failed, attempt < 1, let retryRuntime = retryWithRuntimeFix,
+               failure?.category == .missingLibrary || failure?.category == .dotNet {
+                LogStore.shared.log("\(gameTitle): falta un runtime (VC++/.NET) → instalándolo automáticamente y relanzando…", level: .info)
+                NotificationService.shared.notify(title: "Reparando automáticamente: \(gameTitle)",
+                                                  body: "Instalando el runtime que falta (Visual C++ / .NET)…")
+                GameLaunchTracker.shared.stop(gameId)
+                try? await Task.sleep(for: .seconds(2))
+                await retryRuntime()
+                return
+            }
+
             @MainActor func retry(_ next: GameConfig.GraphicsLayer, reason: String) async {
                 LogStore.shared.log("\(gameTitle): \(reason) con la capa \(currentLayer.rawValue). Reintentando con \(next.rawValue)…", level: .info)
                 NotificationService.shared.notify(title: "Reintentando automáticamente: \(gameTitle)",
@@ -234,6 +248,7 @@ enum LaunchDiagnostics {
             // siempre arranca con otro (Metal/DXMT ↔ D3DMetal ↔ wined3d). Excepción: `.steam` y
             // `.mouse` tienen su propia reparación (Goldberg / relanzar), no ciclo de motores.
             let dedicatedRepair = failure?.category == .steam || failure?.category == .mouse
+                || failure?.category == .missingLibrary || failure?.category == .dotNet
             let maxAttempts = max(3, fallbackLayers.count)
             if !alive, !dedicatedRepair, attempt < maxAttempts,
                let next = nextSensibleLayer(after: currentLayer, in: fallbackLayers) {
