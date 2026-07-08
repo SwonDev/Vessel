@@ -157,6 +157,9 @@ struct StoreLibraryView: View {
     @AppStorage("vessel.gridDensity") private var gridDensity: GridDensity = .normal
     @State private var favorites: Set<String> = []
     @State private var selectedGame: StoreGame?
+    /// Tooltip de "Abrir Steam" sobre el logo: se muestra una vez y se auto-oculta.
+    @State private var showSteamHint = false
+    @State private var steamHintDisplayed = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var tint: Color { store.tint }
@@ -433,7 +436,6 @@ struct StoreLibraryView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             sidebarHeader
-            openSteamAccess
             searchBar
             filterBar
             gameList
@@ -441,50 +443,61 @@ struct StoreLibraryView: View {
         .background(Theme.navyDeep.opacity(0.45))
     }
 
-    /// Acceso VISIBLE "Abrir Steam" (solo Steam), como CrossOver: abre el cliente de Steam en el
-    /// motor D3DMetal para jugar los juegos DESDE Steam (nube de Steam, actualizaciones, DLC y logros
-    /// nativos). Es la vía recomendada para todo lo que dependa de Steam Cloud/red real.
+    /// Contenido del popover que aparece una vez sobre el logo de Steam para indicar que, haciendo
+    /// click en él, se abre el cliente de Steam. Se auto-oculta a los pocos segundos. Va dentro de un
+    /// `.popover` nativo (se posiciona solo, con flecha, sin desbordar la sidebar).
+    private var steamHintTooltip: some View {
+        HStack(spacing: 11) {
+            Image(systemName: "play.rectangle.fill")
+                .font(.title3)
+                .foregroundStyle(Theme.accent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Abrir Steam").font(.callout.weight(.semibold))
+                Text("Haz click en el logo para jugar desde Steam,\ncon la nube y los logros nativos.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 15).padding(.vertical, 13)
+        .presentationCompactAdaptation(.popover)
+    }
+
+    /// Logo de la tienda. En Steam es CLICKABLE (click izquierdo → abre el cliente de Steam para jugar
+    /// desde ahí) y muestra una vez el tooltip que lo indica; en el resto, el logo normal.
     @ViewBuilder
-    private var openSteamAccess: some View {
+    private var steamLogo: some View {
         if let onOpenSteam {
             Button { onOpenSteam() } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "play.rectangle.fill")
-                        .font(.body.weight(.semibold))
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Abrir Steam").font(.callout.weight(.semibold))
-                        Text("Juega desde Steam · nube y logros nativos")
-                            .font(.caption2).opacity(0.75)
-                    }
-                    Spacer(minLength: 4)
-                    Image(systemName: "arrow.up.forward").font(.caption.weight(.semibold)).opacity(0.7)
-                }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 12).padding(.vertical, 10)
-                .frame(maxWidth: .infinity)
-                .background(
-                    LinearGradient(colors: [Theme.accent.opacity(0.95), Theme.accent.opacity(0.55)],
-                                   startPoint: .topLeading, endPoint: .bottomTrailing),
-                    in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-                        .strokeBorder(.white.opacity(0.12), lineWidth: 1)
-                )
-                .shadow(color: Theme.accent.opacity(0.35), radius: 8, y: 3)
-                .contentShape(Rectangle())
+                StoreLogoTile(store: store, size: 32)
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, 12).padding(.top, 2).padding(.bottom, 8)
-            .help("Abre el cliente de Steam en el motor D3DMetal para jugar tus juegos DESDE Steam, con Steam Cloud, actualizaciones, DLC y logros nativos (como CrossOver).")
+            .onHover { inside in
+                if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
+            .help("Abrir Steam · juega desde Steam con nube y logros nativos")
+            .popover(isPresented: $showSteamHint, arrowEdge: .bottom) {
+                steamHintTooltip
+            }
+            .onAppear(perform: maybeShowSteamHint)
+        } else {
+            StoreLogoTile(store: store, size: 32)
         }
     }
 
-    /// Cabecera compacta de la sidebar: logo + nombre de la tienda + contador + menú
-    /// (actualizar / cerrar sesión).
+    /// Muestra el tooltip de Steam brevemente al abrir la vista y lo oculta solo.
+    private func maybeShowSteamHint() {
+        guard onOpenSteam != nil, !steamHintDisplayed else { return }
+        steamHintDisplayed = true
+        // Retardo breve para que el logo esté montado antes de anclar el popover; se auto-oculta.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { showSteamHint = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.5) { showSteamHint = false }
+    }
+
+    /// Cabecera compacta de la sidebar: logo (clickable en Steam → abre Steam) + nombre + contador + menú.
     private var sidebarHeader: some View {
         HStack(spacing: 10) {
-            StoreLogoTile(store: store, size: 32)
+            steamLogo
             VStack(alignment: .leading, spacing: 1) {
                 Text(store.displayName).font(.headline).foregroundStyle(.white)
                 Text("\(games.count) juego\(games.count == 1 ? "" : "s")")
