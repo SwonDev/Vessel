@@ -59,6 +59,10 @@ fi
 # lo aplica al motor unificado (auto-reparable) para que el CEF pinte por DXMT y el login conecte
 [ -d "Resources/engine-steamfix" ] && cp -R "Resources/engine-steamfix" "$APP_BUNDLE/Contents/Resources/engine-steamfix"
 
+# Motor v3: cadena crypto (gnutls 3.8.13 + nettle 4.0 + hogweed) y freetype 2.14.3 x86_64 — DependencyManager
+# las copia en caliente al lib/ del motor unificado (applyCryptoFix, gated por marcador) sin re-descargar 2 GB
+[ -d "Resources/engine-cryptofix" ] && cp -R "Resources/engine-cryptofix" "$APP_BUNDLE/Contents/Resources/engine-cryptofix"
+
 cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

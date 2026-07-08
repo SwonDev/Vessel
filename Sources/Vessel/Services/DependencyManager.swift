@@ -493,11 +493,13 @@ final class DependencyManager {
             WineEngineLocator.unifiedEngineName, enginesDirectory: enginesDirectory
         ) {
             await applySteamRenderFix()
+            await applyCryptoFix()                 // motor v3: gnutls 3.8.13 + freetype 2.14.3 (drop-in)
             Task { await self.ensureWineMono() }   // .NET Framework, en 2º plano (idempotente)
             return
         }
         try await installWineUnified(progress: progress)
         await applySteamRenderFix()
+        await applyCryptoFix()                     // motor v3: gnutls 3.8.13 + freetype 2.14.3 (drop-in)
         Task { await self.ensureWineMono() }
     }
 
@@ -575,6 +577,49 @@ final class DependencyManager {
             await adhocSignBinaries(in: unixDir)
             try? fixVersion.write(toFile: marker, atomically: true, encoding: .utf8)
             LogStore.shared.log("Fix de render/conexión de Steam + fullscreen de juegos aplicado al motor unificado.", level: .info)
+        }
+    }
+
+    /// **Motor v3** — actualiza en caliente la cadena crypto + fuentes del motor unificado a la
+    /// última versión, SIN re-descargar el motor entero (~2 GB). Igual que `applySteamRenderFix`,
+    /// copia unas librerías bundleadas (`Resources/engine-cryptofix/`, ~8 MB) al `lib/` del motor,
+    /// gated por un marcador de versión (bump = re-aplica en instalaciones existentes). Todas son
+    /// x86_64 con deps `@loader_path` (drop-in) y fueron validadas: gnutls 3.8.13 negocia TLS 1.3 +
+    /// ECDHE real contra los servidores de Steam, y freetype 2.14.3 carga en el motor.
+    ///
+    /// - **gnutls 3.8.13** (+ **nettle 4.0** / **hogweed**): TLS/seguridad al día para el login de
+    ///   Steam (Wine la usa vía `bcrypt`/`secur32`). nettle 4.0 (`libnettle.9`/`libhogweed.7`) se
+    ///   **añade** junto a la vieja 3.9 del motor, sin pisarla (coexisten por soname).
+    /// - **freetype 2.14.3**: render de fuentes del cliente CEF y de las apps Windows. ABI estable
+    ///   (soname 6), misma feature set que la 2.13.3 previa (zlib+bz2+png+brotli, sin harfbuzz).
+    func applyCryptoFix() async {
+        let fm = FileManager.default
+        let engineDir = "\(enginesDirectory)/\(WineEngineLocator.unifiedEngineName)"
+        let libDir = "\(engineDir)/lib"
+        guard fm.fileExists(atPath: "\(libDir)/libgnutls.30.dylib") else { return }  // solo si el motor está
+        guard let resDir = Bundle.main.resourceURL?.appendingPathComponent("engine-cryptofix").path,
+              fm.fileExists(atPath: "\(resDir)/libgnutls.30.dylib") else { return }
+
+        let marker = "\(engineDir)/.vessel-crypto-fix"
+        let fixVersion = "v3-gnutls3.8.13-nettle4.0-freetype2.14.3"
+        let current = (try? String(contentsOfFile: marker, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if current == fixVersion { return }
+
+        var applied = false
+        // gnutls/freetype REEMPLAZAN los del motor; nettle.9/hogweed.7 se AÑADEN (nettle 4.0).
+        for dylib in ["libgnutls.30.dylib", "libgnutls.dylib",
+                      "libnettle.9.dylib", "libhogweed.7.dylib",
+                      "libfreetype.6.dylib", "libfreetype.dylib"] {
+            let src = "\(resDir)/\(dylib)", dst = "\(libDir)/\(dylib)"
+            guard fm.fileExists(atPath: src) else { continue }
+            try? fm.removeItem(atPath: dst)
+            if (try? fm.copyItem(atPath: src, toPath: dst)) != nil { applied = true }
+        }
+        if applied {
+            await stripQuarantineRecursive(at: libDir)
+            await adhocSignBinaries(in: libDir)
+            try? fixVersion.write(toFile: marker, atomically: true, encoding: .utf8)
+            LogStore.shared.log("Motor v3: cadena crypto (gnutls 3.8.13 + nettle 4.0) y freetype 2.14.3 aplicadas al motor unificado.", level: .info)
         }
     }
 
