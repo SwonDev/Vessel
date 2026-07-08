@@ -68,23 +68,26 @@ actor DRMFreeInstaller {
         try? FileManager.default.removeItem(atPath: installDir)
         try FileManager.default.createDirectory(atPath: installDir, withIntermediateDirectories: true)
 
+        // Nombre de fichero SEGURO: solo la última componente (descarta cualquier `../` o ruta
+        // absoluta que venga en Content-Disposition), y confinado a installDir.
+        let safeName = Self.safeLeafName(filename, defaultExt: ext.isEmpty ? "bin" : ext)
+
         progress(0.74, "Instalando…")
         switch ext {
         case "zip":
             try Self.unzip(tempURL, to: installDir)
         case "exe", "msi":
-            // .exe/.msi suelto: lo colocamos en la carpeta tal cual (portable o instalador).
-            let dst = "\(installDir)/\(filename)"
-            try FileManager.default.copyItem(atPath: tempURL.path, toPath: dst)
+            // .exe/.msi suelto: lo colocamos en la carpeta (portable o instalador), con nombre saneado.
+            try Self.safeCopy(tempURL.path, toLeaf: safeName, in: installDir)
         default:
             // Otros contenedores (.7z/.rar) no soportados nativamente por macOS: intentar como zip,
-            // y si falla, dejar el fichero para que el usuario lo gestione.
+            // y si falla, dejar el fichero (nombre saneado) para que el usuario lo gestione.
             do { try Self.unzip(tempURL, to: installDir) }
-            catch {
-                let dst = "\(installDir)/\(filename)"
-                try? FileManager.default.copyItem(atPath: tempURL.path, toPath: dst)
-            }
+            catch { try? Self.safeCopy(tempURL.path, toLeaf: safeName, in: installDir) }
         }
+        // Defensa Zip Slip / symlink escape: elimina cualquier entrada cuyo destino real se salga
+        // de installDir (un .zip malicioso de itch/Humble podría traer symlinks o `..`).
+        Self.enforceContainment(of: installDir)
 
         progress(0.88, "Buscando el ejecutable…")
         guard let exe = Self.findMainExecutable(in: installDir, suggestedName: suggestedName) else {
@@ -131,6 +134,43 @@ actor DRMFreeInstaller {
     }
 
     // MARK: - Extracción / heurísticas
+
+    /// Nombre de fichero seguro: solo la última componente (sin `/`, `\`, `..` ni ruta absoluta).
+    private static func safeLeafName(_ filename: String, defaultExt: String) -> String {
+        var leaf = (filename as NSString).lastPathComponent
+        // `lastPathComponent` ya descarta directorios; por si acaso, quita restos peligrosos.
+        leaf = leaf.replacingOccurrences(of: "\\", with: "_")
+        if leaf.isEmpty || leaf == "." || leaf == ".." { leaf = "descarga.\(defaultExt)" }
+        return leaf
+    }
+
+    /// Copia un fichero a `leaf` dentro de `dir`, verificando que el destino NO se sale de `dir`.
+    private static func safeCopy(_ srcPath: String, toLeaf leaf: String, in dir: String) throws {
+        let dst = URL(fileURLWithPath: dir).appendingPathComponent(leaf).standardizedFileURL
+        let base = URL(fileURLWithPath: dir).standardizedFileURL.path
+        guard dst.path == base + "/" + leaf || dst.path.hasPrefix(base + "/") else {
+            throw InstallError.extractionFailed("nombre de fichero inseguro")
+        }
+        try FileManager.default.copyItem(atPath: srcPath, toPath: dst.path)
+    }
+
+    /// Recorre `dir` y elimina cualquier entrada cuyo destino REAL (resolviendo symlinks) se salga
+    /// de `dir` — defensa contra Zip Slip y symlinks que escapan del árbol.
+    static func enforceContainment(of dir: String) {
+        let fm = FileManager.default
+        let baseReal = URL(fileURLWithPath: dir).resolvingSymlinksInPath().standardizedFileURL.path
+        guard let en = fm.enumerator(atPath: dir) else { return }
+        var toRemove: [String] = []
+        while let rel = en.nextObject() as? String {
+            let full = "\(dir)/\(rel)"
+            // Symlink cuyo destino se sale, o cualquier componente `..`.
+            let real = URL(fileURLWithPath: full).resolvingSymlinksInPath().standardizedFileURL.path
+            if rel.split(separator: "/").contains("..") || !(real == baseReal || real.hasPrefix(baseReal + "/")) {
+                toRemove.append(full)
+            }
+        }
+        for p in toRemove { try? fm.removeItem(atPath: p) }
+    }
 
     private static func unzip(_ archive: URL, to dir: String) throws {
         let p = Process()

@@ -140,13 +140,44 @@ actor ItchService {
             ?? uploads.filter { $0.isWindows }.sorted { ($0.size ?? 0) > ($1.size ?? 0) }.first
         guard let up = chosen, let upId = up.id else { throw ItchError.noWindowsBuild }
 
-        // Endpoint moderno de descarga: 302 → URL firmada del CDN. URLSession sigue el redirect y
-        // baja los bytes; NO se decodifica JSON. `api_key` en query firma la petición.
+        // Endpoint moderno de descarga: 302 → URL firmada del CDN. Autenticamos con el header
+        // `Authorization: Bearer` (NO metemos la API key en la URL: acabaría en logs/Referer) y
+        // capturamos el redirect SIN seguirlo — así el header no viaja al CDN y devolvemos la URL
+        // firmada del CDN (su firma es temporal, no contiene el secreto).
         var comps = URLComponents(url: Self.base.appendingPathComponent("uploads/\(upId)/download"),
                                   resolvingAgainstBaseURL: false)!
-        comps.queryItems = [URLQueryItem(name: "api_key", value: key),
-                            URLQueryItem(name: "download_key_id", value: String(downloadKeyId))]
-        guard let u = comps.url else { throw ItchError.http(0) }
-        return (u, up.filename)
+        comps.queryItems = [URLQueryItem(name: "download_key_id", value: String(downloadKeyId))]
+        guard let apiURL = comps.url else { throw ItchError.http(0) }
+        let signed = try await Self.resolveSignedURL(apiURL, bearer: key)
+        return (signed, up.filename)
+    }
+
+    /// Hace un GET autenticado con Bearer al endpoint de descarga y devuelve la URL del `Location`
+    /// del 302 (URL firmada del CDN) SIN seguir el redirect (para no reenviar el header al CDN).
+    private static func resolveSignedURL(_ url: URL, bearer: String) async throws -> URL {
+        let capturer = RedirectCapturer()
+        let session = URLSession(configuration: .ephemeral, delegate: capturer, delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (_, resp) = try await session.data(for: req)
+        if let loc = capturer.captured { return loc }                    // Location del 302
+        if let http = resp as? HTTPURLResponse, (200...299).contains(http.statusCode),
+           let u = http.url { return u }                                 // sin redirect: la propia URL
+        throw ItchError.http((resp as? HTTPURLResponse)?.statusCode ?? 0)
+    }
+}
+
+/// Captura el `Location` de un redirect HTTP sin seguirlo (evita reenviar el header `Authorization`
+/// al host del CDN). `@unchecked Sendable`: `captured` se escribe en el callback del delegado y se
+/// lee tras el `await`, que garantiza que la tarea ya terminó.
+private final class RedirectCapturer: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    var captured: URL?
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        captured = request.url
+        completionHandler(nil)   // NO seguir el redirect
     }
 }

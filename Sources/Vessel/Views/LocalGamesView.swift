@@ -100,7 +100,8 @@ struct LocalGamesView: View {
             }
             Spacer()
             Menu {
-                Button { addGame() } label: { Label("Añadir .exe o instalador…", systemImage: "plus.app") }
+                Button { addGame() } label: { Label("Añadir un .exe de juego…", systemImage: "plus.app") }
+                Button { runInstaller() } label: { Label("Ejecutar un instalador…", systemImage: "shippingbox") }
                 Divider()
                 if !ItchService.shared.isLinked {
                     Button { showingItchLink = true } label: { Label("Vincular itch.io…", systemImage: "link") }
@@ -212,6 +213,47 @@ struct LocalGamesView: View {
         if let exe = UTType(filenameExtension: "exe") { panel.allowedContentTypes = [exe] }
         guard panel.runModal() == .OK, let url = panel.url else { return }
         games.add(name: "", executablePath: url.path)
+    }
+
+    /// Ejecuta un **instalador** de Windows dentro del bottle (para "generar" el juego). Cuando el
+    /// instalador termina, ofrece elegir el ejecutable resultante (apunta a Program Files del bottle).
+    private func runInstaller() {
+        guard let bottle else { flash("Aún no hay un entorno de Wine listo.", true); return }
+        let panel = NSOpenPanel()
+        panel.title = "Elige el instalador de Windows (.exe / .msi)"
+        panel.prompt = "Ejecutar"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [UTType(filenameExtension: "exe"), UTType(filenameExtension: "msi")].compactMap { $0 }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        flash("Ejecutando el instalador… cuando termine, elige el ejecutable del juego.", false)
+        Task {
+            do {
+                let proc = try await wineManager.launch(executable: url.path, in: bottle,
+                                                        arguments: [], effective: EffectiveLaunchConfig())
+                while proc.isRunning { try? await Task.sleep(for: .seconds(1)) }   // esperar sin bloquear
+                await MainActor.run { promptForInstalledExe(in: bottle) }
+            } catch {
+                flash((error as? LocalizedError)?.errorDescription ?? "No se pudo ejecutar el instalador.", true)
+            }
+        }
+    }
+
+    /// Panel para elegir el ejecutable recién instalado, ya apuntando a Program Files del bottle.
+    private func promptForInstalledExe(in bottle: Bottle) {
+        let panel = NSOpenPanel()
+        panel.title = "Elige el ejecutable del juego instalado"
+        panel.prompt = "Añadir"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        if let exe = UTType(filenameExtension: "exe") { panel.allowedContentTypes = [exe] }
+        for candidate in ["\(bottle.prefixPath)/drive_c/Program Files (x86)", "\(bottle.prefixPath)/drive_c/Program Files"] {
+            if FileManager.default.fileExists(atPath: candidate) { panel.directoryURL = URL(fileURLWithPath: candidate); break }
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if games.add(name: "", executablePath: url.path) != nil { flash("Juego añadido.", false) }
     }
 
     private func reveal(_ game: LocalGamesStore.Game) {
