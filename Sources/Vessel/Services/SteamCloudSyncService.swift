@@ -1,6 +1,13 @@
 import Foundation
 import CryptoKit
 
+/// ⚠️ **LEGADO — NO USADO ACTUALMENTE.** La Web API `ICloudService` resultó ser *publisher-only*
+/// (devuelve 401 con el `access_token` de cliente), así que la nube real se resolvió por otra vía:
+/// el **modo Steam real** (`WineManager.launchViaRealSteam`), que lanza el juego con el cliente de
+/// Steam conectado y deja que el propio Steam sincronice la nube — como CrossOver. Este servicio se
+/// conserva por si Valve habilitara el acceso de cliente a `ICloudService`; hoy no lo invoca nadie
+/// (verificado). NO borrar sin confirmar que el modo Steam real cubre todos los casos.
+///
 /// Sincronización con **Steam Cloud REAL** vía la Web API `ICloudService` (HTTP puro + el
 /// `access_token` de cliente que ya obtiene `SteamAuthService`, sin el cliente Steam corriendo).
 ///
