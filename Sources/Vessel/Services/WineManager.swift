@@ -175,6 +175,44 @@ final class WineManager {
         try? FileManager.default.removeItem(atPath: dest)
     }
 
+    /// Escribe en el REGISTRO del bottle la config POR-JUEGO en `HKCU\Software\Wine\AppDefaults\<exe>`
+    /// que Wine aplica por NOMBRE DE EJECUTABLE **lo lance quien lo lance — incluido Steam** (a
+    /// diferencia de `WINEDLLOVERRIDES` en el entorno, que Steam NO hereda al lanzar el juego como hijo).
+    /// Es exactamente lo que hace CrossOver (`crossover.tie`: `AppDefaults\<exe>\DllOverrides
+    /// winegstreamer=disable`). Cubre el crash de vídeo Unity/Media Foundation: `winegstreamer` builtin
+    /// CRASHEA al decodificar vídeo por MF en macOS (wine-steam no trae GStreamer); desactivarlo como
+    /// builtin del juego omite el vídeo LIMPIO (no crashea) y el audio sigue por mfplat/XAudio2 (que NO
+    /// se toca). Solo afecta a cada exe listado. Idempotente (reimporta). Llamar con Steam parado.
+    func applySteamGameRegistry(in bottle: Bottle, wine: String) async {
+        var reg = "Windows Registry Editor Version 5.00\r\n\r\n"
+        // El webhelper moderno recomienda LargeAddressAware (CrossOver lo pone en el bottle de Steam).
+        reg += "[HKEY_CURRENT_USER\\Software\\Wine\\AppDefaults\\steamwebhelper.exe]\r\n"
+        reg += "\"LargeAddressAware\"=dword:00000001\r\n\r\n"
+        var seen = Set<String>()
+        for game in bottle.games {
+            let exe = (game.executablePath as NSString).lastPathComponent
+            let key = exe.lowercased()
+            guard key.hasSuffix(".exe"), seen.insert(key).inserted else { continue }
+            let escaped = exe.replacingOccurrences(of: "\\", with: "\\\\")
+            reg += "[HKEY_CURRENT_USER\\Software\\Wine\\AppDefaults\\\(escaped)\\DllOverrides]\r\n"
+            reg += "\"winegstreamer\"=\"disable\"\r\n\r\n"
+        }
+        let dest = "\(bottle.prefixPath)/drive_c/vessel-steam-appdefaults.reg"
+        // .reg v5: UTF-16 LE con BOM (lo que `wine reg import` espera con certeza).
+        var data = Data([0xFF, 0xFE])
+        data.append(reg.data(using: .utf16LittleEndian) ?? Data())
+        try? data.write(to: URL(fileURLWithPath: dest))
+        _ = try? await runWine(
+            winePath: wine,
+            arguments: ["reg", "import", #"C:\vessel-steam-appdefaults.reg"#],
+            prefix: bottle.prefixPath,
+            environment: ["WINEPREFIX": bottle.prefixPath, "WINEDEBUG": "-all", "WINEDLLOVERRIDES": "winedbg.exe=d"],
+            allowNonZeroExit: true
+        )
+        try? FileManager.default.removeItem(atPath: dest)
+        log.log("Config por-juego aplicada en el registro (AppDefaults): los juegos se lanzan desde Steam sin el crash de vídeo (winegstreamer).", level: .info)
+    }
+
     /// Escribe `steam.cfg` con `BootStrapperInhibitAll` para que Steam NO se
     /// autoactualice/verifique. Sin esto, cuando Steam se relanza sin
     /// `-noverifyfiles` detecta el wrapper como corrupto, intenta actualizar el
@@ -1738,6 +1776,10 @@ final class WineManager {
             try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
             try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
             await applyWinetricksVerbs(["corefonts", "vcrun2022"], prefix: bottle.prefixPath, wine: wine)
+            // Config POR-JUEGO en el registro (AppDefaults), como CrossOver: se aplica aunque el juego
+            // lo lance STEAM (que no hereda `WINEDLLOVERRIDES` del entorno). Evita el crash de vídeo
+            // (winegstreamer) de los juegos Unity lanzados desde Steam.
+            await applySteamGameRegistry(in: bottle, wine: wine)
         }
 
         // 4) Cliente antiguo (era Gcenx, sin cef.win64) → dejar que Steam se actualice
@@ -2216,7 +2258,7 @@ final class WineManager {
             return env
         }
         if WineEngineLocator.isUnifiedEngine(wine) {
-            // Motor UNIFICADO (cliente Steam CEF general, juegos D3D11 por DXMT): WINEMSYNC=0 —
+            // Motor UNIFICADO / wine-steam (cliente Steam CEF, juegos D3D11 por DXMT): WINEMSYNC=0 —
             // msync rompe el async socket del updater HTTP (→ "http error 0"). `launchWineProcess`
             // añade el DYLD del motor; el wrapper SwiftShader completa el CEF.
             var env = steamClientEnvironment(prefix: prefix)
@@ -2227,6 +2269,11 @@ final class WineManager {
             // El CEF de la build moderna pinta por DXMT→Metal (D3D11 FL 11_1) con el wrapper
             // `--single-process`; no usa Vulkan/MoltenVK para su UI, así que esto es cosmético.
             env["MVK_CONFIG_LOG_LEVEL"] = "0"
+            // Env GLOBALES del bottle que los JUEGOS lanzados por Steam HEREDAN (como el bottle de Steam
+            // de CrossOver): fix .NET 7/8 bajo Rosetta (W^X) + exponer AVX a Rosetta. Inocuas para el
+            // cliente; imprescindibles para que muchos juegos .NET/nativos arranquen desde Steam.
+            env["DOTNET_EnableWriteXorExecute"] = "0"
+            if #available(macOS 15, *) { env["ROSETTA_ADVERTISE_AVX"] = "1" }
             return env
         }
         // Gcenx (fallback): entorno normal.
