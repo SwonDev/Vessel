@@ -493,10 +493,47 @@ final class DependencyManager {
             WineEngineLocator.unifiedEngineName, enginesDirectory: enginesDirectory
         ) {
             await applySteamRenderFix()
+            Task { await self.ensureWineMono() }   // .NET Framework, en 2º plano (idempotente)
             return
         }
         try await installWineUnified(progress: progress)
         await applySteamRenderFix()
+        Task { await self.ensureWineMono() }
+    }
+
+    /// Instala **wine-mono** (el runtime de .NET Framework de Wine) en el motor unificado si falta, para
+    /// que los juegos .NET Framework arranquen: Wine lo auto-instala en el prefijo desde
+    /// `share/wine/mono/`. wine-mono es INDEPENDIENTE de la arquitectura del motor (son ensamblados
+    /// .NET/PE de Windows), así que sirve igual para el motor x86_64. Descarga la última estable
+    /// (Regla #1: stack a la última) del repo oficial. Idempotente (salta si ya está esa versión) y NO
+    /// bloqueante (se lanza en segundo plano: la primera vez baja ~60 MB sin frenar la apertura de Steam).
+    func ensureWineMono(version: String = "11.2.0") async {
+        let fm = FileManager.default
+        let engineDir = "\(enginesDirectory)/\(WineEngineLocator.unifiedEngineName)"
+        // Solo si el motor ya está instalado.
+        guard fm.fileExists(atPath: "\(engineDir)/lib/wine/x86_64-unix") else { return }
+        let monoParent = "\(engineDir)/share/wine/mono"
+        let monoDir = "\(monoParent)/wine-mono-\(version)"
+        if fm.fileExists(atPath: monoDir) { return }   // ya instalado
+        guard let url = URL(string: "https://github.com/wine-mono/wine-mono/releases/download/wine-mono-\(version)/wine-mono-\(version)-x86.tar.xz") else { return }
+        do {
+            let (tmp, resp) = try await URLSession.shared.download(from: url)
+            defer { try? fm.removeItem(at: tmp) }
+            if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                LogStore.shared.log("No se pudo descargar wine-mono \(version) (HTTP \(http.statusCode)).", level: .warn); return
+            }
+            try? fm.createDirectory(atPath: monoParent, withIntermediateDirectories: true)
+            // Extraer el .tar.xz en share/wine/mono/ (crea wine-mono-<version>/). tar de macOS lee xz.
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+            p.arguments = ["-xJf", tmp.path, "-C", monoParent]
+            try p.run(); p.waitUntilExit()
+            if fm.fileExists(atPath: monoDir) {
+                LogStore.shared.log("wine-mono \(version) instalado en el motor (juegos .NET Framework).", level: .info)
+            }
+        } catch {
+            LogStore.shared.log("wine-mono no se pudo instalar: \(error.localizedDescription)", level: .warn)
+        }
     }
 
     /// Aplica el fix de RENDER + CONEXIÓN del cliente de Steam al motor unificado (idempotente y
