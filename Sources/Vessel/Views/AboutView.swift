@@ -30,13 +30,13 @@ struct AboutView: View {
 
             HStack(spacing: 12) {
                 Button("Ver en GitHub") {
-                    if let url = URL(string: "https://github.com/Ja1zme/vessel-mac") {
+                    if let url = URL(string: "https://github.com/SwonDev/Vessel") {
                         NSWorkspace.shared.open(url)
                     }
                 }
                 .vesselButton()
                 Button("Reportar bug") {
-                    if let url = URL(string: "https://github.com/Ja1zme/vessel-mac/issues") {
+                    if let url = URL(string: "https://github.com/SwonDev/Vessel/issues") {
                         NSWorkspace.shared.open(url)
                     }
                 }

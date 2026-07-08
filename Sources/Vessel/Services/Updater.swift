@@ -20,8 +20,8 @@ final class Updater {
         }
     }
 
-    private let repoOwner = "Ja1zme"
-    private let repoName = "vessel-mac"
+    private let repoOwner = "SwonDev"
+    private let repoName = "Vessel"
 
     func checkForUpdates(currentVersion: String) async -> Release? {
         let url = URL(string: "https://api.github.com/repos/\(repoOwner)/\(repoName)/releases/latest")!
