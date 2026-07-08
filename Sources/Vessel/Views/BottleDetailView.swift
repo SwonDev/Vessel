@@ -31,7 +31,7 @@ struct BottleDetailView: View {
     }
 
     /// Mapeo de los juegos de Steam (instalados + biblioteca owned) al modelo genérico
-    /// `StoreGame`, para usar la biblioteca común (igual que Epic/GOG/Amazon).
+    /// `StoreGame`, para usar la biblioteca común (igual que Epic/GOG).
     private var steamGames: [StoreGame] {
         let installed = localBottle.games.map { g in
             StoreGame(id: g.steamAppId ?? g.id.uuidString, title: g.name,
