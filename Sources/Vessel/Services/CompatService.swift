@@ -88,12 +88,7 @@ final class CompatService {
 
     /// Ruta del JSON empaquetado: dentro del `.app` o, en desarrollo, el repo.
     static var bundledDatabaseURL: URL? {
-        if let res = Bundle.main.resourceURL {
-            let inBundle = res.appendingPathComponent("CompatDB/compat-db.json")
-            if FileManager.default.fileExists(atPath: inBundle.path) { return inBundle }
-        }
-        let repo = URL(fileURLWithPath: "/Users/vesseldeveloper0000/Documents/vessel-mac/Resources/CompatDB/compat-db.json")
-        return FileManager.default.fileExists(atPath: repo.path) ? repo : nil
+        VesselPaths.bundledResource("CompatDB/compat-db.json")
     }
 
     // MARK: - Búsqueda

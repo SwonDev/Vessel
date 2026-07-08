@@ -61,12 +61,14 @@ final class SteamWebHelperWrapperInstaller {
         if let url = Bundle.main.url(forResource: "steamwebhelper-wrapper", withExtension: "exe") {
             return url.path
         }
-        // Fallback para desarrollo: path del repo
-        return "/Users/vesseldeveloper0000/Documents/vessel-mac/Resources/steamwebhelper-wrapper.exe"
+        // Fallback para desarrollo: path del repo (relativo a #filePath, sin usuario hardcodeado)
+        return VesselPaths.devRepoRoot.appendingPathComponent("Resources/steamwebhelper-wrapper.exe").path
     }
 
     /// Ruta al código fuente del wrapper (solo para recompilación si el bundle falta).
-    private static let sourcePath = "/Users/vesseldeveloper0000/Documents/vessel-mac/Resources/wrapper/steamwebhelper-wrapper.c"
+    private static var sourcePath: String {
+        VesselPaths.devRepoRoot.appendingPathComponent("Resources/wrapper/steamwebhelper-wrapper.c").path
+    }
 
     /// Ruta donde se cachea el wrapper compilado en runtime.
     private var wrapperBinaryPath: String {

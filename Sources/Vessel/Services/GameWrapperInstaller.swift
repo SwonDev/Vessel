@@ -69,7 +69,7 @@ final class GameWrapperInstaller {
         if let url = Bundle.main.url(forResource: "game-wrapper", withExtension: "exe") {
             return url.path
         }
-        return "/Users/vesseldeveloper0000/Documents/vessel-mac/Resources/game-wrapper.exe"
+        return VesselPaths.devRepoRoot.appendingPathComponent("Resources/game-wrapper.exe").path
     }
 
     /// Escanea `steamapps/common/` e instala wrappers en todos los juegos detectados.

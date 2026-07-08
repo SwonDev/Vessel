@@ -156,7 +156,7 @@ final class WineManager {
         let marker = "\(prefix)/.vessel-steam-certs"
         if FileManager.default.fileExists(atPath: marker) { return }
         guard let regURL = Bundle.main.url(forResource: "steam-certs", withExtension: "reg")
-            ?? URL(string: "file:///Users/vesseldeveloper0000/Documents/vessel-mac/Resources/steam-certs.reg") else { return }
+            ?? VesselPaths.bundledResource("steam-certs.reg") else { return }
         guard FileManager.default.fileExists(atPath: regURL.path) else { return }
         // Copiar el .reg al drive_c del prefijo (ruta Windows accesible) e importarlo.
         let dest = "\(prefix)/drive_c/vessel-steam-certs.reg"
@@ -187,7 +187,7 @@ final class WineManager {
         let marker = "\(prefix)/.vessel-cx-overrides"
         if FileManager.default.fileExists(atPath: marker) { return }
         guard let regURL = Bundle.main.url(forResource: "crossover-compat-overrides", withExtension: "reg")
-            ?? URL(string: "file:///Users/vesseldeveloper0000/Documents/vessel-mac/Resources/crossover-compat-overrides.reg") else { return }
+            ?? VesselPaths.bundledResource("crossover-compat-overrides.reg") else { return }
         guard FileManager.default.fileExists(atPath: regURL.path) else { return }
         let dest = "\(prefix)/drive_c/vessel-cx-overrides.reg"
         do { try? FileManager.default.removeItem(atPath: dest)

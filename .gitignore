@@ -11,3 +11,22 @@ docs/CrossOver_SourceCode_NO_SUBIR_a_Github/
 # Marcador web a CrossOver (referencia local, NO subir)
 *CrossOver*.webloc
 *CodeWeavers*.webloc
+
+# SwiftPM local
+.swiftpm/
+
+# Artefactos de release (se suben a GitHub Releases, NUNCA a git)
+Vessel-*.zip
+*.dmg
+
+# Tarballs de motores Wine (van a SwonDev/Vessel-Engines releases, NO a git)
+*.tar.zst
+*.tar.gz
+*.tar.xz
+
+# Claves privadas / secretos (la privada de Sparkle vive en el llavero, nunca en el repo)
+*.p12
+*.pem
+*.key
+sparkle_private_key*.txt
+dsa_priv.pem

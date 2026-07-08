@@ -16,6 +16,28 @@ enum VesselPaths {
             try? FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
         }
     }
+
+    /// Raíz del repo en DESARROLLO, resuelta de forma relativa a este fichero fuente (`#filePath`),
+    /// para NUNCA hardcodear la ruta del usuario en el código (el repo es público). Este fichero vive
+    /// en `Sources/Vessel/Support/Constants.swift` → subir 4 niveles llega a la raíz del repo. Solo se
+    /// usa como fallback cuando la app corre sin bundle (`swift run`); en la `.app` mandan los recursos
+    /// de `Contents/Resources`. En la máquina de otro desarrollador resuelve a SU ruta, sin literales.
+    static let devRepoRoot: URL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()   // Support/
+        .deletingLastPathComponent()   // Vessel/
+        .deletingLastPathComponent()   // Sources/
+        .deletingLastPathComponent()   // <repo>/
+
+    /// Recurso empaquetado en `Contents/Resources/<relPath>` de la `.app` o, en desarrollo, en
+    /// `<repo>/Resources/<relPath>`. `nil` si no existe en ninguno. Sin rutas de usuario.
+    static func bundledResource(_ relPath: String) -> URL? {
+        if let res = Bundle.main.resourceURL {
+            let inBundle = res.appendingPathComponent(relPath)
+            if FileManager.default.fileExists(atPath: inBundle.path) { return inBundle }
+        }
+        let dev = devRepoRoot.appendingPathComponent("Resources/\(relPath)")
+        return FileManager.default.fileExists(atPath: dev.path) ? dev : nil
+    }
 }
 
 enum SteamConstants {
