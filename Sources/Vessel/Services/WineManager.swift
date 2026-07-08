@@ -3058,6 +3058,20 @@ final class WineManager {
         return fm.isExecutableFile(atPath: "\(dst)/\(runRel)") ? dst : nil
     }
 
+    /// Hints de SDL2 para MANDOS. El motor bundlea `libSDL2` (que `winebus.sys` usa), y SDL2 respeta
+    /// estas variables de entorno: activan **HIDAPI + rumble/vibración** de DualShock 4 / DualSense
+    /// (PS4/PS5) y Switch Pro por Bluetooth/USB, que Wine NO da de fábrica. Es el equivalente
+    /// Swift-puro del CW HACK 19629 de CrossOver (`bus_sdl.c`), sin recompilar el motor. Inofensivo
+    /// para teclado/ratón y mandos Xbox (no dependen de estos hints).
+    static let gamepadEnvVars: [String: String] = [
+        "SDL_JOYSTICK_HIDAPI": "1",
+        "SDL_JOYSTICK_HIDAPI_PS4": "1",
+        "SDL_JOYSTICK_HIDAPI_PS4_RUMBLE": "1",
+        "SDL_JOYSTICK_HIDAPI_PS5": "1",
+        "SDL_JOYSTICK_HIDAPI_PS5_RUMBLE": "1",
+        "SDL_JOYSTICK_HIDAPI_SWITCH": "1"
+    ]
+
     private func launchWineProcess(
         winePath: String,
         prefix: String,
@@ -3125,6 +3139,10 @@ final class WineManager {
         //     **invariant globalization** salta ICU (usa cultura invariante) → arranca. Suficiente
         //     para juegos (no necesitan localización por cultura del SO).
         if fullEnv["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] == nil { fullEnv["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] = "1" }
+        // MANDOS: rumble de PS4/PS5/Switch vía los hints de SDL2 (el motor bundlea libSDL2). Inofensivo
+        // para teclado/ratón/Xbox. No pisa lo que ya venga en el entorno. Cubre el camino normal
+        // (Gcenx / wine-dxmt-mousefix); las ramas `env -i` los reañaden por whitelist más abajo.
+        for (k, v) in Self.gamepadEnvVars where fullEnv[k] == nil { fullEnv[k] = v }
         // El motor UNIFICADO propio (WineHQ 11.10) carga freetype/gnutls por `dlopen` desde su
         // `lib/` (SONAME sin ruta). Necesita `DYLD_FALLBACK_LIBRARY_PATH` a esa carpeta o Wine
         // no encuentra FreeType (texto del sistema / CEF de Steam) ni gnutls (TLS). Es
@@ -3252,7 +3270,9 @@ final class WineManager {
             for k in ["HOME", "USER", "TMPDIR", "WINEPREFIX", "WINEDEBUG", "MVK_CONFIG_LOG_LEVEL",
                       "WINEDLLOVERRIDES", "DYLD_FALLBACK_LIBRARY_PATH", "SteamAppId", "SteamGameId",
                       "WINEMSYNC", "WINEESYNC", "WINEFSYNC", "CX_FWD_COMPAT_GL_CTX", "MTL_HUD_ENABLED",
-                      "ROSETTA_ADVERTISE_AVX"] {
+                      "ROSETTA_ADVERTISE_AVX",
+                      "SDL_JOYSTICK_HIDAPI", "SDL_JOYSTICK_HIDAPI_PS4", "SDL_JOYSTICK_HIDAPI_PS4_RUMBLE",
+                      "SDL_JOYSTICK_HIDAPI_PS5", "SDL_JOYSTICK_HIDAPI_PS5_RUMBLE", "SDL_JOYSTICK_HIDAPI_SWITCH"] {
                 if let v = fullEnv[k] { clean[k] = v }
             }
             func shq(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
@@ -3275,7 +3295,9 @@ final class WineManager {
                       "DYLD_FALLBACK_LIBRARY_PATH", "SteamAppId", "SteamGameId",
                       "WINEMSYNC", "WINEESYNC", "WINEFSYNC", "MVK_CONFIG_LOG_LEVEL", "MTL_HUD_ENABLED",
                       "DOTNET_ReadyToRun", "DOTNET_TieredCompilation", "DOTNET_TieredPGO",
-                      "DOTNET_EnableWriteXorExecute", "DOTNET_gcServer", "ROSETTA_ADVERTISE_AVX"] {
+                      "DOTNET_EnableWriteXorExecute", "DOTNET_gcServer", "ROSETTA_ADVERTISE_AVX",
+                      "SDL_JOYSTICK_HIDAPI", "SDL_JOYSTICK_HIDAPI_PS4", "SDL_JOYSTICK_HIDAPI_PS4_RUMBLE",
+                      "SDL_JOYSTICK_HIDAPI_PS5", "SDL_JOYSTICK_HIDAPI_PS5_RUMBLE", "SDL_JOYSTICK_HIDAPI_SWITCH"] {
                 if let v = fullEnv[k] { clean[k] = v }
             }
             // ⭐ CrossOver cxcompatdb — LA clave de que los juegos vayan PERFECTOS desde el Steam de
