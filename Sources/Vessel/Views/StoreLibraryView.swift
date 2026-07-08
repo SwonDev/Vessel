@@ -433,11 +433,51 @@ struct StoreLibraryView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             sidebarHeader
+            openSteamAccess
             searchBar
             filterBar
             gameList
         }
         .background(Theme.navyDeep.opacity(0.45))
+    }
+
+    /// Acceso VISIBLE "Abrir Steam" (solo Steam), como CrossOver: abre el cliente de Steam en el
+    /// motor D3DMetal para jugar los juegos DESDE Steam (nube de Steam, actualizaciones, DLC y logros
+    /// nativos). Es la vía recomendada para todo lo que dependa de Steam Cloud/red real.
+    @ViewBuilder
+    private var openSteamAccess: some View {
+        if let onOpenSteam {
+            Button { onOpenSteam() } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "play.rectangle.fill")
+                        .font(.body.weight(.semibold))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Abrir Steam").font(.callout.weight(.semibold))
+                        Text("Juega desde Steam · nube y logros nativos")
+                            .font(.caption2).opacity(0.75)
+                    }
+                    Spacer(minLength: 4)
+                    Image(systemName: "arrow.up.forward").font(.caption.weight(.semibold)).opacity(0.7)
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 12).padding(.vertical, 10)
+                .frame(maxWidth: .infinity)
+                .background(
+                    LinearGradient(colors: [Theme.accent.opacity(0.95), Theme.accent.opacity(0.55)],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing),
+                    in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                        .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+                )
+                .shadow(color: Theme.accent.opacity(0.35), radius: 8, y: 3)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 12).padding(.top, 2).padding(.bottom, 8)
+            .help("Abre el cliente de Steam en el motor D3DMetal para jugar tus juegos DESDE Steam, con Steam Cloud, actualizaciones, DLC y logros nativos (como CrossOver).")
+        }
     }
 
     /// Cabecera compacta de la sidebar: logo + nombre de la tienda + contador + menú

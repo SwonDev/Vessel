@@ -49,6 +49,13 @@ enum WineEngineLocator {
     /// wineserver). Si no está instalado, se cae a GPTK/D3DMetal (que no corre el CEF moderno).
     static let d3dmetalEngineName = "wine-d3dmetal"
 
+    /// Motor DEDICADO y APARTE para "Abrir Steam (como CrossOver)": clon del unificado (mismo Wine 11
+    /// que SÍ renderiza el CEF: cliente + biblioteca) con un `winemac.so` propio que compone TODAS las
+    /// sub-superficies del CEF (CW HACK 22435) para que la **TIENDA** también se vea. Es EXCLUSIVO del
+    /// cliente de Steam; NO toca los motores de juegos del modo Vessel. La única unión es la biblioteca
+    /// instalada (steamapps del prefijo). Si no está, `openSteamClient` cae al unificado normal.
+    static let steamEngineName = "wine-steam"
+
     // MARK: - Roles de motor (arquitectura de doble motor)
     //
     // Tras validación empírica en Apple Silicon:
@@ -112,6 +119,10 @@ enum WineEngineLocator {
     /// mismo modelo de entorno (MF off, `WINEMSYNC=0`), así que para el gating de env cuentan igual.
     static func isUnifiedEngine(_ winePath: String) -> Bool {
         winePath.contains("/\(unifiedEngineName)/") || winePath.contains("/\(unifiedOpenGLEngineName)/")
+            // `wine-steam` (motor DEDICADO del cliente Steam) es un CLON del unificado: hereda TODO su
+            // modelo de entorno del CEF (WINEMSYNC=0, DYLD, wrapper, deps, certs). Solo cambia el
+            // `winemac.so` (CW HACK 22435 para la tienda). Por eso cuenta como unificado para el gating.
+            || winePath.contains("/\(steamEngineName)/")
     }
 
     /// Binario Wine del motor OpenGL (`wine-unified-opengl`), o `nil` si no está instalado.
@@ -141,6 +152,13 @@ enum WineEngineLocator {
     /// Binario Wine del motor D3DMetal propio (`wine-d3dmetal`), o `nil` si no está instalado.
     static func d3dmetalWineBinary(enginesDirectory: String = VesselPaths.enginesDirectory) -> String? {
         wineBinary(in: d3dmetalEngineName, enginesDirectory: enginesDirectory)
+    }
+
+    /// Binario Wine del motor DEDICADO del cliente de Steam (`wine-steam`), o `nil` si no está.
+    /// Es el que usa `openSteamClient` para abrir Steam APARTE (cliente + biblioteca + tienda), sin
+    /// tocar los motores de juegos. Si falta, `openSteamClient` cae a `clientWineBinary` (unificado).
+    static func steamDedicatedWineBinary(enginesDirectory: String = VesselPaths.enginesDirectory) -> String? {
+        wineBinary(in: steamEngineName, enginesDirectory: enginesDirectory)
     }
 
     /// Binario Wine del motor del CLIENTE de Steam (unificado si está, si no Gcenx).

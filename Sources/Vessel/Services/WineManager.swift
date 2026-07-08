@@ -1612,7 +1612,12 @@ final class WineManager {
                 arguments: [executable] + effective.launchArgs,
                 environment: env,
                 workingDirectory: gameWorkingDirectory(forExecutable: executable),
-                forceSyncOff: true,      // mismo wineserver que el cliente Steam → sync=0 obligatorio
+                effective: effective,    // ACTIVA el env -i (contexto LIMPIO): sin `__CFBundleIdentifier` y
+                                         // con `DYLD_*`, D3DMetal SÍ crea el device Metal (como el modo Vessel).
+                                         // Sin esto el juego se lanzaba con spawn directo de la `.app` y moría.
+                forceSyncOn: true,       // msync=1: DEBE COINCIDIR con el cliente Steam D3DMetal (que corre en
+                                         // msync ON). El `forceSyncOff` anterior ponía msync=0 → mismatch con el
+                                         // wineserver del cliente → `exit(1)` ("Palworld en Steam-real no arrancaba").
                 d3dMetalGame: true       // añade el DYLD a lib/external:lib (D3DMetal)
             )
             NotificationService.shared.status(nil)
@@ -1688,7 +1693,14 @@ final class WineManager {
             return
         }
 
-        // 1) Motor unificado: auto-instalar si falta (best-effort; sin red → Gcenx).
+        // 1) Motor del CLIENTE de Steam: el UNIFICADO (o Gcenx si no está). El CEF de Steam SOLO
+        //    renderiza de forma FIABLE en el motor unificado; el motor `wine-d3dmetal` (optimizado para
+        //    juegos, con el `winemac.so` de client-surfaces DXMT) hace que el proceso GPU del webhelper
+        //    CRASHEE EN BUCLE (verificado: ~87 steamwebhelper reintentando, ventana nunca pinta). Por eso
+        //    el cliente va en el unificado (cliente + biblioteca + juegos D3D11 desde Steam, con la nube de
+        //    Steam nativa). Los juegos D3D12 (p. ej. Palworld) se juegan en modo Vessel (GPTK/D3DMetal) +
+        //    copia de partida local. Unificar CEF+D3D12 en un solo motor (modelo CrossOver puro) exige un
+        //    `winemac.so` que componga las sub-superficies del CEF sin crashear (CW HACK 22435) — I+D abierto.
         do {
             try await dependencyManager.ensureUnifiedEngine { msg, pct in
                 Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
@@ -1696,7 +1708,17 @@ final class WineManager {
         } catch {
             log.log("No se pudo instalar el motor unificado: \(error.localizedDescription). Se usará el motor disponible.", level: .warn)
         }
-        let wine = resolveClientWine(for: bottle)
+        // Motor DEDICADO y APARTE para el cliente de Steam (`wine-steam`): clon del unificado (renderiza
+        // el CEF) + `winemac.so` con el fix de la TIENDA (CW HACK 22435). Es exclusivo del cliente; NO
+        // toca los motores de juegos. Se auto-crea/repara aquí (idempotente); si no se pudo, cae al
+        // unificado (cliente + biblioteca, sin la tienda).
+        await dependencyManager.ensureSteamEngine { msg, pct in
+            Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
+        }
+        let wine = WineEngineLocator.steamDedicatedWineBinary() ?? resolveClientWine(for: bottle)
+        if wine.contains("/\(WineEngineLocator.steamEngineName)/") {
+            log.log("Abriendo Steam en el motor DEDICADO wine-steam (aparte de los juegos; con el fix de la tienda).", level: .info)
+        }
 
         // 2) Steam: auto-instalar en el bottle si falta.
         if !FileManager.default.fileExists(atPath: bottle.steamPath) {
@@ -1712,15 +1734,15 @@ final class WineManager {
         //    corefonts + VC++ v14. Idempotente (marker en el prefijo); se aplican con
         //    TODO el prefijo parado (incluidos zombis de otros motores, que colgarían
         //    winetricks/wineboot con "version mismatch") para evitar cuelgues.
-        if WineEngineLocator.isUnifiedEngine(wine) {
+        if WineEngineLocator.isModernSteamEngine(wine) {
             try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
             try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
             await applyWinetricksVerbs(["corefonts", "vcrun2022"], prefix: bottle.prefixPath, wine: wine)
         }
 
         // 4) Cliente antiguo (era Gcenx, sin cef.win64) → dejar que Steam se actualice
-        //    a sí mismo bajo el motor unificado (una única vez) y reconfigurar.
-        if WineEngineLocator.isUnifiedEngine(wine),
+        //    a sí mismo bajo el motor moderno (unificado/D3DMetal, una única vez) y reconfigurar.
+        if WineEngineLocator.isModernSteamEngine(wine),
            isSteamBootstrapped(in: bottle), !isSteamClientModern(in: bottle) {
             await updateSteamClient(in: bottle, clientWine: wine)
         }
@@ -2782,6 +2804,7 @@ final class WineManager {
         workingDirectory: String? = nil,
         effective: EffectiveLaunchConfig? = nil,
         forceSyncOff: Bool = false,
+        forceSyncOn: Bool = false,
         d3dMetalGame: Bool = false
     ) async throws -> Process {
         let process = Process()
@@ -2870,6 +2893,16 @@ final class WineManager {
                 fullEnv["WINEMSYNC"] = "0"
                 fullEnv["WINEESYNC"] = "0"
                 fullEnv["WINEFSYNC"] = "0"
+            } else if forceSyncOn {
+                // Modo Steam real en el motor D3DMetal: el juego comparte wineserver con el
+                // cliente de Steam, que corre con msync ON (ver `steamClientEnvironment(:wine:)`
+                // para isD3DMetalEngine). msync es POR-PROCESO y cacheado: si el juego arranca
+                // con msync=0 y el wineserver ya está en msync=1 (o viceversa), Wine aborta con
+                // `exit(1)` — de ahí que Palworld en Steam-real "se cerrara al arrancar". Forzamos
+                // msync/esync/fsync = 1 para COINCIDIR con el cliente y evitar el mismatch.
+                fullEnv["WINEMSYNC"] = "1"
+                fullEnv["WINEESYNC"] = "1"
+                fullEnv["WINEFSYNC"] = "1"
             } else {
                 fullEnv["WINEMSYNC"] = eff.msync ? "1" : "0"
                 fullEnv["WINEESYNC"] = (eff.esync || eff.msync) ? "1" : "0"
@@ -2934,23 +2967,26 @@ final class WineManager {
             process.executableURL = URL(fileURLWithPath: "/bin/bash")
             process.arguments = ["-c", "exec /usr/bin/env -i \(assignments) \(cmdline)"]
             process.environment = fullEnv
-        } else if WineEngineLocator.isUnifiedEngine(winePath), !forceSyncOff, !d3dMetalGame, effective != nil {
-            // Juegos DXMT del motor UNIFICADO (Palworld/Unreal, Cross Blitz/Unity, etc.): MISMO problema
-            // de contexto que los .NET. Al ser Vessel una `.app`, el spawn del subproceso arrastra la
-            // IDENTIDAD DE BUNDLE (`__CFBundleIdentifier`/`XPC_*`) y macOS stripea `DYLD_*` de los hijos
-            // DIRECTOS → en ese contexto **DXMT NO crea el device D3D11**: el juego muere en ~1 s con
-            // `d3d11.dll not found` (c0000135) y el auto-reparador cae a otras capas (que borran las
-            // DLLs locales de DXMT) → nunca arranca. VALIDADO con Palworld: lanzado a mano RENDERIZA,
-            // desde la app (hijo directo) MUERE. Se lanza vía `/bin/bash -c 'exec env -i …'` con un env
-            // LIMPIO (whitelist DXMT) → corre como desde terminal, el ÚNICO contexto donde DXMT crea el
-            // device. EXCLUYE el modo Steam-real (`forceSyncOff`) y D3DMetal, que comparten wineserver
-            // con el cliente Steam y NO deben aislarse. Los juegos que ya arrancaban lo hacen igual (el
-            // contexto terminal es donde funcionan); los que morían (Palworld) ahora arrancan.
-            log.log("Juego DXMT (motor unificado): lanzando con entorno LIMPIO (env -i) para que DXMT cree el device D3D11.", level: .info)
+        } else if (WineEngineLocator.isUnifiedEngine(winePath) && !forceSyncOff && !d3dMetalGame)
+                    || WineEngineLocator.isD3DMetalEngine(winePath), effective != nil {
+            // Juegos DXMT del motor UNIFICADO **y juegos D3D12 por D3DMetal (`wine-d3dmetal`)**: MISMO
+            // problema de contexto que los .NET. Al ser Vessel una `.app`, el spawn del subproceso
+            // arrastra la IDENTIDAD DE BUNDLE (`__CFBundleIdentifier`/`XPC_*`) y macOS stripea `DYLD_*`
+            // de los hijos DIRECTOS → en ese contexto **DXMT/D3DMetal NO crean el device**: el juego
+            // muere en ~1 s (`d3d11.dll not found` c0000135 / device Metal nulo). VALIDADO con Palworld:
+            // a mano RENDERIZA, desde la app (hijo directo) MUERE. Se lanza vía `/bin/bash -c 'exec env
+            // -i …'` con un env LIMPIO → corre como desde terminal, el ÚNICO contexto donde se crea el
+            // device. ⚠️ ANTES esto excluía `wine-d3dmetal`/Steam-real por creer que env -i "aislaba"
+            // del cliente Steam — FALSO: el wineserver es POR-PREFIJO y env -i conserva `WINEPREFIX`, así
+            // que el juego sigue compartiendo wineserver con el cliente Steam (comparten el mismo
+            // prefijo). Sin este env -i, **Palworld en modo Steam real muere** (D3DMetal no crea el
+            // device por el contexto de bundle) aunque el cliente Steam esté conectado.
+            log.log("Juego DXMT/D3DMetal: lanzando con entorno LIMPIO (env -i) para crear el device (Metal) sin el contexto de bundle de la app.", level: .info)
             var clean: [String: String] = [:]
             for k in ["HOME", "USER", "TMPDIR", "WINEPREFIX", "WINEDEBUG", "MVK_CONFIG_LOG_LEVEL",
                       "WINEDLLOVERRIDES", "DYLD_FALLBACK_LIBRARY_PATH", "SteamAppId", "SteamGameId",
-                      "WINEMSYNC", "WINEESYNC", "WINEFSYNC", "CX_FWD_COMPAT_GL_CTX", "MTL_HUD_ENABLED"] {
+                      "WINEMSYNC", "WINEESYNC", "WINEFSYNC", "CX_FWD_COMPAT_GL_CTX", "MTL_HUD_ENABLED",
+                      "ROSETTA_ADVERTISE_AVX"] {
                 if let v = fullEnv[k] { clean[k] = v }
             }
             func shq(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }

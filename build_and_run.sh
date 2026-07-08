@@ -38,6 +38,8 @@ cp "$BIN_PATH" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 [ -d "Resources/mousefix-gptk" ] && cp -R "Resources/mousefix-gptk" "$APP_BUNDLE/Contents/Resources/mousefix-gptk"
 # winemac.so parcheado (forward-compat GL, CW Hack 24834): Vessel crea el motor wine-unified-opengl con él (HoH2 y juegos OpenGL)
 [ -d "Resources/opengl-engine" ] && cp -R "Resources/opengl-engine" "$APP_BUNDLE/Contents/Resources/opengl-engine"
+# winemac.so con el fix de la TIENDA de Steam (CW HACK 22435): Vessel crea el motor DEDICADO wine-steam con él (Abrir Steam: cliente + biblioteca + tienda)
+[ -d "Resources/steam-engine" ] && cp -R "Resources/steam-engine" "$APP_BUNDLE/Contents/Resources/steam-engine"
 # Fix de render+conexión del cliente de Steam (win32u wow64 + bcrypt/secur32 gnutls): DependencyManager
 # lo aplica al motor unificado (auto-reparable) para que el CEF pinte por DXMT y el login conecte
 [ -d "Resources/engine-steamfix" ] && cp -R "Resources/engine-steamfix" "$APP_BUNDLE/Contents/Resources/engine-steamfix"
