@@ -425,11 +425,9 @@ final class DependencyManager {
             try fm.copyItem(atPath: uniDir, toPath: steamDir)          // clon COW (APFS)
             try? fm.removeItem(atPath: steamWinemac)
             try fm.copyItem(atPath: patched, toPath: steamWinemac)     // swap del winemac.so (CW HACK 22435)
-            // Firmar ad-hoc el winemac.so (copiarlo desde Resources puede invalidar la firma del bundle).
-            let sign = Process()
-            sign.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
-            sign.arguments = ["--force", "--sign", "-", steamWinemac]
-            try? sign.run(); sign.waitUntilExit()
+            // NO re-firmar: el `winemac.so` de Resources ya viene firmado ad-hoc (build_and_run firma la
+            // .app con `--deep`); re-firmarlo cambiaría su tamaño y rompería la guarda de idempotencia
+            // de arriba (que compara tamaños) → recrearía el motor en cada arranque. Igual que el OpenGL.
             await stripQuarantineRecursive(at: steamDir)
             LogStore.shared.log("Motor 'wine-steam' listo (cliente Steam + biblioteca + TIENDA).", level: .info)
         } catch {

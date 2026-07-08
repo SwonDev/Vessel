@@ -1747,6 +1747,22 @@ final class WineManager {
             await updateSteamClient(in: bottle, clientWine: wine)
         }
 
+        // 4.5) UNIÓN con el modo Vessel: marcar como INSTALADOS en Steam los juegos que Vessel ya
+        //      instaló (genera los `appmanifest_<appid>.acf` que faltan). Así aparecen en la biblioteca
+        //      de Steam y se pueden ejecutar DESDE Steam, con Steam Cloud/actualizaciones/DLC/logros
+        //      nativos. Con Steam parado para que el cliente los lea al arrancar; si creó manifests
+        //      nuevos y Steam ya corría, se reinicia para que los recoja.
+        let newManifests = SteamAppManifestWriter.ensureManifests(in: bottle)
+        if newManifests > 0 {
+            log.log("Steam: \(newManifests) juego(s) de Vessel marcados como INSTALADOS en Steam (jugables desde Steam, con la nube).", level: .info)
+        }
+        if newManifests > 0, isWineProcessRunning(matching: "steam.exe") {
+            log.log("Reiniciando Steam para que recoja los \(newManifests) juego(s) recién marcados como instalados…", level: .info)
+            try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
+            try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+
         // 5) Arrancar y esperar conexión (idempotente si ya corre).
         log.log("Abriendo el cliente Steam completo. Desde él puedes instalar y jugar (DRM real).", level: .info)
         let ok = await ensureSteamConnected(in: bottle, clientWine: wine)
