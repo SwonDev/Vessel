@@ -175,6 +175,36 @@ final class WineManager {
         try? FileManager.default.removeItem(atPath: dest)
     }
 
+    /// Aplica al prefijo el bloque GLOBAL de `DllOverrides` que CrossOver pone de base en TODO bottle de
+    /// Steam (extraído de `~/Library/Application Support/CrossOver/Bottles/Steam/user.reg` →
+    /// `Resources/crossover-compat-overrides.reg`, ~58 entradas: quartz/devenum/amstream/mscoree/… en
+    /// `native,builtin`). Es la MITAD estática del "clon de CrossOver": la otra mitad (los hacks por-juego)
+    /// la aporta el motor `cxcompatdb` en tiempo de ejecución vía `CX_ROOT`. Juntas hacen que los juegos
+    /// lanzados DESDE el cliente Steam en Wine funcionen igual que en CrossOver, sin ir juego a juego.
+    /// El `.reg` es v5 en UTF-8 y se importa con `regedit /S` (verificado: aplica las 58 entradas). Es
+    /// idempotente (marcador `.vessel-cx-overrides`) y debe correr con Steam parado (antes de lanzarlo).
+    func ensureCrossOverCompatOverrides(prefix: String, wine: String) async {
+        let marker = "\(prefix)/.vessel-cx-overrides"
+        if FileManager.default.fileExists(atPath: marker) { return }
+        guard let regURL = Bundle.main.url(forResource: "crossover-compat-overrides", withExtension: "reg")
+            ?? URL(string: "file:///Users/vesseldeveloper0000/Documents/vessel-mac/Resources/crossover-compat-overrides.reg") else { return }
+        guard FileManager.default.fileExists(atPath: regURL.path) else { return }
+        let dest = "\(prefix)/drive_c/vessel-cx-overrides.reg"
+        do { try? FileManager.default.removeItem(atPath: dest)
+             try FileManager.default.copyItem(atPath: regURL.path, toPath: dest) }
+        catch { log.log("No se pudo copiar el .reg de overrides de CrossOver: \(error.localizedDescription)", level: .warn); return }
+        log.log("Aplicando overrides de compatibilidad de CrossOver (base de todos los juegos desde Steam)…", level: .info)
+        _ = try? await runWine(
+            winePath: wine,
+            arguments: ["regedit", "/S", #"C:\vessel-cx-overrides.reg"#],
+            prefix: prefix,
+            environment: ["WINEPREFIX": prefix, "WINEDEBUG": "-all", "WINEDLLOVERRIDES": "winedbg.exe=d"],
+            allowNonZeroExit: true
+        )
+        try? "ok".write(toFile: marker, atomically: true, encoding: .utf8)
+        try? FileManager.default.removeItem(atPath: dest)
+    }
+
     /// Escribe en el REGISTRO del bottle la config POR-JUEGO en `HKCU\Software\Wine\AppDefaults\<exe>`
     /// que Wine aplica por NOMBRE DE EJECUTABLE **lo lance quien lo lance — incluido Steam** (a
     /// diferencia de `WINEDLLOVERRIDES` en el entorno, que Steam NO hereda al lanzar el juego como hijo).
@@ -1842,6 +1872,18 @@ final class WineManager {
             // Config POR-JUEGO en el registro (AppDefaults): evita el crash de vídeo (winegstreamer) de
             // los juegos Unity lanzados desde Steam en el unificado (que no trae GStreamer).
             await applySteamGameRegistry(in: bottle, wine: wine)
+        }
+
+        // 3.7) CLON de CrossOver — overrides GLOBALES de compatibilidad. Junto con `cxcompatdb`
+        //       (CX_ROOT, hacks por-juego en runtime) es lo que hace que los juegos lanzados DESDE el
+        //       cliente Steam en Wine vayan como en CrossOver, sin ir juego a juego. Idempotente; con
+        //       Steam parado (antes de lanzarlo). Solo en motores modernos (wine-full / unificado).
+        if WineEngineLocator.isModernSteamEngine(wine) {
+            if !WineEngineLocator.isFullEngine(wine) {
+                try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
+                try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+            }
+            await ensureCrossOverCompatOverrides(prefix: bottle.prefixPath, wine: wine)
         }
 
         // 4) Cliente antiguo (era Gcenx, sin cef.win64) → dejar que Steam se actualice

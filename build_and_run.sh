@@ -30,6 +30,7 @@ cp "$BIN_PATH" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 [ -f "Resources/dpapi-seal.exe" ] && cp "Resources/dpapi-seal.exe" "$APP_BUNDLE/Contents/Resources/dpapi-seal.exe"
 # Certificados raíz DigiCert (validación TLS del login/CM de Steam — cadena EV ECDSA)
 [ -f "Resources/steam-certs.reg" ] && cp "Resources/steam-certs.reg" "$APP_BUNDLE/Contents/Resources/steam-certs.reg"
+[ -f "Resources/crossover-compat-overrides.reg" ] && cp "Resources/crossover-compat-overrides.reg" "$APP_BUNDLE/Contents/Resources/crossover-compat-overrides.reg"
 # Logos oficiales de las tiendas (sidebar)
 [ -d "Resources/StoreLogos" ] && cp Resources/StoreLogos/*.png "$APP_BUNDLE/Contents/Resources/" 2>/dev/null || true
 # Logo de marca de Vessel (cabecera del sidebar)
