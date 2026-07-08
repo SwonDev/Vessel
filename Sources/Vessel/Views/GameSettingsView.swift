@@ -35,10 +35,15 @@ struct GameConfig: Codable, Equatable {
     /// Steam conectado en segundo plano y lanza el juego en su mismo wineserver. Lo pone el usuario o,
     /// automáticamente, el auto-repair cuando detecta un fallo de interfaz de Steam.
     var useRealSteam: Bool = false
+    /// Sincronizar la partida con la NUBE de Steam en Modo Vessel (experimental, opt-in): antes de
+    /// jugar, Vessel arranca el cliente Steam en 2º plano (que descarga la última nube de todos tus
+    /// juegos); al salir, lo sincroniza (sube los cambios). Validado: arrancar el cliente dispara el
+    /// AutoCloud real (cloud_log lo confirma). El backup local sigue activo SIEMPRE como red de seguridad.
+    var steamCloudSync: Bool = false
 
     init() {}
 
-    enum CodingKeys: String, CodingKey { case graphicsLayer, launchArguments, esync, fsync, metalHUD, useRealSteam }
+    enum CodingKeys: String, CodingKey { case graphicsLayer, launchArguments, esync, fsync, metalHUD, useRealSteam, steamCloudSync }
 
     /// Decodificación TOLERANTE: los campos ausentes usan su valor por defecto. El decoder
     /// sintetizado de Swift NO lo hace y RESETEABA todos los ajustes guardados al añadir un campo
@@ -51,6 +56,7 @@ struct GameConfig: Codable, Equatable {
         fsync = try c.decodeIfPresent(Bool.self, forKey: .fsync) ?? true
         metalHUD = try c.decodeIfPresent(Bool.self, forKey: .metalHUD) ?? false
         useRealSteam = try c.decodeIfPresent(Bool.self, forKey: .useRealSteam) ?? false
+        steamCloudSync = try c.decodeIfPresent(Bool.self, forKey: .steamCloudSync) ?? false
     }
 }
 
@@ -200,8 +206,15 @@ struct GameSettingsView: View {
                                 .tint(tint).foregroundStyle(.white)
                             Text(config.useRealSteam
                                  ? "Activo: el juego corre con el cliente de Steam (motor unificado) y Steam sincroniza tus partidas en la nube. El render puede diferir del modo Vessel óptimo."
-                                 : "Modo Vessel: motor gráfico óptimo por juego + tu copia de partida local (arriba). Sin nube de Steam.")
+                                 : "Modo Vessel: motor gráfico óptimo por juego + tu copia de partida local (arriba). La nube de Steam es opcional (abajo).")
                                 .font(.caption2).foregroundStyle(.white.opacity(0.45)).fixedSize(horizontal: false, vertical: true)
+                            if !config.useRealSteam {
+                                Divider().overlay(.white.opacity(0.06)).padding(.vertical, 2)
+                                Toggle("Sincronizar con Steam Cloud (experimental)", isOn: $config.steamCloudSync)
+                                    .tint(tint).foregroundStyle(.white)
+                                Text("Mantiene el motor gráfico óptimo (Modo Vessel) Y sincroniza tu partida con la nube de Steam: Vessel abre el cliente en 2º plano antes de jugar (baja lo último) y al salir (sube los cambios). Tu copia local sigue como red de seguridad.")
+                                    .font(.caption2).foregroundStyle(.white.opacity(0.45)).fixedSize(horizontal: false, vertical: true)
+                            }
                         }
                     }
 

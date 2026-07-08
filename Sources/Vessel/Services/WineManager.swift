@@ -1797,6 +1797,27 @@ final class WineManager {
     /// motor (auto-descarga), Steam (auto-instalación), deps del prefijo
     /// (corefonts + vcrun2022, idempotente), cliente antiguo (self-update una vez)
     /// y wrapper. Si el motor unificado no se puede instalar, cae a Gcenx (tienda).
+    /// EXPERIMENTAL — Sincroniza la partida con la NUBE de Steam para el **Modo Vessel** (el juego se
+    /// juega con el motor gráfico ÓPTIMO, no bajo el cliente). VALIDADO empíricamente (spike con Grim
+    /// Dawn): arrancar el cliente Steam headless dispara su **AutoCloud REAL** — evalúa todos los juegos
+    /// propios, descarga lo nuevo de la nube y sube lo cambiado (el `cloud_log.txt` del cliente lo
+    /// confirma: "Starting sync (eval)", "File is in sync …player.gdc", "YldWriteCacheDirectoryToFile").
+    /// Aquí solo se asegura el cliente conectado en 2º plano (`-silent`, sin ventana); su AutoCloud hace
+    /// el resto. Degrada en SILENCIO si no hay login/cliente; el backup local (`SaveBackupManager`) es
+    /// SIEMPRE la red de seguridad. Se llama antes de jugar (baja lo último) y al salir (sube la sesión).
+    func syncSteamCloud(appId: String, in bottle: Bottle) async {
+        guard !appId.isEmpty else { return }
+        let clientWine = WineEngineLocator.fullWineBinary()
+            ?? WineEngineLocator.steamDedicatedWineBinary()
+            ?? resolveClientWine(for: bottle)
+        let ok = await ensureSteamConnected(in: bottle, clientWine: clientWine, timeoutSeconds: 90, background: true)
+        if ok || isWineProcessRunning(matching: "steam.exe") {
+            log.log("Steam Cloud (Modo Vessel): cliente conectado en 2º plano; AutoCloud sincroniza la nube del juego \(appId).", level: .info)
+        } else {
+            log.log("Steam Cloud: el cliente no se conectó (¿sin sesión de Steam iniciada?); se omite la nube. El backup local protege la partida.", level: .info)
+        }
+    }
+
     func openSteamClient(in bottle: Bottle) async {
         // Serialización: si otro flujo (p. ej. "Iniciar sesión" de la vista) ya está
         // preparando Steam, esperar y reutilizar en vez de pisarnos los procesos.

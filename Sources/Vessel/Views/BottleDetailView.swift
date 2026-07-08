@@ -364,8 +364,18 @@ struct BottleDetailView: View {
         await GameLaunchTracker.shared.track(
             trackId, statsKey: "steam:\(trackId)",
             // Copia de partida automática: al CERRAR el juego, respalda la partida (seguro, solo copia).
-            onExit: { Task { await SaveBackupManager.shared.backup(store: .steam, id: trackId, title: game.name, steamId: game.steamAppId, prefix: localBottle.prefixPath, installPath: game.installPath) } }
+            onExit: { Task {
+                await SaveBackupManager.shared.backup(store: .steam, id: trackId, title: game.name, steamId: game.steamAppId, prefix: localBottle.prefixPath, installPath: game.installPath)
+                // Nube de Steam en Modo Vessel (opt-in): al SALIR, sube los cambios de la sesión.
+                if cfg.steamCloudSync, !eff.useRealSteam, let appId = game.steamAppId {
+                    await wineManager.syncSteamCloud(appId: appId, in: localBottle)
+                }
+            } }
         ) {
+            // Nube de Steam en Modo Vessel (opt-in): ANTES de jugar, baja la última nube del cliente.
+            if cfg.steamCloudSync, !eff.useRealSteam, let appId = game.steamAppId {
+                await wineManager.syncSteamCloud(appId: appId, in: localBottle)
+            }
             // Restaura la copia ANTES de jugar SOLO si es más nueva que la partida local.
             await SaveBackupManager.shared.restoreIfNewer(store: .steam, id: trackId, title: game.name, steamId: game.steamAppId, prefix: localBottle.prefixPath, installPath: game.installPath)
             let proc = try await wineManager.launch(
