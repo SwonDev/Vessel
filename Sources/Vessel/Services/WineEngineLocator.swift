@@ -56,6 +56,42 @@ enum WineEngineLocator {
     /// instalada (steamapps del prefijo). Si no está, `openSteamClient` cae al unificado normal.
     static let steamEngineName = "wine-steam"
 
+    /// Motor Wine **COMPLETO** de Vessel (`wine-full`): un único Wine moderno con la capa gráfica
+    /// DXMT madura (D3D11→Metal, con `nvapi64`/`atidxx64` reales para la detección de GPU que muchos
+    /// juegos exigen o abortan con `InitializeEngineGraphics failed`) + D3DMetal de Apple (D3D12→Metal)
+    /// + `winemac` completo (fullscreen, ventanas y CEF nativo de fábrica). Corre a la vez el **cliente
+    /// Steam** (CEF nativo multiproceso, SIN wrapper, SIN steam.cfg) y **TODOS los juegos** (D3D11 y
+    /// D3D12), compartiendo wineserver para el DRM real de Steam. Es **autónomo** (empaquetado en Vessel,
+    /// no depende de nada del sistema). ⚠️ A diferencia del resto de motores, se lanza vía
+    /// `bin/wineloader` + `lib/wine/x86_64-windows/winewrapper.exe --run --` (ver
+    /// `WineManager.launchWineProcess`), NO con `bin/wine`. Si está instalado, es el motor preferido para
+    /// el modo Steam (cliente + tienda + juegos). Ver `isFullEngine` / `fullWineLoader` / `fullEngineDir`.
+    static let fullEngineName = "wine-full"
+
+    /// True si la ruta pertenece al motor Wine COMPLETO (`wine-full`), que se lanza vía `wineloader`.
+    static func isFullEngine(_ winePath: String) -> Bool {
+        winePath.contains("/\(fullEngineName)/")
+    }
+
+    /// Raíz del motor COMPLETO (`wine-full`), exista o no.
+    static func fullEngineDir(enginesDirectory: String = VesselPaths.enginesDirectory) -> String {
+        URL(fileURLWithPath: enginesDirectory).appendingPathComponent(fullEngineName).path
+    }
+
+    /// Binario `wine` (shim) del motor COMPLETO (`wine-full`), o `nil` si no está instalado. El shim
+    /// `bin/wine` traduce `wine <args>` → `wineloader winewrapper.exe --run -- <args>` y fija el
+    /// entorno del motor, así que se invoca como cualquier otro motor.
+    static func fullWineBinary(enginesDirectory: String = VesselPaths.enginesDirectory) -> String? {
+        let p = URL(fileURLWithPath: fullEngineDir(enginesDirectory: enginesDirectory))
+            .appendingPathComponent("bin/wine").path
+        return FileManager.default.isExecutableFile(atPath: p) ? p : nil
+    }
+
+    /// True si el motor COMPLETO está instalado (tiene el shim `bin/wine`).
+    static func isFullEngineInstalled(enginesDirectory: String = VesselPaths.enginesDirectory) -> Bool {
+        fullWineBinary(enginesDirectory: enginesDirectory) != nil
+    }
+
     // MARK: - Roles de motor (arquitectura de doble motor)
     //
     // Tras validación empírica en Apple Silicon:
@@ -141,7 +177,7 @@ enum WineEngineLocator {
     /// SwiftShader, self-update permitido). Lo cumplen tanto el unificado como el D3DMetal
     /// (que es el unificado + D3DMetal). Se usa para compartir la ruta del cliente Steam.
     static func isModernSteamEngine(_ winePath: String) -> Bool {
-        isUnifiedEngine(winePath) || isD3DMetalEngine(winePath)
+        isUnifiedEngine(winePath) || isD3DMetalEngine(winePath) || isFullEngine(winePath)
     }
 
     /// True si el motor D3DMetal propio está instalado (tiene binario `wine`).

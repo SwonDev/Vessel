@@ -1486,8 +1486,11 @@ final class WineManager {
             // Conectado (JWT) pero el CEF NO ha creado su ventana tras un margen AMPLIO (el CEF sano
             // tarda ~40-60 s en pintar por DXMT/SwiftShader; margen mayor que `settled` para no
             // reiniciar un arranque legítimo en curso) → cuelgue invisible: reiniciar limpio.
+            // El CEF NATIVO del motor completo (wine-full) tarda más en pintar (multiproceso, sin
+            // wrapper single-process); margen mayor para no reiniciar un arranque legítimo en curso.
+            let noWindowGrace = WineEngineLocator.isFullEngine(clientWine) ? 70 : 45
             let connectedNoWindow = !background && connected && !steamClientWindowVisible()
-                && (elapsed - lastRestartElapsed >= 45)
+                && (elapsed - lastRestartElapsed >= noWindowGrace)
             // "Demasiado lento" SOLO si aún NO conecta. Si ya conectó, el problema es la ventana, que
             // gobierna `connectedNoWindow` con su propio margen → no reiniciamos prematuramente un CEF
             // que está pintando.
@@ -1779,23 +1782,35 @@ final class WineManager {
         //    Steam nativa). Los juegos D3D12 (p. ej. Palworld) se juegan en modo Vessel (GPTK/D3DMetal) +
         //    copia de partida local. Unificar CEF+D3D12 en un solo motor (modelo CrossOver puro) exige un
         //    `winemac.so` que componga las sub-superficies del CEF sin crashear (CW HACK 22435) — I+D abierto.
-        do {
-            try await dependencyManager.ensureUnifiedEngine { msg, pct in
+        // El motor COMPLETO (wine-full) es AUTÓNOMO y trae TODO (Wine + DXMT + D3DMetal + winemac +
+        // redistribuibles): si está instalado, NO hace falta instalar/verificar el unificado ni el motor
+        // dedicado del cliente → se salta (arranque MUCHO más rápido). Solo se preparan esos motores
+        // cuando wine-full NO está (fallback).
+        if WineEngineLocator.fullWineBinary() == nil {
+            do {
+                try await dependencyManager.ensureUnifiedEngine { msg, pct in
+                    Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
+                }
+            } catch {
+                log.log("No se pudo instalar el motor unificado: \(error.localizedDescription). Se usará el motor disponible.", level: .warn)
+            }
+            // Motor DEDICADO del cliente de Steam (`wine-steam`): clon del unificado + `winemac.so` con
+            // el fix de la TIENDA (CW HACK 22435). Idempotente; fallback si wine-full no está.
+            await dependencyManager.ensureSteamEngine { msg, pct in
                 Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
             }
-        } catch {
-            log.log("No se pudo instalar el motor unificado: \(error.localizedDescription). Se usará el motor disponible.", level: .warn)
         }
-        // Motor DEDICADO y APARTE para el cliente de Steam (`wine-steam`): clon del unificado (renderiza
-        // el CEF) + `winemac.so` con el fix de la TIENDA (CW HACK 22435). Es exclusivo del cliente; NO
-        // toca los motores de juegos. Se auto-crea/repara aquí (idempotente); si no se pudo, cae al
-        // unificado (cliente + biblioteca, sin la tienda).
-        await dependencyManager.ensureSteamEngine { msg, pct in
-            Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
-        }
-        let wine = WineEngineLocator.steamDedicatedWineBinary() ?? resolveClientWine(for: bottle)
-        if wine.contains("/\(WineEngineLocator.steamEngineName)/") {
-            log.log("Abriendo Steam en el motor DEDICADO wine-steam (aparte de los juegos; con el fix de la tienda).", level: .info)
+        // Motor COMPLETO de Vessel (wine-full) si está instalado: UN solo motor corre el cliente Steam
+        // (CEF nativo, sin wrapper), la tienda y TODOS los juegos (D3D11 y D3D12), compartiendo
+        // wineserver para el DRM. Si no está, el motor dedicado del cliente (clon del unificado con el
+        // fix de la tienda), o el unificado/Gcenx.
+        let wine = WineEngineLocator.fullWineBinary()
+            ?? WineEngineLocator.steamDedicatedWineBinary()
+            ?? resolveClientWine(for: bottle)
+        if WineEngineLocator.isFullEngine(wine) {
+            log.log("Abriendo Steam con el motor completo de Vessel (cliente + tienda + juegos, CEF nativo).", level: .info)
+        } else if wine.contains("/\(WineEngineLocator.steamEngineName)/") {
+            log.log("Abriendo Steam en el motor dedicado del cliente (aparte de los juegos; con el fix de la tienda).", level: .info)
         }
 
         // 2) Steam: auto-instalar en el bottle si falta.
@@ -1812,13 +1827,16 @@ final class WineManager {
         //    corefonts + VC++ v14. Idempotente (marker en el prefijo); se aplican con
         //    TODO el prefijo parado (incluidos zombis de otros motores, que colgarían
         //    winetricks/wineboot con "version mismatch") para evitar cuelgues.
-        if WineEngineLocator.isModernSteamEngine(wine) {
+        // Deps del prefijo (corefonts + VC++) + config por-juego SOLO para el unificado, que NO los
+        // trae. El motor COMPLETO (wine-full) YA incluye todos los redistribuibles + GStreamer (reproduce
+        // vídeo), así que se salta: ni `winetricks` (minutos) ni el override `winegstreamer=disable` (que
+        // le quitaría el vídeo a los juegos). Arranque mucho más rápido.
+        if WineEngineLocator.isModernSteamEngine(wine), !WineEngineLocator.isFullEngine(wine) {
             try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
             try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
             await applyWinetricksVerbs(["corefonts", "vcrun2022"], prefix: bottle.prefixPath, wine: wine)
-            // Config POR-JUEGO en el registro (AppDefaults), como CrossOver: se aplica aunque el juego
-            // lo lance STEAM (que no hereda `WINEDLLOVERRIDES` del entorno). Evita el crash de vídeo
-            // (winegstreamer) de los juegos Unity lanzados desde Steam.
+            // Config POR-JUEGO en el registro (AppDefaults): evita el crash de vídeo (winegstreamer) de
+            // los juegos Unity lanzados desde Steam en el unificado (que no trae GStreamer).
             await applySteamGameRegistry(in: bottle, wine: wine)
         }
 
@@ -1847,7 +1865,9 @@ final class WineManager {
 
         // 5) Arrancar y esperar conexión (idempotente si ya corre).
         log.log("Abriendo el cliente Steam completo. Desde él puedes instalar y jugar (DRM real).", level: .info)
-        let ok = await ensureSteamConnected(in: bottle, clientWine: wine)
+        // El motor completo (wine-full) arranca el CEF nativo, que tarda más en pintar → más margen.
+        let ok = await ensureSteamConnected(in: bottle, clientWine: wine,
+                                            timeoutSeconds: WineEngineLocator.isFullEngine(wine) ? 150 : 90)
         log.log(ok ? "Steam abierto y conectado ✓" : "Steam abierto (la conexión se confirmará al iniciar sesión).", level: ok ? .info : .warn)
     }
 
@@ -2261,6 +2281,17 @@ final class WineManager {
     /// arranca y se cierra al instante en GPTK. Verificado: con este entorno steam.exe +
     /// steamwebhelper se mantienen vivos en GPTK. En Gcenx, el entorno normal.
     private func steamClientEnvironment(prefix: String, wine: String) -> [String: String] {
+        // Motor COMPLETO (wine-full): el cliente Steam CEF corre NATIVO con WINEMSYNC=1 (msync ON,
+        // como el Wine de referencia). Sin wrapper, sin steam.cfg; el CEF renderiza por su DXMT/winemac
+        // de fábrica. Los juegos que Steam lance heredan los env globales del bottle (.NET + AVX).
+        if WineEngineLocator.isFullEngine(wine) {
+            var env = steamClientEnvironment(prefix: prefix)
+            env["WINEMSYNC"] = "1"; env["WINEESYNC"] = "1"; env["WINEFSYNC"] = "1"
+            env["MVK_CONFIG_LOG_LEVEL"] = "0"
+            env["DOTNET_EnableWriteXorExecute"] = "0"
+            if #available(macOS 15, *) { env["ROSETTA_ADVERTISE_AVX"] = "1" }
+            return env
+        }
         // GPTK/D3DMetal: entorno de D3DMetal (Steam en el mismo motor que un juego Metal).
         if wine.contains("/\(GPTKManager.engineName)/") {
             var env = gptkManager.d3dMetalEnvironment(prefix: prefix)
@@ -2393,7 +2424,14 @@ final class WineManager {
         let needsSelfUpdate = bootstrapped
             && !isSteamClientModern(in: bottle)
             && WineEngineLocator.isModernSteamEngine(clientWine)
-        if needsSelfUpdate {
+        if WineEngineLocator.isFullEngine(clientWine), bootstrapped {
+            // Motor COMPLETO de Vessel: CEF NATIVO (webhelper REAL, sin wrapper), SIN steam.cfg
+            // (Steam se actualiza con normalidad). El winemac/DXMT del motor renderiza el CEF de
+            // fábrica — no hacen falta los parches (wrapper SwiftShader / steam.cfg) del unificado.
+            removeSteamConfig(in: bottle)
+            wrapperInstaller.restoreRealWebHelpers(in: bottle)
+            cleanCEFCache(in: bottle)
+        } else if needsSelfUpdate {
             log.log("Cliente de Steam antiguo detectado: Steam se actualizará solo (una única vez, puede tardar unos minutos)…", level: .info)
             removeSteamConfig(in: bottle)
             wrapperInstaller.restoreRealWebHelpers(in: bottle)
@@ -2443,9 +2481,16 @@ final class WineManager {
         log.log("Lanzando cliente Steam (\(engineLabel)) en \(bottle.name)…", level: .info)
         // En fresh/actualización, argumentos mínimos: sin -noverifyfiles ni
         // -skipinitialbootstrap, para que el bootstrap/updater pueda completarse.
-        let args = needsSelfUpdate ? ["-no-cef-sandbox", "-tcp"]
-            : bootstrapped ? (background ? Self.steamLaunchArguments + ["-silent"] : Self.steamLaunchArguments)
-            : ["-no-cef-sandbox"]
+        let args: [String]
+        if WineEngineLocator.isFullEngine(clientWine), bootstrapped {
+            args = ["-no-cef-sandbox", "-tcp"]   // CEF nativo, sin flags de inhibición del updater
+        } else if needsSelfUpdate {
+            args = ["-no-cef-sandbox", "-tcp"]
+        } else if bootstrapped {
+            args = background ? Self.steamLaunchArguments + ["-silent"] : Self.steamLaunchArguments
+        } else {
+            args = ["-no-cef-sandbox"]
+        }
         // CLAVE: cwd = carpeta de Steam (escribible). Con cwd en "/" (lo que hereda la
         // app GUI) CEF no puede crear su caché y Steam se abre y se cierra solo.
         return try await launchWineProcess(
@@ -2624,6 +2669,15 @@ final class WineManager {
         let marker = "\(prefix)/.vessel-prefix-engine"
         if (try? String(contentsOfFile: marker, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) == id { return }
+        // Motor COMPLETO (wine-full): trae su propio Wine + DXMT + winemac completos y gestiona el
+        // prefijo de fábrica (validado: cliente Steam y juegos corren sin un `wineboot -u` externo).
+        // Además su `bin/wine` es un shim que exige su propio entorno, mientras `resyncGamePrefix`
+        // lanza wineboot con el entorno REEMPLAZADO (sin HOME/PATH) → no encaja. Marcamos el prefijo
+        // como sincronizado sin forzar el resync.
+        if WineEngineLocator.isFullEngine(wine) {
+            try? id.write(toFile: marker, atomically: true, encoding: .utf8)
+            return
+        }
         log.log("Sincronizando el prefijo al motor \(id)…", level: .info)
         await resyncGamePrefix(gameWine: wine, prefix: prefix)
     }
@@ -2910,6 +2964,10 @@ final class WineManager {
         forceSyncOn: Bool = false,
         d3dMetalGame: Bool = false
     ) async throws -> Process {
+        // Motor COMPLETO (wine-full): su `bin/wine` es un shim que traduce `wine <exe>` →
+        // `wineloader winewrapper.exe --run -- <exe>` y fija WINELOADER/WINESERVER/WINEDLLPATH, así
+        // que aquí se lanza como cualquier otro motor (sin casos especiales). El wineloader resuelve
+        // sus libs por rpath (@loader_path/@rpath).
         let process = Process()
         process.executableURL = URL(fileURLWithPath: winePath)
         process.arguments = arguments
@@ -3090,6 +3148,29 @@ final class WineManager {
                       "WINEDLLOVERRIDES", "DYLD_FALLBACK_LIBRARY_PATH", "SteamAppId", "SteamGameId",
                       "WINEMSYNC", "WINEESYNC", "WINEFSYNC", "CX_FWD_COMPAT_GL_CTX", "MTL_HUD_ENABLED",
                       "ROSETTA_ADVERTISE_AVX"] {
+                if let v = fullEnv[k] { clean[k] = v }
+            }
+            func shq(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+            let assignments = clean.map { "\($0.key)=\(shq($0.value))" }.joined(separator: " ")
+            let cmdline = ([winePath] + arguments).map { shq($0) }.joined(separator: " ")
+            process.executableURL = URL(fileURLWithPath: "/bin/bash")
+            process.arguments = ["-c", "exec /usr/bin/env -i \(assignments) \(cmdline)"]
+            process.environment = fullEnv
+        } else if WineEngineLocator.isFullEngine(winePath) {
+            // Motor COMPLETO (wine-full): el cliente Steam CEF **y** los juegos necesitan el contexto
+            // LIMPIO (`env -i` vía bash). Desde la app (hijo directo), el bundle GUI
+            // (`__CFBundleIdentifier`/`XPC_*` + DYLD stripped) rompe el CEF/DXMT: el proceso arranca
+            // pero MUERE sin pintar (validado: lanzado desde terminal RENDERIZA la tienda; desde la app
+            // muere). Igual que los juegos .NET/D3DMetal. El wineserver es por-prefijo, así que `env -i`
+            // conserva `WINEPREFIX` y los juegos comparten wineserver con el cliente (mismo prefijo →
+            // DRM). El shim `bin/wine` (sh) solo usa builtins + rutas absolutas, así que corre sin PATH.
+            log.log("Motor completo: lanzando con entorno LIMPIO (env -i) para evitar el contexto GUI que rompe el CEF/DXMT.", level: .info)
+            var clean: [String: String] = [:]
+            for k in ["HOME", "USER", "TMPDIR", "WINEPREFIX", "WINEDEBUG", "WINEDLLOVERRIDES",
+                      "DYLD_FALLBACK_LIBRARY_PATH", "SteamAppId", "SteamGameId",
+                      "WINEMSYNC", "WINEESYNC", "WINEFSYNC", "MVK_CONFIG_LOG_LEVEL", "MTL_HUD_ENABLED",
+                      "DOTNET_ReadyToRun", "DOTNET_TieredCompilation", "DOTNET_TieredPGO",
+                      "DOTNET_EnableWriteXorExecute", "DOTNET_gcServer", "ROSETTA_ADVERTISE_AVX"] {
                 if let v = fullEnv[k] { clean[k] = v }
             }
             func shq(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
