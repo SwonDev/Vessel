@@ -30,3 +30,6 @@ Vessel-*.zip
 *.key
 sparkle_private_key*.txt
 dsa_priv.pem
+
+# Estrategia interna (privada, NO subir al repo público)
+docs/ESTRATEGIA-VESSEL-STEAM-MAC.md
