@@ -63,7 +63,18 @@ Convención general: servicios de orquestación son `@MainActor @Observable fina
 - **`SteamWebHelperWrapperInstaller` / `GameWrapperInstaller`** — instalan los wrappers PE32+ (ver abajo) dentro del bottle.
 - **`SteamLaunchOptionsManager`** — edita `localconfig.vdf` para inyectar Launch Options por juego (idempotente, con backup `.vessel-bak`).
 - **`SteamLibraryImporter`** — descubre librerías Steam locales parseando `appmanifest_*.acf`.
-- **`SteamGridDBClient` / `ProtonDBClient` / `EngineManager` / `Updater`** — clientes de carátulas, compatibilidad ProtonDB, gestión de motores y comprobación de releases en GitHub.
+- **`SteamGridDBClient` / `ProtonDBClient` / `EngineManager`** — carátulas (clave de SteamGridDB configurable en Ajustes), compatibilidad ProtonDB, gestión de motores.
+- **`UpdaterManager`** — auto-update de la app con **Sparkle** (firma EdDSA + delta). Sustituye al `Updater` casero. Flujo de publicación en `docs/RELEASE-SPARKLE.md`; clave pública en el Info.plist (build_and_run.sh), privada en el llavero de SwonDev.
+- **`LaunchDiagnostics`** — diagnóstico post-lanzamiento + **AUTO-REPARACIÓN** (mandato cero-intervención): sondea ~75 s, y si el arranque falla relanza con el siguiente motor del fallback, auto-activa "Steam real" (interfaces que Goldberg no da), auto-instala runtimes que faltan (VC++/.NET → `WineManager.installMissingRuntimes`), y **persiste la capa ganadora** en el `GameConfig`.
+- **`DiscoveredFixesStore`** — ⭐ **loop de auto-aprendizaje** local→comunidad: cada arreglo que el fallback descubre se registra y el usuario puede **compartirlo** como perfil de compat para `SwonDev/Vessel_DB` (Ajustes › Compatibilidad). Escala la cobertura como el `cxcompatdb` propietario, pero abierto.
+- **`SaveBackupManager`** — copias locales de partidas (manifiesto ludusavi, solo copia, restore-if-newer); red de seguridad SIEMPRE activa (backup al salir + restore al lanzar) en Steam/Epic/GOG.
+- **`SteamCloudSyncService`** — ⚠️ LEGADO (ICloudService Web API es publisher-only → 401). La nube REAL en Modo Vessel se hace vía `WineManager.syncSteamCloud`: arranca el cliente Steam headless (`-silent`) → su **AutoCloud** sincroniza (validado por `cloud_log.txt`), manteniendo el motor gráfico óptimo. Opt-in por juego.
+
+**Auto-reparación de runtimes (`WineManager`)**: `applyWinetricksVerbs`/`installMissingRuntimes` usan winetricks, que se **auto-descarga** si falta (release inmutable `20260125` + verificación **SHA-256** antes de ejecutar — nunca de `master`) y usa el `cabextract` del motor/sistema.
+
+**Mandos**: `WineManager.gamepadEnvVars` activa HIDAPI + rumble de DualShock 4 / DualSense / Switch Pro vía hints de SDL2 (el motor bundlea `libSDL2`), inyectados en el entorno de lanzamiento del juego (equivalente Swift-puro del CW HACK 19629 de CrossOver).
+
+**Compatibilidad (`CompatProfile`)**: campos `graphicsLayer`/`dllOverrides`/`envVars`/`winetricksVerbs`/`useRealSteam` + `thirdPartyAntiCheat` (EAC/BattlEye → fuerza Steam real + aviso honesto: los de modo kernel son imposibles en macOS). La detección heurística por-juego (`detectGraphicsAPI`, imports del PE + estructura) es el cerebro real del enrutado; la BD JSON complementa.
 
 ### MOTOR UNIFICADO propio (el modelo actual) + doble motor (fallback)
 
