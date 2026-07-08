@@ -3251,15 +3251,16 @@ final class WineManager {
             let cmdFile = "\(NSHomeDirectory())/Library/Application Support/Vessel/.steam-launch.sh"
             try? script.write(toFile: cmdFile, atomically: true, encoding: .utf8)
             if let launcher = Self.steamLauncherAppPath {
-                log.log("Motor completo: lanzando vía Finder (launcher independiente) para que el CEF cree su ventana.", level: .info)
-                // CLAVE: la launcher se lanza a través de FINDER (osascript), NO con `open` directo desde
-                // Vessel. Cuando Vessel.app es el ORIGINADOR (`Process(open)`), LaunchServices asocia la
-                // launcher a Vessel (hereda su "responsible process") y el CEF no pinta / es inconsistente.
-                // Con Finder como originador, la launcher es REALMENTE independiente (PPID=1) y el CEF crea
-                // su ventana de forma fiable (validado in-vivo: `open` desde Vessel fallaba, Finder no).
-                let appleScript = "tell application \"Finder\" to open (POSIX file \"\(launcher)\")"
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-                process.arguments = ["-e", appleScript]
+                log.log("Motor completo: lanzando la launcher vía launchctl asuser (independiente de la app).", level: .info)
+                // CLAVE: la launcher se lanza con `launchctl asuser <uid> open -n`, que la arranca en la
+                // sesión GUI del usuario con **launchd como ORIGINADOR** (no Vessel). Alternativas
+                // descartadas (validado in-vivo): `Process(open)` directo → LaunchServices asocia la
+                // launcher a Vessel (hereda su "responsible process") → el CEF no pinta / inconsistente;
+                // `osascript tell Finder` → macOS bloquea el AppleEvent (Vessel no tiene permiso de
+                // Automation → error -1743). `launchctl asuser` NO requiere permiso y desacopla del todo
+                // (la launcher queda con PPID=1, independiente) → el CEF crea su ventana de forma fiable.
+                process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+                process.arguments = ["asuser", "\(getuid())", "/usr/bin/open", "-n", launcher]
             } else {
                 log.log("Motor completo: launcher no encontrada; lanzando con bash directo (el CEF puede no pintar).", level: .warn)
                 process.executableURL = URL(fileURLWithPath: "/bin/bash")
