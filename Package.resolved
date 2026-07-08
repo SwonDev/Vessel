@@ -1,13 +1,13 @@
 {
-  "originHash" : "a02c62fb1d61b26b2e58768c1ec57adf595a6e8afbea6ebbec3d72f52b129639",
+  "originHash" : "9d7ebae32be4315ffacda98361780763497999e22c0fd612902224493480fcdb",
   "pins" : [
     {
       "identity" : "colorfulx",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Lakr233/ColorfulX",
       "state" : {
-        "revision" : "af739ea2d891afc68ff53b01c701bb72b9ca4a69",
-        "version" : "5.8.3"
+        "revision" : "bdf19698a9fdd3d2cd3ade4a9434d443b4313b36",
+        "version" : "6.1.0"
       }
     },
     {
@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/sindresorhus/DockProgress",
       "state" : {
-        "revision" : "d4f23b5a8f5ca0fac393eb7ba78c2fe3e32e52da",
-        "version" : "4.3.1"
+        "revision" : "43ca0137201a479fbd891b129155f4a84c1e1b13",
+        "version" : "5.1.0"
       }
     },
     {
@@ -69,8 +69,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/jpsim/Yams.git",
       "state" : {
-        "revision" : "3d6871d5b4a5cd519adf233fbb576e0a2af71c17",
-        "version" : "5.4.0"
+        "revision" : "a27b21e0c81c5bf42049b897a62aaf387e80f279",
+        "version" : "6.2.2"
       }
     }
   ],
