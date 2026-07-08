@@ -103,7 +103,7 @@ struct GameSettingsView: View {
     }
 
     private var sbStore: SaveBackupManager.Store {
-        switch store { case .steam: return .steam; case .epic: return .epic; case .gog: return .gog }
+        switch store { case .steam: return .steam; case .epic: return .epic; case .gog: return .gog; case .local: return .local }
     }
     private var sbId: String { game.steamAppId ?? game.id }
     /// Prefijo Wine, derivado de la ruta de instalación (la parte previa a `/drive_c`).

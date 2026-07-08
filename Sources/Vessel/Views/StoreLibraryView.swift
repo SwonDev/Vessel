@@ -1077,7 +1077,7 @@ struct GameDetailView: View {
     private var profile: CompatProfile? { CompatService.shared.profile(steam: game.steamAppId, title: game.title) }
     /// Tienda para el sistema de copias de partida.
     private var saveStore: SaveBackupManager.Store {
-        switch store { case .steam: return .steam; case .epic: return .epic; case .gog: return .gog }
+        switch store { case .steam: return .steam; case .epic: return .epic; case .gog: return .gog; case .local: return .local }
     }
     /// Identidad del juego para las copias (mismo criterio que los hooks de lanzamiento).
     private var saveId: String { game.steamAppId ?? game.id }

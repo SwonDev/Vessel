@@ -40,7 +40,7 @@ final class SaveBackupManager {
 
     // MARK: - Identidad del juego (para localizar su carpeta de copias)
 
-    enum Store: String { case steam, epic, gog }
+    enum Store: String { case steam, epic, gog, local }
 
     /// Clave de la carpeta de copias del juego.
     private func gameKey(store: Store, id: String) -> String { "\(store.rawValue)/\(id)" }

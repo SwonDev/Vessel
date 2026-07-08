@@ -128,6 +128,7 @@ struct ContentView: View {
             case .steam: SteamStoreView()
             case .epic:  EpicStoreView()
             case .gog:   GogStoreView()
+            case .local: LocalGamesView()
             }
         }
         .id(selectedStore)
