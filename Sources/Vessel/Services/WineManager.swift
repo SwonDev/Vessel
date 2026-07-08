@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import CryptoKit
 
 @MainActor
 @Observable
@@ -3509,17 +3510,27 @@ final class WineManager {
         let dir = "\(VesselPaths.cacheDirectory)/winetricks"
         let path = "\(dir)/winetricks"
         if FileManager.default.isExecutableFile(atPath: path) { return path }
-        guard let url = URL(string: "https://raw.githubusercontent.com/Winetricks/winetricks/master/src/winetricks") else { return nil }
+        // SEGURIDAD (evitar RCE por script manipulado): pin a un RELEASE INMUTABLE de winetricks +
+        // verificación SHA-256 de los bytes descargados ANTES de escribirlos y hacerlos ejecutables.
+        // Aunque el tag se re-apuntara o hubiera un MITM, el hash no coincidiría → se rechaza y no se
+        // ejecuta nada. (Actualizar `tag`+`expectedSHA` juntos al subir de versión de winetricks.)
+        let tag = "20260125"
+        let expectedSHA = "431f82fc74000e6c864409f1d8fb495d696c03928808e3e8acffc45179312a7b"
+        guard let url = URL(string: "https://raw.githubusercontent.com/Winetricks/winetricks/\(tag)/src/winetricks") else { return nil }
         do {
-            let (tmp, resp) = try await URLSession.shared.download(from: url)
-            defer { try? FileManager.default.removeItem(at: tmp) }
+            let (data, resp) = try await URLSession.shared.data(from: url)
             if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) { return nil }
+            let sha = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            guard sha == expectedSHA else {
+                log.log("winetricks descargado con SHA-256 INESPERADO (\(sha.prefix(12))…) — se RECHAZA por seguridad; no se ejecuta.", level: .warn)
+                return nil
+            }
             try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
             try? FileManager.default.removeItem(atPath: path)
-            try FileManager.default.moveItem(atPath: tmp.path, toPath: path)
+            try data.write(to: URL(fileURLWithPath: path), options: .atomic)   // solo tras verificar el hash
             try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
             guard FileManager.default.isExecutableFile(atPath: path) else { return nil }
-            log.log("winetricks descargado a la caché de Vessel (auto-reparación de runtimes sin depender de brew).", level: .info)
+            log.log("winetricks \(tag) descargado y VERIFICADO (SHA-256) — auto-reparación de runtimes sin depender de brew.", level: .info)
             return path
         } catch { return nil }
     }
