@@ -2096,12 +2096,27 @@ final class WineManager {
     func usesSteamworks(_ executable: String) -> Bool {
         let dir = (executable as NSString).deletingLastPathComponent
         let fm = FileManager.default
-        if fm.fileExists(atPath: "\(dir)/steam_api.dll") || fm.fileExists(atPath: "\(dir)/steam_api64.dll") { return true }
-        // Unity: `<Juego>_Data/Plugins/x86_64/steam_api64.dll`.
+        let names = ["steam_api64.dll", "steam_api.dll"]
+        // 1) Ubicaciones CONOCIDAS (O(1), cubren la inmensa mayoría de layouts) — evita enumerar en el
+        //    caso común: raíz del juego, Unity (`<exe>_Data/Plugins/x86_64|x86`) y Unreal (`Binaries/…`).
+        let exeName = ((executable as NSString).lastPathComponent as NSString).deletingPathExtension
+        var knownDirs = [dir]
+        for sub in ["\(exeName)_Data/Plugins/x86_64", "\(exeName)_Data/Plugins/x86",
+                    "\(exeName)_Data/Plugins", "Binaries/Win64", "Binaries/Win32", "Binaries/WinGDK"] {
+            knownDirs.append("\(dir)/\(sub)")
+        }
+        for base in knownDirs {
+            for n in names where fm.fileExists(atPath: "\(base)/\(n)") { return true }
+        }
+        // 2) Fallback: enumeración con tope ALTO. Buscar un nombre concreto es barato (solo nombres, sin
+        //    leer ficheros); el tope de 4000 anterior dejaba fuera juegos UE5 con árboles enormes cuyo
+        //    `steam_api64.dll` vive muy profundo (p. ej. Engine/Binaries/ThirdParty/Steamworks/…) →
+        //    Goldberg no se aplicaba y el juego moría en `SteamAPI_Init`. Solo se llega aquí si las
+        //    ubicaciones conocidas no lo tenían (raro), así que el coste no afecta al caso común.
         if let walker = fm.enumerator(atPath: dir) {
             var checked = 0
             for case let rel as String in walker {
-                checked += 1; if checked > 4000 { break }   // tope de seguridad
+                checked += 1; if checked > 60000 { break }
                 let low = (rel as NSString).lastPathComponent.lowercased()
                 if low == "steam_api64.dll" || low == "steam_api.dll" { return true }
             }
