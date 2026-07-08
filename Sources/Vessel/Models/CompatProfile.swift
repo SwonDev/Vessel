@@ -130,6 +130,13 @@ struct CompatProfile: Codable, Equatable, Identifiable, Sendable {
     /// init de su Engine.dll con exit 53 en modo standalone). Requiere sesión iniciada.
     var useRealSteam: Bool = false
 
+    /// Anti-cheat de terceros que usa el juego (`"eac"` = Easy Anti-Cheat, `"battleye"`, `"other"`).
+    /// Informativo + de comportamiento: si está presente, Vessel fuerza el modo Steam real (el
+    /// anti-cheat necesita el cliente y el `steam_api` REALES, no la emulación Goldberg) y avisa con
+    /// honestidad. Los anti-cheat de MODO KERNEL son IMPOSIBLES en macOS bajo Wine (ni CrossOver los
+    /// soporta); los de modo USUARIO (p. ej. EAC/BattlEye en algunos juegos) a veces funcionan.
+    var thirdPartyAntiCheat: String? = nil
+
     /// Id estable para de-duplicar (preferimos Steam AppID por universalidad).
     var id: String { stores.steam ?? stores.gog ?? stores.epic ?? title.lowercased() }
 
@@ -143,7 +150,7 @@ struct CompatProfile: Codable, Equatable, Identifiable, Sendable {
         case schemaVersion, title, stores, rating, engine, graphicsLayer
         case windowsVersion, windowsArch, dllOverrides, envVars, launchArgs
         case winetricksVerbs, notes, testedOn, author, date, verified
-        case useRealSteam
+        case useRealSteam, thirdPartyAntiCheat
     }
 
     /// Decodificación TOLERANTE: solo `title` es obligatorio; todo lo demás usa su
@@ -169,6 +176,7 @@ struct CompatProfile: Codable, Equatable, Identifiable, Sendable {
         date = try c.decodeIfPresent(String.self, forKey: .date)
         verified = try c.decodeIfPresent(Bool.self, forKey: .verified) ?? false
         useRealSteam = try c.decodeIfPresent(Bool.self, forKey: .useRealSteam) ?? false
+        thirdPartyAntiCheat = try c.decodeIfPresent(String.self, forKey: .thirdPartyAntiCheat)
     }
 }
 

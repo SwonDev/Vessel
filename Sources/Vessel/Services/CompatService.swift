@@ -137,6 +137,13 @@ final class CompatService {
             cfg.rating = p.rating
             cfg.verified = p.verified
             cfg.useRealSteam = p.useRealSteam
+            // Anti-cheat de terceros (EAC/BattlEye): necesita el cliente Steam y el `steam_api`
+            // REALES (no la emulación Goldberg) → forzar modo Steam real. Aviso honesto: los
+            // anti-cheat de modo KERNEL son imposibles en macOS bajo Wine (ni CrossOver los soporta).
+            if let ac = p.thirdPartyAntiCheat, !ac.isEmpty {
+                cfg.useRealSteam = true
+                LogStore.shared.log("Perfil '\(p.title)': el juego usa anti-cheat de terceros (\(ac)). Se fuerza el modo Steam real; si es de modo kernel, no funcionará en macOS bajo Wine.", level: .warn)
+            }
             cfg.fromProfile = true
         }
 
