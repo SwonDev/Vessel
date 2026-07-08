@@ -263,7 +263,13 @@ final class WineManager {
         // webhelper del todo y el auto-login se CUELGA (verificado in-vivo tras muchos relanzamientos).
         // Se borran para arrancar SIEMPRE en frío. No se toca `steamapps` (juegos) ni `userdata`.
         let steamDir = bottle.steamDirectory
-        let cefState: Set<String> = ["gpucache", "crashpad", "shadercache", "code cache", "blob_storage", "local state"]
+        // Estado volátil del CEF/Chromium que corrompe el arranque tras relanzamientos: además de
+        // la caché GPU y el contador de crashes, el "Service Worker"/"Session Storage"/"databases"
+        // mantienen sesiones a medio escribir que pueden dejar el webhelper vivo pero SIN pintar
+        // ventana (verificado). Todo es recreable por Steam; nunca se toca `steamapps`/`userdata`.
+        let cefState: Set<String> = ["gpucache", "crashpad", "shadercache", "code cache",
+                                     "blob_storage", "local state", "service worker",
+                                     "session storage", "databases", "dawncache"]
         if let top = try? fm.contentsOfDirectory(atPath: steamDir) {
             for entry in top where entry.lowercased() != "steamapps" && entry.lowercased() != "userdata" {
                 let path = "\(steamDir)/\(entry)"
@@ -1415,12 +1421,37 @@ final class WineManager {
         return false
     }
 
+    /// True si el cliente de Steam tiene realmente una VENTANA en pantalla (no solo el backend
+    /// conectado). El CEF puede quedar colgado —proceso vivo, login por JWT hecho— pero SIN crear
+    /// su ventana Cocoa (verificado in-vivo: 3 `steamwebhelper` vivos, 0 ventanas, tras degradar la
+    /// caché CEF con muchos relanzamientos). `isSteamConnected` da true igual, así que el cliente
+    /// "abre y conecta" sin que el usuario vea nada. Se detecta por el TAMAÑO de la ventana:
+    /// `kCGWindowBounds` NO exige permiso de grabación de pantalla (el título `kCGWindowName` sí),
+    /// así que es fiable siempre. Incluye ventanas tapadas por otras (siguen `onScreen`), de modo
+    /// que NO reinicia si la ventana existe pero está detrás de Vessel; solo si no hay ninguna.
+    private func steamClientWindowVisible() -> Bool {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return false }
+        for w in list {
+            let owner = (w[kCGWindowOwnerName as String] as? String ?? "").lowercased()
+            guard owner.contains("wine") || owner.contains("steam") else { continue }
+            guard let b = w[kCGWindowBounds as String] as? [String: Any] else { continue }
+            let width = (b["Width"] as? NSNumber)?.doubleValue ?? 0
+            let height = (b["Height"] as? NSNumber)?.doubleValue ?? 0
+            // La ventana del cliente Steam es grande; ignora tooltips / sub-superficies pequeñas del CEF.
+            if width >= 640, height >= 400 { return true }
+        }
+        return false
+    }
+
     /// Asegura que el cliente Steam está CORRIENDO y **conectado** en `clientWine` (mismo
     /// motor que usará el juego, para compartir wineserver → DRM). Lo arranca si hace falta y
     /// espera hasta `timeoutSeconds` a que el `connection_log` confirme el logon. Devuelve si
     /// llegó a conectar. Con `-tcp` la conexión al CM es estable bajo Wine (el UDP se caía).
     func ensureSteamConnected(in bottle: Bottle, clientWine: String, timeoutSeconds: Int = 90, background: Bool = false) async -> Bool {
-        if isSteamConnected(in: bottle) { return true }
+        // No basta con la conexión (login por JWT / backend vivo): para el cliente VISIBLE hay que
+        // confirmar además que el CEF creó su ventana. Si no, "conecta" pero el usuario no ve nada.
+        // En modo background (DRM) NO se exige ventana (Steam corre sin UI a propósito, `-silent`).
+        if isSteamConnected(in: bottle), background || steamClientWindowVisible() { return true }
         // Estado EN VIVO para el usuario (banner no bloqueante): que SIEMPRE sepa qué pasa.
         NotificationService.shared.status("Abriendo el cliente de Steam…")
         // Arrancar Steam SIEMPRE que no esté conectado: `launchSteam` ya es idempotente (si
@@ -1440,7 +1471,7 @@ final class WineManager {
         var lastRestartElapsed = -100
         for elapsed in 0..<timeoutSeconds {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
-            if isSteamConnected(in: bottle) { NotificationService.shared.status(nil); return true }
+            if isSteamConnected(in: bottle), background || steamClientWindowVisible() { NotificationService.shared.status(nil); return true }
             // MODO BACKGROUND (DRM): NO reiniciar. El multiproceso muestra "Steamwebhelper no
             // responde" (su subproceso GPU crashea) pero el cliente LOGUEA por JWT igualmente;
             // reiniciar solo reinicia el reloj del login y nunca converge. Solo esperamos.
@@ -1451,12 +1482,21 @@ final class WineManager {
             // ~15 s tras cada reinicio para que el nuevo cliente arranque antes de re-evaluar.
             let settled = elapsed - lastRestartElapsed >= 15
             let hung = settled && isSteamWebHelperHung()
-            let tooSlow = elapsed > 0 && elapsed % graceSeconds == 0
-            if restarts < 2, hung || tooSlow, isWineProcessRunning(matching: "steam.exe") {
+            let connected = isSteamConnected(in: bottle)
+            // Conectado (JWT) pero el CEF NO ha creado su ventana tras un margen AMPLIO (el CEF sano
+            // tarda ~40-60 s en pintar por DXMT/SwiftShader; margen mayor que `settled` para no
+            // reiniciar un arranque legítimo en curso) → cuelgue invisible: reiniciar limpio.
+            let connectedNoWindow = !background && connected && !steamClientWindowVisible()
+                && (elapsed - lastRestartElapsed >= 45)
+            // "Demasiado lento" SOLO si aún NO conecta. Si ya conectó, el problema es la ventana, que
+            // gobierna `connectedNoWindow` con su propio margen → no reiniciamos prematuramente un CEF
+            // que está pintando.
+            let tooSlow = !connected && elapsed > 0 && elapsed % graceSeconds == 0
+            if restarts < 2, hung || connectedNoWindow || tooSlow, isWineProcessRunning(matching: "steam.exe") {
                 restarts += 1
                 lastRestartElapsed = elapsed
                 NotificationService.shared.status("Steam no responde; reiniciándolo automáticamente…")
-                log.log("Reinicio limpio del cliente Steam (intento \(restarts); \(hung ? "webhelper colgado" : "sin login en \(elapsed)s"))…", level: .warn)
+                log.log("Reinicio limpio del cliente Steam (intento \(restarts); \(hung ? "webhelper colgado" : connectedNoWindow ? "conectado sin ventana (CEF colgado)" : "sin login en \(elapsed)s"))…", level: .warn)
                 try? await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
                 try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
                 cleanCEFCache(in: bottle)
