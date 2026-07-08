@@ -121,11 +121,16 @@ Vessel se distribuye bajo **GPL-3.0**. Integra y agradece a proyectos de código
 - [**DXMT**](https://github.com/3Shain/dxmt) (3Shain) — D3D10/11 → Metal directo.
 - [**DXVK**](https://github.com/doitsujin/dxvk) · [**MoltenVK**](https://github.com/KhronosGroup/MoltenVK) · [**Vkd3d**](https://gitlab.winehq.org/wine/vkd3d).
 - **Apple Game Porting Toolkit / D3DMetal** — traducción DirectX → Metal (Apple).
+- [**GnuTLS**](https://www.gnutls.org) 3.8.13 (LGPL-2.1+) · [**Nettle**](https://www.lysator.liu.se/~nisse/nettle/) 4.0 · [**FreeType**](https://freetype.org) 2.14.3 — crypto y fuentes del motor.
+- [**wine-mono**](https://github.com/wine-mono/wine-mono) 11.2.0 — runtime .NET Framework.
 - [**Sparkle**](https://sparkle-project.org) — auto-actualización.
 - Diseño inspirado en [**Mythic**](https://github.com/MythicApp/Mythic).
 
-> Vessel **no** incluye ni redistribuye código propietario de terceros. Los motores y las capas se
-> descargan de sus fuentes oficiales o de las *releases* públicas del proyecto.
+> Vessel **no** incluye ni redistribuye código propietario de terceros. El motor `wine-unified` es
+> una build **limpia de WineHQ 11.10** (LGPL-2.1+); los motores y las capas se descargan de sus
+> fuentes oficiales o de las *releases* públicas del proyecto.
+>
+> 📄 **Cumplimiento LGPL / fuente correspondiente y parches del motor:** ver [`docs/ENGINE-SOURCE.md`](docs/ENGINE-SOURCE.md).
 
 <div align="center">
 
