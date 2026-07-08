@@ -185,6 +185,19 @@ final class SteamAuthService {
         return Date().timeIntervalSince1970 + margin >= exp
     }
 
+    /// ¿Hay una sesión de Steam guardada (refresh_token)? Para la UI.
+    nonisolated static var hasStoredSession: Bool {
+        !(UserDefaults.standard.string(forKey: "steam.refreshToken") ?? "").isEmpty
+    }
+
+    /// ¿La sesión guardada ha CADUCADO? (refresh_token presente pero expirado). Si es `true`, los
+    /// logros reales, la propiedad de DLC y el seeding del cliente degradan a "sin datos" en silencio
+    /// → la UI avisa para que el usuario vuelva a iniciar sesión.
+    nonisolated static var storedSessionExpired: Bool {
+        let refresh = UserDefaults.standard.string(forKey: "steam.refreshToken") ?? ""
+        return !refresh.isEmpty && isJWTExpired(refresh)
+    }
+
     // MARK: - RSA
 
     private func getRSAKey(accountName: String) async throws -> (mod: String, exp: String, timestamp: UInt64) {

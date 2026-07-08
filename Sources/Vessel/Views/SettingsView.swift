@@ -162,6 +162,12 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 8) {
             sectionHeader("Cuenta de Steam")
             VStack(alignment: .leading, spacing: 10) {
+                if SteamAuthService.storedSessionExpired {
+                    Label("Tu sesión de Steam ha caducado. Vuelve a iniciar sesión (botón de Steam, arriba) para ver logros, DLC y la nube de Steam.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Divider().overlay(.white.opacity(0.08)).padding(.vertical, 2)
+                }
                 Text("Clave Web API (opcional)").font(.callout)
                 HStack(spacing: 8) {
                     Image(systemName: "key.fill").foregroundStyle(.secondary).font(.caption)
