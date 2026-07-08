@@ -20,7 +20,11 @@ let package = Package(
         // tener la app delante.
         .package(url: "https://github.com/sindresorhus/DockProgress", from: "4.0.0"),
         // Gradientes animados con Metal (mismo que usa Mythic) — vida premium sutil en el fondo.
-        .package(url: "https://github.com/Lakr233/ColorfulX", from: "5.0.0")
+        .package(url: "https://github.com/Lakr233/ColorfulX", from: "5.0.0"),
+        // Auto-actualización nativa de macOS con firma EdDSA + delta updates (el mismo framework
+        // que usa CrossOver). Sustituye el Updater casero sin firma. El framework se embebe en
+        // Contents/Frameworks vía build_and_run.sh y se firma ad-hoc con el resto del bundle.
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0")
     ],
     targets: [
         .executableTarget(
@@ -29,9 +33,14 @@ let package = Package(
                 .product(name: "Yams", package: "Yams"),
                 .product(name: "Shimmer", package: "SwiftUI-Shimmer"),
                 .product(name: "DockProgress", package: "DockProgress"),
-                .product(name: "ColorfulX", package: "ColorfulX")
+                .product(name: "ColorfulX", package: "ColorfulX"),
+                .product(name: "Sparkle", package: "Sparkle")
             ],
-            path: "Sources/Vessel"
+            path: "Sources/Vessel",
+            linkerSettings: [
+                // El framework de Sparkle se resuelve en runtime desde Contents/Frameworks del .app.
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])
+            ]
         ),
         .testTarget(
             name: "VesselTests",

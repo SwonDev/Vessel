@@ -16,8 +16,16 @@ echo "==> Binary: $BIN_PATH"
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
+mkdir -p "$APP_BUNDLE/Contents/Frameworks"
 
 cp "$BIN_PATH" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+
+# Sparkle.framework (auto-update firmado EdDSA): SwiftPM lo deja junto al binario tras compilar.
+# Se embebe en Contents/Frameworks; el ejecutable lo encuentra por el rpath @executable_path/../Frameworks.
+SPARKLE_FW="$(swift build -c release --show-bin-path)/Sparkle.framework"
+if [ -d "$SPARKLE_FW" ]; then
+    cp -R "$SPARKLE_FW" "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
+fi
 [ -f "$ICON_PATH" ] && cp "$ICON_PATH" "$APP_BUNDLE/Contents/Resources/icon.icns"
 [ -f "Resources/steamwebhelper-wrapper.exe" ] && cp "Resources/steamwebhelper-wrapper.exe" "$APP_BUNDLE/Contents/Resources/steamwebhelper-wrapper.exe"
 # Helper vessel-spawn: desacopla los procesos Wine de la identidad de la app (responsible process),
@@ -107,11 +115,30 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
             </array>
         </dict>
     </array>
+    <key>SUFeedURL</key>
+    <string>https://raw.githubusercontent.com/SwonDev/Vessel/main/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>Uj6yYUIotPnQQk5iHzUiWdVukl7pDq1kszju6Z1G99Q=</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
 </dict>
 </plist>
 EOF
 
 echo "==> Ad-hoc signing..."
+# Sparkle exige firma inside-out (helpers antes que el framework antes que la app). --deep no basta
+# para los XPC/Updater.app anidados. Firmamos de dentro afuera; si Sparkle no está, se salta.
+SPARKLE_IN_APP="$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
+if [ -d "$SPARKLE_IN_APP" ]; then
+    V="$SPARKLE_IN_APP/Versions/B"
+    codesign --force --sign - "$V/XPCServices/Downloader.xpc" 2>/dev/null || true
+    codesign --force --sign - "$V/XPCServices/Installer.xpc" 2>/dev/null || true
+    codesign --force --sign - "$V/Updater.app" 2>/dev/null || true
+    codesign --force --sign - "$V/Autoupdate" 2>/dev/null || true
+    codesign --force --sign - "$SPARKLE_IN_APP" 2>/dev/null || true
+fi
 codesign --force --deep --sign - "$APP_BUNDLE"
 
 # Instalar SIEMPRE la última versión en /Applications, para que Spotlight,

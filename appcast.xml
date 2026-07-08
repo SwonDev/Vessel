@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Vessel</title>
+    <link>https://raw.githubusercontent.com/SwonDev/Vessel/main/appcast.xml</link>
+    <description>Actualizaciones de Vessel — la mejor app para jugar a Steam en Mac Silicon.</description>
+    <language>es</language>
+    <!--
+      Canal de actualizaciones de Sparkle. Sin <item> = "estás al día".
+
+      PUBLICAR UNA ACTUALIZACIÓN (ver docs/RELEASE-SPARKLE.md):
+      1. ./build_and_run.sh  → build/Vessel.app
+      2. ditto -c -k --sequesterRsrc --keepParent build/Vessel.app Vessel-<versión>.zip
+      3. .build/artifacts/sparkle/Sparkle/bin/sign_update Vessel-<versión>.zip
+         → devuelve  sparkle:edSignature="…"  length="…"
+      4. Sube el .zip a un GitHub Release en SwonDev/Vessel y añade aquí un <item>:
+
+      <item>
+        <title>Versión X.Y.Z</title>
+        <sparkle:version>N</sparkle:version>                <!-- CFBundleVersion -->
+        <sparkle:shortVersionString>X.Y.Z</sparkle:shortVersionString>
+        <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+        <description><![CDATA[ Notas de la versión en HTML. ]]></description>
+        <pubDate>Fecha RFC 822</pubDate>
+        <enclosure
+          url="https://github.com/SwonDev/Vessel/releases/download/vX.Y.Z/Vessel-X.Y.Z.zip"
+          sparkle:edSignature="FIRMA_DE_sign_update"
+          length="LONGITUD_DE_sign_update"
+          type="application/octet-stream" />
+      </item>
+
+      Alternativa: `generate_appcast <carpeta_con_zips>` genera todo esto automáticamente.
+    -->
+  </channel>
+</rss>

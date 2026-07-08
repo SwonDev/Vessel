@@ -27,6 +27,8 @@ struct VesselApp: App {
                     DockProgress.resetProgress()
                     // Permiso de notificaciones (descarga lista, update disponible…), una vez.
                     NotificationService.shared.requestAuthorization()
+                    // Arranca Sparkle (comprobación automática de actualizaciones firmadas).
+                    _ = UpdaterManager.shared
                     // Actualiza la BD de compatibilidad desde el repo comunitario (1×/día).
                     await CompatService.shared.refreshRemoteIfNeeded()
                 }
@@ -51,6 +53,9 @@ struct VesselApp: App {
             CommandGroup(replacing: .appInfo) {
                 Button("Acerca de Vessel") {
                     NotificationCenter.default.post(name: .openAbout, object: nil)
+                }
+                Button("Buscar actualizaciones…") {
+                    UpdaterManager.shared.checkForUpdates()
                 }
             }
         }
