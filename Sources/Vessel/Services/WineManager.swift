@@ -3240,34 +3240,70 @@ final class WineManager {
             let assignments = clean.map { "\($0.key)=\(shq($0.value))" }.joined(separator: " ")
             let cmdline = ([winePath] + arguments).map { shq($0) }.joined(separator: " ")
             let bashCmd = "exec /usr/bin/env -i \(assignments) \(cmdline)"
-            // Lanzar vía `open` de una mini-app launcher (LaunchServices → app INDEPENDIENTE, con su
-            // propia "responsible process"/session): el CEF de Steam del motor completo crea su ventana
-            // SÓLO así. Como subproceso anidado de Vessel (Foundation.Process, incluso con `env -i`, un
-            // bash intermedio o el disclaim de vessel-spawn) el CEF arranca, carga la UI y loguea por
-            // JWT, pero NO pinta (validado exhaustivamente in-vivo — el disclaim no basta desde un hijo
-            // anidado; `open` sí porque LaunchServices lanza una app nueva). El comando (cd + `exec env
-            // -i wine`) se deja en un archivo que la launcher ejecuta.
+            // Lanzar vía un **LaunchAgent** que arranca **launchd** (`bootstrap` en el dominio GUI del
+            // usuario, `gui/<uid>`): el proceso queda con PPID=1, sesión Aqua propia y su PROPIA
+            // "responsible process" → el CEF de Steam del motor completo crea su ventana. Alternativas
+            // descartadas (validado exhaustivamente in-vivo): como subproceso anidado de Vessel
+            // (Foundation.Process, incluso con `env -i` o el disclaim de vessel-spawn) el CEF arranca,
+            // carga la UI y loguea por JWT, pero NO pinta; `Process(open)` directo → Vessel es el
+            // originador (hereda su responsible process) → el CEF no pinta; `launchctl asuser <uid>
+            // open -n <app>` → funciona desde una shell EXTERNA pero NO desde Vessel, que YA vive en la
+            // sesión `gui/<uid>` (el `open` ni llega a lanzar la launcher: steam.exe=0); `osascript tell
+            // Finder` → -1743 (sin permiso de Automation). `bootstrap gui/<uid>` SÍ funciona desde
+            // dentro de la sesión GUI (validado: ventana en ~5s). El comando real (cd + `exec env -i
+            // wine`) se deja en un archivo que el LaunchAgent ejecuta con bash.
             let cwd = workingDirectory ?? (prefix as NSString).deletingLastPathComponent
             let script = "cd \(shq(cwd))\n\(bashCmd)\n"
             let cmdFile = "\(NSHomeDirectory())/Library/Application Support/Vessel/.steam-launch.sh"
             try? script.write(toFile: cmdFile, atomically: true, encoding: .utf8)
-            if let launcher = Self.steamLauncherAppPath {
-                log.log("Motor completo: lanzando la launcher vía launchctl asuser (independiente de la app).", level: .info)
-                // CLAVE: la launcher se lanza con `launchctl asuser <uid> open -n`, que la arranca en la
-                // sesión GUI del usuario con **launchd como ORIGINADOR** (no Vessel). Alternativas
-                // descartadas (validado in-vivo): `Process(open)` directo → LaunchServices asocia la
-                // launcher a Vessel (hereda su "responsible process") → el CEF no pinta / inconsistente;
-                // `osascript tell Finder` → macOS bloquea el AppleEvent (Vessel no tiene permiso de
-                // Automation → error -1743). `launchctl asuser` NO requiere permiso y desacopla del todo
-                // (la launcher queda con PPID=1, independiente) → el CEF crea su ventana de forma fiable.
-                process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-                process.arguments = ["asuser", "\(getuid())", "/usr/bin/open", "-n", launcher]
-            } else {
-                log.log("Motor completo: launcher no encontrada; lanzando con bash directo (el CEF puede no pintar).", level: .warn)
-                process.executableURL = URL(fileURLWithPath: "/bin/bash")
-                process.arguments = ["-c", bashCmd]
-            }
-            process.environment = fullEnv
+            let uid = getuid()
+            let agentLabel = "com.swondev.vessel.steamlauncher"
+            // ⚠️ El plist va en Application Support, NO en ~/Library/LaunchAgents: allí launchd lo
+            // auto-cargaría en CADA inicio de sesión (RunAtLoad) → Steam arrancaría solo al login.
+            // `bootstrap gui/<uid> <plist>` acepta cualquier ruta de plist para una carga puntual.
+            let agentPlist = "\(NSHomeDirectory())/Library/Application Support/Vessel/steamlauncher.plist"
+            let agentLog = "\(NSHomeDirectory())/Library/Logs/Vessel/steam-agent.log"
+            let plistXML = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+                <key>Label</key><string>\(agentLabel)</string>
+                <key>ProgramArguments</key>
+                <array><string>/bin/bash</string><string>\(cmdFile)</string></array>
+                <key>RunAtLoad</key><true/>
+                <key>LimitLoadToSessionType</key><string>Aqua</string>
+                <key>ProcessType</key><string>Interactive</string>
+                <key>StandardOutPath</key><string>\(agentLog)</string>
+                <key>StandardErrorPath</key><string>\(agentLog)</string>
+            </dict>
+            </plist>
+            """
+            try? plistXML.write(toFile: agentPlist, atomically: true, encoding: .utf8)
+            log.log("Motor completo: lanzando la launcher vía LaunchAgent (launchd bootstrap, independiente de la app).", level: .info)
+            // bootout del anterior (idempotente; si Steam sigue vivo lo descarga) + bootstrap (RunAtLoad
+            // arranca el script). Entorno MÍNIMO: `launchctl` no necesita el entorno de Wine (el script
+            // lo aplica vía `env -i`), y heredar el del bundle GUI de Vessel es innecesario.
+            // El bootstrap DEBE arrancar con el prefijo LIMPIO: Steam es single-instance, y si queda un
+            // steam.exe a medio morir del lanzamiento anterior (race con `terminateWineProcesses`), el
+            // nuevo lo detecta y sale SIN pintar. Por eso: bootout del agente previo (descarga su Steam
+            // si lo gestionaba launchd) + mata residuos + ESPERA a que mueran + margen para el wineserver.
+            // Además RunAtLoad puede fallar (`last exit code = 1`) si arranca demasiado pronto tras el
+            // terminate (el wineserver anterior aún cerrándose): validado in-vivo (1er arranque falla,
+            // pero un `kickstart` posterior arranca). Por eso se REINTENTA con kickstart hasta que
+            // steam.exe viva. El agente (Steam) cuelga de launchd, no de este bash → queda desacoplado.
+            let bootCmd =
+                "/bin/launchctl bootout gui/\(uid)/\(agentLabel) 2>/dev/null; "
+                + "/usr/bin/pkill -9 -f 'steam\\.exe' 2>/dev/null; /usr/bin/pkill -9 -f steamwebhelper 2>/dev/null; "
+                + "for i in 1 2 3 4 5 6 7 8; do /usr/bin/pgrep -f 'steam\\.exe' >/dev/null 2>&1 || break; sleep 1; done; "
+                + "sleep 2; "
+                + "/bin/launchctl bootstrap gui/\(uid) '\(agentPlist)' 2>/dev/null; "
+                + "for r in 1 2 3 4 5 6; do sleep 4; /usr/bin/pgrep -f 'steam\\.exe' >/dev/null 2>&1 && break; "
+                + "/bin/launchctl kickstart gui/\(uid)/\(agentLabel) 2>/dev/null; done"
+            process.executableURL = URL(fileURLWithPath: "/bin/bash")
+            process.arguments = ["-c", bootCmd]
+            process.environment = ["HOME": NSHomeDirectory(), "USER": NSUserName(),
+                                   "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
         } else {
             process.environment = fullEnv
         }
