@@ -185,12 +185,6 @@ final class WineManager {
     /// se toca). Solo afecta a cada exe listado. Idempotente (reimporta). Llamar con Steam parado.
     func applySteamGameRegistry(in bottle: Bottle, wine: String) async {
         var reg = "Windows Registry Editor Version 5.00\r\n\r\n"
-        // CEF SIN GPU (como CrossOver `GPUAccelWebViews=0`): el cliente y la TIENDA renderizan por CPU.
-        // Es IMPRESCINDIBLE para que el motor pueda llevar D3DMetal (juegos D3D12) sin que el proceso GPU
-        // del webhelper crashee en bucle (el crash de ~87 steamwebhelper venía justo del CEF usando
-        // dxgi/D3DMetal por GPU). Sin GPU en el CEF, D3DMetal solo lo usan los juegos.
-        reg += "[HKEY_CURRENT_USER\\Software\\Valve\\Steam]\r\n"
-        reg += "\"GPUAccelWebViews\"=dword:00000000\r\n\r\n"
         // El webhelper moderno recomienda LargeAddressAware (CrossOver lo pone en el bottle de Steam).
         reg += "[HKEY_CURRENT_USER\\Software\\Wine\\AppDefaults\\steamwebhelper.exe]\r\n"
         reg += "\"LargeAddressAware\"=dword:00000001\r\n\r\n"
@@ -2936,20 +2930,16 @@ final class WineManager {
         if WineEngineLocator.isModernSteamEngine(winePath),
            let root = WineEngineLocator.engineRoot(forWineExecutable: URL(fileURLWithPath: winePath)) {
             let libDir = root.appendingPathComponent("lib").path
-            // El motor D3DMetal necesita su `lib/external` (D3DMetal.framework + libd3dshared.dylib, a
-            // los que apuntan los symlinks d3d12.so/dxgi.so) por delante para el D3D12.
-            //  · Juego D3D12 directo en wine-d3dmetal → external:lib.
-            //  · **Cliente de STEAM en `wine-steam`** → TAMBIÉN external:lib, para que los JUEGOS que
-            //    Steam lanza como hijos hereden D3DMetal (D3D12 desde Steam). El CEF va por CPU
-            //    (`GPUAccelWebViews=0`), así que `external` ya NO le enreda el dxgi.
-            //  · Motor unificado o cliente sin D3DMetal → `lib/` a secas.
+            // El motor D3DMetal necesita su `lib/external` (D3DMetal.framework + libd3dshared.dylib,
+            // a los que apuntan los symlinks d3d12.so/dxgi.so) por delante SOLO para el JUEGO D3D12.
+            // El cliente Steam va con `lib/` a secas: su CEF renderiza por DXMT/CPU y meterle
+            // `external` en el DYLD podría enredar la resolución de dxgi (validado: cliente=lib,
+            // juego=external:lib). En el motor unificado siempre es `lib/`.
             let extDir = root.appendingPathComponent("lib/external").path
-            let hasExternal = FileManager.default.fileExists(atPath: extDir)
-            let useExternal = hasExternal && (
-                (d3dMetalGame && WineEngineLocator.isD3DMetalEngine(winePath))
-                || winePath.contains("/\(WineEngineLocator.steamEngineName)/")
-            )
-            let engineDyld = useExternal ? "\(extDir):\(libDir)" : libDir
+            let engineDyld = (d3dMetalGame
+                              && WineEngineLocator.isD3DMetalEngine(winePath)
+                              && FileManager.default.fileExists(atPath: extDir))
+                ? "\(extDir):\(libDir)" : libDir
             let base = fullEnv["DYLD_FALLBACK_LIBRARY_PATH"]
             fullEnv["DYLD_FALLBACK_LIBRARY_PATH"] = (base?.isEmpty == false) ? "\(engineDyld):\(base!)" : engineDyld
         }
