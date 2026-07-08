@@ -3245,7 +3245,12 @@ final class WineManager {
             // CX_GRAPHICS_BACKEND). `WINEMSYNC=1` (ya en la whitelist) DEBE coincidir con el cliente.
             let cxRoot = WineEngineLocator.fullEngineDir()
             clean["CX_ROOT"] = cxRoot
-            clean["CX_GRAPHICS_BACKEND"] = "d3dmetal"
+            // ⚠️ NO forzar CX_GRAPHICS_BACKEND: CrossOver NO lo setea (su bottle Steam va sin él) y usa
+            // su AUTO-DETECCIÓN por juego (D3D9→wined3d, D3D11/12→D3DMetal/vkd3d…). Forzarlo a "d3dmetal"
+            // rompía los juegos que NO son D3D11/12 — p.ej. Cube World (D3D9) daba "Could not initialize
+            // Direct3D". Sin forzarlo, cada juego usa su backend correcto, exactamente como CrossOver.
+            // `CX_APPLEGPTK_LIBD3DSHARED_PATH` sí se exporta siempre (CrossOver hace igual): deja D3DMetal
+            // DISPONIBLE para cuando la auto-detección lo elija (D3D11/12), sin imponerlo.
             let cxLibd3d = "\(cxRoot)/lib64/apple_gptk/external/libd3dshared.dylib"
             if FileManager.default.fileExists(atPath: cxLibd3d) { clean["CX_APPLEGPTK_LIBD3DSHARED_PATH"] = cxLibd3d }
             if let cxHome = ensureCXCompatDB() { clean["CX_HOME"] = cxHome }
