@@ -3501,6 +3501,29 @@ final class WineManager {
         await applyWinetricksVerbs(["vcrun2022"], prefix: bottle.prefixPath, wine: wine)
     }
 
+    /// Resuelve `winetricks`: si no está en el sistema, DESCARGA el script oficial (un único fichero
+    /// shell, sin compilar) a la caché de Vessel y lo hace ejecutable. Así la auto-reparación de
+    /// runtimes funciona sin depender de `brew install winetricks` (coherente con "todo
+    /// auto-descargable"). Idempotente. Devuelve `nil` si no hay red.
+    private func ensureWinetricks() async -> String? {
+        let dir = "\(VesselPaths.cacheDirectory)/winetricks"
+        let path = "\(dir)/winetricks"
+        if FileManager.default.isExecutableFile(atPath: path) { return path }
+        guard let url = URL(string: "https://raw.githubusercontent.com/Winetricks/winetricks/master/src/winetricks") else { return nil }
+        do {
+            let (tmp, resp) = try await URLSession.shared.download(from: url)
+            defer { try? FileManager.default.removeItem(at: tmp) }
+            if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) { return nil }
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            try? FileManager.default.removeItem(atPath: path)
+            try FileManager.default.moveItem(atPath: tmp.path, toPath: path)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
+            guard FileManager.default.isExecutableFile(atPath: path) else { return nil }
+            log.log("winetricks descargado a la caché de Vessel (auto-reparación de runtimes sin depender de brew).", level: .info)
+            return path
+        } catch { return nil }
+    }
+
     /// Aplica los verbos de winetricks que pide el perfil (vcrun, d3dx9…) de forma IDEMPOTENTE:
     /// lleva un registro en `<prefix>/.vessel-winetricks-applied` y solo aplica los que falten.
     ///
@@ -3515,10 +3538,16 @@ final class WineManager {
         let pending = verbs.filter { !already.contains($0) }
         guard !pending.isEmpty else { return }
 
-        // winetricks NO se empaqueta: resolverlo del sistema. Sin él, no bloqueamos el lanzamiento.
+        // winetricks: del sistema o AUTO-DESCARGADO (es un único script shell público, sin compilar),
+        // para que la auto-reparación de runtimes NO dependa de `brew install winetricks`.
         let candidates = ["/opt/homebrew/bin/winetricks", "/usr/local/bin/winetricks"]
-        guard let winetricks = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
-            log.log("El perfil pide winetricks [\(pending.joined(separator: ", "))] pero winetricks no está instalado; el juego podría faltarle ese runtime. Instálalo con `brew install winetricks`.", level: .warn)
+        let winetricks: String
+        if let sys = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
+            winetricks = sys
+        } else if let dl = await ensureWinetricks() {
+            winetricks = dl
+        } else {
+            log.log("Falta winetricks para instalar [\(pending.joined(separator: ", "))] y no se pudo descargar (¿sin red?); el juego podría faltarle ese runtime.", level: .warn)
             return
         }
 
@@ -3530,6 +3559,14 @@ final class WineManager {
         env["WINE"] = wine
         env["WINEPREFIX"] = prefix
         env["WINEDEBUG"] = "-all"
+        // winetricks necesita `cabextract` (y a veces `7z`) en PATH para extraer los redistribuibles.
+        // El motor (wine-full) trae cabextract en su `bin`; brew también. Los ponemos en PATH (el
+        // entorno de una .app puede venir con un PATH mínimo sin /opt/homebrew/bin).
+        var pathParts = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+        if let root = WineEngineLocator.engineRoot(forWineExecutable: URL(fileURLWithPath: wine)) {
+            pathParts.insert(root.appendingPathComponent("bin").path, at: 0)
+        }
+        env["PATH"] = pathParts.joined(separator: ":")
         // Motor unificado: sus libs externas (freetype/gnutls) viven en `lib/` del motor
         // y se cargan por dlopen (SONAME sin ruta) → winetricks necesita el mismo
         // `DYLD_FALLBACK_LIBRARY_PATH` que usa `launchWineProcess`, y su `wineserver`.
