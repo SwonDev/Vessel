@@ -18,6 +18,8 @@ struct SettingsView: View {
     /// Clave de SteamGridDB (opcional, gratis): mejora la calidad de las carátulas. La lee
     /// `SteamGridDBClient` de `UserDefaults` con la misma clave.
     @AppStorage(SteamGridDBClient.apiKeyDefaultsKey) private var steamGridDBKey = ""
+    /// Arreglos que Vessel ha aprendido solo (loop local→comunidad); se pueden compartir.
+    private var fixesStore = DiscoveredFixesStore.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -226,6 +228,41 @@ struct SettingsView: View {
                     }
                 }
                 .tint(Theme.accent)
+                if !fixesStore.fixes.isEmpty {
+                    Divider().opacity(0.3)
+                    HStack {
+                        Text("Arreglos que Vessel ha aprendido").font(.callout)
+                        Spacer()
+                        if fixesStore.unsharedCount > 0 {
+                            Text("\(fixesStore.unsharedCount) sin compartir")
+                                .font(.caption).foregroundStyle(Theme.accent)
+                        }
+                    }
+                    Text("Cuando Vessel repara un juego solo, lo apunta aquí. Compártelo (issue anónimo en la BD comunitaria) para que funcione para todos.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    ForEach(fixesStore.fixes) { fix in
+                        HStack(spacing: 8) {
+                            Image(systemName: fix.shared ? "checkmark.circle.fill" : "wrench.and.screwdriver")
+                                .foregroundStyle(fix.shared ? Color.green : Theme.accent).font(.caption)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(fix.title).font(.caption.weight(.medium)).lineLimit(1)
+                                Text("\(fix.graphicsLayer)\(fix.useRealSteam ? " · Steam real" : "")")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button(fix.shared ? "Compartido" : "Compartir") {
+                                if let url = CompatService.shareFixIssueURL(fix) {
+                                    NSWorkspace.shared.open(url)
+                                    fixesStore.markShared(fix.id)
+                                }
+                            }
+                            .buttonStyle(.plain).font(.caption.weight(.medium))
+                            .foregroundStyle(fix.shared ? Color.secondary : Theme.accent)
+                            .disabled(fix.shared)
+                        }
+                    }
+                }
                 Divider().opacity(0.3)
                 Label("Vessel no envía telemetría ni datos personales. Los reportes de compatibilidad son anónimos y solo se publican si tú decides enviarlos manualmente.",
                       systemImage: "lock.shield")

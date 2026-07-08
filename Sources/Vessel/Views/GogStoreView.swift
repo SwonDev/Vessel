@@ -296,6 +296,9 @@ final class GogStore {
                 var c = GameConfigStore.load(game.appId)
                 c.graphicsLayer = winLayer
                 GameConfigStore.save(game.appId, c)
+                DiscoveredFixesStore.shared.record(id: game.appId, title: game.title, store: "gog",
+                                                   storeId: game.appId, graphicsLayer: winLayer.rawValue,
+                                                   useRealSteam: c.useRealSteam)
             }
         ) { [weak self] next in await self?.play(game, forcedLayer: next, attempt: attempt + 1) }
     }

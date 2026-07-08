@@ -280,6 +280,9 @@ final class EpicStore {
                 var c = GameConfigStore.load(game.appName)
                 c.graphicsLayer = winLayer
                 GameConfigStore.save(game.appName, c)
+                DiscoveredFixesStore.shared.record(id: game.appName, title: game.title, store: "epic",
+                                                   storeId: game.appName, graphicsLayer: winLayer.rawValue,
+                                                   useRealSteam: c.useRealSteam)
             }
         ) { [weak self] next in await self?.play(game, forcedLayer: next, attempt: attempt + 1) }
     }

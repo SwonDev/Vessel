@@ -230,6 +230,47 @@ final class CompatService {
         return comps?.url
     }
 
+    /// URL de issue PRE-RELLENADO para COMPARTIR un arreglo que Vessel aprendió solo (loop
+    /// local→comunidad). Incluye el JSON del perfil listo para añadir a `compat-db.json`. Anónimo
+    /// (solo juego + datos técnicos del sistema). El usuario revisa y decide enviarlo (nada automático).
+    @MainActor
+    static func shareFixIssueURL(_ fix: DiscoveredFixesStore.Fix) -> URL? {
+        let idJSON = fix.storeId.map { "\"\(fix.store)\": \"\($0)\"" } ?? ""
+        let profileJSON = """
+        {
+          "title": "\(fix.title)",
+          "stores": { \(idJSON) },
+          "graphicsLayer": "\(fix.graphicsLayer)",
+          "useRealSteam": \(fix.useRealSteam),
+          "verified": false,
+          "notes": "Arreglo descubierto automáticamente por Vessel."
+        }
+        """
+        let body = """
+        ## Arreglo aprendido automáticamente por Vessel (anónimo)
+
+        > 🔒 Anónimo: solo el juego, datos técnicos del sistema y la capa gráfica que funcionó.
+        > No incluye tu usuario, correo ni nombre de equipo, y nada se envía automáticamente.
+
+        - **Juego**: \(fix.title)
+        - **Tienda**: \(fix.store)\(fix.storeId.map { " (\($0))" } ?? "")
+        - **Capa que funcionó**: \(fix.graphicsLayer)\(fix.useRealSteam ? " · modo Steam real" : "")
+        - **Sistema**: \(systemSummary())
+
+        ### Perfil sugerido para `compat-db.json`
+        ```json
+        \(profileJSON)
+        ```
+        """
+        var comps = URLComponents(string: repoIssuesURL)
+        comps?.queryItems = [
+            URLQueryItem(name: "title", value: "[Compat] \(fix.title) — arreglo automático (\(fix.graphicsLayer))"),
+            URLQueryItem(name: "labels", value: "compat-report,learned-fix"),
+            URLQueryItem(name: "body", value: body)
+        ]
+        return comps?.url
+    }
+
     // MARK: - Descarga remota (1×/día)
 
     /// Clave de preferencia: auto-actualizar la BD desde el repo (default ON). Si el

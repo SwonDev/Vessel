@@ -389,6 +389,10 @@ struct BottleDetailView: View {
                 var c = GameConfigStore.load(trackId)
                 c.graphicsLayer = winLayer
                 GameConfigStore.save(trackId, c)
+                // Loop de auto-aprendizaje: registra el arreglo para poder compartirlo con la comunidad.
+                DiscoveredFixesStore.shared.record(id: trackId, title: game.name, store: "steam",
+                                                   storeId: game.steamAppId, graphicsLayer: winLayer.rawValue,
+                                                   useRealSteam: c.useRealSteam)
             },
             // Auto-reparación de Steam: el juego pide una interfaz de Steam que la emulación no provee
             // (Steam Input/Controller). Activamos el modo Steam-real PERSISTENTE y relanzamos.
