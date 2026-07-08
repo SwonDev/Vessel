@@ -23,7 +23,14 @@ actor SteamGridDBClient {
     }
 
     private let baseURL = "https://www.steamgriddb.com/api/v2"
-    private let apiKey: String? = nil
+    /// Clave de la API de SteamGridDB (gratis en steamgriddb.com/profile/preferences/api). Se
+    /// configura en Ajustes y se guarda en `UserDefaults`. Sin ella la búsqueda de carátulas va
+    /// muy limitada (rate-limit anónimo); con ella se obtienen portadas de alta calidad.
+    static let apiKeyDefaultsKey = "vessel.steamgriddb.apikey"
+    private var apiKey: String? {
+        let k = UserDefaults.standard.string(forKey: Self.apiKeyDefaultsKey) ?? ""
+        return k.isEmpty ? nil : k
+    }
 
     func search(query: String) async throws -> [SearchResult] {
         guard !query.isEmpty else { return [] }

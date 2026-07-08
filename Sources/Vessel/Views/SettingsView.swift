@@ -15,6 +15,9 @@ struct SettingsView: View {
     /// Clave Web API de Steam (opcional): habilita iconos por logro y garantiza el estado de logros
     /// aunque el perfil sea privado. Se guarda en `SteamAccountService.webAPIKey`.
     @State private var steamApiKey = SteamAccountService.webAPIKey
+    /// Clave de SteamGridDB (opcional, gratis): mejora la calidad de las carátulas. La lee
+    /// `SteamGridDBClient` de `UserDefaults` con la misma clave.
+    @AppStorage(SteamGridDBClient.apiKeyDefaultsKey) private var steamGridDBKey = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -176,6 +179,27 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Link("Obtener mi clave Web API", destination: URL(string: "https://steamcommunity.com/dev/apikey")!)
+                    .font(.caption.weight(.medium))
+
+                Divider().overlay(.white.opacity(0.08)).padding(.vertical, 4)
+                Text("Clave de SteamGridDB (opcional)").font(.callout)
+                HStack(spacing: 8) {
+                    Image(systemName: "photo.fill").foregroundStyle(.secondary).font(.caption)
+                    SecureField("Pega tu clave de steamgriddb.com/profile/preferences/api", text: $steamGridDBKey)
+                        .textFieldStyle(.plain)
+                    if !steamGridDBKey.isEmpty {
+                        Button { steamGridDBKey = "" } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(8)
+                .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                Text("Con la clave (gratis) las carátulas de tus juegos se ven en alta calidad. Sin ella, la búsqueda de portadas va muy limitada.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Link("Obtener mi clave de SteamGridDB", destination: URL(string: "https://www.steamgriddb.com/profile/preferences/api")!)
                     .font(.caption.weight(.medium))
 
                 Divider().overlay(.white.opacity(0.08)).padding(.vertical, 4)
