@@ -299,6 +299,12 @@ final class GogStore {
                 DiscoveredFixesStore.shared.record(id: game.appId, title: game.title, store: "gog",
                                                    storeId: game.appId, graphicsLayer: winLayer.rawValue,
                                                    useRealSteam: c.useRealSteam)
+            },
+            // Auto-reparación de runtime (VC++/.NET) también para GOG, igual que Steam.
+            retryWithRuntimeFix: { [weak self] in
+                guard let self, let exe = self.gogdl.primaryExecutable(appId: game.appId, installDir: dir) else { return }
+                await self.wineManager.installMissingRuntimes(in: bottle, forExecutable: exe)
+                await self.play(game, attempt: attempt + 1)
             }
         ) { [weak self] next in await self?.play(game, forcedLayer: next, attempt: attempt + 1) }
     }

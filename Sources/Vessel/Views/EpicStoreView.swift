@@ -283,6 +283,11 @@ final class EpicStore {
                 DiscoveredFixesStore.shared.record(id: game.appName, title: game.title, store: "epic",
                                                    storeId: game.appName, graphicsLayer: winLayer.rawValue,
                                                    useRealSteam: c.useRealSteam)
+            },
+            // Auto-reparación de runtime (VC++/.NET) también para Epic, igual que Steam.
+            retryWithRuntimeFix: { [weak self] in
+                await self?.wineManager.installMissingRuntimes(in: bottle, forExecutable: exe)
+                await self?.play(game, attempt: attempt + 1)
             }
         ) { [weak self] next in await self?.play(game, forcedLayer: next, attempt: attempt + 1) }
     }
