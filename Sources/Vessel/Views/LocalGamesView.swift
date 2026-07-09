@@ -45,9 +45,13 @@ struct LocalGamesView: View {
         }
     }
 
+    private var columns: [GridItem] {
+        [GridItem(.adaptive(minimum: 158, maximum: 200), spacing: Theme.Space.gameGrid)]
+    }
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: Theme.Space.section) {
                 header
                 accountsBar
                 if let banner {
@@ -60,25 +64,10 @@ struct LocalGamesView: View {
                 if visibleGames.isEmpty {
                     emptyState
                 } else {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 160, maximum: 200), spacing: 18)], spacing: 22) {
-                        ForEach(visibleGames) { game in
-                            DRMFreeCard(
-                                game: game,
-                                progress: downloading[game.id],
-                                busy: tracker.isBusy(game.id.uuidString),
-                                running: tracker.state(game.id.uuidString) == .running,
-                                onPlay: { play(game) },
-                                onStop: { tracker.stop(game.id.uuidString) },
-                                onDownload: { download(game) },
-                                onReveal: { reveal(game) },
-                                onRemove: { games.remove(game.id) },
-                                onDelete: { games.removeAndDelete(game.id) }
-                            )
-                        }
-                    }
+                    gridSection
                 }
             }
-            .padding(28)
+            .padding(Theme.Space.page)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .vesselBackground(tint: StoreKind.local.tint)
@@ -100,6 +89,47 @@ struct LocalGamesView: View {
     }
 
     // MARK: - Secciones
+
+    /// Título de sección + rejilla de carátulas (mismo estilo que las demás tiendas).
+    private var gridSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(sectionTitle).font(.title2.bold()).foregroundStyle(.white)
+                Spacer()
+                Text("\(visibleGames.count) juego\(visibleGames.count == 1 ? "" : "s")")
+                    .font(.subheadline).foregroundStyle(.white.opacity(0.5))
+            }
+            LazyVGrid(columns: columns, spacing: Theme.Space.gameGrid) {
+                ForEach(visibleGames) { game in
+                    DRMFreeCard(
+                        game: game,
+                        progress: downloading[game.id],
+                        busy: tracker.isBusy(game.id.uuidString),
+                        running: tracker.state(game.id.uuidString) == .running,
+                        onPlay: { play(game) },
+                        onStop: { tracker.stop(game.id.uuidString) },
+                        onDownload: { download(game) },
+                        onReveal: { reveal(game) },
+                        onOpenFolder: { openFolder(game) },
+                        onRemove: { games.remove(game.id) },
+                        onDelete: { games.removeAndDelete(game.id) }
+                    )
+                    .transition(.opacity.combined(with: .scale(scale: 0.97)))
+                }
+            }
+            .animation(.snappy(duration: 0.28), value: visibleGames.count)
+        }
+    }
+
+    private var sectionTitle: String {
+        switch filter {
+        case .all: return "Tus juegos DRM‑free"
+        case .steam: return "Copias locales de Steam"
+        case .itch: return "Biblioteca de itch.io"
+        case .humble: return "Biblioteca de Humble"
+        case .local: return "Juegos locales"
+        }
+    }
 
     private var header: some View {
         HStack(alignment: .center, spacing: 14) {
@@ -277,6 +307,14 @@ struct LocalGamesView: View {
             if let s = game.pageURL, let u = URL(string: s) { NSWorkspace.shared.open(u) }; return
         }
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+
+    /// Abre en Finder la CARPETA de archivos generados/instalados (para copiarlos, respaldarlos…).
+    private func openFolder(_ game: LocalGamesStore.Game) {
+        let dir = game.installPath
+            ?? (game.executablePath.isEmpty ? nil : (game.executablePath as NSString).deletingLastPathComponent)
+        guard let dir, !dir.isEmpty else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: dir))
     }
 
     private func flash(_ msg: String, _ isError: Bool) {

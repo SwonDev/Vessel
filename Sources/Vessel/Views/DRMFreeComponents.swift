@@ -1,9 +1,10 @@
 import SwiftUI
 import WebKit
 
-/// Tarjeta premium de un juego DRM‑free (itch.io / Humble / local): portada (URL remota o
-/// placeholder), insignia de fuente, y acción contextual — **Jugar/Detener** si está instalado,
-/// **Descargar** si está en la biblioteca pero aún no, o barra de progreso mientras se instala.
+/// Tarjeta premium de un juego DRM‑free — MISMO lenguaje visual que `StoreGameCard` de las tiendas
+/// (carátula **2:3**, título superpuesto con degradado, hover-lift, esquinas `Theme.Radius.cover`).
+/// Acción contextual: **Jugar/Detener** si está instalado, **Descargar** si aún no, barra de
+/// progreso al descargar/instalar, e insignia de la fuente. Menú con acceso a la carpeta generada.
 struct DRMFreeCard: View {
     let game: LocalGamesStore.Game
     let progress: (Double, String)?
@@ -13,103 +14,111 @@ struct DRMFreeCard: View {
     let onStop: () -> Void
     let onDownload: () -> Void
     let onReveal: () -> Void
+    let onOpenFolder: () -> Void
     let onRemove: () -> Void
     let onDelete: () -> Void
     @State private var hovering = false
 
     private var tint: Color { StoreKind.local.tint }
+    private var hasFolder: Bool { game.installPath?.hasPrefix(VesselPaths.drmFreeDirectory) == true }
+
+    private var coverCandidates: [URL] {
+        var urls: [URL] = []
+        if let p = game.coverPath { urls.append(URL(fileURLWithPath: p)) }
+        if let s = game.coverURL, let u = URL(string: s) { urls.append(u) }
+        return urls
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ZStack {
-                cover
-                if let progress {   // descargando / instalando
-                    RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.black.opacity(0.55))
-                    VStack(spacing: 8) {
-                        ProgressView(value: progress.0).progressViewStyle(.linear).tint(tint)
-                            .frame(width: 120)
-                        Text(progress.1).font(.caption2).foregroundStyle(.white.opacity(0.85))
-                            .lineLimit(1)
-                    }.padding(.horizontal, 12)
-                } else if hovering || busy {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.black.opacity(0.38))
-                    if busy && !running {
-                        ProgressView().controlSize(.large).tint(.white)
-                    } else {
-                        actionButton
-                    }
-                }
-                sourceBadge
+        cover
+            .aspectRatio(2.0/3.0, contentMode: .fit)
+            .overlay(alignment: .bottom) {
+                LinearGradient(colors: [.clear, .black.opacity(0.55), .black.opacity(0.9)],
+                               startPoint: .center, endPoint: .bottom)
             }
-            .frame(height: 210)
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
-            .shadow(color: .black.opacity(0.3), radius: hovering ? 12 : 6, y: hovering ? 6 : 3)
-            .scaleEffect(hovering ? 1.02 : 1)
-            Text(game.name).font(.callout.weight(.medium)).foregroundStyle(.white).lineLimit(1)
-        }
-        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: hovering)
-        .onHover { hovering = $0 }
-        .contextMenu { contextMenu }
+            .overlay(alignment: .bottomLeading) {
+                Text(game.name)
+                    .font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+                    .lineLimit(2).shadow(color: .black.opacity(0.6), radius: 3, y: 1)
+                    .padding(10)
+            }
+            .overlay(alignment: .topLeading) { sourceBadge }
+            .overlay { stateOverlay }
+            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous)
+                    .strokeBorder(.white.opacity(0.10), lineWidth: 0.5)
+            }
+            .shadow(color: .black.opacity(0.32), radius: 9, y: 5)
+            .hoverLift()
+            .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous))
+            .onHover { hovering = $0 }
+            .onTapGesture { if progress == nil && !busy { primaryAction() } }
+            .contextMenu { contextMenu }
     }
 
     @ViewBuilder private var cover: some View {
-        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
-        if let local = game.coverPath, let img = NSImage(contentsOfFile: local) {
-            Image(nsImage: img).resizable().aspectRatio(contentMode: .fill).clipShape(shape)
-        } else if let s = game.coverURL, let url = URL(string: s) {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let img): img.resizable().aspectRatio(contentMode: .fill)
-                default: placeholder
-                }
-            }.clipShape(shape)
-        } else {
-            placeholder
-        }
+        GameCoverImage(cacheKey: game.id.uuidString, candidates: coverCandidates) { placeholder }
+            .clipped()
     }
 
     private var placeholder: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(LinearGradient(colors: [tint.opacity(0.55), .black.opacity(0.6)],
-                                     startPoint: .topLeading, endPoint: .bottomTrailing))
-            Image(systemName: "lock.open.fill").font(.system(size: 34, weight: .medium)).foregroundStyle(.white.opacity(0.85))
+            LinearGradient(colors: [tint.opacity(0.55), .black.opacity(0.6)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+            Image(systemName: "lock.open.fill").font(.system(size: 30, weight: .medium)).foregroundStyle(.white.opacity(0.85))
         }
     }
 
-    @ViewBuilder private var actionButton: some View {
-        if game.installed {
-            Button(action: running ? onStop : onPlay) {
-                Label(running ? "Detener" : "Jugar", systemImage: running ? "stop.fill" : "play.fill")
-                    .font(.headline).padding(.horizontal, 14).padding(.vertical, 8)
+    /// Superposición de estado: progreso (descarga/instalación), spinner (arranque) o botón al hover.
+    @ViewBuilder private var stateOverlay: some View {
+        if let progress {
+            ZStack {
+                Color.black.opacity(0.58)
+                VStack(spacing: 6) {
+                    ProgressView(value: progress.0).progressViewStyle(.linear).tint(tint).frame(width: 96)
+                    Text(progress.1).font(.caption2.weight(.medium)).foregroundStyle(.white)
+                        .lineLimit(1).truncationMode(.middle).padding(.horizontal, 6)
+                }
             }
-            .buttonStyle(.plain).foregroundStyle(.white)
-            .background(tint.gradient, in: Capsule())
-        } else if game.source == .itch || game.source == .humble {
-            Button(action: onDownload) {
-                Label("Descargar", systemImage: "arrow.down.circle.fill")
-                    .font(.headline).padding(.horizontal, 14).padding(.vertical, 8)
+        } else if busy && !running {
+            ZStack { Color.black.opacity(0.5); ProgressView().controlSize(.large).tint(.white) }
+        } else if hovering {
+            ZStack {
+                Color.black.opacity(0.32)
+                if game.installed {
+                    actionCapsule(running ? "Detener" : "Jugar", running ? "stop.fill" : "play.fill",
+                                  action: running ? onStop : onPlay)
+                } else if game.source == .itch || game.source == .humble {
+                    actionCapsule("Descargar", "arrow.down.circle.fill", action: onDownload)
+                }
             }
-            .buttonStyle(.plain).foregroundStyle(.white)
-            .background(tint.gradient, in: Capsule())
         }
+    }
+
+    private func actionCapsule(_ title: String, _ icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: icon).font(.subheadline.weight(.semibold))
+                .padding(.horizontal, 14).padding(.vertical, 8)
+        }
+        .buttonStyle(.plain).foregroundStyle(.white)
+        .background(tint.gradient, in: Capsule())
     }
 
     /// Insignia de la fuente (arriba a la izquierda), salvo en local.
     @ViewBuilder private var sourceBadge: some View {
         if game.source != .local {
-            VStack {
-                HStack {
-                    Text(game.source.displayName)
-                        .font(.caption2.weight(.semibold)).foregroundStyle(.white)
-                        .padding(.horizontal, 7).padding(.vertical, 3)
-                        .background(.black.opacity(0.55), in: Capsule())
-                        .padding(6)
-                    Spacer()
-                }
-                Spacer()
-            }
+            Text(game.source.displayName)
+                .font(.caption2.weight(.semibold)).foregroundStyle(.white)
+                .padding(.horizontal, 7).padding(.vertical, 3)
+                .background(.black.opacity(0.55), in: Capsule())
+                .padding(8)
         }
+    }
+
+    private func primaryAction() {
+        if game.installed { running ? onStop() : onPlay() }
+        else if game.source == .itch || game.source == .humble { onDownload() }
     }
 
     @ViewBuilder private var contextMenu: some View {
@@ -118,13 +127,16 @@ struct DRMFreeCard: View {
         } else if game.source == .itch || game.source == .humble {
             Button("Descargar", systemImage: "arrow.down.circle") { onDownload() }
         }
+        if hasFolder {
+            Button("Abrir carpeta de archivos", systemImage: "folder") { onOpenFolder() }
+        }
+        Button("Revelar en Finder", systemImage: "magnifyingglass") { onReveal() }
         if let s = game.pageURL, let u = URL(string: s) {
             Button("Ver en la web", systemImage: "safari") { NSWorkspace.shared.open(u) }
         }
-        Button("Revelar en Finder", systemImage: "folder") { onReveal() }
         Divider()
         Button("Quitar de la lista", systemImage: "eye.slash", role: .destructive) { onRemove() }
-        if game.installed, game.installPath?.hasPrefix(VesselPaths.drmFreeDirectory) == true {
+        if game.installed, hasFolder {
             Button("Borrar del disco", systemImage: "trash", role: .destructive) { onDelete() }
         }
     }
@@ -231,11 +243,12 @@ struct SteamDRMImportSheet: View {
                         ForEach(candidates) { c in row(c); Divider() }
                     }
                 }
-                HStack {
-                    Text("\(generable.count) de \(candidates.count) pueden generarse como DRM‑free.")
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(generable.count) de \(candidates.count) juegos instalados pueden generarse como DRM‑free.")
                         .font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                }.padding(12)
+                    Text("Solo aparecen los juegos instalados. Para generar otros, instálalos antes desde la pestaña Steam.")
+                        .font(.caption2).foregroundStyle(.secondary.opacity(0.7))
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
             }
         }
         .frame(width: 640, height: 560)
