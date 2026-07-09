@@ -189,6 +189,133 @@ struct ItchLinkSheet: View {
     }
 }
 
+// MARK: - Generar juegos DRM-free desde Steam
+
+/// Hoja que escanea los juegos de Steam instalados, los clasifica por DRM y permite **generar una
+/// copia local DRM‑free** (copia los archivos + Goldberg) de los que pueden correr sin Steam.
+struct SteamDRMImportSheet: View {
+    let bottle: Bottle
+    let onGenerated: (SteamDRMScanner.Candidate, String, String) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var candidates: [SteamDRMScanner.Candidate] = []
+    @State private var scanning = true
+    @State private var generating: [String: (Double, String)] = [:]   // appId → progreso
+    @State private var done: Set<String> = []
+
+    private var generable: [SteamDRMScanner.Candidate] { candidates.filter { $0.status.isGenerable } }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.down.doc.fill").foregroundStyle(StoreKind.local.tint)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Generar juegos DRM‑free desde Steam").font(.headline)
+                    Text("Vessel copia los archivos y los deja ejecutables sin Steam (Goldberg).")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Cerrar") { dismiss() }
+            }
+            .padding(14)
+            Divider()
+            if scanning {
+                VStack(spacing: 10) { ProgressView(); Text("Escaneando tu biblioteca de Steam…").foregroundStyle(.secondary) }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if candidates.isEmpty {
+                Text("No se encontraron juegos de Steam instalados en el entorno de Vessel.")
+                    .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity).padding()
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(candidates) { c in row(c); Divider() }
+                    }
+                }
+                HStack {
+                    Text("\(generable.count) de \(candidates.count) pueden generarse como DRM‑free.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                }.padding(12)
+            }
+        }
+        .frame(width: 640, height: 560)
+        .task { await scan() }
+    }
+
+    private func row(_ c: SteamDRMScanner.Candidate) -> some View {
+        HStack(spacing: 12) {
+            AsyncImage(url: c.coverURL.flatMap(URL.init)) { img in
+                img.resizable().aspectRatio(contentMode: .fill)
+            } placeholder: { Rectangle().fill(.gray.opacity(0.2)) }
+                .frame(width: 40, height: 56).clipShape(RoundedRectangle(cornerRadius: 5))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(c.name).font(.callout.weight(.medium)).lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(c.status.label).font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(badgeColor(c.status).opacity(0.2), in: Capsule())
+                        .foregroundStyle(badgeColor(c.status))
+                    Text(byteString(c.sizeBytes)).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            action(c)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 8)
+    }
+
+    @ViewBuilder private func action(_ c: SteamDRMScanner.Candidate) -> some View {
+        if done.contains(c.appId) {
+            Label("Generado", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
+        } else if let prog = generating[c.appId] {
+            VStack(alignment: .trailing, spacing: 2) {
+                ProgressView(value: prog.0).frame(width: 120)
+                Text(prog.1).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+        } else if c.status.isGenerable {
+            Button("Generar") { generate(c) }.buttonStyle(.borderedProminent).controlSize(.small)
+        } else {
+            Text("No sin Steam").font(.caption).foregroundStyle(.secondary)
+                .help("Usa el DRM de Steam (CEG): el ejecutable está cifrado y no corre sin el cliente.")
+        }
+    }
+
+    private func badgeColor(_ s: SteamDRMScanner.DRMStatus) -> Color {
+        switch s { case .drmFree: return .green; case .steamworks: return StoreKind.local.tint; case .steamDRM: return .orange }
+    }
+
+    private func scan() async {
+        scanning = true
+        let result = SteamDRMScanner.shared.scan(bottle: bottle)
+        await MainActor.run { candidates = result; scanning = false }
+    }
+
+    private func generate(_ c: SteamDRMScanner.Candidate) {
+        generating[c.appId] = (0, "Preparando…")
+        Task {
+            do {
+                let r = try await SteamDRMScanner.shared.generateLocalCopy(c) { frac, msg in
+                    Task { @MainActor in generating[c.appId] = (frac, msg) }
+                }
+                await MainActor.run {
+                    generating[c.appId] = nil
+                    done.insert(c.appId)
+                    onGenerated(c, r.exe, r.dir)
+                }
+            } catch {
+                await MainActor.run {
+                    generating[c.appId] = nil
+                    // Reaprovecha la fila con un aviso breve reutilizando el badge de error via help.
+                }
+            }
+        }
+    }
+
+    private func byteString(_ b: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: b, countStyle: .file)
+    }
+}
+
 // MARK: - Vincular Humble (login WebView)
 
 /// Hoja para vincular Humble Bundle: login en un WebView; al capturar la cookie de sesión, se guarda.

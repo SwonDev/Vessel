@@ -15,14 +15,15 @@ struct LocalGamesView: View {
     @State private var filter: SourceFilter = .all
     @State private var showingItchLink = false
     @State private var showingHumbleLink = false
+    @State private var showingSteamImport = false
     /// Progreso de descarga/instalación por juego: (fracción 0…1, mensaje).
     @State private var downloading: [UUID: (Double, String)] = [:]
     @State private var syncing = false
     @State private var banner: (String, Bool)?   // (mensaje, esError)
 
-    enum SourceFilter: Hashable { case all, itch, humble, local
+    enum SourceFilter: Hashable { case all, steam, itch, humble, local
         var title: String {
-            switch self { case .all: return "Todos"; case .itch: return "itch.io"
+            switch self { case .all: return "Todos"; case .steam: return "Steam"; case .itch: return "itch.io"
             case .humble: return "Humble"; case .local: return "Local" }
         }
     }
@@ -37,6 +38,7 @@ struct LocalGamesView: View {
         let all = games.games
         switch filter {
         case .all: return all
+        case .steam: return all.filter { $0.source == .steam }
         case .itch: return all.filter { $0.source == .itch }
         case .humble: return all.filter { $0.source == .humble }
         case .local: return all.filter { $0.source == .local || $0.source == .gogOffline }
@@ -86,6 +88,15 @@ struct LocalGamesView: View {
         .sheet(isPresented: $showingHumbleLink) { HumbleLinkSheet {
             flash("Humble Bundle vinculado.", false); syncHumble()
         } }
+        .sheet(isPresented: $showingSteamImport) {
+            if let bottle {
+                SteamDRMImportSheet(bottle: bottle) { c, exe, dir in
+                    games.upsertSteamCopy(appId: c.appId, name: c.name, executablePath: exe,
+                                          installPath: dir, coverURL: c.coverURL)
+                    flash("«\(c.name)» generado como juego DRM‑free local.", false)
+                }
+            }
+        }
     }
 
     // MARK: - Secciones
@@ -100,6 +111,7 @@ struct LocalGamesView: View {
             }
             Spacer()
             Menu {
+                Button { showingSteamImport = true } label: { Label("Generar copia local desde Steam…", systemImage: "arrow.down.doc") }
                 Button { addGame() } label: { Label("Añadir un .exe de juego…", systemImage: "plus.app") }
                 Button { runInstaller() } label: { Label("Ejecutar un instalador…", systemImage: "shippingbox") }
                 Divider()
@@ -159,7 +171,7 @@ struct LocalGamesView: View {
 
     private var filterPills: some View {
         HStack(spacing: 8) {
-            ForEach([SourceFilter.all, .itch, .humble, .local], id: \.self) { f in
+            ForEach([SourceFilter.all, .steam, .itch, .humble, .local], id: \.self) { f in
                 let n = count(for: f)
                 Button { withAnimation(.snappy) { filter = f } } label: {
                     Text(n > 0 ? "\(f.title) (\(n))" : f.title)
@@ -177,6 +189,7 @@ struct LocalGamesView: View {
     private func count(for f: SourceFilter) -> Int {
         switch f {
         case .all: return games.games.count
+        case .steam: return games.games.filter { $0.source == .steam }.count
         case .itch: return games.games.filter { $0.source == .itch }.count
         case .humble: return games.games.filter { $0.source == .humble }.count
         case .local: return games.games.filter { $0.source == .local || $0.source == .gogOffline }.count
@@ -187,8 +200,10 @@ struct LocalGamesView: View {
         VStack(spacing: 14) {
             Image(systemName: "lock.open.fill").font(.system(size: 48)).foregroundStyle(StoreKind.local.tint)
             Text("Tu biblioteca DRM‑free está vacía").font(.title3.weight(.semibold)).foregroundStyle(.white)
-            Text("Vincula tu cuenta de itch.io o Humble Bundle para traer tus juegos, o añade un .exe / instalador de Windows a mano. Vessel los descarga, instala y ejecuta con el motor óptimo.")
-                .font(.callout).foregroundStyle(.white.opacity(0.55)).multilineTextAlignment(.center).frame(maxWidth: 480)
+            Text("Genera copias locales DRM‑free de tus juegos de Steam, vincula itch.io o Humble Bundle para traer tus juegos, o añade un .exe / instalador a mano. Vessel los ejecuta con el motor óptimo.")
+                .font(.callout).foregroundStyle(.white.opacity(0.55)).multilineTextAlignment(.center).frame(maxWidth: 500)
+            Button { showingSteamImport = true } label: { Label("Generar copia local desde Steam", systemImage: "arrow.down.doc").frame(maxWidth: 300) }
+                .vesselButton(tint: StoreKind.local.tint)
             HStack(spacing: 10) {
                 Button { showingItchLink = true } label: { Label("Vincular itch.io", systemImage: "link") }
                     .vesselButton(tint: StoreKind.local.tint)

@@ -16,6 +16,7 @@ final class LocalGamesStore {
         case itch         // itch.io (biblioteca vinculada)
         case humble       // Humble Bundle (biblioteca vinculada)
         case gogOffline   // instalador offline de GOG añadido a mano
+        case steam        // copia local DRM‑free generada desde un juego de Steam sin CEG
 
         var displayName: String {
             switch self {
@@ -23,6 +24,7 @@ final class LocalGamesStore {
             case .itch: return "itch.io"
             case .humble: return "Humble Bundle"
             case .gogOffline: return "GOG offline"
+            case .steam: return "Steam (DRM‑free)"
             }
         }
     }
@@ -125,6 +127,27 @@ final class LocalGamesStore {
         let g = Game(name: name, source: source, sourceId: sourceId,
                      downloadURL: downloadURL, coverURL: coverURL, pageURL: pageURL)
         games.append(g)
+        save()
+        return g.id
+    }
+
+    /// Registra (o actualiza) una **copia local DRM‑free generada desde Steam** — ya instalada.
+    /// Dedup por appId (sourceId). Devuelve el id.
+    @discardableResult
+    func upsertSteamCopy(appId: String, name: String, executablePath: String,
+                         installPath: String, coverURL: String?) -> UUID {
+        if let i = games.firstIndex(where: { $0.source == .steam && $0.sourceId == appId }) {
+            games[i].name = name
+            games[i].executablePath = executablePath
+            games[i].installPath = installPath
+            games[i].coverURL = coverURL
+            save()
+            return games[i].id
+        }
+        var g = Game(name: name, source: .steam, sourceId: appId,
+                     executablePath: executablePath, installPath: installPath, coverURL: coverURL)
+        g.pageURL = "https://store.steampowered.com/app/\(appId)"
+        games.insert(g, at: 0)
         save()
         return g.id
     }
