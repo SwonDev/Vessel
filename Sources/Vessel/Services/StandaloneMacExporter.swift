@@ -1,0 +1,210 @@
+import Foundation
+
+/// Exporta un juego DRM‑free como una **app de macOS autónoma** (`.app`) para **Apple Silicon**:
+/// empaqueta el juego + el **motor unificado ya compilado** (Wine+DXMT) + un launcher que crea su
+/// propio prefijo y arranca el juego por DXMT→Metal — **sin Vessel instalado**. Copiable a un USB y
+/// ejecutable en cualquier Mac Silicon (con Rosetta 2, igual que Vessel). El juego ya trae Goldberg,
+/// así que no necesita Steam.
+///
+/// Es grande (~2.2 GB de motor + el juego) porque incluye TODO el runtime — ese es el precio de que
+/// sea 100% independiente, como pediste.
+actor StandaloneMacExporter {
+    static let shared = StandaloneMacExporter()
+
+    enum ExportError: LocalizedError {
+        case noEngine, noGameFolder, copyFailed(String), signFailed
+        var errorDescription: String? {
+            switch self {
+            case .noEngine: return "No se encontró el motor unificado (instálalo jugando un juego primero)."
+            case .noGameFolder: return "El juego no tiene una carpeta local que empaquetar."
+            case .copyFailed(let w): return "Fallo al copiar \(w)."
+            case .signFailed: return "No se pudo firmar la app exportada."
+            }
+        }
+    }
+
+    /// Genera `<destParent>/<Nombre>.app` autónomo. `gameFolder` es la carpeta del juego DRM‑free,
+    /// `exePath` su ejecutable. `progress` = (fracción 0…1, mensaje).
+    func exportMacApp(name: String, gameFolder: String, exePath: String, destParent: URL,
+                      progress: @Sendable @escaping (Double, String) -> Void) async throws -> URL {
+        let fm = FileManager.default
+        let engineDir = "\(VesselPaths.enginesDirectory)/\(WineEngineLocator.unifiedEngineName)"
+        guard fm.isExecutableFile(atPath: "\(engineDir)/bin/wine") else { throw ExportError.noEngine }
+        guard fm.fileExists(atPath: gameFolder) else { throw ExportError.noGameFolder }
+
+        let slug = Self.sanitize(name)
+        let appURL = destParent.appendingPathComponent("\(slug).app")
+        try? fm.removeItem(at: appURL)
+        let contents = appURL.appendingPathComponent("Contents")
+        let macOS = contents.appendingPathComponent("MacOS")
+        let resources = contents.appendingPathComponent("Resources")
+        try fm.createDirectory(at: macOS, withIntermediateDirectories: true)
+        try fm.createDirectory(at: resources, withIntermediateDirectories: true)
+
+        // 1) Motor (lo más pesado, ~2.2 GB) → Resources/engine, con progreso por sondeo de tamaño.
+        progress(0.02, "Copiando el motor (Wine + DXMT)…")
+        let engineTotal = Self.dirSize(engineDir)
+        try await Self.copyTree(from: engineDir, to: resources.appendingPathComponent("engine").path,
+                                totalBytes: engineTotal) { f in progress(0.02 + f * 0.78, "Copiando el motor… \(Int(f*100))%") }
+
+        // 2) Juego → Resources/game.
+        progress(0.82, "Copiando los archivos del juego…")
+        let gameTotal = Self.dirSize(gameFolder)
+        try await Self.copyTree(from: gameFolder, to: resources.appendingPathComponent("game").path,
+                                totalBytes: gameTotal) { f in progress(0.82 + f * 0.12, "Copiando el juego… \(Int(f*100))%") }
+
+        // Ruta relativa del ejecutable dentro de game/.
+        let relExe: String
+        if exePath.hasPrefix(gameFolder) {
+            relExe = String(exePath.dropFirst(gameFolder.count)).drop(while: { $0 == "/" }).description
+        } else {
+            relExe = (exePath as NSString).lastPathComponent
+        }
+
+        // 2b) DLLs de **DXMT** junto al exe (D3D11/DXGI/D3D10 → Metal). Es lo que hace Vessel al jugar
+        // (`ensureGameDXMTDLLs`): sin esto, UnityPlayer no encuentra d3d11.dll y el juego no arranca.
+        // VALIDADO: con estas DLLs el juego renderiza standalone por DXMT→Metal. Solo en la copia del
+        // `.app` (la exportación Windows queda limpia, porque en un PC Windows manda su propio d3d11).
+        let exeDirInApp = (resources.appendingPathComponent("game").appendingPathComponent(relExe).path as NSString).deletingLastPathComponent
+        let dxmtSrc = "\(engineDir)/lib/wine/x86_64-windows"
+        for dll in ["d3d11.dll", "dxgi.dll", "d3d10core.dll", "d3d10.dll", "d3d10_1.dll", "winemetal.dll"] {
+            let src = "\(dxmtSrc)/\(dll)", dst = "\(exeDirInApp)/\(dll)"
+            if fm.fileExists(atPath: src) { try? fm.removeItem(atPath: dst); try? fm.copyItem(atPath: src, toPath: dst) }
+        }
+
+        // 3) Launcher + Info.plist.
+        progress(0.95, "Escribiendo el launcher…")
+        try Self.launcherScript(appName: slug, relExe: relExe).write(
+            to: macOS.appendingPathComponent("launch"), atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: macOS.appendingPathComponent("launch").path)
+        try Self.infoPlist(appName: slug).write(
+            to: contents.appendingPathComponent("Info.plist"), atomically: true, encoding: .utf8)
+
+        // 4) Firma ad-hoc (deep) + quitar quarantine local.
+        progress(0.98, "Firmando la app…")
+        await Self.stripQuarantine(appURL.path)
+        _ = await Self.run("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", appURL.path])
+
+        progress(1.0, "Listo")
+        return appURL
+    }
+
+    // MARK: - Launcher
+
+    private static func launcherScript(appName: String, relExe: String) -> String {
+        // Nota: rutas con espacios entre comillas. El motor es x86_64 → corre bajo Rosetta 2.
+        """
+        #!/bin/bash
+        # Launcher autónomo generado por Vessel — ejecuta este juego DRM‑free en cualquier Mac Silicon
+        # SIN Vessel, usando el motor Wine+DXMT empaquetado. El juego ya trae Goldberg (sin Steam).
+        HERE="$(cd "$(dirname "$0")" && pwd)"
+        CONTENTS="$(dirname "$HERE")"
+        RES="$CONTENTS/Resources"
+        ENGINE="$RES/engine"
+        GAME="$RES/game"
+        APPNAME="\(appName)"
+        PREFIX="$HOME/Library/Application Support/Vessel Games/$APPNAME"
+        WINE="$ENGINE/bin/wine"
+
+        # Rosetta 2 es imprescindible (el motor es x86_64, como en Vessel).
+        if ! /usr/bin/pgrep -q oahd && ! /usr/bin/arch -x86_64 /usr/bin/true >/dev/null 2>&1; then
+          /usr/bin/osascript -e 'display alert "Falta Rosetta 2" message "Este juego usa un motor x86_64. Instálalo con:\\n\\nsoftwareupdate --install-rosetta --agree-to-license" as critical' >/dev/null 2>&1
+          exit 1
+        fi
+
+        export WINEPREFIX="$PREFIX"
+        export WINEDEBUG="-all"
+        export WINEESYNC="1"
+        export DYLD_FALLBACK_LIBRARY_PATH="$ENGINE/lib:/usr/lib"
+
+        # Primera ejecución (venimos de un USB/copia): quitar quarantine de todo el runtime, o macOS
+        # bloqueará las dylibs del motor. Requiere que el usuario haya abierto la app una vez (botón
+        # derecho → Abrir) para pasar Gatekeeper.
+        FLAG="$PREFIX/.ready"
+        if [ ! -f "$FLAG" ]; then
+          /usr/bin/xattr -dr com.apple.quarantine "$RES" >/dev/null 2>&1 || true
+          mkdir -p "$PREFIX"
+          "$WINE" wineboot --init >/dev/null 2>&1 || true
+          "$ENGINE/bin/wineserver" -w >/dev/null 2>&1 || true
+          touch "$FLAG"
+        fi
+
+        cd "$GAME" || exit 1
+        exec "$WINE" "$GAME/\(relExe)" "$@"
+        """
+    }
+
+    private static func infoPlist(appName: String) -> String {
+        """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+          <key>CFBundleName</key><string>\(appName)</string>
+          <key>CFBundleDisplayName</key><string>\(appName)</string>
+          <key>CFBundleIdentifier</key><string>com.swondev.vessel.export.\(Self.bundleSlug(appName))</string>
+          <key>CFBundleExecutable</key><string>launch</string>
+          <key>CFBundlePackageType</key><string>APPL</string>
+          <key>CFBundleShortVersionString</key><string>1.0</string>
+          <key>CFBundleVersion</key><string>1</string>
+          <key>LSMinimumSystemVersion</key><string>13.0</string>
+          <key>NSHighResolutionCapable</key><true/>
+        </dict>
+        </plist>
+        """
+    }
+
+    // MARK: - Utilidades (copia con progreso, tamaño, firma)
+
+    private static func copyTree(from src: String, to dest: String, totalBytes: Int64,
+                                 _ onProgress: @Sendable @escaping (Double) -> Void) async throws {
+        try FileManager.default.createDirectory(atPath: dest, withIntermediateDirectories: true)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        p.arguments = [src, dest]
+        try p.run()
+        let total = max(totalBytes, 1)
+        while p.isRunning {
+            try? await Task.sleep(for: .milliseconds(1200))
+            onProgress(min(0.999, Double(dirSize(dest)) / Double(total)))
+        }
+        p.waitUntilExit()
+        if p.terminationStatus != 0 { throw ExportError.copyFailed((src as NSString).lastPathComponent) }
+        onProgress(1.0)
+    }
+
+    static func dirSize(_ path: String) -> Int64 {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/du")
+        p.arguments = ["-sk", path]
+        let out = Pipe(); p.standardOutput = out; p.standardError = Pipe()
+        do { try p.run() } catch { return 0 }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        guard let s = String(data: data, encoding: .utf8), let kb = Int64(s.split(separator: "\t").first ?? "") else { return 0 }
+        return kb * 1024
+    }
+
+    @discardableResult
+    private static func run(_ tool: String, _ args: [String]) async -> Int32 {
+        let p = Process(); p.executableURL = URL(fileURLWithPath: tool); p.arguments = args
+        p.standardOutput = Pipe(); p.standardError = Pipe()
+        do { try p.run() } catch { return -1 }
+        p.waitUntilExit(); return p.terminationStatus
+    }
+
+    private static func stripQuarantine(_ path: String) async {
+        _ = await run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", path])
+    }
+
+    static func sanitize(_ s: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_ "))
+        let cleaned = String(s.unicodeScalars.filter { allowed.contains($0) }).trimmingCharacters(in: .whitespaces)
+        return cleaned.isEmpty ? "Juego" : cleaned
+    }
+    private static func bundleSlug(_ s: String) -> String {
+        let allowed = CharacterSet.alphanumerics
+        let c = String(s.unicodeScalars.filter { allowed.contains($0) }).lowercased()
+        return c.isEmpty ? "game" : c
+    }
+}

@@ -20,6 +20,10 @@ struct LocalGamesView: View {
     @State private var downloading: [UUID: (Double, String)] = [:]
     @State private var syncing = false
     @State private var banner: (String, Bool)?   // (mensaje, esError)
+    /// Juego pendiente de elegir formato de exportación (Mac app vs carpeta Windows).
+    @State private var exportChoice: LocalGamesStore.Game?
+    /// Progreso de una exportación larga (nombre, fracción, mensaje) — banner persistente.
+    @State private var exportProgress: (name: String, frac: Double, msg: String)?
 
     /// Bottle compartido (el mismo prefijo con Wine + fixes que usa Steam).
     private var bottle: Bottle? {
@@ -63,9 +67,18 @@ struct LocalGamesView: View {
             onReload: { refresh() },
             onLogout: { },
             toolbarExtra: AnyView(drmFreeMenu),
-            onExport: { sg in if let g = game(sg) { exportGame(g) } }
+            onExport: { sg in if let g = game(sg) { exportChoice = g } }
         )
         .overlay(alignment: .bottom) { bannerView }
+        .confirmationDialog("Exportar «\(exportChoice?.name ?? "")»",
+                            isPresented: Binding(get: { exportChoice != nil }, set: { if !$0 { exportChoice = nil } }),
+                            titleVisibility: .visible) {
+            Button("App para Mac (Apple Silicon)") { if let g = exportChoice { exportChoice = nil; exportMacApp(g) } }
+            Button("Carpeta Windows (para USB/PC)") { if let g = exportChoice { exportChoice = nil; exportGame(g) } }
+            Button("Cancelar", role: .cancel) { exportChoice = nil }
+        } message: {
+            Text("«App para Mac» empaqueta el juego + el motor (~2,2 GB) en un .app que arranca en cualquier Mac Apple Silicon sin Vessel. «Carpeta Windows» copia el juego DRM‑free para ejecutarlo en un PC.")
+        }
         .sheet(isPresented: $showingItchLink) { ItchLinkSheet { user in
             flash("itch.io vinculado como \(user).", false); syncItch()
         } }
@@ -117,7 +130,21 @@ struct LocalGamesView: View {
     }
 
     @ViewBuilder private var bannerView: some View {
-        if let banner {
+        if let ep = exportProgress {
+            VStack(spacing: 8) {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small).tint(.white)
+                    Text("Exportando «\(ep.name)» — \(ep.msg)").font(.callout.weight(.medium)).foregroundStyle(.white).lineLimit(1)
+                }
+                ProgressView(value: ep.frac).tint(StoreKind.local.tint).frame(width: 320)
+            }
+            .padding(.horizontal, 18).padding(.vertical, 13)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.white.opacity(0.14), lineWidth: 1))
+            .shadow(color: .black.opacity(0.35), radius: 16, y: 6)
+            .padding(.bottom, 26)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        } else if let banner {
             Label(banner.0, systemImage: banner.1 ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                 .font(.callout.weight(.medium)).foregroundStyle(.white)
                 .padding(.horizontal, 16).padding(.vertical, 11)
@@ -222,6 +249,38 @@ struct LocalGamesView: View {
                          : "La copia falló (código \(p.terminationStatus)).", !ok)
             } catch {
                 flash("No se pudo exportar: \(error.localizedDescription)", true)
+            }
+        }
+    }
+
+    /// **Exporta como app de macOS autónoma** (Apple Silicon): empaqueta el juego + el motor en un
+    /// `.app` que arranca en cualquier Mac Silicon SIN Vessel. Copiable a un USB.
+    private func exportMacApp(_ g: LocalGamesStore.Game) {
+        let folder = g.installPath
+            ?? (g.executablePath.isEmpty ? nil : (g.executablePath as NSString).deletingLastPathComponent)
+        guard let folder, FileManager.default.fileExists(atPath: folder), !g.executablePath.isEmpty else {
+            flash("Este juego no tiene una carpeta local que empaquetar.", true); return
+        }
+        let panel = NSOpenPanel()
+        panel.title = "Elige dónde crear la app de «\(g.name)» (USB, disco…)"
+        panel.prompt = "Exportar app aquí"
+        panel.message = "Se creará una app de macOS autónoma (~2,2 GB) que arranca en cualquier Mac Apple Silicon sin Vessel."
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let destParent = panel.url else { return }
+        exportProgress = (g.name, 0, "Preparando…")
+        Task {
+            do {
+                let appURL = try await StandaloneMacExporter.shared.exportMacApp(
+                    name: g.name, gameFolder: folder, exePath: g.executablePath, destParent: destParent
+                ) { frac, msg in Task { @MainActor in exportProgress = (g.name, frac, msg) } }
+                exportProgress = nil
+                flash("App de «\(g.name)» creada en \(destParent.lastPathComponent) — arranca en cualquier Mac Silicon.", false)
+                NSWorkspace.shared.activateFileViewerSelecting([appURL])
+            } catch {
+                exportProgress = nil
+                flash((error as? LocalizedError)?.errorDescription ?? "No se pudo exportar la app.", true)
             }
         }
     }
