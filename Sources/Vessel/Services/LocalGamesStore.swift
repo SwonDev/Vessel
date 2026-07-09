@@ -167,6 +167,24 @@ final class LocalGamesStore {
 
     func remove(_ id: UUID) { games.removeAll { $0.id == id }; save() }
 
+    /// "Desinstala" un juego: borra los archivos si Vessel los generó/descargó. Para itch/Humble
+    /// conserva la entrada de biblioteca (vuelve a estado "no instalado", re-descargable); para el
+    /// resto (local/steam/gog) lo quita de la lista.
+    func uninstall(_ id: UUID) {
+        guard let i = games.firstIndex(where: { $0.id == id }) else { return }
+        if let ip = games[i].installPath, ip.hasPrefix(VesselPaths.drmFreeDirectory) {
+            try? FileManager.default.removeItem(atPath: ip)
+        }
+        if games[i].source == .itch || games[i].source == .humble {
+            games[i].executablePath = ""
+            games[i].installPath = nil
+            save()
+        } else {
+            games.remove(at: i)
+            save()
+        }
+    }
+
     /// Quita el juego de la lista y, si estaba instalado por Vessel, borra su carpeta de instalación.
     func removeAndDelete(_ id: UUID) {
         guard let g = games.first(where: { $0.id == id }) else { return }

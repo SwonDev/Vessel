@@ -143,6 +143,14 @@ struct StoreLibraryView: View {
     /// Abrir el cliente Steam completo (solo Steam). Si se provee, aparece "Abrir Steam" en el
     /// menú "…": arranca Steam conectado en D3DMetal para jugar DESDE Steam con DRM real.
     var onOpenSteam: (() -> Void)? = nil
+    /// Controles EXTRA propios de la tienda, mostrados en la cabecera del grid (junto al selector de
+    /// densidad) y en la cabecera de la sidebar. Lo usa la sección DRM‑free para sus acciones
+    /// (vincular itch.io/Humble, generar desde Steam, añadir .exe). `nil` en el resto de tiendas.
+    var toolbarExtra: AnyView? = nil
+    /// **Exportar** un juego instalado (copiar su carpeta autocontenida a un USB/disco externo). Lo
+    /// usa la sección DRM‑free: los juegos generados son portables y "tuyos". Si se provee, aparece
+    /// "Exportar juego…" en el menú contextual de la carátula. `nil` en el resto de tiendas.
+    var onExport: ((StoreGame) -> Void)? = nil
 
     @State private var search = ""
     /// Foco del buscador (para el atajo ⌘F). Se aplica a ambos buscadores (sidebar y cabecera);
@@ -399,6 +407,7 @@ struct StoreLibraryView: View {
                     Spacer()
                     Text("\(displayed.count) juego\(displayed.count == 1 ? "" : "s")")
                         .font(.subheadline).foregroundStyle(.white.opacity(0.5))
+                    if let toolbarExtra { toolbarExtra }
                     gridDensityToggle
                 }
                 grid
@@ -500,10 +509,13 @@ struct StoreLibraryView: View {
             steamLogo
             VStack(alignment: .leading, spacing: 1) {
                 Text(store.displayName).font(.headline).foregroundStyle(.white)
+                    .lineLimit(1).minimumScaleFactor(0.7)
                 Text("\(games.count) juego\(games.count == 1 ? "" : "s")")
                     .font(.caption2).foregroundStyle(.white.opacity(0.45))
+                    .lineLimit(1)
             }
-            Spacer()
+            .layoutPriority(1)
+            Spacer(minLength: 4)
             Button { sidebarCollapsed = true } label: {
                 Image(systemName: "sidebar.left").font(.body.weight(.medium))
                     .foregroundStyle(.white.opacity(0.55)).frame(width: 26, height: 26).contentShape(Rectangle())
@@ -740,7 +752,8 @@ struct StoreLibraryView: View {
                         onPlay: { onPlay(game) },
                         onToggleFavorite: { toggleFav(game.id) },
                         onUninstall: { onUninstall(game) },
-                        onOpen: { selectedGame = game }
+                        onOpen: { selectedGame = game },
+                        onExport: onExport.map { cb in { cb(game) } }
                     )
                     .transition(.opacity.combined(with: .scale(scale: 0.97)))
                 }
@@ -767,6 +780,8 @@ struct StoreGameCard: View {
     var onToggleFavorite: () -> Void = {}
     var onUninstall: () -> Void = {}
     var onOpen: () -> Void = {}
+    /// Exportar (copiar a USB/disco). Si es `nil`, no se muestra la opción. Lo usa DRM‑free.
+    var onExport: (() -> Void)? = nil
 
     // Reutilizan la lógica del modelo (sin duplicar): ver `StoreGame`.
     private var placeholderColor: Color { game.placeholderColor }
@@ -790,6 +805,12 @@ struct StoreGameCard: View {
                 if game.installed {
                     Button { onPlay() } label: { Label("Jugar", systemImage: "play.fill") }
                     Button { onOpen() } label: { Label("Ver detalles", systemImage: "info.circle") }
+                    if let path = game.installPath, !path.isEmpty {
+                        Button { NSWorkspace.shared.open(URL(fileURLWithPath: path)) } label: { Label("Abrir carpeta", systemImage: "folder") }
+                    }
+                    if let onExport {
+                        Button { onExport() } label: { Label("Exportar juego… (copiar a USB)", systemImage: "externaldrive.badge.plus") }
+                    }
                     Divider()
                     Button(role: .destructive) { onUninstall() } label: { Label("Desinstalar", systemImage: "trash") }
                 } else if !installing {

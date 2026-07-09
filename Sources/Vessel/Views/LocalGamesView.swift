@@ -2,75 +2,70 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-/// **Hub DRM‑free** de Vessel: agrega TODO lo sin DRM y del usuario — biblioteca de **itch.io**,
-/// de **Humble Bundle**, GOG offline y cualquier `.exe`/instalador suelto. Vincula cuentas,
-/// sincroniza bibliotecas, descarga/instala, y ejecuta cada juego con el motor gráfico óptimo +
-/// auto‑reparación + backup de partidas, reutilizando el bottle de Steam (prefijo con Wine + fixes).
+/// **Hub DRM‑free** de Vessel. Reutiliza `StoreLibraryView` (la MISMA biblioteca genérica de
+/// Steam/Epic/GOG) → hereda la sidebar buscable, la rejilla con densidad y la ficha, con total
+/// coherencia visual. Sus acciones propias (vincular itch.io/Humble, generar copias locales desde
+/// Steam, añadir .exe/instalador) viven en `toolbarExtra`. Agrega TODO lo sin DRM del usuario:
+/// itch.io, Humble Bundle, copias locales de Steam, GOG offline y cualquier ejecutable de Windows.
 struct LocalGamesView: View {
     private var games = LocalGamesStore.shared
     private let store = BottleStore.shared
     @State private var wineManager = WineManager()
     private var tracker = GameLaunchTracker.shared
 
-    @State private var filter: SourceFilter = .all
     @State private var showingItchLink = false
     @State private var showingHumbleLink = false
     @State private var showingSteamImport = false
-    /// Progreso de descarga/instalación por juego: (fracción 0…1, mensaje).
+    /// Progreso de descarga/instalación por juego (fracción 0…1, mensaje).
     @State private var downloading: [UUID: (Double, String)] = [:]
     @State private var syncing = false
     @State private var banner: (String, Bool)?   // (mensaje, esError)
 
-    enum SourceFilter: Hashable { case all, steam, itch, humble, local
-        var title: String {
-            switch self { case .all: return "Todos"; case .steam: return "Steam"; case .itch: return "itch.io"
-            case .humble: return "Humble"; case .local: return "Local" }
-        }
-    }
-
+    /// Bottle compartido (el mismo prefijo con Wine + fixes que usa Steam).
     private var bottle: Bottle? {
         store.bottles.first(where: { $0.name == "Steam" })
             ?? store.bottles.first(where: { FileManager.default.fileExists(atPath: $0.steamPath) })
             ?? store.bottles.first
     }
 
-    private var visibleGames: [LocalGamesStore.Game] {
-        let all = games.games
-        switch filter {
-        case .all: return all
-        case .steam: return all.filter { $0.source == .steam }
-        case .itch: return all.filter { $0.source == .itch }
-        case .humble: return all.filter { $0.source == .humble }
-        case .local: return all.filter { $0.source == .local || $0.source == .gogOffline }
+    // MARK: - Mapeo a StoreGame (para reutilizar StoreLibraryView)
+
+    private var storeGames: [StoreGame] {
+        games.games.map { g in
+            let folder = g.installPath
+                ?? (g.installed ? (g.executablePath as NSString).deletingLastPathComponent : nil)
+            return StoreGame(
+                id: g.id.uuidString,
+                title: g.name,
+                coverURL: g.coverURL,
+                steamAppId: g.source == .steam ? g.sourceId : nil,
+                installed: g.installed,
+                installPath: folder
+            )
         }
     }
 
-    private var columns: [GridItem] {
-        [GridItem(.adaptive(minimum: 158, maximum: 200), spacing: Theme.Space.gameGrid)]
+    private func game(_ sg: StoreGame) -> LocalGamesStore.Game? {
+        games.games.first { $0.id.uuidString == sg.id }
     }
+    private func uuid(_ id: String) -> UUID? { UUID(uuidString: id) }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Theme.Space.section) {
-                header
-                accountsBar
-                if let banner {
-                    Label(banner.0, systemImage: banner.1 ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                        .font(.callout).foregroundStyle(banner.1 ? .orange : .green)
-                        .padding(.horizontal, 12).padding(.vertical, 8)
-                        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
-                }
-                filterPills
-                if visibleGames.isEmpty {
-                    emptyState
-                } else {
-                    gridSection
-                }
-            }
-            .padding(Theme.Space.page)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .vesselBackground(tint: StoreKind.local.tint)
+        StoreLibraryView(
+            store: .local,
+            games: storeGames,
+            installingIDs: Set(downloading.keys.map { $0.uuidString }),
+            progressFor: { id in uuid(id).flatMap { downloading[$0]?.1 } },
+            percentFor: { id in uuid(id).flatMap { downloading[$0]?.0 } },
+            onInstall: { sg in if let g = game(sg) { download(g) } },
+            onPlay: { sg in if let g = game(sg) { play(g) } },
+            onUninstall: { sg in if let g = game(sg) { games.uninstall(g.id) } },
+            onReload: { refresh() },
+            onLogout: { },
+            toolbarExtra: AnyView(drmFreeMenu),
+            onExport: { sg in if let g = game(sg) { exportGame(g) } }
+        )
+        .overlay(alignment: .bottom) { bannerView }
         .sheet(isPresented: $showingItchLink) { ItchLinkSheet { user in
             flash("itch.io vinculado como \(user).", false); syncItch()
         } }
@@ -88,169 +83,65 @@ struct LocalGamesView: View {
         }
     }
 
-    // MARK: - Secciones
+    // MARK: - Acciones propias (toolbarExtra)
 
-    /// Título de sección + rejilla de carátulas (mismo estilo que las demás tiendas).
-    private var gridSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(sectionTitle).font(.title2.bold()).foregroundStyle(.white)
-                Spacer()
-                Text("\(visibleGames.count) juego\(visibleGames.count == 1 ? "" : "s")")
-                    .font(.subheadline).foregroundStyle(.white.opacity(0.5))
-            }
-            LazyVGrid(columns: columns, spacing: Theme.Space.gameGrid) {
-                ForEach(visibleGames) { game in
-                    DRMFreeCard(
-                        game: game,
-                        progress: downloading[game.id],
-                        busy: tracker.isBusy(game.id.uuidString),
-                        running: tracker.state(game.id.uuidString) == .running,
-                        onPlay: { play(game) },
-                        onStop: { tracker.stop(game.id.uuidString) },
-                        onDownload: { download(game) },
-                        onReveal: { reveal(game) },
-                        onOpenFolder: { openFolder(game) },
-                        onRemove: { games.remove(game.id) },
-                        onDelete: { games.removeAndDelete(game.id) }
-                    )
-                    .transition(.opacity.combined(with: .scale(scale: 0.97)))
+    private var drmFreeMenu: some View {
+        Menu {
+            Button { showingSteamImport = true } label: { Label("Generar copia local desde Steam…", systemImage: "arrow.down.doc") }
+            Button { addGame() } label: { Label("Añadir un .exe de juego…", systemImage: "plus.app") }
+            Button { runInstaller() } label: { Label("Ejecutar un instalador…", systemImage: "shippingbox") }
+            Divider()
+            if ItchService.shared.isLinked {
+                Menu("itch.io") {
+                    Button { syncItch() } label: { Label("Sincronizar biblioteca", systemImage: "arrow.clockwise") }
+                    Button(role: .destructive) { ItchService.shared.setAPIKey(nil); games.removeAll(source: .itch); flash("itch.io desvinculado.", false) } label: { Label("Desvincular", systemImage: "xmark.circle") }
                 }
+            } else {
+                Button { showingItchLink = true } label: { Label("Vincular itch.io…", systemImage: "link") }
             }
-            .animation(.snappy(duration: 0.28), value: visibleGames.count)
-        }
-    }
-
-    private var sectionTitle: String {
-        switch filter {
-        case .all: return "Tus juegos DRM‑free"
-        case .steam: return "Copias locales de Steam"
-        case .itch: return "Biblioteca de itch.io"
-        case .humble: return "Biblioteca de Humble"
-        case .local: return "Juegos locales"
-        }
-    }
-
-    private var header: some View {
-        HStack(alignment: .center, spacing: 14) {
-            StoreLogoTile(store: .local, size: 56)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("DRM‑free").font(.largeTitle.bold()).foregroundStyle(.white)
-                Text("Tu biblioteca sin DRM: itch.io, Humble Bundle, GOG offline o cualquier .exe de Windows.")
-                    .font(.callout).foregroundStyle(.white.opacity(0.6))
-            }
-            Spacer()
-            Menu {
-                Button { showingSteamImport = true } label: { Label("Generar copia local desde Steam…", systemImage: "arrow.down.doc") }
-                Button { addGame() } label: { Label("Añadir un .exe de juego…", systemImage: "plus.app") }
-                Button { runInstaller() } label: { Label("Ejecutar un instalador…", systemImage: "shippingbox") }
-                Divider()
-                if !ItchService.shared.isLinked {
-                    Button { showingItchLink = true } label: { Label("Vincular itch.io…", systemImage: "link") }
+            if HumbleService.shared.isLinked {
+                Menu("Humble Bundle") {
+                    Button { syncHumble() } label: { Label("Sincronizar biblioteca", systemImage: "arrow.clockwise") }
+                    Button(role: .destructive) { HumbleService.shared.setSession(nil); games.removeAll(source: .humble); flash("Humble desvinculado.", false) } label: { Label("Desvincular", systemImage: "xmark.circle") }
                 }
-                if !HumbleService.shared.isLinked {
-                    Button { showingHumbleLink = true } label: { Label("Vincular Humble Bundle…", systemImage: "link") }
-                }
-            } label: {
-                Label("Añadir", systemImage: "plus")
+            } else {
+                Button { showingHumbleLink = true } label: { Label("Vincular Humble Bundle…", systemImage: "link") }
             }
-            .menuStyle(.borderlessButton).fixedSize()
-            .vesselButton(tint: StoreKind.local.tint)
+        } label: {
+            Image(systemName: "plus.circle.fill")
+                .font(.title3).foregroundStyle(StoreKind.local.tint)
+                .frame(width: 28, height: 28).contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .help("Añadir juegos DRM‑free (Steam, itch.io, Humble, .exe)")
+    }
+
+    @ViewBuilder private var bannerView: some View {
+        if let banner {
+            Label(banner.0, systemImage: banner.1 ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                .font(.callout.weight(.medium)).foregroundStyle(.white)
+                .padding(.horizontal, 16).padding(.vertical, 11)
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay(Capsule().strokeBorder((banner.1 ? Color.orange : .green).opacity(0.5), lineWidth: 1))
+                .shadow(color: .black.opacity(0.3), radius: 12, y: 5)
+                .padding(.bottom, 26)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
 
-    /// Barra de estado de cuentas vinculadas (sincronizar / desvincular).
-    @ViewBuilder private var accountsBar: some View {
-        let itch = ItchService.shared.isLinked
-        let humble = HumbleService.shared.isLinked
-        if itch || humble {
-            HStack(spacing: 10) {
-                if itch {
-                    accountChip(name: "itch.io", icon: "gamecontroller.fill",
-                                count: games.games.filter { $0.source == .itch }.count,
-                                onSync: { syncItch() },
-                                onUnlink: { ItchService.shared.setAPIKey(nil); games.removeAll(source: .itch); flash("itch.io desvinculado.", false) })
-                }
-                if humble {
-                    accountChip(name: "Humble", icon: "bag.fill",
-                                count: games.games.filter { $0.source == .humble }.count,
-                                onSync: { syncHumble() },
-                                onUnlink: { HumbleService.shared.setSession(nil); games.removeAll(source: .humble); flash("Humble desvinculado.", false) })
-                }
-                if syncing { ProgressView().controlSize(.small).tint(.white) }
-                Spacer()
-            }
+    private func refresh() {
+        if ItchService.shared.isLinked { syncItch() }
+        if HumbleService.shared.isLinked { syncHumble() }
+        if !ItchService.shared.isLinked && !HumbleService.shared.isLinked {
+            flash("Biblioteca DRM‑free actualizada.", false)
         }
     }
 
-    private func accountChip(name: String, icon: String, count: Int,
-                             onSync: @escaping () -> Void, onUnlink: @escaping () -> Void) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: icon).foregroundStyle(StoreKind.local.tint)
-            Text("\(name) · \(count)").font(.callout.weight(.medium)).foregroundStyle(.white)
-            Button { onSync() } label: { Image(systemName: "arrow.clockwise") }.buttonStyle(.plain)
-                .foregroundStyle(.white.opacity(0.7)).help("Sincronizar biblioteca")
-            Menu { Button("Desvincular", role: .destructive) { onUnlink() } } label: {
-                Image(systemName: "ellipsis")
-            }.menuStyle(.borderlessButton).fixedSize().foregroundStyle(.white.opacity(0.6))
-        }
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(.white.opacity(0.06), in: Capsule())
-        .overlay(Capsule().strokeBorder(.white.opacity(0.1), lineWidth: 0.5))
-    }
-
-    private var filterPills: some View {
-        HStack(spacing: 8) {
-            ForEach([SourceFilter.all, .steam, .itch, .humble, .local], id: \.self) { f in
-                let n = count(for: f)
-                Button { withAnimation(.snappy) { filter = f } } label: {
-                    Text(n > 0 ? "\(f.title) (\(n))" : f.title)
-                        .font(.subheadline.weight(.medium))
-                        .padding(.horizontal, 14).padding(.vertical, 7)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(filter == f ? .white : .white.opacity(0.6))
-                .background(filter == f ? StoreKind.local.tint.opacity(0.85) : Color.white.opacity(0.06),
-                            in: Capsule())
-            }
-        }
-    }
-
-    private func count(for f: SourceFilter) -> Int {
-        switch f {
-        case .all: return games.games.count
-        case .steam: return games.games.filter { $0.source == .steam }.count
-        case .itch: return games.games.filter { $0.source == .itch }.count
-        case .humble: return games.games.filter { $0.source == .humble }.count
-        case .local: return games.games.filter { $0.source == .local || $0.source == .gogOffline }.count
-        }
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "lock.open.fill").font(.system(size: 48)).foregroundStyle(StoreKind.local.tint)
-            Text("Tu biblioteca DRM‑free está vacía").font(.title3.weight(.semibold)).foregroundStyle(.white)
-            Text("Genera copias locales DRM‑free de tus juegos de Steam, vincula itch.io o Humble Bundle para traer tus juegos, o añade un .exe / instalador a mano. Vessel los ejecuta con el motor óptimo.")
-                .font(.callout).foregroundStyle(.white.opacity(0.55)).multilineTextAlignment(.center).frame(maxWidth: 500)
-            Button { showingSteamImport = true } label: { Label("Generar copia local desde Steam", systemImage: "arrow.down.doc").frame(maxWidth: 300) }
-                .vesselButton(tint: StoreKind.local.tint)
-            HStack(spacing: 10) {
-                Button { showingItchLink = true } label: { Label("Vincular itch.io", systemImage: "link") }
-                    .vesselButton(tint: StoreKind.local.tint)
-                Button { showingHumbleLink = true } label: { Label("Vincular Humble", systemImage: "link") }
-                    .vesselButton(tint: StoreKind.local.tint)
-                Button { addGame() } label: { Label("Añadir .exe", systemImage: "plus") }
-                    .vesselButton(tint: StoreKind.local.tint)
-            }
-        }
-        .frame(maxWidth: .infinity).padding(.top, 60)
-    }
-
-    // MARK: - Añadir local / revelar
+    // MARK: - Añadir local / instalador
 
     private func addGame() {
         let panel = NSOpenPanel()
-        panel.title = "Elige el ejecutable de Windows (.exe) o un instalador"
+        panel.title = "Elige el ejecutable de Windows (.exe)"
         panel.prompt = "Añadir"
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
@@ -260,8 +151,8 @@ struct LocalGamesView: View {
         games.add(name: "", executablePath: url.path)
     }
 
-    /// Ejecuta un **instalador** de Windows dentro del bottle (para "generar" el juego). Cuando el
-    /// instalador termina, ofrece elegir el ejecutable resultante (apunta a Program Files del bottle).
+    /// Ejecuta un **instalador** en el bottle (para "generar" el juego) y, al terminar, ofrece elegir
+    /// el ejecutable resultante (apunta a Program Files del bottle).
     private func runInstaller() {
         guard let bottle else { flash("Aún no hay un entorno de Wine listo.", true); return }
         let panel = NSOpenPanel()
@@ -277,7 +168,7 @@ struct LocalGamesView: View {
             do {
                 let proc = try await wineManager.launch(executable: url.path, in: bottle,
                                                         arguments: [], effective: EffectiveLaunchConfig())
-                while proc.isRunning { try? await Task.sleep(for: .seconds(1)) }   // esperar sin bloquear
+                while proc.isRunning { try? await Task.sleep(for: .seconds(1)) }
                 await MainActor.run { promptForInstalledExe(in: bottle) }
             } catch {
                 flash((error as? LocalizedError)?.errorDescription ?? "No se pudo ejecutar el instalador.", true)
@@ -285,7 +176,6 @@ struct LocalGamesView: View {
         }
     }
 
-    /// Panel para elegir el ejecutable recién instalado, ya apuntando a Program Files del bottle.
     private func promptForInstalledExe(in bottle: Bottle) {
         let panel = NSOpenPanel()
         panel.title = "Elige el ejecutable del juego instalado"
@@ -301,28 +191,47 @@ struct LocalGamesView: View {
         if games.add(name: "", executablePath: url.path) != nil { flash("Juego añadido.", false) }
     }
 
-    private func reveal(_ game: LocalGamesStore.Game) {
-        let path = game.installed ? game.executablePath : (game.installPath ?? game.executablePath)
-        guard !path.isEmpty else {
-            if let s = game.pageURL, let u = URL(string: s) { NSWorkspace.shared.open(u) }; return
+    /// **Exporta** el juego: copia su carpeta autocontenida (juego + Goldberg) a un USB/disco externo
+    /// elegido por el usuario. Como es DRM‑free y suyo, puede llevárselo y ejecutarlo en otro sitio.
+    private func exportGame(_ g: LocalGamesStore.Game) {
+        let dir = g.installPath
+            ?? (g.executablePath.isEmpty ? nil : (g.executablePath as NSString).deletingLastPathComponent)
+        guard let dir, FileManager.default.fileExists(atPath: dir) else {
+            flash("Este juego no tiene una carpeta local que exportar.", true); return
         }
-        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
-    }
-
-    /// Abre en Finder la CARPETA de archivos generados/instalados (para copiarlos, respaldarlos…).
-    private func openFolder(_ game: LocalGamesStore.Game) {
-        let dir = game.installPath
-            ?? (game.executablePath.isEmpty ? nil : (game.executablePath as NSString).deletingLastPathComponent)
-        guard let dir, !dir.isEmpty else { return }
-        NSWorkspace.shared.open(URL(fileURLWithPath: dir))
+        let panel = NSOpenPanel()
+        panel.title = "Elige dónde copiar «\(g.name)» (USB, disco externo…)"
+        panel.prompt = "Exportar aquí"
+        panel.message = "Se copiará una carpeta autocontenida y DRM‑free, lista para ejecutar en otro equipo."
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let destParent = panel.url else { return }
+        let destName = DRMFreeInstaller.sanitize(g.name)
+        let dest = destParent.appendingPathComponent(destName)
+        flash("Copiando «\(g.name)» a \(destParent.lastPathComponent)…", false)
+        Task {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+            p.arguments = [dir, dest.path]
+            do {
+                try p.run()
+                while p.isRunning { try? await Task.sleep(for: .milliseconds(500)) }
+                let ok = p.terminationStatus == 0
+                flash(ok ? "«\(g.name)» exportado a \(destParent.lastPathComponent) — listo para llevártelo."
+                         : "La copia falló (código \(p.terminationStatus)).", !ok)
+            } catch {
+                flash("No se pudo exportar: \(error.localizedDescription)", true)
+            }
+        }
     }
 
     private func flash(_ msg: String, _ isError: Bool) {
-        withAnimation { banner = (msg, isError) }
+        withAnimation(.smooth) { banner = (msg, isError) }
         Task { try? await Task.sleep(for: .seconds(5)); await MainActor.run { withAnimation { if banner?.0 == msg { banner = nil } } } }
     }
 
-    // MARK: - Sincronizar bibliotecas
+    // MARK: - Sincronizar bibliotecas vinculadas
 
     private func syncItch() {
         syncing = true
@@ -355,17 +264,17 @@ struct LocalGamesView: View {
         }
     }
 
-    // MARK: - Descargar / instalar
+    // MARK: - Descargar / instalar (itch/Humble)
 
-    private func download(_ game: LocalGamesStore.Game) {
-        guard let sid = game.sourceId else { return }
-        downloading[game.id] = (0, "Resolviendo descarga…")
+    private func download(_ g: LocalGamesStore.Game) {
+        guard let sid = g.sourceId else { return }
+        downloading[g.id] = (0, "Resolviendo descarga…")
         Task {
             do {
                 let url: URL
                 var headers: [String: String] = [:]
                 var filenameHint: String? = nil
-                switch game.source {
+                switch g.source {
                 case .itch:
                     let parts = sid.split(separator: ":").map(String.init)
                     guard parts.count == 2, let gid = Int(parts[0]), let dkid = Int(parts[1]) else {
@@ -383,18 +292,16 @@ struct LocalGamesView: View {
                 default:
                     throw NSError(domain: "Vessel", code: 1, userInfo: [NSLocalizedDescriptionKey: "Fuente sin descarga automática."])
                 }
-                let name = game.name
+                let name = g.name
                 let installed = try await DRMFreeInstaller.shared.downloadAndInstall(
                     url: url, headers: headers, slug: name, suggestedName: name, filenameHint: filenameHint
-                ) { frac, msg in
-                    Task { @MainActor in downloading[game.id] = (frac, msg) }
-                }
-                games.setInstalled(game.id, executablePath: installed.executablePath, installPath: installed.installDir)
-                downloading[game.id] = nil
+                ) { frac, msg in Task { @MainActor in downloading[g.id] = (frac, msg) } }
+                games.setInstalled(g.id, executablePath: installed.executablePath, installPath: installed.installDir)
+                downloading[g.id] = nil
                 flash("«\(name)» instalado.", false)
             } catch {
-                downloading[game.id] = nil
-                flash((error as? LocalizedError)?.errorDescription ?? "Error al descargar «\(game.name)».", true)
+                downloading[g.id] = nil
+                flash((error as? LocalizedError)?.errorDescription ?? "Error al descargar «\(g.name)».", true)
             }
         }
     }
