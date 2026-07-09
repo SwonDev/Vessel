@@ -62,8 +62,10 @@ struct ItchLinkSheet: View {
 
 // MARK: - Generar juegos DRM-free desde Steam
 
-/// Hoja que escanea los juegos de Steam instalados, los clasifica por DRM y permite **generar una
-/// copia local DRM‑free** (copia los archivos + Goldberg) de los que pueden correr sin Steam.
+/// Hoja que trabaja con TODA tu biblioteca de Steam: (1) los juegos **instalados** los clasifica por
+/// DRM y genera una **copia local DRM‑free** (copia + Goldberg); (2) los juegos **poseídos pero no
+/// instalados** los puede **instalar desde Steam (SteamCMD) y generar** en un solo paso. El resultado
+/// es una carpeta autocontenida, ejecutable sin Steam y exportable a un USB.
 struct SteamDRMImportSheet: View {
     let bottle: Bottle
     let onGenerated: (SteamDRMScanner.Candidate, String, String) -> Void
@@ -71,79 +73,154 @@ struct SteamDRMImportSheet: View {
 
     @State private var candidates: [SteamDRMScanner.Candidate] = []
     @State private var scanning = true
-    @State private var generating: [String: (Double, String)] = [:]   // appId → progreso
+    /// Progreso por appId (compartido: generar o instalar+generar).
+    @State private var progress: [String: (Double, String)] = [:]
     @State private var done: Set<String> = []
+    @State private var failed: [String: String] = [:]
+
+    // Biblioteca poseída (para instalar+generar los que aún no están).
+    @State private var accountService = SteamAccountService()
+    @State private var steamCMD = SteamCMDManager()
+    @State private var ownedGames: [SteamAccountService.OwnedGame] = []
+    @State private var loadingOwned = false
+    @State private var search = ""
+    @State private var showSteamCMDLogin = false
+    @State private var pendingInstall: (appId: String, name: String)?
+    @AppStorage("steamcmd.user") private var steamCMDUser = ""
 
     private var generable: [SteamDRMScanner.Candidate] { candidates.filter { $0.status.isGenerable } }
+    private var installedAppIds: Set<String> { Set(candidates.map { $0.appId }) }
+    private var ownedNotInstalled: [SteamAccountService.OwnedGame] {
+        let q = search.trimmingCharacters(in: .whitespaces).lowercased()
+        return ownedGames
+            .filter { !installedAppIds.contains($0.appId) && !done.contains($0.appId) }
+            .filter { q.isEmpty || $0.name.lowercased().contains(q) }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Image(systemName: "arrow.down.doc.fill").foregroundStyle(StoreKind.local.tint)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Generar juegos DRM‑free desde Steam").font(.headline)
-                    Text("Vessel copia los archivos y los deja ejecutables sin Steam (Goldberg).")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("Cerrar") { dismiss() }
-            }
-            .padding(14)
+            header
             Divider()
             if scanning {
                 VStack(spacing: 10) { ProgressView(); Text("Escaneando tu biblioteca de Steam…").foregroundStyle(.secondary) }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if candidates.isEmpty {
-                Text("No se encontraron juegos de Steam instalados en el entorno de Vessel.")
-                    .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity).padding()
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(candidates) { c in row(c); Divider() }
-                    }
-                }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("\(generable.count) de \(candidates.count) juegos instalados pueden generarse como DRM‑free.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text("Solo aparecen los juegos instalados. Para generar otros, instálalos antes desde la pestaña Steam.")
-                        .font(.caption2).foregroundStyle(.secondary.opacity(0.7))
-                }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                content
             }
         }
-        .frame(width: 640, height: 560)
-        .task { await scan() }
+        .frame(width: 700, height: 640)
+        .task { await scan(); await loadOwned() }
+        .sheet(isPresented: $showSteamCMDLogin) {
+            SteamCMDLoginView(suggestedUser: steamCMDUser.isEmpty ? (accountService.detectAccount(bottle: bottle)?.accountName ?? "") : steamCMDUser) { user in
+                steamCMDUser = user
+                if let p = pendingInstall {
+                    pendingInstall = nil
+                    Task { await doInstallAndGenerate(appId: p.appId, name: p.name, user: user) }
+                }
+            }
+        }
     }
 
-    private func row(_ c: SteamDRMScanner.Candidate) -> some View {
+    private var header: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.down.doc.fill").foregroundStyle(StoreKind.local.tint)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Juegos DRM‑free desde Steam").font(.headline)
+                Text("Genera copias locales autocontenidas (sin Steam, con Goldberg) — instálalas si hace falta.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Cerrar") { dismiss() }
+        }
+        .padding(14)
+    }
+
+    private var content: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                Section {
+                    if candidates.isEmpty {
+                        Text("No hay juegos de Steam instalados en el entorno de Vessel.")
+                            .font(.callout).foregroundStyle(.secondary).padding(14)
+                    } else {
+                        ForEach(candidates) { c in
+                            gameRow(appId: c.appId, name: c.name, cover: c.coverURL,
+                                    badge: (c.status.label, badgeColor(c.status)),
+                                    detail: byteString(c.sizeBytes)) { installedAction(c) }
+                            Divider()
+                        }
+                    }
+                } header: { sectionHeader("Instalados — listos para generar (\(generable.count))") }
+
+                Section {
+                    searchField
+                    if loadingOwned && ownedNotInstalled.isEmpty {
+                        HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Cargando tu biblioteca…").font(.caption).foregroundStyle(.secondary) }.padding(14)
+                    } else if ownedGames.isEmpty {
+                        Text("Conecta tu cuenta de Steam (pestaña Steam) para ver e instalar tu biblioteca aquí.")
+                            .font(.caption).foregroundStyle(.secondary).padding(14)
+                    }
+                    ForEach(ownedNotInstalled.prefix(150)) { g in
+                        gameRow(appId: g.appId, name: g.name,
+                                cover: "https://cdn.akamai.steamstatic.com/steam/apps/\(g.appId)/library_600x900_2x.jpg",
+                                badge: nil, detail: "AppID \(g.appId)") { ownedAction(g) }
+                        Divider()
+                    }
+                    if ownedNotInstalled.count > 150 {
+                        Text("Mostrando 150 de \(ownedNotInstalled.count). Refina la búsqueda para ver más.")
+                            .font(.caption2).foregroundStyle(.secondary).padding(12)
+                    }
+                } header: { sectionHeader("Tu biblioteca de Steam — instalar y generar") }
+            }
+        }
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(.ultraThinMaterial)
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.caption)
+            TextField("Buscar en tu biblioteca de Steam…", text: $search).textFieldStyle(.plain).font(.callout)
+        }
+        .padding(8).background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, 14).padding(.vertical, 8)
+    }
+
+    private func gameRow<Trailing: View>(appId: String, name: String, cover: String?,
+                                         badge: (String, Color)?, detail: String,
+                                         @ViewBuilder trailing: () -> Trailing) -> some View {
         HStack(spacing: 12) {
-            AsyncImage(url: c.coverURL.flatMap(URL.init)) { img in
+            AsyncImage(url: cover.flatMap(URL.init)) { img in
                 img.resizable().aspectRatio(contentMode: .fill)
             } placeholder: { Rectangle().fill(.gray.opacity(0.2)) }
                 .frame(width: 40, height: 56).clipShape(RoundedRectangle(cornerRadius: 5))
             VStack(alignment: .leading, spacing: 3) {
-                Text(c.name).font(.callout.weight(.medium)).lineLimit(1)
+                Text(name).font(.callout.weight(.medium)).lineLimit(1)
                 HStack(spacing: 6) {
-                    Text(c.status.label).font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(badgeColor(c.status).opacity(0.2), in: Capsule())
-                        .foregroundStyle(badgeColor(c.status))
-                    Text(byteString(c.sizeBytes)).font(.caption2).foregroundStyle(.secondary)
+                    if let badge {
+                        Text(badge.0).font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(badge.1.opacity(0.2), in: Capsule()).foregroundStyle(badge.1)
+                    }
+                    Text(detail).font(.caption2).foregroundStyle(.secondary)
                 }
             }
             Spacer()
-            action(c)
+            trailing()
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
     }
 
-    @ViewBuilder private func action(_ c: SteamDRMScanner.Candidate) -> some View {
+    @ViewBuilder private func installedAction(_ c: SteamDRMScanner.Candidate) -> some View {
         if done.contains(c.appId) {
             Label("Generado", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
-        } else if let prog = generating[c.appId] {
-            VStack(alignment: .trailing, spacing: 2) {
-                ProgressView(value: prog.0).frame(width: 120)
-                Text(prog.1).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-            }
+        } else if let prog = progress[c.appId] {
+            progressView(prog)
         } else if c.status.isGenerable {
             Button("Generar") { generate(c) }.buttonStyle(.borderedProminent).controlSize(.small)
         } else {
@@ -152,34 +229,108 @@ struct SteamDRMImportSheet: View {
         }
     }
 
+    @ViewBuilder private func ownedAction(_ g: SteamAccountService.OwnedGame) -> some View {
+        if let prog = progress[g.appId] {
+            progressView(prog)
+        } else if let err = failed[g.appId] {
+            Button("Reintentar") { installAndGenerate(g) }.buttonStyle(.bordered).controlSize(.small).help(err)
+        } else {
+            Button("Instalar y generar") { installAndGenerate(g) }.buttonStyle(.bordered).controlSize(.small)
+        }
+    }
+
+    private func progressView(_ prog: (Double, String)) -> some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            ProgressView(value: prog.0).frame(width: 130)
+            Text(prog.1).font(.caption2).foregroundStyle(.secondary).lineLimit(1).frame(maxWidth: 150, alignment: .trailing)
+        }
+    }
+
     private func badgeColor(_ s: SteamDRMScanner.DRMStatus) -> Color {
         switch s { case .drmFree: return .green; case .steamworks: return StoreKind.local.tint; case .steamDRM: return .orange }
     }
 
+    // MARK: - Carga
+
     private func scan() async {
         scanning = true
         let result = SteamDRMScanner.shared.scan(bottle: bottle)
-        await MainActor.run { candidates = result; scanning = false }
+        candidates = result; scanning = false
     }
 
+    private func loadOwned() async {
+        guard let account = accountService.detectAccount(bottle: bottle) else { return }
+        loadingOwned = true; defer { loadingOwned = false }
+        if ownedGames.isEmpty, let cached = LibraryCache.load("steam-\(account.steamID64)", as: [SteamAccountService.OwnedGame].self) {
+            ownedGames = cached
+        }
+        let owned = await accountService.fetchOwnedGames(steamID64: account.steamID64)
+        if !owned.isEmpty { ownedGames = owned; LibraryCache.save("steam-\(account.steamID64)", owned) }
+    }
+
+    // MARK: - Generar (instalado)
+
     private func generate(_ c: SteamDRMScanner.Candidate) {
-        generating[c.appId] = (0, "Preparando…")
+        progress[c.appId] = (0, "Preparando…")
         Task {
             do {
                 let r = try await SteamDRMScanner.shared.generateLocalCopy(c) { frac, msg in
-                    Task { @MainActor in generating[c.appId] = (frac, msg) }
+                    Task { @MainActor in progress[c.appId] = (frac, msg) }
                 }
-                await MainActor.run {
-                    generating[c.appId] = nil
-                    done.insert(c.appId)
-                    onGenerated(c, r.exe, r.dir)
-                }
+                progress[c.appId] = nil; done.insert(c.appId)
+                onGenerated(c, r.exe, r.dir)
             } catch {
-                await MainActor.run {
-                    generating[c.appId] = nil
-                    // Reaprovecha la fila con un aviso breve reutilizando el badge de error via help.
-                }
+                progress[c.appId] = nil
+                failed[c.appId] = (error as? LocalizedError)?.errorDescription ?? "Error al generar."
             }
+        }
+    }
+
+    // MARK: - Instalar desde Steam + generar
+
+    private func installAndGenerate(_ g: SteamAccountService.OwnedGame) {
+        failed[g.appId] = nil
+        progress[g.appId] = (0, "Preparando SteamCMD…")
+        Task {
+            do { try await steamCMD.ensureInstalled() } catch {
+                progress[g.appId] = nil; failed[g.appId] = "No se pudo preparar SteamCMD."; return
+            }
+            var user = steamCMDUser
+            if user.isEmpty { user = accountService.detectAccount(bottle: bottle)?.accountName ?? "" }
+            guard !user.isEmpty, await steamCMD.hasSession(user: user) else {
+                progress[g.appId] = nil
+                pendingInstall = (g.appId, g.name)
+                showSteamCMDLogin = true
+                return
+            }
+            steamCMDUser = user
+            await doInstallAndGenerate(appId: g.appId, name: g.name, user: user)
+        }
+    }
+
+    private func doInstallAndGenerate(appId: String, name: String, user: String) async {
+        progress[appId] = (0, "Iniciando descarga…")
+        let safeName = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "")
+        let installDir = "\(bottle.steamDirectory)/steamapps/common/\(safeName)"
+        let ok = await steamCMD.installGame(appId: appId, user: user, installDir: installDir, validate: true) { pct, msg in
+            progress[appId] = (msg.contains("Descargando") ? max(0, min(1, pct / 100)) : 0, msg)
+        }
+        guard ok, let cand = SteamDRMScanner.shared.candidate(appId: appId, name: name, installDir: installDir) else {
+            progress[appId] = nil; failed[appId] = "La instalación no se completó."; return
+        }
+        guard cand.status.isGenerable else {
+            progress[appId] = nil; failed[appId] = "Instalado, pero usa DRM de Steam (no corre sin Steam)."; return
+        }
+        do {
+            progress[appId] = (0.9, "Generando copia local DRM‑free…")
+            let r = try await SteamDRMScanner.shared.generateLocalCopy(cand) { frac, msg in
+                Task { @MainActor in progress[appId] = (0.9 + frac * 0.1, msg) }
+            }
+            progress[appId] = nil; done.insert(appId)
+            onGenerated(cand, r.exe, r.dir)
+        } catch {
+            progress[appId] = nil
+            failed[appId] = (error as? LocalizedError)?.errorDescription ?? "Error al generar."
         }
     }
 

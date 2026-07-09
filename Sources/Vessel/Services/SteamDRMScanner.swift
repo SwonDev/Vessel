@@ -43,6 +43,19 @@ final class SteamDRMScanner {
     private let wine = WineManager()
     private let goldberg = GoldbergManager()
 
+    /// Construye un `Candidate` para un juego YA instalado en `installDir` (localiza el ejecutable
+    /// y clasifica su DRM). Lo usa el flujo "instalar desde Steam y generar".
+    func candidate(appId: String, name: String, installDir: String) -> Candidate? {
+        guard let exe = SteamLibraryImporter.mainGameExecutable(in: installDir) else { return nil }
+        let hasCEG = Self.hasSteamStub(exe)
+        let steamworks = wine.usesSteamworks(exe)
+        let status: DRMStatus = hasCEG ? .steamDRM : (steamworks ? .steamworks : .drmFree)
+        return Candidate(id: appId, appId: appId, name: name, installPath: installDir,
+                         executablePath: exe,
+                         coverURL: "https://cdn.akamai.steamstatic.com/steam/apps/\(appId)/library_600x900_2x.jpg",
+                         status: status, sizeBytes: Self.dirSize(installDir))
+    }
+
     /// Escanea los juegos instalados en el Steam del bottle y los clasifica por DRM.
     func scan(bottle: Bottle) -> [Candidate] {
         importer.scanBottleGames(bottle: bottle).map { g in
