@@ -15,6 +15,24 @@ actor DRMFreeInstaller {
         let installDir: String
         /// `true` si el ejecutable parece un instalador (Inno/NSIS/MSI) y no un juego portable.
         let isInstaller: Bool
+        /// Nativo de macOS (`.app`) o de Windows (`.exe`, vía Wine).
+        var isNativeMac: Bool = false
+    }
+
+    /// Localiza el bundle `.app` de una descarga NATIVA de macOS: es lo que se abre (sin Wine).
+    /// Se elige el menos profundo (el del juego, no el de un helper embebido).
+    static func findMacApp(in dir: String) -> String? {
+        let fm = FileManager.default
+        guard let en = fm.enumerator(atPath: dir) else { return nil }
+        var best: (path: String, depth: Int)?
+        while let rel = en.nextObject() as? String {
+            guard (rel as NSString).pathExtension.lowercased() == "app" else { continue }
+            // No mirar dentro de un .app ya encontrado (helpers internos).
+            en.skipDescendants()
+            let depth = rel.components(separatedBy: "/").count
+            if best == nil || depth < best!.depth { best = ("\(dir)/\(rel)", depth) }
+        }
+        return best?.path
     }
 
     enum InstallError: LocalizedError {
@@ -37,6 +55,7 @@ actor DRMFreeInstaller {
     func downloadAndInstall(url: URL, headers: [String: String] = [:], slug: String,
                             suggestedName: String, filenameHint: String? = nil,
                             source: String = "local", sourceId: String? = nil,
+                            nativeMac: Bool = false,
                             progress: @Sendable @escaping (Double, String) -> Void) async throws -> Installed {
         progress(0.02, "Preparando descarga…")
         let installDir = "\(VesselPaths.drmFreeDirectory)/\(Self.sanitize(slug))"
@@ -91,26 +110,35 @@ actor DRMFreeInstaller {
         Self.enforceContainment(of: installDir)
 
         progress(0.88, "Buscando el ejecutable…")
-        guard let exe = Self.findMainExecutable(in: installDir, suggestedName: suggestedName) else {
-            throw InstallError.noExecutable
+        // Nativo de macOS → buscamos el bundle `.app` (se abre sin Wine). Si la descarga decía ser
+        // nativa pero no trae `.app`, caemos a buscar un `.exe` antes de rendirnos.
+        var isNative = false
+        var exeOpt: String? = nil
+        if nativeMac, let app = Self.findMacApp(in: installDir) {
+            exeOpt = app; isNative = true
+            await Self.makeExecutable(app)
         }
+        if exeOpt == nil { exeOpt = Self.findMainExecutable(in: installDir, suggestedName: suggestedName) }
+        guard let exe = exeOpt else { throw InstallError.noExecutable }
         // Quitar quarantine del árbol instalado (evita bloqueos de Gatekeeper al pasar por Wine).
         await Self.stripQuarantine(at: installDir)
 
         // **Manifiesto de archivo** (metadatos + SHA‑256): la copia queda autodescriptiva y verificable
         // años después. Se omite en instaladores: lo que hay en disco aún no es el juego.
-        if !Self.looksLikeInstaller(exe) {
+        let isInstaller = !isNative && Self.looksLikeInstaller(exe)
+        if !isInstaller {
             let relExe = exe.hasPrefix(installDir + "/") ? String(exe.dropFirst(installDir.count + 1))
                                                          : (exe as NSString).lastPathComponent
             _ = try? await DRMFreeArchive.shared.writeManifest(
                 folder: installDir, title: suggestedName, source: source, sourceId: sourceId,
-                executable: relExe, drm: "Ninguno (DRM‑free de origen)"
+                executable: relExe,
+                drm: isNative ? "Ninguno (build NATIVO de macOS, sin Wine)" : "Ninguno (DRM‑free de origen)"
             ) { frac, msg in progress(0.90 + frac * 0.10, msg) }
         }
 
         progress(1.0, "Listo")
         return Installed(executablePath: exe, installDir: installDir,
-                         isInstaller: Self.looksLikeInstaller(exe))
+                         isInstaller: isInstaller, isNativeMac: isNative)
     }
 
     // MARK: - Descarga con progreso
@@ -250,6 +278,16 @@ actor DRMFreeInstaller {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_ "))
         let cleaned = String(s.unicodeScalars.filter { allowed.contains($0) }).trimmingCharacters(in: .whitespaces)
         return cleaned.isEmpty ? "juego-\(abs(s.hashValue))" : cleaned
+    }
+
+    /// Restaura el bit de ejecución del binario dentro de un `.app`. Los zips de itch/Humble suelen
+    /// perder los permisos (o los pierde la extracción), y entonces el juego nativo no arranca.
+    private static func makeExecutable(_ appPath: String) async {
+        let macOSDir = "\(appPath)/Contents/MacOS"
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: macOSDir) else { return }
+        for f in files {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: "\(macOSDir)/\(f)")
+        }
     }
 
     private static func stripQuarantine(at dir: String) async {

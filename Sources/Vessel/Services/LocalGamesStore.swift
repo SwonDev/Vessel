@@ -29,6 +29,14 @@ final class LocalGamesStore {
         }
     }
 
+    /// Cómo se ejecuta el juego. Un build **nativo** de macOS es SIEMPRE preferible: corre sin Wine,
+    /// sin Rosetta y con el rendimiento real de la máquina. Muchos indies de itch/Humble lo tienen.
+    enum Platform: String, Codable, Hashable {
+        case windows   // `.exe` → se ejecuta con el motor Wine
+        case mac       // `.app` nativo → se abre directamente
+        var label: String { self == .mac ? "Nativo de Mac" : "Windows (Wine)" }
+    }
+
     struct Game: Identifiable, Codable, Hashable {
         var id: UUID = UUID()
         var name: String
@@ -37,9 +45,11 @@ final class LocalGamesStore {
         /// Id estable dentro de su fuente (itch: id del download‑key; humble: "gamekey:machine_name").
         /// Sirve para deduplicar al re‑sincronizar la biblioteca. `nil` para juegos locales.
         var sourceId: String?
-        /// Ruta al `.exe` de Windows a lanzar. Vacía si la entrada está en la biblioteca pero
-        /// aún NO se ha descargado/instalado.
+        /// Ruta a lo que se lanza: el `.exe` de Windows o el `.app` nativo (ver `platform`). Vacía si
+        /// la entrada está en la biblioteca pero aún NO se ha descargado/instalado.
         var executablePath: String = ""
+        /// Windows (vía Wine) o nativo de macOS. Se decide al descargar, prefiriendo lo nativo.
+        var platform: Platform = .windows
         /// Directorio donde Vessel instaló el juego (para descargas de itch/humble). `nil` si es
         /// un `.exe` que el usuario apuntó en su sitio.
         var installPath: String?
@@ -62,11 +72,12 @@ final class LocalGamesStore {
         // Decodificación TOLERANTE: el JSON viejo solo tenía id/name/executablePath/coverPath/
         // addedAt/lastPlayedAt. Los campos nuevos usan valores por defecto si faltan.
         init(id: UUID = UUID(), name: String, source: Source = .local, sourceId: String? = nil,
-             executablePath: String = "", installPath: String? = nil, downloadURL: String? = nil,
+             executablePath: String = "", platform: Platform = .windows,
+             installPath: String? = nil, downloadURL: String? = nil,
              coverPath: String? = nil, coverURL: String? = nil, pageURL: String? = nil,
              addedAt: Date = Date(), lastPlayedAt: Date? = nil) {
             self.id = id; self.name = name; self.source = source; self.sourceId = sourceId
-            self.executablePath = executablePath; self.installPath = installPath
+            self.executablePath = executablePath; self.platform = platform; self.installPath = installPath
             self.downloadURL = downloadURL; self.coverPath = coverPath; self.coverURL = coverURL
             self.pageURL = pageURL; self.addedAt = addedAt; self.lastPlayedAt = lastPlayedAt
         }
@@ -78,6 +89,7 @@ final class LocalGamesStore {
             source = (try? c.decode(Source.self, forKey: .source)) ?? .local
             sourceId = try? c.decodeIfPresent(String.self, forKey: .sourceId)
             executablePath = (try? c.decode(String.self, forKey: .executablePath)) ?? ""
+            platform = (try? c.decode(Platform.self, forKey: .platform)) ?? .windows
             installPath = try? c.decodeIfPresent(String.self, forKey: .installPath)
             downloadURL = try? c.decodeIfPresent(String.self, forKey: .downloadURL)
             coverPath = try? c.decodeIfPresent(String.self, forKey: .coverPath)
@@ -152,11 +164,13 @@ final class LocalGamesStore {
         return g.id
     }
 
-    /// Marca una entrada como instalada tras descargarla (fija exe + dir de instalación).
-    func setInstalled(_ id: UUID, executablePath: String, installPath: String?) {
+    /// Marca una entrada como instalada tras descargarla (fija exe/app + dir + plataforma).
+    func setInstalled(_ id: UUID, executablePath: String, installPath: String?,
+                      platform: Platform = .windows) {
         guard let i = games.firstIndex(where: { $0.id == id }) else { return }
         games[i].executablePath = executablePath
         games[i].installPath = installPath
+        games[i].platform = platform
         save()
     }
 

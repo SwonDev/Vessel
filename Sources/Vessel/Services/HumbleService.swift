@@ -155,14 +155,39 @@ actor HumbleService {
         let order = try await fetchOrder(gamekey)
         var out: [LibraryItem] = []
         for sub in order.subproducts ?? [] {
-            guard let mn = sub.machine_name,
-                  let win = (sub.downloads ?? []).first(where: { ($0.platform ?? "").lowercased() == "windows" }),
-                  let ds = (win.download_struct ?? []).first(where: { $0.url?.web != nil }) else { continue }
+            guard let mn = sub.machine_name else { continue }
+            // Se acepta si hay build ejecutable de **Mac** (preferido: nativo) o de Windows (vía Wine).
+            let runnable = (sub.downloads ?? []).filter {
+                let p = ($0.platform ?? "").lowercased()
+                return (p == "windows" || p == "mac") && ($0.download_struct ?? []).contains { $0.url?.web != nil }
+            }
+            guard !runnable.isEmpty else { continue }
+            let ds = runnable.compactMap { ($0.download_struct ?? []).first { $0.url?.web != nil } }.first
             out.append(LibraryItem(gamekey: gamekey, machineName: mn,
                                    name: sub.human_name ?? mn, iconURL: sub.icon,
-                                   humanSize: ds.human_size))
+                                   humanSize: ds?.human_size))
         }
         return out
+    }
+
+    /// Plataforma del build elegido: condiciona cómo se ejecuta (nativo vs Wine).
+    enum BuildPlatform: String, Sendable { case mac, windows }
+
+    /// Resuelve la URL de descarga (firmada, fresca) de un subproducto, **prefiriendo el build NATIVO
+    /// de macOS** si existe (mejor que Wine: sin traducción ni Rosetta) y cayendo a Windows si no.
+    func bestDownloadURL(gamekey: String, machineName: String,
+                         preferNative: Bool = true) async throws -> (url: URL, platform: BuildPlatform) {
+        let order = try await fetchOrder(gamekey)
+        guard let sub = (order.subproducts ?? []).first(where: { $0.machine_name == machineName })
+        else { throw HumbleError.noWindowsBuild }
+        func web(_ platform: String) -> URL? {
+            guard let d = (sub.downloads ?? []).first(where: { ($0.platform ?? "").lowercased() == platform }),
+                  let s = (d.download_struct ?? []).compactMap({ $0.url?.web }).first else { return nil }
+            return URL(string: s)
+        }
+        if preferNative, let mac = web("mac") { return (mac, .mac) }
+        if let win = web("windows") { return (win, .windows) }
+        throw HumbleError.noWindowsBuild
     }
 
     // MARK: - Humble Trove / Humble Games Collection

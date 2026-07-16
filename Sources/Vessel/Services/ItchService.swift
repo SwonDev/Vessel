@@ -56,9 +56,13 @@ actor ItchService {
         let size: Int64?
         let type: String?                     // "default", "soundtrack", "book", "html"…
         let demo: Bool?
-        let platforms: [String: String]?      // API moderna: {"windows":"all", ...}
+        let platforms: [String: String]?      // API moderna: {"windows":"all", "osx":"all", ...}
         let p_windows: Bool?                  // API legacy: booleano plano
+        let p_osx: Bool?
         var isWindows: Bool { (platforms?["windows"] != nil) || (p_windows ?? false) }
+        /// Build NATIVO de macOS. En un Mac es SIEMPRE mejor que pasar por Wine: sin traducción,
+        /// sin Rosetta y con el rendimiento real de la máquina. itch lo llama "osx".
+        var isMac: Bool { (platforms?["osx"] != nil) || (p_osx ?? false) }
         var isDemo: Bool { demo ?? false }
         /// Descarta descargas que no son un ejecutable (soundtrack, libro, html play-in-browser).
         var isRunnable: Bool { !["soundtrack", "book", "html"].contains((type ?? "default").lowercased()) }
@@ -125,19 +129,29 @@ actor ItchService {
         }
     }
 
-    /// Resuelve la descarga del build de **Windows** de un juego que se posee. Devuelve la URL de
-    /// descarga (endpoint moderno con `api_key`+`download_key_id`, que responde 302 al fichero
-    /// firmado del CDN) y el nombre de fichero real (para conocer la extensión .zip/.exe/.msi).
-    func windowsDownload(gameId: Int, downloadKeyId: Int) async throws -> (url: URL, filename: String?) {
+    /// Plataforma del build elegido: condiciona cómo se ejecuta (nativo vs Wine).
+    enum BuildPlatform: String, Sendable { case mac, windows }
+
+    /// Resuelve la mejor descarga de un juego que se posee. **Prefiere el build NATIVO de macOS**
+    /// si existe (mejor que Wine en todos los sentidos) y cae a Windows si no.
+    /// Devuelve la URL (endpoint moderno con Bearer, que responde 302 al CDN firmado), el nombre de
+    /// fichero real (para conocer la extensión) y la plataforma que se ha elegido.
+    func bestDownload(gameId: Int, downloadKeyId: Int,
+                      preferNative: Bool = true) async throws -> (url: URL, filename: String?, platform: BuildPlatform) {
         guard let key = apiKey, !key.isEmpty else { throw ItchError.notLinked }
         let ur = try await request("games/\(gameId)/uploads",
                                    query: [URLQueryItem(name: "download_key_id", value: String(downloadKeyId))],
                                    as: UploadsResponse.self)
         let uploads = (ur.uploads ?? []).filter { $0.isRunnable }
-        // Preferir Windows no‑demo (el más grande); si no, cualquier Windows; si no, el runnable mayor.
-        let win = uploads.filter { $0.isWindows && !$0.isDemo }.sorted { ($0.size ?? 0) > ($1.size ?? 0) }
-        let chosen = win.first
-            ?? uploads.filter { $0.isWindows }.sorted { ($0.size ?? 0) > ($1.size ?? 0) }.first
+        // Dentro de cada plataforma: no‑demo primero y, a igualdad, el más grande (el juego completo).
+        func pick(_ f: (Upload) -> Bool) -> Upload? {
+            uploads.filter { f($0) && !$0.isDemo }.sorted { ($0.size ?? 0) > ($1.size ?? 0) }.first
+                ?? uploads.filter(f).sorted { ($0.size ?? 0) > ($1.size ?? 0) }.first
+        }
+        var platform: BuildPlatform = .windows
+        var chosen: Upload?
+        if preferNative, let mac = pick({ $0.isMac }) { chosen = mac; platform = .mac }
+        if chosen == nil { chosen = pick({ $0.isWindows }); platform = .windows }
         guard let up = chosen, let upId = up.id else { throw ItchError.noWindowsBuild }
 
         // Endpoint moderno de descarga: 302 → URL firmada del CDN. Autenticamos con el header
@@ -149,7 +163,13 @@ actor ItchService {
         comps.queryItems = [URLQueryItem(name: "download_key_id", value: String(downloadKeyId))]
         guard let apiURL = comps.url else { throw ItchError.http(0) }
         let signed = try await Self.resolveSignedURL(apiURL, bearer: key)
-        return (signed, up.filename)
+        return (signed, up.filename, platform)
+    }
+
+    /// Compatibilidad: la variante que fuerza Windows (la usan flujos que ya asumen Wine).
+    func windowsDownload(gameId: Int, downloadKeyId: Int) async throws -> (url: URL, filename: String?) {
+        let r = try await bestDownload(gameId: gameId, downloadKeyId: downloadKeyId, preferNative: false)
+        return (r.url, r.filename)
     }
 
     /// Hace un GET autenticado con Bearer al endpoint de descarga y devuelve la URL del `Location`

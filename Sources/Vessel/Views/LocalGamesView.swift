@@ -386,14 +386,16 @@ struct LocalGamesView: View {
                 let url: URL
                 var headers: [String: String] = [:]
                 var filenameHint: String? = nil
+                // Preferimos SIEMPRE el build nativo de macOS si existe: corre sin Wine ni Rosetta.
+                var native = false
                 switch g.source {
                 case .itch:
                     let parts = sid.split(separator: ":").map(String.init)
                     guard parts.count == 2, let gid = Int(parts[0]), let dkid = Int(parts[1]) else {
                         throw NSError(domain: "Vessel", code: 1, userInfo: [NSLocalizedDescriptionKey: "Id de itch.io inválido."])
                     }
-                    let r = try await ItchService.shared.windowsDownload(gameId: gid, downloadKeyId: dkid)
-                    url = r.url; filenameHint = r.filename
+                    let r = try await ItchService.shared.bestDownload(gameId: gid, downloadKeyId: dkid)
+                    url = r.url; filenameHint = r.filename; native = (r.platform == .mac)
                 case .humble:
                     guard let colon = sid.firstIndex(of: ":") else {
                         throw NSError(domain: "Vessel", code: 1, userInfo: [NSLocalizedDescriptionKey: "Id de Humble inválido."])
@@ -406,7 +408,8 @@ struct LocalGamesView: View {
                         }
                         url = try await HumbleService.shared.troveSignedURL(machineName: machine, webName: webName)
                     } else {
-                        url = try await HumbleService.shared.windowsDownloadURL(gamekey: gamekey, machineName: machine)
+                        let r = try await HumbleService.shared.bestDownloadURL(gamekey: gamekey, machineName: machine)
+                        url = r.url; native = (r.platform == .mac)
                     }
                     if let sess = HumbleService.shared.sessionCookie { headers["Cookie"] = "_simpleauth_sess=\(sess)" }
                 default:
@@ -415,15 +418,18 @@ struct LocalGamesView: View {
                 let name = g.name
                 let installed = try await DRMFreeInstaller.shared.downloadAndInstall(
                     url: url, headers: headers, slug: name, suggestedName: name, filenameHint: filenameHint,
-                    source: g.source.rawValue, sourceId: g.sourceId
+                    source: g.source.rawValue, sourceId: g.sourceId, nativeMac: native
                 ) { frac, msg in Task { @MainActor in downloading[g.id] = (frac, msg) } }
-                games.setInstalled(g.id, executablePath: installed.executablePath, installPath: installed.installDir)
+                games.setInstalled(g.id, executablePath: installed.executablePath,
+                                   installPath: installed.installDir,
+                                   platform: installed.isNativeMac ? .mac : .windows)
                 downloading[g.id] = nil
                 if installed.isInstaller {
                     // Lo descargado es un instalador (típico en itch.io): ejecútalo y fija el exe real.
                     await runDownloadedInstaller(g, installerExe: installed.executablePath)
                 } else {
-                    flash("«\(name)» instalado.", false)
+                    flash(installed.isNativeMac ? "«\(name)» instalado (build NATIVO de Mac, sin Wine)."
+                                                : "«\(name)» instalado.", false)
                 }
             } catch {
                 downloading[g.id] = nil
@@ -435,7 +441,18 @@ struct LocalGamesView: View {
     // MARK: - Jugar (mismo flujo que las tiendas)
 
     private func play(_ game: LocalGamesStore.Game, forcedLayer: GameConfig.GraphicsLayer? = nil, attempt: Int = 0) {
-        guard let bottle, game.installed else { return }
+        guard game.installed else { return }
+        // **Build nativo de macOS**: se abre tal cual, sin Wine, sin motor y sin capa gráfica. Es lo
+        // mejor que le puede pasar a un juego en un Mac; no hay nada que traducir ni que reparar.
+        if game.platform == .mac {
+            games.markPlayed(game.id)
+            NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: game.executablePath),
+                                               configuration: NSWorkspace.OpenConfiguration()) { _, err in
+                if let err { Task { @MainActor in flash("No se pudo abrir «\(game.name)»: \(err.localizedDescription)", true) } }
+            }
+            return
+        }
+        guard let bottle else { return }
         let exe = game.executablePath
         let id = game.id.uuidString
         let installDir = (exe as NSString).deletingLastPathComponent
