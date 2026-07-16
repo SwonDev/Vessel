@@ -546,8 +546,11 @@ struct StoreLibraryView: View {
 
         let minimumY = panel.height / 2 + margin
         let maximumY = max(minimumY, viewport.height - panel.height / 2 - margin)
+        // Alinear los bordes superiores como Steam evita que un panel más alto que la carátula
+        // invada el título y la scope bar de filtros de la primera fila.
+        let topAlignedY = card.minY + panel.height / 2
         return CGPoint(x: min(maximumX, max(minimumX, x)),
-                       y: min(maximumY, max(minimumY, card.midY)))
+                       y: min(maximumY, max(minimumY, topAlignedY)))
     }
 
     /// Steam espera un instante antes de abrir la tarjeta rica: recorrer el grid no provoca red

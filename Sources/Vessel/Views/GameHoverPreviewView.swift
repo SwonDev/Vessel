@@ -111,7 +111,11 @@ struct GameHoverPreviewView: View {
 
     private var lastPlayedText: String {
         guard let lastPlayed = game.lastPlayed else { return "Nunca jugado" }
-        return "Última sesión \(lastPlayed.formatted(.relative(presentation: .named)))"
+        let relative = lastPlayed.formatted(
+            .relative(presentation: .named)
+                .locale(Locale(identifier: "es_ES"))
+        )
+        return "Última sesión \(relative)"
     }
 
     var body: some View {
