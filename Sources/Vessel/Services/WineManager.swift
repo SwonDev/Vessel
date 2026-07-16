@@ -836,6 +836,16 @@ final class WineManager {
             // wineserver con el cliente Steam).
             return try await launchD3D12Game(executable: executable, in: bottle, steamAppId: steamAppId, effective: eff, forceGPTK: true)
         }
+        // **Envoltorios retro (DOSBox/ScummVM) → Gcenx, sin capa.** VA ANTES que la detección de API
+        // a propósito: `dosbox.exe` IMPORTA d3d9 (se lo trae SDL2, que en Windows usa Direct3D 9 de
+        // backend por defecto), así que la detección lo clasifica como "juego D3D9" y lo mandaba a
+        // la ruta de wined3d — que es justo la que hay que evitar. Estos no son juegos de Direct3D:
+        // son emuladores SDL que pintan por software, y con `SDL_RENDER_DRIVER=software` ni tocan
+        // wined3d. Aquí manda lo que ES el binario, no lo que importa.
+        if isRetroWrapper(executable) {
+            return try await launchRetroWrapper(executable: executable, in: bottle,
+                                                arguments: allArgs, effective: eff)
+        }
         // Juegos D3D9/D3D8/DDraw → Gcenx (wine-osx64, Wine 11 completo, wined3d→Metal).
         // wine-dxmt no resuelve el d3d9 (falla con c0000135 "d3d9.dll not found"); Gcenx sí.
         // Se aplica SIEMPRE que la API sea D3D9 — también si un perfil/usuario forzó `.dxmt`:
@@ -845,17 +855,6 @@ final class WineManager {
             if go == .dxmt { log.log("Override DXMT ignorado en juego D3D9: se usa Gcenx (wined3d→Vulkan), que es lo que funciona.", level: .info) }
             return try await launchD3D9Game(executable: executable, in: bottle,
                                             arguments: allArgs, steamAppId: steamAppId, effective: eff)
-        }
-        // **Envoltorios retro (DOSBox / ScummVM) → Gcenx.** Casi todo el catálogo clásico de GOG son
-        // juegos de DOS o aventuras gráficas que GOG distribuye envueltos en DOSBox o ScummVM: el
-        // `.exe` que se lanza no es el juego, es el emulador. Son SDL puro (software/OpenGL) y NO
-        // tocan Direct3D, así que no necesitan capa de traducción — solo un Wine que ejecute 32-bit.
-        // Sin esta rama caían en la de abajo (gptk-mythic, que existe para el Mono de Unity) y ahí
-        // NO se ejecutan: el juego se cerraba al instante. Verificado en vivo: Beneath a Steel Sky
-        // (ScummVM) renderiza su intro con Gcenx.
-        if isRetroWrapper(executable) {
-            return try await launchRetroWrapper(executable: executable, in: bottle,
-                                                arguments: allArgs, effective: eff)
         }
         // Juegos de 32-bit que NO son D3D9 (típicamente Unity D3D11): el new-WoW64 de
         // Gcenx/wine-dxmt CRASHEA su runtime (p.ej. el Mono de Unity → "Crash!!!" nada más
