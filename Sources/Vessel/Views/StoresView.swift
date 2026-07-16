@@ -40,9 +40,13 @@ enum StoreKind: String, CaseIterable, Identifiable {
         case .steam: return Color(red: 0.10, green: 0.55, blue: 0.85)
         case .epic: return Color(white: 0.55)
         case .gog: return Color(red: 0.60, green: 0.25, blue: 0.75)
-        case .local: return Color(red: 0.20, green: 0.70, blue: 0.45)
+        case .local: return Color(red: 0.80, green: 0.17, blue: 0.18)   // rojo Humble Bundle (DRM‑free)
         }
     }
+
+    /// El logo debe LLENAR el tile (clip a esquinas redondeadas) en vez de ir centrado sobre el
+    /// gradiente: para logos que ya son un icono cuadrado con fondo propio (Humble Bundle en `.local`).
+    var logoFillsTile: Bool { self == .local }
 
     /// Todas están integradas. `.local` NO es una tienda: es tu biblioteca DRM‑free (juegos sueltos
     /// / itch.io / instaladores), que Vessel ejecuta con el mismo motor óptimo + auto‑reparación.
@@ -83,7 +87,11 @@ struct StoreLogoTile: View {
     var body: some View {
         Group {
             if let logo = StoreLogo.image(store.logoAsset) {
-                Image(nsImage: logo).resizable().scaledToFit().padding(size * 0.24)
+                if store.logoFillsTile {
+                    Image(nsImage: logo).resizable().scaledToFill()   // el icono llena el tile (Humble)
+                } else {
+                    Image(nsImage: logo).resizable().scaledToFit().padding(size * 0.24)
+                }
             } else {
                 Image(systemName: store.symbol).font(.system(size: size * 0.46, weight: .medium))
             }
@@ -91,6 +99,7 @@ struct StoreLogoTile: View {
         .foregroundStyle(.white)
         .frame(width: size, height: size)
         .background(store.tint.gradient, in: RoundedRectangle(cornerRadius: size * 0.23, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: size * 0.23, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: size * 0.23, style: .continuous).strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
         .shadow(color: store.tint.opacity(0.5), radius: size * 0.2, y: size * 0.09)
     }
@@ -128,7 +137,13 @@ private struct StoreSwitchButton: View {
         Button(action: action) {
             Group {
                 if let logo = StoreLogo.image(store.logoAsset) {
-                    Image(nsImage: logo).resizable().scaledToFit().padding(7)
+                    if store.logoFillsTile {
+                        Image(nsImage: logo).resizable().scaledToFill()
+                            .frame(width: 34, height: 34).clipShape(Circle())
+                            .opacity(isSelected ? 1 : 0.7)
+                    } else {
+                        Image(nsImage: logo).resizable().scaledToFit().padding(7)
+                    }
                 } else {
                     Image(systemName: store.symbol).font(.title3)
                 }
@@ -136,7 +151,7 @@ private struct StoreSwitchButton: View {
             .foregroundStyle(isSelected ? .white : .white.opacity(0.55))
             .frame(width: 34, height: 34)
             .background {
-                if isSelected {
+                if isSelected && !store.logoFillsTile {
                     Circle().fill(store.tint.gradient)
                 } else if hovering {
                     Circle().fill(.white.opacity(0.10))
