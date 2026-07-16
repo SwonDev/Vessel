@@ -16,16 +16,17 @@ final class SteamDRMScanner {
     static let shared = SteamDRMScanner()
 
     enum DRMStatus: String {
-        case drmFree, steamworks, steamDRM
+        case drmFree, steamworks, steamDRM, otherDRM
         var label: String {
             switch self {
             case .drmFree: return "DRM‑free"
             case .steamworks: return "Steamworks (Goldberg)"
             case .steamDRM: return "DRM de Steam"
+            case .otherDRM: return "Protegido (DRM/anti‑cheat)"
             }
         }
-        /// Puede generarse como juego local DRM‑free.
-        var isGenerable: Bool { self != .steamDRM }
+        /// Puede generarse como juego local DRM‑free: solo si NO hay ninguna protección.
+        var isGenerable: Bool { self == .drmFree || self == .steamworks }
     }
 
     struct Candidate: Identifiable, Hashable {
@@ -37,6 +38,17 @@ final class SteamDRMScanner {
         let coverURL: String?
         let status: DRMStatus
         let sizeBytes: Int64
+        /// Detalle legible de lo detectado (protecciones concretas + SDK sociales, que NO son DRM).
+        var drmDetail: String? = nil
+    }
+
+    /// Traduce el informe del analizador universal al estado que muestra la UI.
+    /// Cualquier protección (Denuvo, anti‑cheat, DRM de cuenta, legacy…) impide generar la copia;
+    /// los SDK sociales (Steamworks/EOS/Galaxy) NO son DRM y no bloquean.
+    private static func status(from report: DRMAnalyzer.Report) -> DRMStatus {
+        if report.protections.contains(.steamStub) { return .steamDRM }
+        if !report.protections.isEmpty { return .otherDRM }
+        return report.social.contains(.steamworks) ? .steamworks : .drmFree
     }
 
     private let importer = SteamLibraryImporter()
@@ -47,26 +59,52 @@ final class SteamDRMScanner {
     /// y clasifica su DRM). Lo usa el flujo "instalar desde Steam y generar".
     func candidate(appId: String, name: String, installDir: String) -> Candidate? {
         guard let exe = SteamLibraryImporter.mainGameExecutable(in: installDir) else { return nil }
-        let hasCEG = Self.hasSteamStub(exe)
-        let steamworks = wine.usesSteamworks(exe)
-        let status: DRMStatus = hasCEG ? .steamDRM : (steamworks ? .steamworks : .drmFree)
+        let report = DRMAnalyzer.analyze(folder: installDir, executable: exe)
         return Candidate(id: appId, appId: appId, name: name, installPath: installDir,
                          executablePath: exe,
                          coverURL: "https://cdn.akamai.steamstatic.com/steam/apps/\(appId)/library_600x900_2x.jpg",
-                         status: status, sizeBytes: Self.dirSize(installDir))
+                         status: Self.status(from: report), sizeBytes: Self.dirSize(installDir),
+                         drmDetail: report.summary)
     }
 
-    /// Escanea los juegos instalados en el Steam del bottle y los clasifica por DRM.
+    /// Escanea los juegos instalados en el Steam del bottle y los clasifica con el **analizador
+    /// universal** (no solo SteamStub): Denuvo, anti‑cheat, DRM de cuenta y legacy también bloquean
+    /// la generación, y los SDK sociales (Steamworks/EOS) se reconocen como lo que son: no DRM.
     func scan(bottle: Bottle) -> [Candidate] {
         importer.scanBottleGames(bottle: bottle).map { g in
-            let hasCEG = Self.hasSteamStub(g.executablePath)
-            let steamworks = wine.usesSteamworks(g.executablePath)
-            let status: DRMStatus = hasCEG ? .steamDRM : (steamworks ? .steamworks : .drmFree)
+            let report = DRMAnalyzer.analyze(folder: g.installPath, executable: g.executablePath)
             return Candidate(id: g.appId, appId: g.appId, name: g.name,
                              installPath: g.installPath, executablePath: g.executablePath,
-                             coverURL: g.coverURL, status: status, sizeBytes: Self.dirSize(g.installPath))
+                             coverURL: g.coverURL, status: Self.status(from: report),
+                             sizeBytes: Self.dirSize(g.installPath), drmDetail: report.summary)
         }
         .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// Enriquece los candidatos con las **bases de datos en vivo** (PCGamingWiki, avisos de Steam,
+    /// anti‑cheat en macOS): añade lo que el disco no puede saber. Best‑effort y cacheado; si no hay
+    /// red, devuelve los candidatos tal cual.
+    func enrichWithDatabases(_ candidates: [Candidate]) async -> [Candidate] {
+        var out: [Candidate] = []
+        out.reserveCapacity(candidates.count)
+        for c in candidates {
+            let v = await DRMDatabase.shared.lookup(steamAppId: c.appId)
+            var e = c
+            // PCGamingWiki confirma DRM‑free y el disco no vio protecciones → certeza máxima.
+            if v.isDRMFreeConfirmed, c.status.isGenerable {
+                e.drmDetail = "DRM‑free confirmado por PCGamingWiki" + (c.status == .steamworks ? " · usa Steamworks (Goldberg lo cubre)" : "")
+            } else if !v.blockers.isEmpty {
+                // La BD sabe de bloqueos que el disco no ve (Denuvo con token en servidor, cuentas…).
+                e.drmDetail = [c.drmDetail, v.blockers.joined(separator: " · ")]
+                    .compactMap { $0 }.joined(separator: " · ")
+                if c.status.isGenerable { e = Candidate(id: c.id, appId: c.appId, name: c.name,
+                                                        installPath: c.installPath, executablePath: c.executablePath,
+                                                        coverURL: c.coverURL, status: .otherDRM,
+                                                        sizeBytes: c.sizeBytes, drmDetail: e.drmDetail) }
+            }
+            out.append(e)
+        }
+        return out
     }
 
     enum GenError: LocalizedError {

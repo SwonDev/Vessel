@@ -247,7 +247,12 @@ struct SteamDRMImportSheet: View {
     }
 
     private func badgeColor(_ s: SteamDRMScanner.DRMStatus) -> Color {
-        switch s { case .drmFree: return .green; case .steamworks: return StoreKind.local.tint; case .steamDRM: return .orange }
+        switch s {
+        case .drmFree: return .green
+        case .steamworks: return StoreKind.local.tint
+        case .steamDRM: return .orange
+        case .otherDRM: return .red      // Denuvo / anti-cheat / DRM de cuenta / legacy
+        }
     }
 
     // MARK: - Carga
