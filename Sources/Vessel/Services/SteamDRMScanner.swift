@@ -188,7 +188,7 @@ final class SteamDRMScanner {
     ///       (ahí va en TEXTO PLANO; en v3.x va XOR‑eado y en v1.0 no existe).
     ///     · el **entry point cae DENTRO de `.bind`** → el stub se ejecuta primero (cubre v1.0/v3.x). Al
     ///       desempaquetar, Steamless restaura el OEP original, que queda FUERA de `.bind`.
-    static func hasSteamStub(_ exePath: String) -> Bool {
+    nonisolated static func hasSteamStub(_ exePath: String) -> Bool {
         guard let fh = FileHandle(forReadingAtPath: exePath) else { return false }
         defer { try? fh.close() }
         // Cabeceras + tabla de secciones caben de sobra en los primeros 16 KB.
