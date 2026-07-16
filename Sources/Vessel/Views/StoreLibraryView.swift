@@ -17,6 +17,8 @@ struct StoreGame: Identifiable, Hashable {
     var lastPlayed: Date? = nil
     var playtimeMinutes: Int? = nil
     var installPath: String? = nil   // carpeta del juego (para "Abrir carpeta")
+    /// Etiqueta opcional sobre la carátula (p. ej. la FUENTE en DRM‑free: Steam / itch.io / Humble).
+    var badge: String? = nil
 
     /// Carátula vertical 2:3 resuelta: URL directa o, si no, la del CDN de Steam.
     /// Compartida por la tarjeta del grid y la fila de la lista (sin duplicar lógica).
@@ -859,6 +861,15 @@ struct StoreGameCard: View {
                     .font(.subheadline.weight(.semibold)).foregroundStyle(.white)
                     .lineLimit(2).shadow(color: .black.opacity(0.6), radius: 3, y: 1)
                     .padding(10)
+            }
+            .overlay(alignment: .topLeading) {
+                if let badge = game.badge {
+                    Text(badge)
+                        .font(.caption2.weight(.semibold)).foregroundStyle(.white)
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(.black.opacity(0.55), in: Capsule())
+                        .padding(8)
+                }
             }
             .overlay(alignment: .topTrailing) {
                 Button(action: onToggleFavorite) {

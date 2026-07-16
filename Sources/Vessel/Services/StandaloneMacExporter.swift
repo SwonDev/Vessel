@@ -76,13 +76,17 @@ actor StandaloneMacExporter {
             if fm.fileExists(atPath: src) { try? fm.removeItem(atPath: dst); try? fm.copyItem(atPath: src, toPath: dst) }
         }
 
-        // 3) Icono del juego (carátula → .icns squircle), si hay portada.
+        // 3) Icono del juego (carátula → .icns squircle). Si no hay portada (p. ej. un .exe suelto
+        // añadido a mano), cae al logo DRM‑free bundleado para que el .app nunca salga sin icono.
+        progress(0.95, "Creando el icono…")
         var hasIcon = false
-        if let coverURL, let url = URL(string: coverURL) {
-            progress(0.95, "Creando el icono…")
-            if let (data, _) = try? await URLSession.shared.data(from: url) {
-                hasIcon = Self.buildAppIcon(coverData: data, into: resources.path)
-            }
+        if let coverURL, let url = URL(string: coverURL),
+           let (data, _) = try? await URLSession.shared.data(from: url) {
+            hasIcon = Self.buildAppIcon(coverData: data, into: resources.path)
+        }
+        if !hasIcon, let fallback = VesselPaths.bundledResource("store-local.png"),
+           let data = try? Data(contentsOf: fallback) {
+            hasIcon = Self.buildAppIcon(coverData: data, into: resources.path)
         }
 
         // 4) Launcher + Info.plist.

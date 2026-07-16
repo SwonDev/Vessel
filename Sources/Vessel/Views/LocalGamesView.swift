@@ -44,7 +44,9 @@ struct LocalGamesView: View {
                 coverURL: g.coverURL,
                 steamAppId: g.source == .steam ? g.sourceId : nil,
                 installed: g.installed,
-                installPath: folder
+                installPath: folder,
+                // Insignia con la FUENTE (Steam / itch.io / Humble / GOG offline); los locales no la llevan.
+                badge: g.source == .local ? nil : g.source.displayName
             )
         }
     }
@@ -204,9 +206,15 @@ struct LocalGamesView: View {
     }
 
     private func promptForInstalledExe(in bottle: Bottle) {
+        guard let exe = pickInstalledExe(in: bottle) else { return }
+        if games.add(name: "", executablePath: exe) != nil { flash("Juego añadido.", false) }
+    }
+
+    /// Panel para elegir un `.exe` ya instalado dentro del bottle (apunta a Program Files).
+    private func pickInstalledExe(in bottle: Bottle) -> String? {
         let panel = NSOpenPanel()
         panel.title = "Elige el ejecutable del juego instalado"
-        panel.prompt = "Añadir"
+        panel.prompt = "Usar este"
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
@@ -214,8 +222,29 @@ struct LocalGamesView: View {
         for candidate in ["\(bottle.prefixPath)/drive_c/Program Files (x86)", "\(bottle.prefixPath)/drive_c/Program Files"] {
             if FileManager.default.fileExists(atPath: candidate) { panel.directoryURL = URL(fileURLWithPath: candidate); break }
         }
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        if games.add(name: "", executablePath: url.path) != nil { flash("Juego añadido.", false) }
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        return url.path
+    }
+
+    /// La descarga resultó ser un **instalador** (típico en itch.io/Humble): lo ejecuta en el bottle
+    /// y, al terminar, fija el ejecutable REAL del juego en esta misma entrada de la biblioteca.
+    private func runDownloadedInstaller(_ g: LocalGamesStore.Game, installerExe: String) async {
+        guard let bottle else { return }
+        flash("«\(g.name)» es un instalador: ejecutándolo… al acabar, elige el ejecutable del juego.", false)
+        do {
+            let proc = try await wineManager.launch(executable: installerExe, in: bottle,
+                                                    arguments: [], effective: EffectiveLaunchConfig())
+            while proc.isRunning { try? await Task.sleep(for: .seconds(1)) }
+            if let exe = pickInstalledExe(in: bottle) {
+                games.setInstalled(g.id, executablePath: exe,
+                                   installPath: (exe as NSString).deletingLastPathComponent)
+                flash("«\(g.name)» instalado y listo para jugar.", false)
+            } else {
+                flash("«\(g.name)»: instalador ejecutado. Cuando quieras, elige su ejecutable desde «Añadir».", false)
+            }
+        } catch {
+            flash((error as? LocalizedError)?.errorDescription ?? "No se pudo ejecutar el instalador de «\(g.name)».", true)
+        }
     }
 
     /// **Exporta** el juego: copia su carpeta autocontenida (juego + Goldberg) a un USB/disco externo
@@ -331,11 +360,17 @@ struct LocalGamesView: View {
         Task {
             do {
                 let items = try await HumbleService.shared.fetchLibrary()
-                for it in items {
+                // Humble Trove / Games Collection: catálogo de la suscripción (endpoint aparte).
+                // Si no estás suscrito devuelve vacío → no es un error.
+                let trove = (try? await HumbleService.shared.fetchTrove()) ?? []
+                for it in items + trove {
+                    // En el Trove guardamos el `url.web` (nombre a firmar) en downloadURL.
                     games.upsertLibraryEntry(source: .humble, sourceId: it.sourceId,
-                                             name: it.name, coverURL: it.iconURL)
+                                             name: it.name, coverURL: it.iconURL,
+                                             downloadURL: it.troveWebName)
                 }
-                flash("Humble: \(items.count) juego(s) DRM‑free sincronizados.", false)
+                let troveNote = trove.isEmpty ? "" : " + \(trove.count) del Trove"
+                flash("Humble: \(items.count) juego(s) DRM‑free\(troveNote) sincronizados.", false)
             } catch { flash((error as? LocalizedError)?.errorDescription ?? "Error al sincronizar Humble.", true) }
             syncing = false
         }
@@ -364,7 +399,15 @@ struct LocalGamesView: View {
                         throw NSError(domain: "Vessel", code: 1, userInfo: [NSLocalizedDescriptionKey: "Id de Humble inválido."])
                     }
                     let gamekey = String(sid[..<colon]); let machine = String(sid[sid.index(after: colon)...])
-                    url = try await HumbleService.shared.windowsDownloadURL(gamekey: gamekey, machineName: machine)
+                    if gamekey == "trove" {
+                        // Trove: su `url.web` es un NOMBRE de fichero que hay que firmar (no una URL).
+                        guard let webName = g.downloadURL, !webName.isEmpty else {
+                            throw NSError(domain: "Vessel", code: 1, userInfo: [NSLocalizedDescriptionKey: "Falta el fichero del Trove; vuelve a sincronizar Humble."])
+                        }
+                        url = try await HumbleService.shared.troveSignedURL(machineName: machine, webName: webName)
+                    } else {
+                        url = try await HumbleService.shared.windowsDownloadURL(gamekey: gamekey, machineName: machine)
+                    }
                     if let sess = HumbleService.shared.sessionCookie { headers["Cookie"] = "_simpleauth_sess=\(sess)" }
                 default:
                     throw NSError(domain: "Vessel", code: 1, userInfo: [NSLocalizedDescriptionKey: "Fuente sin descarga automática."])
@@ -375,7 +418,12 @@ struct LocalGamesView: View {
                 ) { frac, msg in Task { @MainActor in downloading[g.id] = (frac, msg) } }
                 games.setInstalled(g.id, executablePath: installed.executablePath, installPath: installed.installDir)
                 downloading[g.id] = nil
-                flash("«\(name)» instalado.", false)
+                if installed.isInstaller {
+                    // Lo descargado es un instalador (típico en itch.io): ejecútalo y fija el exe real.
+                    await runDownloadedInstaller(g, installerExe: installed.executablePath)
+                } else {
+                    flash("«\(name)» instalado.", false)
+                }
             } catch {
                 downloading[g.id] = nil
                 flash((error as? LocalizedError)?.errorDescription ?? "Error al descargar «\(g.name)».", true)

@@ -59,9 +59,33 @@ actor HumbleService {
         let name: String
         let iconURL: String?
         let humanSize: String?
-        /// id estable para `LocalGamesStore` (`sourceId`).
+        /// Solo Trove: nombre de fichero (`url.web`) que hay que FIRMAR para descargar.
+        var troveWebName: String? = nil
+        /// id estable para `LocalGamesStore` (`sourceId`). Trove usa el gamekey sintético "trove".
         var sourceId: String { "\(gamekey):\(machineName)" }
     }
+
+    /// Gamekey sintético para los juegos del **Humble Trove / Humble Games Collection** (no vienen
+    /// de una compra, sino del catálogo de la suscripción → endpoint y firma distintos).
+    static let troveGamekey = "trove"
+
+    // MARK: - Modelos del Trove (catálogo de la suscripción)
+
+    struct TroveEntry: Decodable {
+        let machine_name: String?
+        let human_name: String?
+        let image: String?
+        /// En el Trove `downloads` es un DICCIONARIO por plataforma (no una lista como en las órdenes).
+        let downloads: [String: TroveDownload]?
+    }
+    struct TroveDownload: Decodable {
+        let machine_name: String?
+        let name: String?
+        let file_size: Int64?
+        let url: TroveURL?
+        struct TroveURL: Decodable { let web: String?; let bittorrent: String? }
+    }
+    struct SignedURL: Decodable { let signed_url: String? }
 
     enum HumbleError: LocalizedError {
         case notLinked, http(Int), sessionExpired, noWindowsBuild
@@ -139,6 +163,56 @@ actor HumbleService {
                                    humanSize: ds.human_size))
         }
         return out
+    }
+
+    // MARK: - Humble Trove / Humble Games Collection
+
+    /// Catálogo del **Trove** (juegos de la suscripción). Endpoint distinto al de las compras y
+    /// paginado por `index`. Devuelve solo los que tienen build de Windows.
+    func fetchTrove() async throws -> [LibraryItem] {
+        var items: [LibraryItem] = []
+        var index = 0
+        while index < 60 {   // salvaguarda
+            let page: [TroveEntry]
+            do { page = try await get("/client/catalog?index=\(index)", as: [TroveEntry].self) }
+            catch { break }   // sin acceso al Trove (no suscrito) o fin del catálogo
+            if page.isEmpty { break }
+            for e in page {
+                guard let mn = e.machine_name,
+                      let win = e.downloads?["windows"],
+                      let web = win.url?.web else { continue }
+                items.append(LibraryItem(gamekey: Self.troveGamekey, machineName: mn,
+                                         name: e.human_name ?? mn, iconURL: e.image,
+                                         humanSize: win.file_size.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) },
+                                         troveWebName: web))
+            }
+            index += 1
+        }
+        return items
+    }
+
+    /// Firma la URL de un fichero del Trove (sus `url.web` NO vienen prefirmadas).
+    func troveSignedURL(machineName: String, webName: String) async throws -> URL {
+        guard let sess = sessionCookie, !sess.isEmpty else { throw HumbleError.notLinked }
+        var req = URLRequest(url: URL(string: Self.base + "/api/v1/user/download/sign")!)
+        req.httpMethod = "POST"
+        req.setValue("_simpleauth_sess=\(sess)", forHTTPHeaderField: "Cookie")
+        req.setValue("hb_android_app", forHTTPHeaderField: "X-Requested-By")
+        req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Vessel/0.1",
+                     forHTTPHeaderField: "User-Agent")
+        func esc(_ s: String) -> String {
+            s.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? s
+        }
+        req.httpBody = "machine_name=\(esc(machineName))&filename=\(esc(webName))".data(using: .utf8)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        if let http = resp as? HTTPURLResponse {
+            if http.statusCode == 401 || http.statusCode == 403 { throw HumbleError.sessionExpired }
+            if !(200...299).contains(http.statusCode) { throw HumbleError.http(http.statusCode) }
+        }
+        guard let s = try? JSONDecoder().decode(SignedURL.self, from: data), let web = s.signed_url,
+              let u = URL(string: web) else { throw HumbleError.noWindowsBuild }
+        return u
     }
 
     /// Resuelve la URL de descarga (firmada, fresca) del build de Windows de un subproducto.

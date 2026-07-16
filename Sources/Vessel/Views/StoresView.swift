@@ -138,9 +138,13 @@ private struct StoreSwitchButton: View {
             Group {
                 if let logo = StoreLogo.image(store.logoAsset) {
                     if store.logoFillsTile {
+                        // El logo es una imagen A COLOR (no una marca monocroma que `foregroundStyle`
+                        // pueda atenuar), así que replicamos ese trato a mano: sin seleccionar va
+                        // DESATURADO + atenuado (como el gris del resto); seleccionado, a todo color.
                         Image(nsImage: logo).resizable().scaledToFill()
                             .frame(width: 34, height: 34).clipShape(Circle())
-                            .opacity(isSelected ? 1 : 0.7)
+                            .saturation(isSelected ? 1 : 0)
+                            .opacity(isSelected ? 1 : 0.55)
                     } else {
                         Image(nsImage: logo).resizable().scaledToFit().padding(7)
                     }
