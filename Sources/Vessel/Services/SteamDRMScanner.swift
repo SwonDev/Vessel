@@ -161,9 +161,22 @@ final class SteamDRMScanner {
         try? p.run(); p.waitUntilExit()
     }
 
-    /// Detecta el wrapper **SteamStub / CEG** (DRM de Steam) leyendo la tabla de secciones del PE:
-    /// SteamStub añade una sección `.bind` (marcador de sus variantes v2/v3, las más comunes).
-    /// Heurística: no garantiza el 100% de los casos, pero identifica el DRM de Steam habitual.
+    /// Sección del PE (lo que necesitamos para traducir RVA→offset de fichero).
+    private struct PESection { let name: String; let vaddr: Int; let vsize: Int; let praw: Int; let sraw: Int }
+
+    /// Detecta el wrapper **SteamStub / CEG** (el DRM de Steam) analizando el PE, SIN ejecutar nada.
+    ///
+    /// Método (verificado contra el código de **Steamless**, que es quien los desempaqueta):
+    ///  1. **`.bind`** es la precondición: TODAS las variantes de SteamStub la añaden. Sin ella → no hay
+    ///     SteamStub.
+    ///  2. Pero `.bind` **por sí sola NO es prueba**: el flag `--keepbind` de Steamless la conserva en un
+    ///     exe **ya desempaquetado** (y un exe cualquiera podría llamar así a una sección). Confiar solo
+    ///     en ella da **falsos positivos** (marcar como protegido algo que no lo está).
+    ///  3. Confirmación fuerte — cualquiera de las dos:
+    ///     · **magic `0xC0DEC0DE`** en `(offset de fichero del entry point) − 4` → SteamStub **v2.0/v2.1**
+    ///       (ahí va en TEXTO PLANO; en v3.x va XOR‑eado y en v1.0 no existe).
+    ///     · el **entry point cae DENTRO de `.bind`** → el stub se ejecuta primero (cubre v1.0/v3.x). Al
+    ///       desempaquetar, Steamless restaura el OEP original, que queda FUERA de `.bind`.
     static func hasSteamStub(_ exePath: String) -> Bool {
         guard let fh = FileHandle(forReadingAtPath: exePath) else { return false }
         defer { try? fh.close() }
@@ -176,18 +189,45 @@ final class SteamDRMScanner {
         }
         guard bytes[0] == 0x4D, bytes[1] == 0x5A else { return false }   // "MZ"
         let peOff = u32(0x3C)
-        guard peOff + 24 < bytes.count,
+        guard peOff > 0, peOff + 24 < bytes.count,
               bytes[peOff] == 0x50, bytes[peOff+1] == 0x45 else { return false }   // "PE\0\0"
         let numSections = u16(peOff + 6)
         let sizeOptHeader = u16(peOff + 20)
-        var sectOff = peOff + 24 + sizeOptHeader
+        let optOff = peOff + 24
+        guard sizeOptHeader > 16, optOff + 20 <= bytes.count else { return false }
+        // AddressOfEntryPoint: offset 16 del optional header (tras Magic + versiones + tamaños).
+        let entryRVA = u32(optOff + 16)
+
+        var sections: [PESection] = []
+        var sectOff = optOff + sizeOptHeader
         for _ in 0..<max(0, min(numSections, 96)) {
-            guard sectOff + 8 <= bytes.count else { break }
+            guard sectOff + 40 <= bytes.count else { break }
             let nameBytes = bytes[sectOff..<sectOff+8].prefix { $0 != 0 }
-            let name = String(decoding: nameBytes, as: UTF8.self)
-            if name == ".bind" { return true }
+            sections.append(PESection(name: String(decoding: nameBytes, as: UTF8.self),
+                                      vaddr: u32(sectOff + 12), vsize: u32(sectOff + 8),
+                                      praw: u32(sectOff + 20), sraw: u32(sectOff + 16)))
             sectOff += 40
         }
+        // 1) Sin `.bind` no hay SteamStub.
+        guard let bind = sections.first(where: { $0.name == ".bind" }) else { return false }
+
+        // 3a) El entry point cae dentro de `.bind` → el stub arranca primero (v1.0/v3.x).
+        if entryRVA >= bind.vaddr && entryRVA < bind.vaddr + max(bind.vsize, bind.sraw) { return true }
+
+        // 3b) Magic 0xC0DEC0DE justo antes del entry point (v2.0/v2.1, en claro).
+        guard let host = sections.first(where: {
+            $0.sraw > 0 && entryRVA >= $0.vaddr && entryRVA < $0.vaddr + max($0.vsize, $0.sraw)
+        }) else { return false }
+        let entryFileOff = entryRVA - host.vaddr + host.praw
+        guard entryFileOff >= 4 else { return false }
+        guard (try? fh.seek(toOffset: UInt64(entryFileOff - 4))) != nil,
+              let magic = try? fh.read(upToCount: 4), magic.count == 4 else { return false }
+        let m = [UInt8](magic)
+        let value = UInt32(m[0]) | (UInt32(m[1]) << 8) | (UInt32(m[2]) << 16) | (UInt32(m[3]) << 24)
+        if value == 0xC0DE_C0DE { return true }
+
+        // `.bind` presente pero sin confirmación → casi seguro un exe ya desempaquetado
+        // (`--keepbind`) o una sección homónima. NO lo marcamos como protegido.
         return false
     }
 }
