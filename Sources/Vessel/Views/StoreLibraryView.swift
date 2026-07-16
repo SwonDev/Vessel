@@ -73,6 +73,7 @@ enum StoreLibraryFilter: String, CaseIterable, Identifiable {
     case conActualizacion = "Con actualización"
     case sinJugar = "Sin jugar"
     case jugados = "Jugados"
+    case ocultos = "Ocultos"
     var id: String { rawValue }
     var symbol: String {
         switch self {
@@ -82,6 +83,7 @@ enum StoreLibraryFilter: String, CaseIterable, Identifiable {
         case .conActualizacion: return "arrow.triangle.2.circlepath"
         case .sinJugar:         return "sparkles"
         case .jugados:          return "clock.arrow.circlepath"
+        case .ocultos:          return "eye.slash"
         }
     }
 }
@@ -188,6 +190,9 @@ struct StoreLibraryView: View {
     /// Tamaño de las carátulas del grid (persistente). Como el slider de tamaño de Steam.
     @AppStorage("vessel.gridDensity") private var gridDensity: GridDensity = .normal
     @State private var favorites: Set<String> = []
+    /// Juegos archivados por el usuario. Es una preferencia local, reversible y separada por
+    /// tienda: nunca borra archivos, estadísticas, favoritos ni copias de partida.
+    @State private var hiddenGames: Set<String> = []
     @State private var selectedGame: StoreGame?
     /// Hover intencional del grid. Se separa el candidato de la vista presentada para poder
     /// aplicar retardo, cancelar al cruzar huecos y evitar parpadeos en bibliotecas grandes.
@@ -201,6 +206,7 @@ struct StoreLibraryView: View {
 
     private var tint: Color { store.tint }
     private var favKey: String { "favorites.\(store.rawValue)" }
+    private var hiddenKey: String { "hiddenGames.\(store.rawValue)" }
     private var preferencePrefix: String { "vessel.library.\(store.rawValue)" }
     /// Columnas adaptativas según la densidad elegida (tamaño de carátula).
     private var columns: [GridItem] {
@@ -214,6 +220,14 @@ struct StoreLibraryView: View {
         UserDefaults.standard.set(Array(favorites), forKey: favKey)
     }
 
+    private func isHidden(_ id: String) -> Bool { hiddenGames.contains(id) }
+
+    private func toggleHidden(_ id: String) {
+        if hiddenGames.contains(id) { hiddenGames.remove(id) } else { hiddenGames.insert(id) }
+        UserDefaults.standard.set(Array(hiddenGames), forKey: hiddenKey)
+        if selectedGame?.id == id { selectedGame = nil }
+    }
+
     private var activeQuickScope: LibraryQuickScope? {
         if showFavoritesOnly && filter == .todos { return .favoritos }
         guard !showFavoritesOnly else { return nil }
@@ -222,7 +236,7 @@ struct StoreLibraryView: View {
         case .instalados:       return .listos
         case .conActualizacion: return .actualizaciones
         case .sinJugar:         return .sinJugar
-        case .porInstalar, .jugados: return nil
+        case .porInstalar, .jugados, .ocultos: return nil
         }
     }
 
@@ -301,13 +315,20 @@ struct StoreLibraryView: View {
 
     private func computeFiltered() -> [StoreGame] {
         var list = enriched
-        switch filter {
-        case .instalados:       list = list.filter { $0.installed }
-        case .porInstalar:      list = list.filter { !$0.installed }
-        case .conActualizacion: list = list.filter { $0.updateAvailable }
-        case .sinJugar:         list = list.filter { $0.lastPlayed == nil && ($0.playtimeMinutes ?? 0) == 0 }
-        case .jugados:          list = list.filter { $0.lastPlayed != nil || ($0.playtimeMinutes ?? 0) > 0 }
-        case .todos:            break
+        if filter == .ocultos {
+            list = list.filter { isHidden($0.id) }
+        } else {
+            // Los juegos ocultos no reaparecen accidentalmente al cambiar otro filtro. Solo se
+            // muestran desde su ámbito explícito, igual que en Steam.
+            list = list.filter { !isHidden($0.id) }
+            switch filter {
+            case .instalados:       list = list.filter { $0.installed }
+            case .porInstalar:      list = list.filter { !$0.installed }
+            case .conActualizacion: list = list.filter { $0.updateAvailable }
+            case .sinJugar:         list = list.filter { $0.lastPlayed == nil && ($0.playtimeMinutes ?? 0) == 0 }
+            case .jugados:          list = list.filter { $0.lastPlayed != nil || ($0.playtimeMinutes ?? 0) > 0 }
+            case .todos, .ocultos:  break
+            }
         }
         if showFavoritesOnly { list = list.filter { isFav($0.id) } }
         if !search.isEmpty {
@@ -369,14 +390,6 @@ struct StoreLibraryView: View {
             }
         }
         .vesselBackground(tint: tint)
-        // ⌘F enfoca el buscador (expande la sidebar si estaba colapsada, para que sea alcanzable).
-        .background {
-            Button("") {
-                if sidebarCollapsed { sidebarCollapsed = false }
-                searchFocused = true
-            }
-            .keyboardShortcut("f", modifiers: .command).opacity(0).accessibilityHidden(true)
-        }
         // Esc: volver de la ficha; si no, limpiar la búsqueda; si no, soltar el foco.
         .onExitCommand {
             if selectedGame != nil { selectedGame = nil }
@@ -385,6 +398,7 @@ struct StoreLibraryView: View {
         }
         .onAppear {
             favorites = Set(UserDefaults.standard.stringArray(forKey: favKey) ?? [])
+            hiddenGames = Set(UserDefaults.standard.stringArray(forKey: hiddenKey) ?? [])
             restoreLibraryPreferences()
             displayed = computeFiltered()
             updateDockProgress()
@@ -395,6 +409,7 @@ struct StoreLibraryView: View {
         .onChange(of: sortOrder) { _, _ in persistLibraryPreferences(); refreshDisplayed() }
         .onChange(of: showFavoritesOnly) { _, _ in persistLibraryPreferences(); refreshDisplayed() }
         .onChange(of: favorites) { _, _ in refreshDisplayed() }
+        .onChange(of: hiddenGames) { _, _ in refreshDisplayed() }
         .onChange(of: selectedGame) { _, selected in
             if selected != nil { dismissHoverPreview(immediately: true) }
         }
@@ -411,6 +426,23 @@ struct StoreLibraryView: View {
         .onDisappear {
             hoverPresentationTask?.cancel()
             hoverPresentationTask = nil
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .libraryFind)) { _ in
+            if sidebarCollapsed { sidebarCollapsed = false }
+            searchFocused = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .libraryToggleSidebar)) { _ in
+            sidebarCollapsed.toggle()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .libraryShowAll)) { _ in
+            resetQuery()
+            selectedGame = nil
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .libraryShowHidden)) { _ in
+            search = ""
+            filter = .ocultos
+            showFavoritesOnly = false
+            selectedGame = nil
         }
     }
 
@@ -472,12 +504,14 @@ struct StoreLibraryView: View {
                 progress: progressFor(game.id),
                 percent: percentFor(game.id),
                 isFavorite: isFav(game.id),
+                isHidden: isHidden(game.id),
                 onInstall: { onInstall(game) },
                 onPlay: { onPlay(game) },
                 onUninstall: { onUninstall(game) },
                 onVerify: { onVerify(game) },
                 onUpdate: { onUpdate(game) },
                 onToggleFavorite: { toggleFav(game.id) },
+                onToggleHidden: { toggleHidden(game.id) },
                 onBack: { selectedGame = nil }
             )
             .id(game.id)
@@ -492,10 +526,11 @@ struct StoreLibraryView: View {
     private var homeGrid: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.section) {
-                if !recentlyPlayed.isEmpty { recentlyPlayedSection }
+                if filter != .ocultos && !recentlyPlayed.isEmpty { recentlyPlayedSection }
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(alignment: .center, spacing: 12) {
-                        Text("Todos los juegos").font(.title.bold()).foregroundStyle(.white)
+                        Text(filter == .ocultos ? "Juegos ocultos" : "Todos los juegos")
+                            .font(.title.bold()).foregroundStyle(.white)
                         // Con la sidebar colapsada, el buscador (y filtro/orden) viven en la sidebar y se
                         // ocultan → los traemos aquí para no perder la búsqueda. Estilo Steam.
                         if sidebarCollapsed {
@@ -597,7 +632,7 @@ struct StoreLibraryView: View {
 
     /// Juegos jugados recientemente (los que tienen `lastPlayed`), más recientes primero.
     private var recentlyPlayed: [StoreGame] {
-        enriched.filter { $0.lastPlayed != nil }
+        enriched.filter { $0.lastPlayed != nil && !isHidden($0.id) }
             .sorted { ($0.lastPlayed ?? .distantPast) > ($1.lastPlayed ?? .distantPast) }
             .prefix(8).map { $0 }
     }
@@ -620,7 +655,7 @@ struct StoreLibraryView: View {
     /// Barra de ámbitos siempre visible. Es el equivalente ligero a las colecciones dinámicas de
     /// Steam y a una scope bar de macOS: un clic aplica el criterio y el contador anticipa el resultado.
     private var quickScopeBar: some View {
-        let source = enriched
+        let source = enriched.filter { !isHidden($0.id) }
         let counts: [LibraryQuickScope: Int] = [
             .todos: source.count,
             .listos: source.count(where: \.installed),
@@ -880,9 +915,9 @@ struct StoreLibraryView: View {
     @ViewBuilder private var gameList: some View {
         if displayed.isEmpty {
             VStack(spacing: 10) {
-                Image(systemName: showFavoritesOnly ? "star.slash" : "magnifyingglass")
+                Image(systemName: filter == .ocultos ? "eye.slash" : (showFavoritesOnly ? "star.slash" : "magnifyingglass"))
                     .font(.system(size: 30)).foregroundStyle(.white.opacity(0.25))
-                Text(search.isEmpty && !showFavoritesOnly ? "Sin juegos." : "Sin resultados.")
+                Text(emptyStateTitle(compact: true))
                     .font(.caption).foregroundStyle(.secondary)
                 if !search.isEmpty || filter != .todos || showFavoritesOnly {
                     Button("Mostrar todos", action: resetQuery)
@@ -936,6 +971,10 @@ struct StoreLibraryView: View {
             Label(isFav(game.id) ? "Quitar de favoritos" : "Añadir a favoritos",
                   systemImage: isFav(game.id) ? "star.slash" : "star")
         }
+        Button { toggleHidden(game.id) } label: {
+            Label(isHidden(game.id) ? "Mostrar en la biblioteca" : "Ocultar de la biblioteca",
+                  systemImage: isHidden(game.id) ? "eye" : "eye.slash")
+        }
     }
 
     // MARK: - Grid
@@ -971,12 +1010,10 @@ struct StoreLibraryView: View {
     @ViewBuilder private var grid: some View {
         if displayed.isEmpty {
             VStack(spacing: 16) {
-                Image(systemName: showFavoritesOnly ? "star.slash" : "magnifyingglass")
+                Image(systemName: filter == .ocultos ? "eye.slash" : (showFavoritesOnly ? "star.slash" : "magnifyingglass"))
                     .font(.system(size: 44))
                     .foregroundStyle(.white.opacity(0.30))
-                Text(search.isEmpty && !showFavoritesOnly
-                     ? "No hay juegos que mostrar."
-                     : "Sin resultados con los filtros actuales.")
+                Text(emptyStateTitle(compact: false))
                     .font(.callout).foregroundStyle(.secondary)
                 if !search.isEmpty || filter != .todos || showFavoritesOnly {
                     Button {
@@ -996,12 +1033,14 @@ struct StoreLibraryView: View {
                         game: game,
                         tint: tint,
                         isFavorite: isFav(game.id),
+                        isHidden: isHidden(game.id),
                         installing: installingIDs.contains(game.id),
                         progress: progressFor(game.id),
                         percent: percentFor(game.id),
                         onInstall: { onInstall(game) },
                         onPlay: { onPlay(game) },
                         onToggleFavorite: { toggleFav(game.id) },
+                        onToggleHidden: { toggleHidden(game.id) },
                         onUninstall: { onUninstall(game) },
                         onOpen: { selectedGame = game },
                         onHoverChanged: { handleGridHover($0, game: game) },
@@ -1016,6 +1055,12 @@ struct StoreLibraryView: View {
             .animation(reduceMotion ? nil : .snappy(duration: 0.28), value: displayed.count)
             .animation(reduceMotion ? nil : .snappy(duration: 0.30), value: gridDensity)
         }
+    }
+
+    private func emptyStateTitle(compact: Bool) -> String {
+        if filter == .ocultos && search.isEmpty { return compact ? "No hay juegos ocultos." : "Tu biblioteca no tiene juegos ocultos." }
+        if search.isEmpty && !showFavoritesOnly { return compact ? "Sin juegos." : "No hay juegos que mostrar." }
+        return compact ? "Sin resultados." : "Sin resultados con los filtros actuales."
     }
 }
 
@@ -1079,12 +1124,14 @@ struct StoreGameCard: View {
     let game: StoreGame
     let tint: Color
     var isFavorite: Bool = false
+    var isHidden: Bool = false
     var installing: Bool = false
     var progress: String? = nil
     var percent: Double? = nil
     var onInstall: () -> Void = {}
     var onPlay: () -> Void = {}
     var onToggleFavorite: () -> Void = {}
+    var onToggleHidden: () -> Void = {}
     var onUninstall: () -> Void = {}
     var onOpen: () -> Void = {}
     var onHoverChanged: (Bool) -> Void = { _ in }
@@ -1151,6 +1198,10 @@ struct StoreGameCard: View {
                 Button { onToggleFavorite() } label: {
                     Label(isFavorite ? "Quitar de favoritos" : "Añadir a favoritos",
                           systemImage: isFavorite ? "star.slash" : "star")
+                }
+                Button { onToggleHidden() } label: {
+                    Label(isHidden ? "Mostrar en la biblioteca" : "Ocultar de la biblioteca",
+                          systemImage: isHidden ? "eye" : "eye.slash")
                 }
             }
     }
@@ -1407,12 +1458,14 @@ struct GameDetailView: View {
     var progress: String? = nil
     var percent: Double? = nil
     var isFavorite: Bool = false
+    var isHidden: Bool = false
     var onInstall: () -> Void = {}
     var onPlay: () -> Void = {}
     var onUninstall: () -> Void = {}
     var onVerify: () -> Void = {}
     var onUpdate: () -> Void = {}
     var onToggleFavorite: () -> Void = {}
+    var onToggleHidden: () -> Void = {}
     var onBack: () -> Void = {}
 
     @State private var showingSettings = false
@@ -1574,12 +1627,17 @@ struct GameDetailView: View {
             }
             Spacer(minLength: 0)
             if game.installed && !installing {
-                iconButton("arrow.triangle.2.circlepath", tinted: game.updateAvailable, action: onUpdate)
+                iconButton("arrow.triangle.2.circlepath", label: "Actualizar", tinted: game.updateAvailable, action: onUpdate)
             }
-            if game.installed && !installing { iconButton("checkmark.shield", action: onVerify) }
-            if game.installed { iconButton("trash", action: onUninstall) }
-            iconButton("gearshape.fill") { showingSettings = true }
-            iconButton(isFavorite ? "heart.fill" : "heart", tinted: isFavorite, action: onToggleFavorite)
+            if game.installed && !installing { iconButton("checkmark.shield", label: "Verificar o reparar", action: onVerify) }
+            if game.installed { iconButton("trash", label: "Desinstalar", action: onUninstall) }
+            iconButton("gearshape.fill", label: "Ajustes del juego") { showingSettings = true }
+            iconButton(isFavorite ? "heart.fill" : "heart",
+                       label: isFavorite ? "Quitar de favoritos" : "Añadir a favoritos",
+                       tinted: isFavorite, action: onToggleFavorite)
+            iconButton(isHidden ? "eye" : "eye.slash",
+                       label: isHidden ? "Mostrar en la biblioteca" : "Ocultar de la biblioteca",
+                       action: onToggleHidden)
         }
         .padding(.horizontal, 32).padding(.vertical, 18)
         .animation(.snappy(duration: 0.25), value: launchState)
@@ -2255,7 +2313,8 @@ struct GameDetailView: View {
         .fixedSize()   // ancho natural: nunca parte el texto por carácter
     }
 
-    private func iconButton(_ icon: String, tinted: Bool = false, action: @escaping () -> Void) -> some View {
+    private func iconButton(_ icon: String, label: String, tinted: Bool = false,
+                            action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon).font(.body)
                 .foregroundStyle(tinted ? Color.pink : .white.opacity(0.7))
@@ -2263,5 +2322,7 @@ struct GameDetailView: View {
                 .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(label)
+        .help(label)
     }
 }

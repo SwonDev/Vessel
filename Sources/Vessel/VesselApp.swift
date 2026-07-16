@@ -41,6 +41,24 @@ struct VesselApp: App {
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified(showsTitle: true))
         .commands {
+            CommandMenu("Biblioteca") {
+                Button("Buscar en la biblioteca") {
+                    NotificationCenter.default.post(name: .libraryFind, object: nil)
+                }
+                .keyboardShortcut("f", modifiers: .command)
+                Button("Mostrar u ocultar la lista") {
+                    NotificationCenter.default.post(name: .libraryToggleSidebar, object: nil)
+                }
+                .keyboardShortcut("l", modifiers: .command)
+                Divider()
+                Button("Mostrar todos los juegos") {
+                    NotificationCenter.default.post(name: .libraryShowAll, object: nil)
+                }
+                .keyboardShortcut("0", modifiers: .command)
+                Button("Mostrar juegos ocultos") {
+                    NotificationCenter.default.post(name: .libraryShowHidden, object: nil)
+                }
+            }
             CommandGroup(after: .appSettings) {
                 Button("Ajustes…") {
                     NotificationCenter.default.post(name: .openSettings, object: nil)
@@ -66,6 +84,10 @@ extension Notification.Name {
     static let openSettings = Notification.Name("vessel.openSettings")
     static let openLogs = Notification.Name("vessel.openLogs")
     static let openAbout = Notification.Name("vessel.openAbout")
+    static let libraryFind = Notification.Name("vessel.libraryFind")
+    static let libraryToggleSidebar = Notification.Name("vessel.libraryToggleSidebar")
+    static let libraryShowAll = Notification.Name("vessel.libraryShowAll")
+    static let libraryShowHidden = Notification.Name("vessel.libraryShowHidden")
     /// Aviso de lanzamiento visible in-app (p. ej. "el juego necesita Steam"). userInfo: title, body.
     static let launchMessage = Notification.Name("vessel.launchMessage")
     /// Estado EN VIVO de lanzamiento (banner no bloqueante). userInfo: message (ausente = ocultar).
