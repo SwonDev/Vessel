@@ -29,7 +29,7 @@ actor StandaloneMacExporter {
     /// Genera `<destParent>/<Nombre>.app` autónomo. `gameFolder` es la carpeta del juego DRM‑free,
     /// `exePath` su ejecutable. `progress` = (fracción 0…1, mensaje).
     func exportMacApp(name: String, gameFolder: String, exePath: String, coverURL: String? = nil,
-                      destParent: URL,
+                      arguments: [String] = [], destParent: URL,
                       progress: @Sendable @escaping (Double, String) -> Void) async throws -> URL {
         let fm = FileManager.default
         let engineDir = "\(VesselPaths.enginesDirectory)/\(WineEngineLocator.unifiedEngineName)"
@@ -101,7 +101,7 @@ actor StandaloneMacExporter {
 
         // 4) Launcher + Info.plist.
         progress(0.96, "Escribiendo el launcher…")
-        try Self.launcherScript(appName: slug, relExe: relExe).write(
+        try Self.launcherScript(appName: slug, relExe: relExe, arguments: arguments).write(
             to: macOS.appendingPathComponent("launch"), atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: macOS.appendingPathComponent("launch").path)
         try Self.infoPlist(appName: slug, hasIcon: hasIcon).write(
@@ -150,9 +150,20 @@ actor StandaloneMacExporter {
 
     // MARK: - Launcher
 
-    private static func launcherScript(appName: String, relExe: String) -> String {
+    /// Escapa un argumento para incrustarlo LITERAL en el script (comillas simples de shell). Es
+    /// imprescindible: los argumentos de GOG traen barras invertidas de Windows
+    /// (`-conf "..\dosboxAkalabeth.conf"`) que bash se comería con comillas dobles.
+    private static func shellQuote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private static func launcherScript(appName: String, relExe: String, arguments: [String]) -> String {
+        // Argumentos fijos del juego (los de GOG para DOSBox/ScummVM); van ANTES de "$@" para que
+        // quien abra la app pueda añadir los suyos sin romper los obligatorios.
+        let fixedArgs = arguments.map(shellQuote).joined(separator: " ")
+        let argsFragment = fixedArgs.isEmpty ? "" : fixedArgs + " "
         // Nota: rutas con espacios entre comillas. El motor es x86_64 → corre bajo Rosetta 2.
-        """
+        return """
         #!/bin/bash
         # Launcher autónomo generado por Vessel — ejecuta este juego DRM‑free en cualquier Mac Silicon
         # SIN Vessel, usando el motor Wine+DXMT empaquetado. El juego ya trae Goldberg (sin Steam).
@@ -188,8 +199,11 @@ actor StandaloneMacExporter {
           touch "$FLAG"
         fi
 
-        cd "$GAME" || exit 1
-        exec "$WINE" "$GAME/\(relExe)" "$@"
+        # Directorio de trabajo = carpeta del EXE (igual que hace Vessel al lanzar). Es doble
+        # necesidad: DXMT necesita un cwd escribible para su caché Metal, y los clásicos de GOG
+        # declaran sus rutas de config relativas a la carpeta del ejecutable, no a la raíz.
+        cd "$(dirname "$GAME/\(relExe)")" || exit 1
+        exec "$WINE" "$GAME/\(relExe)" \(argsFragment)"$@"
         """
     }
 

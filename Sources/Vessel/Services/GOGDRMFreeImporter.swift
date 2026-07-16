@@ -36,14 +36,17 @@ enum GOGDRMFreeImporter {
         var imported = 0
         for g in library {
             let dir = installDir(bottle, g.appId)
-            // `gameRoot` resuelve la subcarpeta REAL donde gogdl dejó los archivos; `primaryExecutable`
-            // sale del `goggame-<id>.info` que instala el propio GOG (la fuente oficial del juego).
+            // `gameRoot` resuelve la subcarpeta REAL donde gogdl dejó los archivos; `primaryLaunch`
+            // sale del `goggame-<id>.info` que instala el propio GOG (la fuente oficial del juego)
+            // y trae TAMBIÉN los argumentos: los clásicos van envueltos en DOSBox y sin ellos no
+            // arrancan.
             guard let root = gogdl.gameRoot(appId: g.appId, installDir: dir),
-                  let exe = gogdl.primaryExecutable(appId: g.appId, installDir: dir),
-                  FileManager.default.fileExists(atPath: exe) else { continue }
+                  let launch = gogdl.primaryLaunch(appId: g.appId, installDir: dir),
+                  FileManager.default.fileExists(atPath: launch.executable) else { continue }
             LocalGamesStore.shared.upsertInstalledCopy(
                 source: .gog, sourceId: g.appId, name: g.title,
-                executablePath: exe, installPath: root, coverURL: g.coverURL)
+                executablePath: launch.executable, installPath: root, coverURL: g.coverURL,
+                launchArguments: launch.arguments)
             imported += 1
         }
         // Lo que se desinstaló desde la sección de GOG deja de listarse aquí (no se borra nada).

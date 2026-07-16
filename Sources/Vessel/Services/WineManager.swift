@@ -569,6 +569,17 @@ final class WineManager {
     ///  - importa `d3d11.dll`/`dxgi.dll`, o Unity (`UnityPlayer.dll`/`<exe>_Data`) → D3D11 (DXMT).
     ///  - importa `d3d9.dll`/`d3d8.dll`/`ddraw.dll` → D3D9 (Gcenx, wined3d→Metal). wine-dxmt
     ///    NO resuelve bien el d3d9 de 32-bit (c0000135 "d3d9.dll not found"); Gcenx sí.
+    /// `true` si el ejecutable es un **envoltorio retro**: el DOSBox o el ScummVM con el que GOG
+    /// (y otras tiendas) distribuyen su catálogo clásico. Lo que se lanza no es el juego, es el
+    /// emulador — SDL puro, sin Direct3D, y con su configuración en el `.conf`/`.ini` que le pasa
+    /// el propio playTask. Basta un Wine que ejecute 32-bit, sin capas de traducción.
+    func isRetroWrapper(_ executable: String) -> Bool {
+        let name = ((executable as NSString).lastPathComponent as NSString)
+            .deletingPathExtension.lowercased()
+        // `dosbox`, `dosbox_x`, `dosbox-staging`… y `scummvm`.
+        return name == "scummvm" || name == "dosbox" || name.hasPrefix("dosbox_") || name.hasPrefix("dosbox-")
+    }
+
     func detectGraphicsAPI(forExecutable executable: String) -> GameGraphicsAPI {
         let dir = (executable as NSString).deletingLastPathComponent
         let fm = FileManager.default
@@ -692,6 +703,12 @@ final class WineManager {
         // runtime .NET 8 Y da D3D11→Metal (validado: Romestead renderiza). Gcenx de respaldo (corre
         // .NET pero sin D3D11 en el M5). NUNCA gptk (Wine 9.0, viejo, rompe el loader de .NET 8).
         if isDotNetCoreGame(executable) { return [.dxmt, .gcenx] }
+        // **Envoltorios retro (DOSBox/ScummVM): SIN fallback.** No tienen capa gráfica que probar —
+        // son SDL, no tocan Direct3D. Reintentar con "otra capa" no cambia nada y encima hace daño:
+        // cada reintento MATA el proceso anterior, y estos tardan ~12 s en aparecer (Rosetta + Wine
+        // + el emulador). El reintento llegaba antes → el juego moría 4 s después de haber arrancado
+        // bien, y el usuario veía "no llegó a arrancar" de un juego que SÍ arrancaba.
+        if isRetroWrapper(executable) { return [] }
         // Juegos 32-bit: SIEMPRE van a CrossOver/gptk (launch32BitGame ignora la capa) y
         // `resolvedGraphicsLayer` devuelve `.gcenx` fijo → una lista de UN elemento evita el BUCLE de
         // reintentos (la capa nunca cambia, así que ciclar es inútil). Si falla, el auto-repair pasa a
@@ -828,6 +845,17 @@ final class WineManager {
             if go == .dxmt { log.log("Override DXMT ignorado en juego D3D9: se usa Gcenx (wined3d→Vulkan), que es lo que funciona.", level: .info) }
             return try await launchD3D9Game(executable: executable, in: bottle,
                                             arguments: allArgs, steamAppId: steamAppId, effective: eff)
+        }
+        // **Envoltorios retro (DOSBox / ScummVM) → Gcenx.** Casi todo el catálogo clásico de GOG son
+        // juegos de DOS o aventuras gráficas que GOG distribuye envueltos en DOSBox o ScummVM: el
+        // `.exe` que se lanza no es el juego, es el emulador. Son SDL puro (software/OpenGL) y NO
+        // tocan Direct3D, así que no necesitan capa de traducción — solo un Wine que ejecute 32-bit.
+        // Sin esta rama caían en la de abajo (gptk-mythic, que existe para el Mono de Unity) y ahí
+        // NO se ejecutan: el juego se cerraba al instante. Verificado en vivo: Beneath a Steel Sky
+        // (ScummVM) renderiza su intro con Gcenx.
+        if isRetroWrapper(executable) {
+            return try await launchRetroWrapper(executable: executable, in: bottle,
+                                                arguments: allArgs, effective: eff)
         }
         // Juegos de 32-bit que NO son D3D9 (típicamente Unity D3D11): el new-WoW64 de
         // Gcenx/wine-dxmt CRASHEA su runtime (p.ej. el Mono de Unity → "Crash!!!" nada más
@@ -1010,6 +1038,57 @@ final class WineManager {
             environment: env,
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: effective
+        )
+    }
+
+    /// Lanza un **envoltorio retro** (DOSBox / ScummVM) con Gcenx y **sin tocar nada más**.
+    ///
+    /// Estos no son juegos de Direct3D: son emuladores SDL que pintan por software u OpenGL y se
+    /// configuran solos con el `.conf`/`.ini` que les pasa el playTask de GOG. Toda la preparación
+    /// que hacen las otras rutas (DLLs nativas de d3dx9, `renderer=vulkan`, overrides de d3d9…) no
+    /// les aporta nada y les estorba: con la ruta D3D9 el proceso moría al instante; con un
+    /// lanzamiento limpio arrancan. Verificado en vivo con Beneath a Steel Sky (ScummVM), que
+    /// renderiza su intro, y con el DOSBox de Akalabeth.
+    private func launchRetroWrapper(executable: String, in bottle: Bottle, arguments: [String],
+                                    effective: EffectiveLaunchConfig = EffectiveLaunchConfig()) async throws -> Process {
+        let wine = resolveClientWine(for: bottle)   // Gcenx: es el que ejecuta binarios de 32-bit
+        log.log("Envoltorio retro (DOSBox/ScummVM) con Gcenx — sin capa gráfica: \((executable as NSString).lastPathComponent)",
+                level: .info)
+        // Si un intento anterior con DXMT dejó sus DLLs junto al exe, con Gcenx abortan.
+        cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
+        try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+        await resyncGamePrefix(gameWine: wine, prefix: bottle.prefixPath)
+        // ⭐ `renderer=gl`, y NO es opcional. SDL (que es lo que usan DOSBox y ScummVM) pinta su
+        // framebuffer como un quad = DOS triángulos. Con `renderer=vulkan` (que otro juego D3D9 del
+        // MISMO prefijo pudo dejar puesto, porque la clave es del prefijo y persiste) MoltenVK solo
+        // rasteriza UNO: el juego se ve **cortado por una diagonal perfecta**, con media pantalla en
+        // negro. Con el GL de Apple se ve entero. Verificado en vivo con Beneath a Steel Sky.
+        await setWined3dRenderer(prefix: bottle.prefixPath, wine: wine, renderer: "gl")
+        return try await launchWineProcess(
+            winePath: wine,
+            prefix: bottle.prefixPath,
+            arguments: [executable] + arguments,
+            // Entorno MÍNIMO a propósito: nada de overrides de DLL ni capas de traducción.
+            // ⭐ `SDL_RENDER_DRIVER=software` es LA pieza. En Windows, SDL2 elige **Direct3D 9** como
+            // backend de render por defecto, así que DOSBox/ScummVM —que no tienen nada de 3D— acaban
+            // pasando por `d3d9` → `wined3d` igualmente. Y ahí se rompe todo, de tres formas distintas
+            // según el renderer del prefijo: con Vulkan/MoltenVK la imagen sale **cortada por una
+            // diagonal** (solo se rasteriza uno de los dos triángulos del quad), con GL se queda en
+            // **negro**, y a veces revienta con un page fault cuya traza es inequívoca:
+            // `sdl2 → d3d9 → wined3d`. Diciéndole a SDL que pinte por software se salta wined3d
+            // entero: son juegos de 320×200, el coste es nulo.
+            environment: ["WINEPREFIX": bottle.prefixPath, "WINEDEBUG": "-all",
+                          "WINEDLLOVERRIDES": "winemenubuilder.exe=d",
+                          "SDL_RENDER_DRIVER": "software",
+                          "SDL_FRAMEBUFFER_ACCELERATION": "0"],
+            workingDirectory: gameWorkingDirectory(forExecutable: executable),
+            effective: effective,
+            // Contexto LIMPIO (env -i), igual que los juegos DXMT: heredando la identidad de bundle
+            // de Vessel, el contexto OpenGL de SDL se crea pero **no pinta nada** — la ventana abre a
+            // pantalla completa y se queda en NEGRO (el proceso vive, así que ni siquiera parece un
+            // error). Lanzado como desde un terminal, renderiza.
+            forceCleanEnv: true
         )
     }
 
@@ -3118,7 +3197,12 @@ final class WineManager {
         effective: EffectiveLaunchConfig? = nil,
         forceSyncOff: Bool = false,
         forceSyncOn: Bool = false,
-        d3dMetalGame: Bool = false
+        d3dMetalGame: Bool = false,
+        /// Fuerza el lanzamiento con entorno LIMPIO (`env -i` vía bash), como si viniera de un
+        /// terminal. No es solo cosa de Metal: **cualquier** juego que cree un contexto gráfico
+        /// (también el OpenGL de SDL) puede fallar heredando la identidad de bundle de Vessel — la
+        /// ventana abre y se queda NEGRA. Lo usan los envoltorios retro (DOSBox/ScummVM).
+        forceCleanEnv: Bool = false
     ) async throws -> Process {
         // Motor COMPLETO (wine-full): su `bin/wine` es un shim que traduce `wine <exe>` →
         // `wineloader winewrapper.exe --run -- <exe>` y fija WINELOADER/WINESERVER/WINEDLLPATH, así
@@ -3288,7 +3372,8 @@ final class WineManager {
             process.executableURL = URL(fileURLWithPath: "/bin/bash")
             process.arguments = ["-c", "exec /usr/bin/env -i \(assignments) \(cmdline)"]
             process.environment = fullEnv
-        } else if (WineEngineLocator.isUnifiedEngine(winePath) && !forceSyncOff && !d3dMetalGame)
+        } else if forceCleanEnv
+                    || (WineEngineLocator.isUnifiedEngine(winePath) && !forceSyncOff && !d3dMetalGame)
                     || WineEngineLocator.isD3DMetalEngine(winePath), effective != nil {
             // Juegos DXMT del motor UNIFICADO **y juegos D3D12 por D3DMetal (`wine-d3dmetal`)**: MISMO
             // problema de contexto que los .NET. Al ser Vessel una `.app`, el spawn del subproceso
@@ -3308,6 +3393,9 @@ final class WineManager {
                       "WINEDLLOVERRIDES", "DYLD_FALLBACK_LIBRARY_PATH", "SteamAppId", "SteamGameId",
                       "WINEMSYNC", "WINEESYNC", "WINEFSYNC", "CX_FWD_COMPAT_GL_CTX", "MTL_HUD_ENABLED",
                       "ROSETTA_ADVERTISE_AVX",
+                      // Render de SDL (envoltorios retro): sin esto en la lista blanca, `env -i` se
+                      // las comería y DOSBox/ScummVM volverían a pasar por d3d9→wined3d.
+                      "SDL_RENDER_DRIVER", "SDL_FRAMEBUFFER_ACCELERATION",
                       "SDL_JOYSTICK_HIDAPI", "SDL_JOYSTICK_HIDAPI_PS4", "SDL_JOYSTICK_HIDAPI_PS4_RUMBLE",
                       "SDL_JOYSTICK_HIDAPI_PS5", "SDL_JOYSTICK_HIDAPI_PS5_RUMBLE", "SDL_JOYSTICK_HIDAPI_SWITCH"] {
                 if let v = fullEnv[k] { clean[k] = v }

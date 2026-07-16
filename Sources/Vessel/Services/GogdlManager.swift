@@ -375,14 +375,60 @@ final class GogdlManager {
     /// Se resuelve relativo a la carpeta REAL (la subcarpeta donde gogdl puso los archivos). Se
     /// lanza luego con wine-dxmt desde Vessel (igual que Steam/Epic), no con `gogdl launch`.
     func primaryExecutable(appId: String, installDir: String) -> String? {
+        primaryLaunch(appId: appId, installDir: installDir)?.executable
+    }
+
+    /// Ejecutable principal **y sus argumentos**, tal y como los declara el `goggame-<id>.info`
+    /// (la fuente oficial de GOG). Ambas cosas son imprescindibles: buena parte del catálogo
+    /// clásico de GOG son juegos DOS/ScummVM envueltos, cuyo playTask primario es
+    /// `DOSBOX\dosbox.exe` **con** `-conf "..\loquesea.conf"`. Sin los argumentos, dosbox abre un
+    /// prompt de DOS vacío en vez del juego.
+    ///
+    /// El directorio de trabajo lo fija `WineManager.launch` a la carpeta del exe (`…/DOSBOX/`),
+    /// que es justo contra lo que GOG escribe esas rutas relativas (`..\` = raíz del juego).
+    func primaryLaunch(appId: String, installDir: String) -> (executable: String, arguments: [String])? {
         guard let root = gameRoot(appId: appId, installDir: installDir) else { return nil }
         let info = "\(root)/goggame-\(appId).info"
         guard let data = FileManager.default.contents(atPath: info),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tasks = obj["playTasks"] as? [[String: Any]] else { return nil }
-        let primary = tasks.first { ($0["isPrimary"] as? Bool) == true } ?? tasks.first
+        // Solo tareas JUGABLES: `FileTask` de categoría `game` (las hay de tipo `URLTask` —soporte,
+        // sin `path`— y `FileTask` de categoría `document`/`tool`: manuales en PDF, configuradores
+        // de vídeo, editores de mapas… que no son el juego).
+        let playable = tasks.filter {
+            ($0["type"] as? String) == "FileTask" && (($0["category"] as? String) ?? "game") == "game"
+        }
+        let primary = playable.first { ($0["isPrimary"] as? Bool) == true } ?? playable.first
         guard let rel = primary?["path"] as? String, !rel.isEmpty else { return nil }
-        return "\(root)/\(rel)"
+        return ("\(root)/\(Self.normalizeGogPath(rel))",
+                Self.parsePlayTaskArguments(primary?["arguments"] as? String ?? ""))
+    }
+
+    /// Normaliza la ruta relativa que declara GOG. Viene con separadores de **Windows**
+    /// (`DOSBOX\dosbox.exe`) y a veces duplicados (`Editor//MAPEDIT.EXE`). Sin esto la ruta no
+    /// existe en macOS, el juego se daba por NO instalado y desaparecía — se llevaba por delante
+    /// todo el catálogo clásico de GOG (DOSBox/ScummVM), que es la mitad de su gracia.
+    nonisolated static func normalizeGogPath(_ path: String) -> String {
+        var s = path.replacingOccurrences(of: "\\", with: "/")
+        while s.contains("//") { s = s.replacingOccurrences(of: "//", with: "/") }
+        return s.hasPrefix("/") ? String(s.dropFirst()) : s
+    }
+
+    /// Trocea la cadena de argumentos de un playTask respetando las comillas dobles.
+    /// Las `\` de DENTRO de los argumentos se conservan a propósito: son rutas de Windows que
+    /// resuelve el propio programa bajo Wine (`-conf "..\dosboxAkalabeth.conf"`).
+    nonisolated static func parsePlayTaskArguments(_ raw: String) -> [String] {
+        var out: [String] = [], current = "", inQuotes = false
+        for ch in raw {
+            switch ch {
+            case "\"": inQuotes.toggle()
+            case " " where !inQuotes:
+                if !current.isEmpty { out.append(current); current = "" }
+            default: current.append(ch)
+            }
+        }
+        if !current.isEmpty { out.append(current) }
+        return out
     }
 
     /// Extrae el porcentaje de descarga (0–100) de una línea de salida de gogdl

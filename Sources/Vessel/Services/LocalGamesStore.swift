@@ -54,6 +54,10 @@ final class LocalGamesStore {
         var executablePath: String = ""
         /// Windows (vía Wine) o nativo de macOS. Se decide al descargar, prefiriendo lo nativo.
         var platform: Platform = .windows
+        /// Argumentos con los que hay que lanzar el ejecutable. Casi siempre vacío, pero los juegos
+        /// clásicos de GOG son DOS/ScummVM envueltos y su ejecutable es `DOSBOX\dosbox.exe`, que
+        /// SIN `-conf …` abre un prompt de DOS en vez del juego. Los declara el propio GOG.
+        var launchArguments: [String] = []
         /// Huella de la versión instalada (md5/build del origen). Si el build publicado tiene otra,
         /// hay actualización. `nil` = instalado antes de que existiera este control, o fuente sin versión.
         var installedVersion: String?
@@ -99,6 +103,7 @@ final class LocalGamesStore {
             sourceId = try? c.decodeIfPresent(String.self, forKey: .sourceId)
             executablePath = (try? c.decode(String.self, forKey: .executablePath)) ?? ""
             platform = (try? c.decode(Platform.self, forKey: .platform)) ?? .windows
+            launchArguments = (try? c.decode([String].self, forKey: .launchArguments)) ?? []
             installedVersion = try? c.decodeIfPresent(String.self, forKey: .installedVersion)
             updateAvailable = (try? c.decode(Bool.self, forKey: .updateAvailable)) ?? false
             installPath = try? c.decodeIfPresent(String.self, forKey: .installPath)
@@ -160,20 +165,30 @@ final class LocalGamesStore {
     func upsertInstalledCopy(source: Source, sourceId: String, name: String,
                              executablePath: String, installPath: String,
                              coverURL: String? = nil, pageURL: String? = nil,
-                             platform: Platform = .windows) -> UUID {
-        if let i = games.firstIndex(where: { $0.source == source && $0.sourceId == sourceId }) {
+                             platform: Platform = .windows,
+                             launchArguments: [String] = []) -> UUID {
+        // Dedup por `source`+`sourceId` y, si no, **por ejecutable**. Lo segundo no es paranoia: una
+        // versión ANTIGUA de Vessel que no conozca un `source` nuevo lo decodifica como `.local` y
+        // vuelve a guardar el JSON así; sin este segundo criterio, la versión nueva no reconocería
+        // su propia entrada y crearía un duplicado. Con él, la entrada se cura sola.
+        if let i = games.firstIndex(where: { $0.source == source && $0.sourceId == sourceId })
+            ?? games.firstIndex(where: { !$0.executablePath.isEmpty && $0.executablePath == executablePath }) {
+            games[i].source = source
+            games[i].sourceId = sourceId
             games[i].name = name
             games[i].executablePath = executablePath
             games[i].installPath = installPath
             games[i].platform = platform
+            games[i].launchArguments = launchArguments
             if let coverURL { games[i].coverURL = coverURL }
             if let pageURL { games[i].pageURL = pageURL }
             save()
             return games[i].id
         }
-        let g = Game(name: name, source: source, sourceId: sourceId,
+        var g = Game(name: name, source: source, sourceId: sourceId,
                      executablePath: executablePath, platform: platform,
                      installPath: installPath, coverURL: coverURL, pageURL: pageURL)
+        g.launchArguments = launchArguments
         games.insert(g, at: 0)
         save()
         return g.id
@@ -271,7 +286,48 @@ final class LocalGamesStore {
     private func load() {
         guard let d = try? Data(contentsOf: fileURL) else { return }
         let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601
-        if let g = try? dec.decode([Game].self, from: d) { games = g }
+        guard var g = try? dec.decode([Game].self, from: d) else { return }
+        let before = g.count
+        g = Self.deduped(g)
+        games = g
+        if g.count != before {
+            LogStore.shared.log("Biblioteca DRM‑free: \(before - g.count) entrada(s) duplicada(s) fusionadas.",
+                                level: .info)
+            save()
+        }
+    }
+
+    /// Fusiona entradas que apuntan al MISMO ejecutable. Pueden aparecer si una versión antigua de
+    /// Vessel guardó el JSON sin conocer un `source` nuevo (lo degrada a `.local`) y luego una
+    /// versión nueva reimportó el juego con su origen real. Gana la entrada mejor informada: la que
+    /// NO es `.local` y, a igualdad, la que trae argumentos de lanzamiento.
+    static func deduped(_ games: [Game]) -> [Game] {
+        var byExe: [String: Game] = [:]
+        var out: [Game] = []
+        for g in games {
+            guard !g.executablePath.isEmpty else { out.append(g); continue }
+            guard let existing = byExe[g.executablePath] else {
+                byExe[g.executablePath] = g; continue
+            }
+            byExe[g.executablePath] = better(existing, g)
+        }
+        // Se conserva el orden original (por la primera aparición de cada ejecutable).
+        var seen = Set<String>()
+        var result: [Game] = []
+        for g in games {
+            if g.executablePath.isEmpty { continue }
+            guard !seen.contains(g.executablePath) else { continue }
+            seen.insert(g.executablePath)
+            if let best = byExe[g.executablePath] { result.append(best) }
+        }
+        return result + out
+    }
+
+    private static func better(_ a: Game, _ b: Game) -> Game {
+        if (a.source == .local) != (b.source == .local) { return a.source == .local ? b : a }
+        if a.launchArguments.isEmpty != b.launchArguments.isEmpty { return a.launchArguments.isEmpty ? b : a }
+        // A igualdad, la más reciente en jugarse (conserva el historial del usuario).
+        return (a.lastPlayedAt ?? .distantPast) >= (b.lastPlayedAt ?? .distantPast) ? a : b
     }
 
     private func save() {

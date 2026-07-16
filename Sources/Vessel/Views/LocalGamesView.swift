@@ -28,11 +28,20 @@ struct LocalGamesView: View {
     /// Progreso de una exportación larga (nombre, fracción, mensaje) — banner persistente.
     @State private var exportProgress: (name: String, frac: Double, msg: String)?
 
-    /// Bottle compartido (el mismo prefijo con Wine + fixes que usa Steam).
+    /// Bottle compartido (el mismo prefijo con Wine + fixes que usa Steam). Es el de los juegos
+    /// que Vessel instala él mismo (itch/Humble/exes sueltos); los de tienda usan el suyo.
     private var bottle: Bottle? {
         store.bottles.first(where: { $0.name == "Steam" })
             ?? store.bottles.first(where: { FileManager.default.fileExists(atPath: $0.steamPath) })
             ?? store.bottles.first
+    }
+
+    /// Bottle **donde vive** el juego: el que contiene su ejecutable. Los juegos de GOG y de Epic
+    /// están dentro del prefijo de SU tienda y hay que lanzarlos ahí — su registro, sus runtimes y
+    /// sus partidas viven en ese prefijo. Lanzarlos en el de Steam los deja sin nada de eso.
+    private func bottle(for game: LocalGamesStore.Game) -> Bottle? {
+        store.bottles.first { !$0.prefixPath.isEmpty && game.executablePath.hasPrefix($0.prefixPath + "/") }
+            ?? bottle
     }
 
     /// Carpeta local del juego: la de instalación o, si no consta, la del ejecutable. `nil` si el
@@ -495,7 +504,7 @@ struct LocalGamesView: View {
             do {
                 let appURL = try await StandaloneMacExporter.shared.exportMacApp(
                     name: g.name, gameFolder: folder, exePath: g.executablePath,
-                    coverURL: g.coverURL, destParent: destParent
+                    coverURL: g.coverURL, arguments: g.launchArguments, destParent: destParent
                 ) { frac, msg in Task { @MainActor in exportProgress = (g.name, frac, msg) } }
                 exportProgress = nil
                 flash("App de «\(g.name)» creada en \(destParent.lastPathComponent) — arranca en cualquier Mac Silicon.", false)
@@ -650,11 +659,20 @@ struct LocalGamesView: View {
             }
             return
         }
-        guard let bottle else { return }
+        guard let bottle = bottle(for: game) else { return }
         let exe = game.executablePath
         let id = game.id.uuidString
         let installDir = (exe as NSString).deletingLastPathComponent
         Task {
+            // Juegos de GOG: completar su post-instalación si falta (los clásicos no arrancan sin
+            // el .ini/.conf que genera el `goggame-<id>.script`). Idempotente y silencioso.
+            // OJO: la raíz es `installPath` (donde está el `goggame-<id>.*`), NO la carpeta del exe
+            // — en los clásicos el exe cuelga de una subcarpeta (`ScummVM/`, `DOSBOX/`).
+            if game.source == .gog, let sid = game.sourceId, let root = folder(of: game) {
+                await GOGPostInstall.applyIfNeeded(
+                    appId: sid, root: root, prefix: bottle.prefixPath,
+                    winePath: wineManager.resolveGameWine(for: bottle, executable: exe))
+            }
             let profile = CompatService.shared.profile(steam: nil, title: game.name)
             var eff = CompatService.shared.effectiveConfig(profile: profile, user: GameConfigStore.load(id))
             if let forcedLayer { eff.graphicsOverride = forcedLayer }
@@ -664,7 +682,8 @@ struct LocalGamesView: View {
                 onExit: { Task { await SaveBackupManager.shared.backup(store: .local, id: id, title: game.name, steamId: nil, prefix: bottle.prefixPath, installPath: installDir) } }
             ) {
                 await SaveBackupManager.shared.restoreIfNewer(store: .local, id: id, title: game.name, steamId: nil, prefix: bottle.prefixPath, installPath: installDir)
-                let proc = try await wineManager.launch(executable: exe, in: bottle, arguments: [], effective: eff)
+                let proc = try await wineManager.launch(executable: exe, in: bottle,
+                                                        arguments: game.launchArguments, effective: eff)
                 games.markPlayed(game.id)
                 return proc
             }

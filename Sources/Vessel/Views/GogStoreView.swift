@@ -163,12 +163,28 @@ final class GogStore {
                     }
                 }
             }
+            // gogdl deja los ficheros, pero el juego NO está completo hasta ejecutar el
+            // `goggame-<id>.script` de GOG (crea los .ini/.conf, las carpetas de partidas y las
+            // claves de registro que el juego lee al arrancar). Sin esto, los clásicos se cierran
+            // al instante sin decir por qué.
+            installProgress[game.appId] = "Configurando el juego…"
+            await runPostInstall(game.appId, bottle: bottle)
             NotificationService.shared.notify(title: "Instalación completada", body: game.title)
             await reloadLibrary()
         } catch {
             log.log("Error instalando \(game.title): \(error.localizedDescription)", level: .error)
             installProgress[game.appId] = "Error en la instalación"
         }
+    }
+
+    /// Aplica el script de post-instalación de GOG (idempotente). Se llama al instalar y también
+    /// antes de jugar: así los juegos que ya estaban instalados **se auto-reparan solos**, sin que
+    /// el usuario tenga que reinstalar nada ni enterarse de que existía el problema.
+    private func runPostInstall(_ appId: String, bottle: Bottle) async {
+        let dir = installDir(bottle, appId)
+        guard let root = gogdl.gameRoot(appId: appId, installDir: dir) else { return }
+        await GOGPostInstall.applyIfNeeded(appId: appId, root: root, prefix: bottle.prefixPath,
+                                           winePath: wineManager.resolveGameWine(for: bottle))
     }
 
     /// Verifica y repara un juego de GOG ya instalado (reusa el feedback visual de instalación).
@@ -277,13 +293,19 @@ final class GogStore {
                 await SaveBackupManager.shared.backup(store: .gog, id: game.appId, title: game.title, steamId: nil, prefix: prefix, installPath: dir)
             } }
         ) {
-            guard let exe = self.gogdl.primaryExecutable(appId: game.appId, installDir: dir) else {
+            // Ejecutable **y argumentos**: los clásicos de GOG son DOS/ScummVM envueltos y su
+            // ejecutable es `DOSBOX\dosbox.exe`, que sin `-conf …` abre un prompt de DOS vacío.
+            guard let launch = self.gogdl.primaryLaunch(appId: game.appId, installDir: dir) else {
                 throw GogdlManager.GogdlError.notImplemented("No se encontró el ejecutable del juego. Reinstálalo.")
             }
+            // Auto-reparación: completa la post-instalación de GOG si falta (juegos instalados
+            // antes de que Vessel supiera hacerlo). Idempotente y barato.
+            await self.runPostInstall(game.appId, bottle: bottle)
             // Cloud saves: baja lo último de la nube ANTES de jugar (silencioso si no aplica).
             await self.gogdl.syncSaves(appId: game.appId, installDir: dir, prefix: prefix, direction: .download)
             await SaveBackupManager.shared.restoreIfNewer(store: .gog, id: game.appId, title: game.title, steamId: nil, prefix: prefix, installPath: dir)
-            return try await self.wineManager.launch(executable: exe, in: bottle, arguments: [], effective: eff)
+            return try await self.wineManager.launch(executable: launch.executable, in: bottle,
+                                                     arguments: launch.arguments, effective: eff)
         }
         // Diagnóstico + fallback automático de motor (DXMT ↔ GPTK) si falla el arranque.
         LaunchDiagnostics.monitorAndMaybeRetry(
