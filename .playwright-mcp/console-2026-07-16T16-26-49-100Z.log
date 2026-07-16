@@ -1,0 +1,16 @@
+[     311ms] [LOG] JQMIGRATE: Migrate is installed with logging active, version 3.3.2 @ https://www.pcgamingwiki.com/w/load.php?lang=en&modules=jquery%2Coojs-ui-core%2Coojs-ui-widgets&skin=overclocked&version=fxxpk:144
+[     313ms] [WARNING] JQMIGRATE: jQuery.isFunction() is deprecated @ https://www.pcgamingwiki.com/w/load.php?lang=en&modules=jquery%2Coojs-ui-core%2Coojs-ui-widgets&skin=overclocked&version=fxxpk:145
+[     313ms] [WARNING] JQMIGRATE: jQuery.fn.offset() requires a valid DOM element @ https://www.pcgamingwiki.com/w/load.php?lang=en&modules=jquery%2Coojs-ui-core%2Coojs-ui-widgets&skin=overclocked&version=fxxpk:145
+[     313ms] [WARNING] JQMIGRATE: jQuery.fn.hover() is deprecated @ https://www.pcgamingwiki.com/w/load.php?lang=en&modules=jquery%2Coojs-ui-core%2Coojs-ui-widgets&skin=overclocked&version=fxxpk:145
+[     313ms] [WARNING] JQMIGRATE: jQuery.fn.bind() is deprecated @ https://www.pcgamingwiki.com/w/load.php?lang=en&modules=jquery%2Coojs-ui-core%2Coojs-ui-widgets&skin=overclocked&version=fxxpk:145
+[     314ms] [LOG] MediaWiki:Common.js executing... rev. 11 @ :0
+[     314ms] [LOG] -- Link: https://www.pcgamingwiki.com/wiki/MediaWiki:Common.js @ :0
+[    1083ms] [WARNING] This page is using the deprecated ResourceLoader module "mediawiki.ui".
+Please use OOUI instead. @ https://www.pcgamingwiki.com/w/index.php?search=insource%3A%22uplay_r1_loader64.dll%22&fulltext=1&ns0=1:238
+[    1083ms] [WARNING] This page is using the deprecated ResourceLoader module "mediawiki.skinning.elements".
+Your default skin ResourceLoader class should use ResourceLoaderSkinModule::class @ https://www.pcgamingwiki.com/w/index.php?search=insource%3A%22uplay_r1_loader64.dll%22&fulltext=1&ns0=1:238
+[    1094ms] [LOG] sendBeacon: URL =  https://go.adt256.com/t/t?a=1578845458&as=1649876489&t=1&tk=1&cl=1&atag=1&sv=1&at_gd=C452ADB40C07A486DC2958A6515BA81171088653&cid=1905898357.1784219036&cacheprev=0.19448700525886564 ; status =  true @ https://cdn.adt598.com/atag.js?as=1649876489:0
+[    4347ms] [WARNING] The resource https://static.pcgamingwiki.com/logos/pcgamingwiki.svg was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally. @ https://www.pcgamingwiki.com/w/index.php?search=insource%3A%22uplay_r1_loader64.dll%22&fulltext=1&ns0=1:0
+[    5946ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://www.pcgamingwiki.com/show_bug.cgi?id=52092:0
+[    6097ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://www.pcgamingwiki.com/show_bug.cgi?id=59407:0
+[    9098ms] [WARNING] The resource https://static.pcgamingwiki.com/logos/pcgamingwiki.svg was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally. @ https://www.pcgamingwiki.com/w/index.php?search=insource%3A%22uplay_r1_loader64.dll%22&fulltext=1&ns0=1:0

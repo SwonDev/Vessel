@@ -1,0 +1,332 @@
+- generic [active] [ref=f459e1]:
+  - link [ref=f459e3] [cursor=pointer]:
+    - /url: /
+  - link [ref=f459e5] [cursor=pointer]:
+    - /url: /
+    - img "WineHQ" [ref=f459e6]
+  - generic [ref=f459e7]: Bug Tracking Database – Bug List
+  - generic [ref=f459e9]:
+    - text: "Search:"
+    - textbox [ref=f459e10]
+  - generic [ref=f459e11]:
+    - list:
+      - listitem [ref=f459e12]:
+        - link "WineHQ" [ref=f459e13] [cursor=pointer]:
+          - /url: https://www.winehq.org/
+      - listitem [ref=f459e14]:
+        - link "Wiki" [ref=f459e15] [cursor=pointer]:
+          - /url: https://wiki.winehq.org/
+      - listitem [ref=f459e16]:
+        - link "AppDB" [ref=f459e17] [cursor=pointer]:
+          - /url: https://appdb.winehq.org/
+      - listitem [ref=f459e18]:
+        - link "Bugzilla" [ref=f459e19] [cursor=pointer]:
+          - /url: https://bugs.winehq.org/
+      - listitem [ref=f459e20]:
+        - link "Forums" [ref=f459e21] [cursor=pointer]:
+          - /url: https://forum.winehq.org/
+  - generic [ref=f459e22]:
+    - list [ref=f459e23]:
+      - listitem [ref=f459e24]:
+        - paragraph [ref=f459e25]: Task Lists
+      - listitem [ref=f459e26]:
+        - paragraph [ref=f459e27]:
+          - link "Regressions" [ref=f459e28] [cursor=pointer]:
+            - /url: buglist.cgi?bug_status=UNCONFIRMED&bug_status=NEW&bug_status=ASSIGNED&bug_status=REOPENED&bug_status=NEEDINFO&bug_status=STAGED&product=Wine&keywords=regression&columnlist=bug_severity,priority,bug_status,cf_regression_sha1sum,short_desc,changeddate&keywords_type=anywords
+      - listitem [ref=f459e29]:
+        - paragraph [ref=f459e30]:
+          - link "With download" [ref=f459e31] [cursor=pointer]:
+            - /url: buglist.cgi?bug_status=UNCONFIRMED&bug_status=NEW&bug_status=ASSIGNED&bug_status=REOPENED&bug_status=NEEDINFO&bug_status=STAGED&product=Wine&keywords=download&keywords_type=anywords
+      - listitem [ref=f459e32]:
+        - paragraph [ref=f459e33]:
+          - link "With patch" [ref=f459e34] [cursor=pointer]:
+            - /url: buglist.cgi?bug_status=UNCONFIRMED&bug_status=NEW&bug_status=ASSIGNED&bug_status=REOPENED&bug_status=NEEDINFO&bug_status=STAGED&product=Wine&keywords=patch&keywords_type=anywords
+    - list [ref=f459e35]:
+      - listitem [ref=f459e36]:
+        - paragraph [ref=f459e37]: Bug Lists
+      - listitem [ref=f459e38]:
+        - paragraph [ref=f459e39]:
+          - link "Available" [ref=f459e40] [cursor=pointer]:
+            - /url: buglist.cgi?bug_status=UNCONFIRMED&bug_status=NEW&bug_status=REOPENED&cmdtype=doit&order=Bug+Number
+      - listitem [ref=f459e41]:
+        - paragraph [ref=f459e42]:
+          - link "Assigned" [ref=f459e43] [cursor=pointer]:
+            - /url: buglist.cgi?bug_status=ASSIGNED
+      - listitem [ref=f459e44]:
+        - paragraph [ref=f459e45]:
+          - link "NeedInfo" [ref=f459e46] [cursor=pointer]:
+            - /url: buglist.cgi?bug_status=NEEDINFO
+      - listitem [ref=f459e47]:
+        - paragraph [ref=f459e48]:
+          - link "Staged" [ref=f459e49] [cursor=pointer]:
+            - /url: buglist.cgi?bug_status=STAGED
+      - listitem [ref=f459e50]:
+        - paragraph [ref=f459e51]:
+          - link "Resolved" [ref=f459e52] [cursor=pointer]:
+            - /url: buglist.cgi?bug_status=RESOLVED
+  - generic [ref=f459e60]:
+    - generic [ref=f459e61]:
+      - table [ref=f459e62]:
+        - rowgroup [ref=f459e63]:
+          - row [ref=f459e64]:
+            - cell [ref=f459e65]:
+              - paragraph [ref=f459e66]: Bugzilla
+            - cell [ref=f459e67]:
+              - paragraph [ref=f459e68]
+      - list [ref=f459e70]:
+        - listitem [ref=f459e71]:
+          - link "Intro" [ref=f459e72] [cursor=pointer]:
+            - /url: ./
+        - listitem [ref=f459e73]:
+          - text: "|"
+          - link "New" [ref=f459e74] [cursor=pointer]:
+            - /url: enter_bug.cgi
+        - listitem [ref=f459e75]:
+          - text: "|"
+          - link "Browse" [ref=f459e76] [cursor=pointer]:
+            - /url: describecomponents.cgi
+        - listitem [ref=f459e77]:
+          - text: "|"
+          - link "Search" [ref=f459e78] [cursor=pointer]:
+            - /url: query.cgi
+        - listitem [ref=f459e79]:
+          - text: "|"
+          - generic [ref=f459e80]:
+            - textbox "Find" [ref=f459e81]: appx
+            - button "Find" [ref=f459e82]
+          - link "[?]" [ref=f459e83] [cursor=pointer]:
+            - /url: page.cgi?id=quicksearch.html
+        - listitem [ref=f459e84]:
+          - text: "|"
+          - link "Reports" [ref=f459e85] [cursor=pointer]:
+            - /url: report.cgi
+        - listitem
+        - listitem [ref=f459e86]:
+          - text: "|"
+          - link "Help" [ref=f459e87] [cursor=pointer]:
+            - /url: https://bugzilla.readthedocs.org/en/5.2/using/finding.html
+        - listitem [ref=f459e88]:
+          - text: "|"
+          - link "New Account" [ref=f459e89] [cursor=pointer]:
+            - /url: createaccount.cgi
+        - listitem [ref=f459e90]:
+          - text: "|"
+          - link "Log In" [ref=f459e91] [cursor=pointer]:
+            - /url: buglist.cgi?field0-0-0=product&type0-0-0=substring&value0-0-0=appx&field0-0-1=component&type0-0-1=substring&value0-0-1=appx&field0-0-2=alias&type0-0-2=substring&value0-0-2=appx&field0-0-3=short_desc&type0-0-3=substring&value0-0-3=appx&field0-0-4=status_whiteboard&type0-0-4=substring&value0-0-4=appx&field0-0-5=content&type0-0-5=matches&value0-0-5=%22appx%22&bug_status=UNCONFIRMED&bug_status=NEW&bug_status=ASSIGNED&bug_status=REOPENED&bug_status=STAGED&bug_status=NEEDINFO&GoAheadAndLogIn=1
+        - listitem [ref=f459e92]:
+          - text: "|"
+          - link "Forgot Password" [ref=f459e93] [cursor=pointer]:
+            - /url: buglist.cgi?field0-0-0=product&type0-0-0=substring&value0-0-0=appx&field0-0-1=component&type0-0-1=substring&value0-0-1=appx&field0-0-2=alias&type0-0-2=substring&value0-0-2=appx&field0-0-3=short_desc&type0-0-3=substring&value0-0-3=appx&field0-0-4=status_whiteboard&type0-0-4=substring&value0-0-4=appx&field0-0-5=content&type0-0-5=matches&value0-0-5=%22appx%22&bug_status=UNCONFIRMED&bug_status=NEW&bug_status=ASSIGNED&bug_status=REOPENED&bug_status=STAGED&bug_status=NEEDINFO&GoAheadAndLogIn=1#forgot
+    - generic [ref=f459e94]:
+      - generic [ref=f459e95]: Thu Jul 16 2026 16:25:47 UTC
+      - link "Hide Search Description" [ref=f459e97] [cursor=pointer]:
+        - /url: javascript:TUI_toggle_class('search_description')
+      - list [ref=f459e98]:
+        - listitem [ref=f459e99]:
+          - strong [ref=f459e100]: "Status:"
+          - text: UNCONFIRMED, NEW, ASSIGNED, REOPENED, STAGED, NEEDINFO
+        - listitem [ref=f459e101]:
+          - strong [ref=f459e102]: "Product:"
+          - text: appx
+        - listitem [ref=f459e103]:
+          - strong [ref=f459e104]: "Component:"
+          - text: appx
+        - listitem [ref=f459e105]:
+          - strong [ref=f459e106]: "Alias:"
+          - text: appx
+        - listitem [ref=f459e107]:
+          - strong [ref=f459e108]: "Summary:"
+          - text: appx
+        - listitem [ref=f459e109]:
+          - strong [ref=f459e110]: "Whiteboard:"
+          - text: appx
+        - listitem [ref=f459e111]:
+          - strong [ref=f459e112]: "Content:"
+          - text: "\"appx\""
+      - separator [ref=f459e113]
+      - table [ref=f459e114]:
+        - rowgroup [ref=f459e115]:
+          - row [ref=f459e116]:
+            - columnheader [ref=f459e117]:
+              - link "ID" [ref=f459e118] [cursor=pointer]:
+                - /url: buglist.cgi?bug_status=UNCONFIRMED&bug_status=NEW&bug_status=ASSIGNED&bug_status=REOPENED&bug_status=STAGED&bug_status=NEEDINFO&field0-0-0=product&field0-0-1=component&field0-0-2=alias&field0-0-3=short_desc&field0-0-4=status_whiteboard&field0-0-5=content&query_format=advanced&type0-0-0=substring&type0-0-1=substring&type0-0-2=substring&type0-0-3=substring&type0-0-4=substring&type0-0-5=matches&value0-0-0=appx&value0-0-1=appx&value0-0-2=appx&value0-0-3=appx&value0-0-4=appx&value0-0-5=%22appx%22&order=bug_id%20DESC&query_based_on=
+            - columnheader [ref=f459e119]:
+              - link "Product" [ref=f459e120] [cursor=pointer]:
+                - /url: buglist.cgi?bug_status=UNCONFIRMED&bug_status=NEW&bug_status=ASSIGNED&bug_status=REOPENED&bug_status=STAGED&bug_status=NEEDINFO&field0-0-0=product&field0-0-1=component&field0-0-2=alias&field0-0-3=short_desc&field0-0-4=status_whiteboard&field0-0-5=content&query_format=advanced&type0-0-0=substring&type0-0-1=substring&type0-0-2=substring&type0-0-3=substring&type0-0-4=substring&type0-0-5=matches&value0-0-0=appx&value0-0-1=appx&value0-0-2=appx&value0-0-3=appx&value0-0-4=appx&value0-0-5=%22appx%22&order=product%2Cbug_id&query_based_on=
+            - columnheader [ref=f459e121]:
+              - link "Comp" [ref=f459e122] [cursor=pointer]:
+                - /url: buglist.cgi?bug_status=UNCONFIRMED&bug_status=NEW&bug_status=ASSIGNED&bug_status=REOPENED&bug_status=STAGED&bug_status=NEEDINFO&field0-0-0=product&field0-0-1=component&field0-0-2=alias&field0-0-3=short_desc&field0-0-4=status_whiteboard&field0-0-5=content&query_format=advanced&type0-0-0=substring&type0-0-1=substring&type0-0-2=substring&type0-0-3=substring&type0-0-4=substring&type0-0-5=matches&value0-0-0=appx&value0-0-1=appx&value0-0-2=appx&value0-0-3=appx&value0-0-4=appx&value0-0-5=%22appx%22&order=component%2Cbug_id&query_based_on=
+            - columnheader [ref=f459e123]:
+              - link "Assignee" [ref=f459e124] [cursor=pointer]:
+                - /url: buglist.cgi?bug_status=UNCONFIRMED&bug_status=NEW&bug_status=ASSIGNED&bug_status=REOPENED&bug_status=STAGED&bug_status=NEEDINFO&field0-0-0=product&field0-0-1=component&field0-0-2=alias&field0-0-3=short_desc&field0-0-4=status_whiteboard&field0-0-5=content&query_format=advanced&type0-0-0=substring&type0-0-1=substring&type0-0-2=substring&type0-0-3=substring&type0-0-4=substring&type0-0-5=matches&value0-0-0=appx&value0-0-1=appx&value0-0-2=appx&value0-0-3=appx&value0-0-4=appx&value0-0-5=%22appx%22&order=assigned_to%2Cbug_id&query_based_on=
+            - columnheader [ref=f459e125]:
+              - link "Status" [ref=f459e126] [cursor=pointer]:
+                - /url: buglist.cgi?bug_status=UNCONFIRMED&bug_status=NEW&bug_status=ASSIGNED&bug_status=REOPENED&bug_status=STAGED&bug_status=NEEDINFO&field0-0-0=product&field0-0-1=component&field0-0-2=alias&field0-0-3=short_desc&field0-0-4=status_whiteboard&field0-0-5=content&query_format=advanced&type0-0-0=substring&type0-0-1=substring&type0-0-2=substring&type0-0-3=substring&type0-0-4=substring&type0-0-5=matches&value0-0-0=appx&value0-0-1=appx&value0-0-2=appx&value0-0-3=appx&value0-0-4=appx&value0-0-5=%22appx%22&order=bug_status%2Cbug_id&query_based_on=
+            - columnheader [ref=f459e127]:
+              - link "Resolution" [ref=f459e128] [cursor=pointer]:
+                - /url: buglist.cgi?bug_status=UNCONFIRMED&bug_status=NEW&bug_status=ASSIGNED&bug_status=REOPENED&bug_status=STAGED&bug_status=NEEDINFO&field0-0-0=product&field0-0-1=component&field0-0-2=alias&field0-0-3=short_desc&field0-0-4=status_whiteboard&field0-0-5=content&query_format=advanced&type0-0-0=substring&type0-0-1=substring&type0-0-2=substring&type0-0-3=substring&type0-0-4=substring&type0-0-5=matches&value0-0-0=appx&value0-0-1=appx&value0-0-2=appx&value0-0-3=appx&value0-0-4=appx&value0-0-5=%22appx%22&order=resolution%2Cbug_id&query_based_on=
+            - columnheader [ref=f459e129]:
+              - link "Summary" [ref=f459e130] [cursor=pointer]:
+                - /url: buglist.cgi?bug_status=UNCONFIRMED&bug_status=NEW&bug_status=ASSIGNED&bug_status=REOPENED&bug_status=STAGED&bug_status=NEEDINFO&field0-0-0=product&field0-0-1=component&field0-0-2=alias&field0-0-3=short_desc&field0-0-4=status_whiteboard&field0-0-5=content&query_format=advanced&type0-0-0=substring&type0-0-1=substring&type0-0-2=substring&type0-0-3=substring&type0-0-4=substring&type0-0-5=matches&value0-0-0=appx&value0-0-1=appx&value0-0-2=appx&value0-0-3=appx&value0-0-4=appx&value0-0-5=%22appx%22&order=short_desc%2Cbug_id&query_based_on=
+            - columnheader [ref=f459e131]:
+              - link "Changed" [ref=f459e132] [cursor=pointer]:
+                - /url: buglist.cgi?bug_status=UNCONFIRMED&bug_status=NEW&bug_status=ASSIGNED&bug_status=REOPENED&bug_status=STAGED&bug_status=NEEDINFO&field0-0-0=product&field0-0-1=component&field0-0-2=alias&field0-0-3=short_desc&field0-0-4=status_whiteboard&field0-0-5=content&query_format=advanced&type0-0-0=substring&type0-0-1=substring&type0-0-2=substring&type0-0-3=substring&type0-0-4=substring&type0-0-5=matches&value0-0-0=appx&value0-0-1=appx&value0-0-2=appx&value0-0-3=appx&value0-0-4=appx&value0-0-5=%22appx%22&order=changeddate%2Cbug_id&query_based_on=
+          - row [ref=f459e133]:
+            - cell [ref=f459e134]:
+              - link "50279" [ref=f459e135] [cursor=pointer]:
+                - /url: show_bug.cgi?id=50279
+            - cell "Wine" [ref=f459e136]
+            - cell "ole32" [ref=f459e137]
+            - cell "wine-bugs" [ref=f459e138]
+            - cell "NEED" [ref=f459e139]
+            - cell "---" [ref=f459e140]
+            - cell [ref=f459e141]:
+              - link "Registration free COM fails" [ref=f459e142] [cursor=pointer]:
+                - /url: show_bug.cgi?id=50279
+            - cell "2021-02-06" [ref=f459e143]
+          - row [ref=f459e144]:
+            - cell [ref=f459e145]:
+              - link "52876" [ref=f459e146] [cursor=pointer]:
+                - /url: show_bug.cgi?id=52876
+            - cell "Wine" [ref=f459e147]
+            - cell "msi" [ref=f459e148]
+            - cell "wine-bugs" [ref=f459e149]
+            - cell "NEW" [ref=f459e150]
+            - cell "---" [ref=f459e151]
+            - cell [ref=f459e152]:
+              - link "SolidWorks installer fails to install components with action INSTALLSTATE_UNKNOWN" [ref=f459e153] [cursor=pointer]:
+                - /url: show_bug.cgi?id=52876
+            - cell "2022-07-12" [ref=f459e154]
+          - row [ref=f459e155]:
+            - cell [ref=f459e156]:
+              - link "55180" [ref=f459e157] [cursor=pointer]:
+                - /url: show_bug.cgi?id=55180
+            - cell "Wine" [ref=f459e158]
+            - cell "ole32" [ref=f459e159]
+            - cell "wine-bugs" [ref=f459e160]
+            - cell "NEW" [ref=f459e161]
+            - cell "---" [ref=f459e162]
+            - cell [ref=f459e163]:
+              - link "Roblox (Win10 Store version) needs combase.dll.SetRestrictedErrorInfo" [ref=f459e164] [cursor=pointer]:
+                - /url: show_bug.cgi?id=55180
+            - cell "2024-01-26" [ref=f459e165]
+          - row [ref=f459e166]:
+            - cell [ref=f459e167]:
+              - link "57745" [ref=f459e168] [cursor=pointer]:
+                - /url: show_bug.cgi?id=57745
+            - cell "Wine" [ref=f459e169]
+            - cell "-unknown" [ref=f459e170]
+            - cell "wine-bugs" [ref=f459e171]
+            - cell "UNCO" [ref=f459e172]
+            - cell "---" [ref=f459e173]
+            - cell [ref=f459e174]:
+              - link "Autocad fails to install" [ref=f459e175] [cursor=pointer]:
+                - /url: show_bug.cgi?id=57745
+            - cell "2026-02-13" [ref=f459e176]
+          - row [ref=f459e177]:
+            - cell [ref=f459e178]:
+              - link "59278" [ref=f459e179] [cursor=pointer]:
+                - /url: show_bug.cgi?id=59278
+            - cell "Wine" [ref=f459e180]
+            - cell "kernel32" [ref=f459e181]
+            - cell "wine-bugs" [ref=f459e182]
+            - cell "NEW" [ref=f459e183]
+            - cell "---" [ref=f459e184]
+            - cell [ref=f459e185]:
+              - link "Adobe Express Photos installer crashes on unimplemented function KERNEL32.dll.PackageFullNameFromId" [ref=f459e186] [cursor=pointer]:
+                - /url: show_bug.cgi?id=59278
+            - cell "2026-02-12" [ref=f459e187]
+          - row [ref=f459e188]:
+            - cell [ref=f459e189]:
+              - link "59407" [ref=f459e190] [cursor=pointer]:
+                - /url: show_bug.cgi?id=59407
+            - cell "Wine" [ref=f459e191]
+            - cell "msi" [ref=f459e192]
+            - cell "wine-bugs" [ref=f459e193]
+            - cell "UNCO" [ref=f459e194]
+            - cell "---" [ref=f459e195]
+            - cell [ref=f459e196]:
+              - link "Multiple apps require appx/appxbundle support to install" [ref=f459e197] [cursor=pointer]:
+                - /url: show_bug.cgi?id=59407
+            - cell "2026-02-18" [ref=f459e198]
+      - text: 6 bugs found.
+      - generic [ref=f459e199]:
+        - generic [ref=f459e200]:
+          - button "Long Format" [ref=f459e202]
+          - button [ref=f459e204]:
+            - img "XML" [ref=f459e205]
+        - generic [ref=f459e206]:
+          - link [ref=f459e207] [cursor=pointer]:
+            - /url: buglist.cgi?bug_status=UNCONFIRMED&bug_status=NEW&bug_status=ASSIGNED&bug_status=REOPENED&bug_status=STAGED&bug_status=NEEDINFO&field0-0-0=product&field0-0-1=component&field0-0-2=alias&field0-0-3=short_desc&field0-0-4=status_whiteboard&field0-0-5=content&query_format=advanced&type0-0-0=substring&type0-0-1=substring&type0-0-2=substring&type0-0-3=substring&type0-0-4=substring&type0-0-5=matches&value0-0-0=appx&value0-0-1=appx&value0-0-2=appx&value0-0-3=appx&value0-0-4=appx&value0-0-5=%22appx%22&ctype=csv&human=1
+            - img "CSV" [ref=f459e208]
+          - link [ref=f459e209] [cursor=pointer]:
+            - /url: buglist.cgi?bug_status=UNCONFIRMED&bug_status=NEW&bug_status=ASSIGNED&bug_status=REOPENED&bug_status=STAGED&bug_status=NEEDINFO&field0-0-0=product&field0-0-1=component&field0-0-2=alias&field0-0-3=short_desc&field0-0-4=status_whiteboard&field0-0-5=content&query_format=advanced&type0-0-0=substring&type0-0-1=substring&type0-0-2=substring&type0-0-3=substring&type0-0-4=substring&type0-0-5=matches&value0-0-0=appx&value0-0-1=appx&value0-0-2=appx&value0-0-3=appx&value0-0-4=appx&value0-0-5=%22appx%22&title=Bug%20List&ctype=atom
+            - img "Feed" [ref=f459e210]
+          - link [ref=f459e211] [cursor=pointer]:
+            - /url: buglist.cgi?bug_status=UNCONFIRMED&bug_status=NEW&bug_status=ASSIGNED&bug_status=REOPENED&bug_status=STAGED&bug_status=NEEDINFO&field0-0-0=product&field0-0-1=component&field0-0-2=alias&field0-0-3=short_desc&field0-0-4=status_whiteboard&field0-0-5=content&query_format=advanced&type0-0-0=substring&type0-0-1=substring&type0-0-2=substring&type0-0-3=substring&type0-0-4=substring&type0-0-5=matches&value0-0-0=appx&value0-0-1=appx&value0-0-2=appx&value0-0-3=appx&value0-0-4=appx&value0-0-5=%22appx%22&ctype=ics
+            - img "iCal" [ref=f459e212]
+          - button "Change Columns" [ref=f459e213]
+        - button "Edit Search" [ref=f459e215]
+        - generic [ref=f459e217]:
+          - button "Remember search" [ref=f459e218]
+          - text: as
+          - textbox "New query name" [ref=f459e219]
+      - paragraph [ref=f459e220]:
+        - link "File a new bug in the \"Wine\" product" [ref=f459e221] [cursor=pointer]:
+          - /url: enter_bug.cgi?product=Wine
+    - list [ref=f459e223]:
+      - listitem [ref=f459e224]:
+        - list [ref=f459e225]:
+          - listitem [ref=f459e226]:
+            - link "Intro" [ref=f459e227] [cursor=pointer]:
+              - /url: ./
+          - listitem [ref=f459e228]:
+            - text: "|"
+            - link "New" [ref=f459e229] [cursor=pointer]:
+              - /url: enter_bug.cgi
+          - listitem [ref=f459e230]:
+            - text: "|"
+            - link "Browse" [ref=f459e231] [cursor=pointer]:
+              - /url: describecomponents.cgi
+          - listitem [ref=f459e232]:
+            - text: "|"
+            - link "Search" [ref=f459e233] [cursor=pointer]:
+              - /url: query.cgi
+          - listitem [ref=f459e234]:
+            - text: "|"
+            - generic [ref=f459e235]:
+              - textbox "Find" [ref=f459e236]: appx
+              - button "Find" [ref=f459e237]
+            - link "[?]" [ref=f459e238] [cursor=pointer]:
+              - /url: page.cgi?id=quicksearch.html
+          - listitem [ref=f459e239]:
+            - text: "|"
+            - link "Reports" [ref=f459e240] [cursor=pointer]:
+              - /url: report.cgi
+          - listitem
+          - listitem [ref=f459e241]:
+            - text: "|"
+            - link "Help" [ref=f459e242] [cursor=pointer]:
+              - /url: https://bugzilla.readthedocs.org/en/5.2/using/finding.html
+          - listitem [ref=f459e243]:
+            - text: "|"
+            - link "New Account" [ref=f459e244] [cursor=pointer]:
+              - /url: createaccount.cgi
+          - listitem [ref=f459e245]:
+            - text: "|"
+            - link "Log In" [ref=f459e246] [cursor=pointer]:
+              - /url: buglist.cgi?field0-0-0=product&type0-0-0=substring&value0-0-0=appx&field0-0-1=component&type0-0-1=substring&value0-0-1=appx&field0-0-2=alias&type0-0-2=substring&value0-0-2=appx&field0-0-3=short_desc&type0-0-3=substring&value0-0-3=appx&field0-0-4=status_whiteboard&type0-0-4=substring&value0-0-4=appx&field0-0-5=content&type0-0-5=matches&value0-0-5=%22appx%22&bug_status=UNCONFIRMED&bug_status=NEW&bug_status=ASSIGNED&bug_status=REOPENED&bug_status=STAGED&bug_status=NEEDINFO&GoAheadAndLogIn=1
+          - listitem [ref=f459e247]:
+            - text: "|"
+            - link "Forgot Password" [ref=f459e248] [cursor=pointer]:
+              - /url: buglist.cgi?field0-0-0=product&type0-0-0=substring&value0-0-0=appx&field0-0-1=component&type0-0-1=substring&value0-0-1=appx&field0-0-2=alias&type0-0-2=substring&value0-0-2=appx&field0-0-3=short_desc&type0-0-3=substring&value0-0-3=appx&field0-0-4=status_whiteboard&type0-0-4=substring&value0-0-4=appx&field0-0-5=content&type0-0-5=matches&value0-0-5=%22appx%22&bug_status=UNCONFIRMED&bug_status=NEW&bug_status=ASSIGNED&bug_status=REOPENED&bug_status=STAGED&bug_status=NEEDINFO&GoAheadAndLogIn=1#forgot
+  - generic [ref=f459e254]:
+    - link "Privacy Policy" [ref=f459e255] [cursor=pointer]:
+      - /url: https://wiki.winehq.org/WineHQ_Wiki:Privacy_policy
+    - text: If you have a privacy inquiry regarding this site, please write to
+    - link "privacy@winehq.org" [ref=f459e256] [cursor=pointer]:
+      - /url: mailto:privacy@winehq.org
+    - text: Hosted By
+    - link [ref=f459e257] [cursor=pointer]:
+      - /url: https://www.codeweavers.com/
+      - img "CodeWeavers" [ref=f459e258]

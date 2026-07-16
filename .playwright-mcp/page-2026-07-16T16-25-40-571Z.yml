@@ -1,0 +1,18 @@
+- generic [active] [ref=f447e1]:
+  - main [ref=f447e2]:
+    - generic [ref=f447e3]:
+      - heading "www.pcgamingwiki.com" [level=1] [ref=f447e5]
+      - heading "Verificación de seguridad en curso" [level=2] [ref=f447e6]
+      - paragraph [ref=f447e7]: Este sitio web utiliza un servicio de seguridad para protegerse contra bots maliciosos. Esta página se muestra mientras el sitio web verifica que tú no eres un bot.
+  - contentinfo [ref=f447e14]:
+    - generic [ref=f447e16]:
+      - generic [ref=f447e18]:
+        - text: "Ray ID:"
+        - code [ref=f447e19]: a1c25d3a6e04d8ff
+      - generic [ref=f447e20]:
+        - generic [ref=f447e21]:
+          - text: Rendimiento y seguridad de
+          - link "Cloudflare" [ref=f447e22] [cursor=pointer]:
+            - /url: https://www.cloudflare.com?utm_source=challenge&utm_campaign=j
+        - link "Privacidad" [ref=f447e24] [cursor=pointer]:
+          - /url: https://www.cloudflare.com/es-es/privacypolicy/

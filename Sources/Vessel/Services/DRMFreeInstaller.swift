@@ -36,6 +36,7 @@ actor DRMFreeInstaller {
     /// `slug` da nombre a la carpeta; `suggestedName` es el nombre a buscar para el exe principal.
     func downloadAndInstall(url: URL, headers: [String: String] = [:], slug: String,
                             suggestedName: String, filenameHint: String? = nil,
+                            source: String = "local", sourceId: String? = nil,
                             progress: @Sendable @escaping (Double, String) -> Void) async throws -> Installed {
         progress(0.02, "Preparando descarga…")
         let installDir = "\(VesselPaths.drmFreeDirectory)/\(Self.sanitize(slug))"
@@ -95,6 +96,18 @@ actor DRMFreeInstaller {
         }
         // Quitar quarantine del árbol instalado (evita bloqueos de Gatekeeper al pasar por Wine).
         await Self.stripQuarantine(at: installDir)
+
+        // **Manifiesto de archivo** (metadatos + SHA‑256): la copia queda autodescriptiva y verificable
+        // años después. Se omite en instaladores: lo que hay en disco aún no es el juego.
+        if !Self.looksLikeInstaller(exe) {
+            let relExe = exe.hasPrefix(installDir + "/") ? String(exe.dropFirst(installDir.count + 1))
+                                                         : (exe as NSString).lastPathComponent
+            _ = try? await DRMFreeArchive.shared.writeManifest(
+                folder: installDir, title: suggestedName, source: source, sourceId: sourceId,
+                executable: relExe, drm: "Ninguno (DRM‑free de origen)"
+            ) { frac, msg in progress(0.90 + frac * 0.10, msg) }
+        }
+
         progress(1.0, "Listo")
         return Installed(executablePath: exe, installDir: installDir,
                          isInstaller: Self.looksLikeInstaller(exe))

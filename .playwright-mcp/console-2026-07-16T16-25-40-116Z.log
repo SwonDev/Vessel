@@ -1,0 +1,3 @@
+[      91ms] [ERROR] Failed to load resource: the server responded with a status of 403 () @ https://www.pcgamingwiki.com/w/index.php?search=insource%3A%22uplay_r1_loader64.dll%22&title=Special%3ASearch&fulltext=1&ns0=1:0
+[     435ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://www.pcgamingwiki.com/favicon.ico:0
+[     486ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://www.pcgamingwiki.com/favicon.ico:0

@@ -1,0 +1,703 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - link [ref=e5] [cursor=pointer]:
+        - /url: /wiki/Home
+      - generic [ref=e6]:
+        - list [ref=e8]:
+          - listitem [ref=e9]:
+            - generic [ref=e10] [cursor=pointer]: Explore
+          - listitem [ref=e11]:
+            - generic [ref=e12] [cursor=pointer]: Editing
+          - listitem [ref=e13]:
+            - generic [ref=e14] [cursor=pointer]: Community
+          - listitem [ref=e15]:
+            - generic [ref=e16] [cursor=pointer]: About
+          - listitem [ref=e17]:
+            - generic [ref=e18] [cursor=pointer]: Tools
+        - generic [ref=e19]:
+          - searchbox "Search PCGamingWiki [ctrl-option-f]" [ref=e22]
+          - list [ref=e23]:
+            - listitem [ref=e24]:
+              - link "Log in" [ref=e25] [cursor=pointer]:
+                - /url: https://auth.pcgamingwiki.com/oauth2/start?rd=https%3A%2F%2Fwww.pcgamingwiki.com%2Fwiki%2FStore%3AEA_app
+  - generic [ref=e27]:
+    - paragraph [ref=e31]:
+      - text: Anonymous edits have been disabled on the wiki. If you want to contribute please
+      - link "login" [ref=e32] [cursor=pointer]:
+        - /url: https://auth.pcgamingwiki.com/oauth2/start?rd=https://www.pcgamingwiki.com/wiki/Home
+      - text: or
+      - link "create" [ref=e33] [cursor=pointer]:
+        - /url: https://sso.pcgamingwiki.com/auth/realms/PCGamingWiki/protocol/openid-connect/registrations?response_type=code&client_id=mediawiki&redirect_uri=https://www.pcgamingwiki.com/wiki/PCGamingWiki:Account/confirmed
+      - text: an account.
+    - generic [ref=e34]:
+      - generic [ref=e35]:
+        - list [ref=e36]:
+          - listitem [ref=e37]:
+            - link "Store" [ref=e38] [cursor=pointer]:
+              - /url: /wiki/Store:EA_app
+          - listitem [ref=e39]:
+            - link "Discussion" [ref=e40] [cursor=pointer]:
+              - /url: /wiki/Store_talk:EA_app
+        - list [ref=e41]:
+          - listitem [ref=e42]:
+            - link "View" [ref=e43] [cursor=pointer]:
+              - /url: /wiki/Store:EA_app
+          - listitem [ref=e44]:
+            - link "View source" [ref=e45] [cursor=pointer]:
+              - /url: /w/index.php?title=Store:EA_app&action=edit
+          - listitem [ref=e46]:
+            - link "History" [ref=e47] [cursor=pointer]:
+              - /url: /w/index.php?title=Store:EA_app&action=history
+      - heading "Store:EA app" [level=1] [ref=e49]
+      - generic [ref=e50]: From PCGamingWiki, the wiki about fixing PC games
+      - generic [ref=e51]:
+        - generic [ref=e54]:
+          - table [ref=e55]:
+            - caption [ref=e56]: EA app
+            - rowgroup [ref=e57]:
+              - row [ref=e58]:
+                - cell [ref=e59]:
+                  - link [ref=e60] [cursor=pointer]:
+                    - /url: /wiki/File:EA_App_logo.svg
+                    - img "EA app cover" [ref=e61]
+              - row [ref=e62]:
+                - columnheader "Developers" [ref=e63]
+              - row [ref=e64]:
+                - cell [ref=e65]
+                - cell [ref=e66]:
+                  - link "Company:Electronic Arts":
+                    - /url: /wiki/Company:Electronic_Arts
+                  - link "Electronic Arts" [ref=e67] [cursor=pointer]:
+                    - /url: /wiki/Company:Electronic_Arts
+              - row [ref=e68]:
+                - columnheader "Release dates" [ref=e69]
+              - row [ref=e70]:
+                - cell "Windows" [ref=e71]
+                - cell [ref=e72]:
+                  - text: June 3, 2011
+                  - superscript [ref=e73]:
+                    - link "[Note 1]" [ref=e74] [cursor=pointer]:
+                      - /url: "#cite_note-Note-1"
+              - row [ref=e75]:
+                - cell "macOS (OS X)" [ref=e76]
+                - cell [ref=e77]:
+                  - text: February 8, 2013
+                  - superscript [ref=e78]:
+                    - link "[1]" [ref=e79] [cursor=pointer]:
+                      - /url: "#cite_note-2"
+                  - superscript [ref=e80]:
+                    - link "[Note 2]" [ref=e81] [cursor=pointer]:
+                      - /url: "#cite_note-Note1-3"
+              - row [ref=e82]:
+                - cell [ref=e83]:
+                  - generic "EA app at WineHQ" [ref=e84]:
+                    - link [ref=e85] [cursor=pointer]:
+                      - /url: https://appdb.winehq.org/objectManager.php?sClass=application&iId=20348
+                  - generic "EA app at Wikipedia" [ref=e86]:
+                    - link [ref=e87] [cursor=pointer]:
+                      - /url: http://en.wikipedia.org/wiki/EA_App
+                      - img "EA app at Wikipedia" [ref=e88]
+          - generic [ref=e90]:
+            - generic [ref=e92]:
+              - link [ref=e95] [cursor=pointer]:
+                - /url: /wiki/Digital_rights_management_(DRM)
+                - img "DRM-icons.png" [ref=e96]
+              - paragraph [ref=e97]:
+                - link "Digital Rights Management (DRM)" [ref=e98] [cursor=pointer]:
+                  - /url: /wiki/Digital_rights_management_(DRM)
+            - list [ref=e99]:
+              - listitem [ref=e100]:
+                - link "Types of DRM" [ref=e101] [cursor=pointer]:
+                  - /url: /wiki/Digital_rights_management_(DRM)#Types_of_DRM
+              - listitem [ref=e102]:
+                - link "DRM-free" [ref=e103] [cursor=pointer]:
+                  - /url: /wiki/Digital_rights_management_(DRM)#DRM-free
+                - text: (
+                - link "Steam list" [ref=e104] [cursor=pointer]:
+                  - /url: /wiki/The_big_list_of_DRM-free_games_on_Steam
+                - text: )
+              - listitem [ref=e105]:
+                - link "Stores" [ref=e106] [cursor=pointer]:
+                  - /url: /wiki/Category:Stores
+              - listitem [ref=e107]:
+                - link "Middleware" [ref=e108] [cursor=pointer]:
+                  - /url: /wiki/Digital_rights_management_(DRM)#Middleware
+              - listitem [ref=e109]:
+                - link "DRM removal" [ref=e110] [cursor=pointer]:
+                  - /url: /wiki/Digital_rights_management_(DRM)#DRM_removal
+          - table [ref=e111]:
+            - caption [ref=e112]: Stores
+            - rowgroup [ref=e113]:
+              - row [ref=e114]:
+                - cell [ref=e115]:
+                  - link "Amazon" [ref=e116] [cursor=pointer]:
+                    - /url: /wiki/Store:Amazon
+              - row [ref=e117]:
+                - cell [ref=e118]:
+                  - link "Battle.net" [ref=e119] [cursor=pointer]:
+                    - /url: /wiki/Store:Battle.net
+              - row [ref=e120]:
+                - cell [ref=e121]:
+                  - link "Bethesda.net" [ref=e122] [cursor=pointer]:
+                    - /url: /wiki/Store:Bethesda.net
+              - row [ref=e123]:
+                - cell [ref=e124]:
+                  - link "Discord" [ref=e125] [cursor=pointer]:
+                    - /url: /wiki/Store:Discord
+              - row [ref=e126]:
+                - cell "EA app" [ref=e127]
+              - row [ref=e128]:
+                - cell [ref=e129]:
+                  - link "Epic Games Store" [ref=e130] [cursor=pointer]:
+                    - /url: /wiki/Store:Epic_Games_Store
+              - row [ref=e131]:
+                - cell [ref=e132]:
+                  - link "FireFlower Games" [ref=e133] [cursor=pointer]:
+                    - /url: /wiki/Store:FireFlower_Games
+              - row [ref=e134]:
+                - cell [ref=e135]:
+                  - link "GamersGate" [ref=e136] [cursor=pointer]:
+                    - /url: /wiki/Store:GamersGate
+              - row [ref=e137]:
+                - cell [ref=e138]:
+                  - link "Games for Windows - LIVE" [ref=e139] [cursor=pointer]:
+                    - /url: /wiki/Games_for_Windows_-_LIVE
+              - row [ref=e140]:
+                - cell [ref=e141]:
+                  - link "Gamesplanet" [ref=e142] [cursor=pointer]:
+                    - /url: /wiki/Store:Gamesplanet
+              - row [ref=e143]:
+                - cell [ref=e144]:
+                  - link "GOG.com" [ref=e145] [cursor=pointer]:
+                    - /url: /wiki/Store:GOG.com
+              - row [ref=e146]:
+                - cell [ref=e147]:
+                  - link "Green Man Gaming" [ref=e148] [cursor=pointer]:
+                    - /url: /wiki/Store:Green_Man_Gaming
+              - row [ref=e149]:
+                - cell [ref=e150]:
+                  - link "Humble Store" [ref=e151] [cursor=pointer]:
+                    - /url: /wiki/Store:Humble_Store
+              - row [ref=e152]:
+                - cell [ref=e153]:
+                  - link "Itch.io" [ref=e154] [cursor=pointer]:
+                    - /url: /wiki/Store:Itch.io
+              - row [ref=e155]:
+                - cell [ref=e156]:
+                  - link "Kartridge" [ref=e157] [cursor=pointer]:
+                    - /url: /wiki/Store:Kartridge
+              - row [ref=e158]:
+                - cell [ref=e159]:
+                  - link "Mac App Store" [ref=e160] [cursor=pointer]:
+                    - /url: /wiki/Store:Mac_App_Store
+              - row [ref=e161]:
+                - cell [ref=e162]:
+                  - link "Meta Store" [ref=e163] [cursor=pointer]:
+                    - /url: /wiki/Store:Meta_Store
+              - row [ref=e164]:
+                - cell [ref=e165]:
+                  - link "Microsoft Store" [ref=e166] [cursor=pointer]:
+                    - /url: /wiki/Store:Microsoft_Store
+              - row [ref=e167]:
+                - cell [ref=e168]:
+                  - link "Rockstar Games Launcher" [ref=e169] [cursor=pointer]:
+                    - /url: /wiki/Store:Rockstar_Games_Launcher
+              - row [ref=e170]:
+                - cell [ref=e171]:
+                  - link "Steam" [ref=e172] [cursor=pointer]:
+                    - /url: /wiki/Store:Steam
+              - row [ref=e173]:
+                - cell [ref=e174]:
+                  - link "Ubisoft Connect" [ref=e175] [cursor=pointer]:
+                    - /url: /wiki/Store:Ubisoft_Connect
+              - row [ref=e176]:
+                - cell [ref=e177]:
+                  - link "Viveport" [ref=e178] [cursor=pointer]:
+                    - /url: /wiki/Store:Viveport
+              - row [ref=e179]:
+                - cell [ref=e180]:
+                  - link "ZOOM Platform" [ref=e181] [cursor=pointer]:
+                    - /url: /wiki/Store:ZOOM_Platform
+          - generic [ref=e182]:
+            - paragraph [ref=e183]:
+              - text: The EA app, formerly EA Desktop and originally Origin, is a digital distribution platform operated by
+              - link "Electronic Arts" [ref=e184] [cursor=pointer]:
+                - /url: /wiki/Company:Electronic_Arts
+              - text: .
+            - paragraph [ref=e185]:
+              - text: It serves as the digital distribution platform and DRM mechanism for all currently supported Electronic Arts games. Activation keys (also known as product code) of games published by EA that are sold through third-party storefronts can be used to activate games on EA App.
+              - superscript [ref=e186]:
+                - link "[2]" [ref=e187] [cursor=pointer]:
+                  - /url: "#cite_note-4"
+              - text: For a time, EA game activation keys sold on Humble Bundle were region-locked in Latin America for a limited time, but this lock had been since lifted.
+            - paragraph [ref=e188]:
+              - text: To protect its users, EA App supports two-factor authentication via email and third-party authenticator app.
+              - superscript [ref=e189]:
+                - link "[3]" [ref=e190] [cursor=pointer]:
+                  - /url: "#cite_note-5"
+            - paragraph
+            - paragraph [ref=e191]:
+              - text: Origin was launched on June 3, 2011 for Windows and February 8, 2013 for OS X. Origin was later superseded by the EA app on October 7, 2022 for Windows, with Windows games published on Origin migrated to the EA App. EA App for Mac was released in March 2024, but Origin for Mac continued to be available for those running on macOS 10.14 and older until April 17, 2025.
+              - superscript [ref=e192]:
+                - link "[4]" [ref=e193] [cursor=pointer]:
+                  - /url: "#cite_note-6"
+            - definition [ref=e195]:
+              - generic "Disadvantage" [ref=e196]
+              - text: EA games bought via third party storefronts, such as the
+              - link "Epic Games Store" [ref=e197] [cursor=pointer]:
+                - /url: /wiki/Epic_Games_Store
+              - text: ","
+              - link "Microsoft Store" [ref=e198] [cursor=pointer]:
+                - /url: /wiki/Microsoft_Store
+              - text: ", or"
+              - link "Steam" [ref=e199] [cursor=pointer]:
+                - /url: /wiki/Steam
+              - text: requires those accounts to be linked to your EA account as they use the launcher as middleware.
+            - paragraph
+          - paragraph [ref=e200]: General information
+          - generic [ref=e201]:
+            - definition [ref=e202]:
+              - generic "Information" [ref=e203]
+              - link "List of games available on the EA app" [ref=e204] [cursor=pointer]:
+                - /url: /wiki/List_of_games_available_on_the_EA_app
+            - definition [ref=e205]:
+              - generic "More information" [ref=e206]
+              - link "Official Store" [ref=e207] [cursor=pointer]:
+                - /url: https://www.ea.com/games/library/pc-download
+            - definition [ref=e208]:
+              - generic "More information" [ref=e209]
+              - link "Official forums" [ref=e210] [cursor=pointer]:
+                - /url: https://forums.ea.com/category/ea-app-en
+            - definition [ref=e211]:
+              - generic "More information" [ref=e212]
+              - link "List of EA Play games" [ref=e213] [cursor=pointer]:
+                - /url: /wiki/List_of_EA_Play_games
+          - navigation [ref=e214]:
+            - button "h" [ref=e215]
+            - generic [ref=e216]:
+              - heading "Contents" [level=2] [ref=e217]
+              - generic [ref=e218]:
+                - text: "["
+                - generic [ref=e219] [cursor=pointer]: h
+                - text: "]"
+            - list [ref=e220]:
+              - listitem [ref=e221]:
+                - link "Installation" [ref=e222] [cursor=pointer]:
+                  - /url: "#Installation"
+              - listitem [ref=e223]:
+                - link "EA Play" [ref=e224] [cursor=pointer]:
+                  - /url: "#EA_Play"
+              - listitem [ref=e225]:
+                - link "Client data" [ref=e226] [cursor=pointer]:
+                  - /url: "#Client_data"
+                - list [ref=e227]:
+                  - listitem [ref=e228]:
+                    - link "Configuration file(s) location" [ref=e229] [cursor=pointer]:
+                      - /url: "#Configuration_file.28s.29_location"
+              - listitem [ref=e230]:
+                - link "Other information" [ref=e231] [cursor=pointer]:
+                  - /url: "#Other_information"
+                - list [ref=e232]:
+                  - listitem [ref=e233]:
+                    - link "Move/backup installed games" [ref=e234] [cursor=pointer]:
+                      - /url: "#Move.2Fbackup_installed_games"
+                  - listitem [ref=e235]:
+                    - link "Repair game installation" [ref=e236] [cursor=pointer]:
+                      - /url: "#Repair_game_installation"
+              - listitem [ref=e237]:
+                - link "System requirements" [ref=e238] [cursor=pointer]:
+                  - /url: "#System_requirements"
+              - listitem [ref=e239]:
+                - link "Notes" [ref=e240] [cursor=pointer]:
+                  - /url: "#Notes"
+              - listitem [ref=e241]:
+                - link "References" [ref=e242] [cursor=pointer]:
+                  - /url: "#References"
+          - heading [level=2] [ref=e243]:
+            - generic [ref=e244]:
+              - text: Installation
+              - generic [ref=e245]:
+                - text: •
+                - link "Link" [ref=e246] [cursor=pointer]:
+                  - /url: "#Installation"
+          - definition [ref=e248]:
+            - generic "Information" [ref=e249]
+            - text: "The EA app can be downloaded for the following:"
+          - table [ref=e251]:
+            - rowgroup [ref=e252]:
+              - row [ref=e253]:
+                - columnheader "Operating systems" [ref=e254]
+                - columnheader "Download" [ref=e255]
+              - row [ref=e256]:
+                - cell "64-bit Windows 7 and newer OS X 11 and newer" [ref=e257]: 64-bit Windows 7 and newerOS X 11 and newer
+                - cell [ref=e258]:
+                  - link "https://www.ea.com/ea-app#downloads" [ref=e259] [cursor=pointer]:
+                    - /url: https://www.ea.com/ea-app#downloads
+          - definition [ref=e261]:
+            - generic "Information" [ref=e262]
+            - text: Please note that the 32-bit Windows and OS X versions are considered legacy have been unsupported since the Origin shutdown.
+          - heading [level=2] [ref=e263]:
+            - generic [ref=e264]:
+              - text: EA Play
+              - generic [ref=e265]:
+                - text: •
+                - link "Link" [ref=e266] [cursor=pointer]:
+                  - /url: "#EA_Play"
+          - paragraph [ref=e267]: EA Play (formerly Origin Access on PC and EA Access on Xbox One and PS4) is a monthly subscription service that grants access to a catalog of games and content through the EA app store. This subscription services comes in two forms; the default EA Play and the more expensive EA Play Pro tier. While the default tier includes the majority of games and content available through the service, some games and/or content might be exclusive to the Pro tier.
+          - generic [ref=e268]:
+            - definition [ref=e269]:
+              - generic "More information" [ref=e270]
+              - link "List of EA Play games" [ref=e271] [cursor=pointer]:
+                - /url: /wiki/List_of_EA_Play_games
+            - definition [ref=e272]:
+              - generic "More information" [ref=e273]
+              - link "List of EA Play Pro games" [ref=e274] [cursor=pointer]:
+                - /url: /wiki/List_of_EA_Play_Pro_games
+          - heading [level=2] [ref=e275]:
+            - generic [ref=e276]:
+              - text: Client data
+              - generic [ref=e277]:
+                - text: •
+                - link "Link" [ref=e278] [cursor=pointer]:
+                  - /url: "#Client_data"
+          - heading [level=3] [ref=e279]:
+            - generic [ref=e280]:
+              - text: Configuration file(s) location
+              - generic [ref=e281]:
+                - text: •
+                - link "Link" [ref=e282] [cursor=pointer]:
+                  - /url: "#Configuration_file.28s.29_location"
+          - definition [ref=e284]:
+            - generic "Information" [ref=e285]
+            - text: "The following locations are used on Windows:"
+          - table [ref=e287]:
+            - rowgroup [ref=e288]:
+              - row [ref=e289]:
+                - columnheader "Element" [ref=e290]
+                - columnheader "Location" [ref=e291]
+              - row [ref=e292]:
+                - cell "DRM activations" [ref=e293]
+                - cell [ref=e294]:
+                  - link "%PROGRAMDATA%" [ref=e295] [cursor=pointer]:
+                    - /url: /wiki/Glossary:Game_data#Shared_application_data
+                  - text: \Electronic Arts\EA Services\License\*.dlf
+              - row [ref=e296]:
+                - cell "Settings" [ref=e297]
+                - cell [ref=e298]:
+                  - link "%PROGRAMDATA%" [ref=e299] [cursor=pointer]:
+                    - /url: /wiki/Glossary:Game_data#Shared_application_data
+                  - text: \EA Desktop
+              - row [ref=e300]:
+                - cell "Games launch configuration" [ref=e301]
+                - cell [ref=e302]:
+                  - link "<path-to-game>" [ref=e303] [cursor=pointer]:
+                    - /url: /wiki/Glossary:Game_data#Installation_folder
+                  - text: \__Installer\installerdata.xml
+          - heading [level=2] [ref=e304]:
+            - generic [ref=e305]:
+              - text: Other information
+              - generic [ref=e306]:
+                - text: •
+                - link "Link" [ref=e307] [cursor=pointer]:
+                  - /url: "#Other_information"
+          - heading [level=3] [ref=e308]:
+            - generic [ref=e309]:
+              - text: Move/backup installed games
+              - generic [ref=e310]:
+                - text: •
+                - link "Link" [ref=e311] [cursor=pointer]:
+                  - /url: "#Move.2Fbackup_installed_games"
+          - table [ref=e312]:
+            - rowgroup [ref=e313]:
+              - row [ref=e314]:
+                - columnheader "Fix Save game folder[5]" [ref=e315]:
+                  - generic "Fix" [ref=e316]
+                  - text: Save game folder
+                  - superscript [ref=e317]:
+                    - link "[5]" [ref=e318] [cursor=pointer]:
+                      - /url: "#cite_note-7"
+              - row [ref=e319]:
+                - cell "Navigate to 📂 <path-to-game> and save it somewhere else. Copy it in the EA app's Install location. Install the game from the library. This should have the game files detected by the EA app and make the backup playable after file verification finishes." [ref=e320]:
+                  - list [ref=e321]:
+                    - listitem [ref=e322]:
+                      - text: Navigate to
+                      - generic [ref=e323]:
+                        - generic [ref=e324]: 📂
+                        - code [ref=e325]:
+                          - link "<path-to-game>" [ref=e326] [cursor=pointer]:
+                            - /url: /wiki/Glossary:Game_data#Installation_folder
+                      - text: and save it somewhere else.
+                    - listitem [ref=e327]: Copy it in the EA app's Install location.
+                    - listitem [ref=e328]:
+                      - text: Install the game from the library.
+                      - list [ref=e329]:
+                        - listitem [ref=e330]: This should have the game files detected by the EA app and make the backup playable after file verification finishes.
+          - heading [level=3] [ref=e331]:
+            - generic [ref=e332]:
+              - text: Repair game installation
+              - generic [ref=e333]:
+                - text: •
+                - link "Link" [ref=e334] [cursor=pointer]:
+                  - /url: "#Repair_game_installation"
+          - table [ref=e335]:
+            - rowgroup [ref=e336]:
+              - row [ref=e337]:
+                - columnheader "Fix Repair Game" [ref=e338]:
+                  - generic "Fix" [ref=e339]
+                  - text: Repair Game
+              - row [ref=e340]:
+                - cell [ref=e341]:
+                  - list [ref=e342]:
+                    - listitem [ref=e343]: Right-click on a game in the library.
+                    - listitem [ref=e344]: Choose Repair Game.
+                    - listitem [ref=e345]: Wait for verification to complete.
+          - paragraph [ref=e346]
+          - heading [level=2] [ref=e347]:
+            - generic [ref=e348]:
+              - text: System requirements
+              - generic [ref=e349]:
+                - text: •
+                - link "Link" [ref=e350] [cursor=pointer]:
+                  - /url: "#System_requirements"
+          - table [ref=e352]:
+            - rowgroup [ref=e353]:
+              - row [ref=e354]:
+                - columnheader "Windows" [ref=e355]
+              - row [ref=e356]:
+                - columnheader [ref=e357]
+                - columnheader "Minimum" [ref=e358]
+                - columnheader "Recommended" [ref=e359]
+              - row [ref=e360]:
+                - rowheader "Operating system (OS)" [ref=e361]
+                - cell "10" [ref=e362]
+                - cell "11" [ref=e363]
+              - row [ref=e364]:
+                - rowheader "Processor (CPU)" [ref=e365]
+                - cell "1 GHz" [ref=e366]
+                - cell "Dual core" [ref=e367]
+              - row [ref=e368]:
+                - rowheader "System memory (RAM)" [ref=e369]
+                - cell "2 GB" [ref=e370]
+                - cell "4 GB" [ref=e371]
+              - row [ref=e372]:
+                - columnheader "Storage drive (HDD/SSD)" [ref=e373]
+                - cell [ref=e374]
+                - cell [ref=e375]
+              - row [ref=e376]:
+                - rowheader "Video card (GPU)" [ref=e377]
+                - cell "DirectX 9 compatible" [ref=e378]
+                - cell "DirectX 12 compatible" [ref=e379]
+              - row [ref=e380]:
+                - rowheader "Other" [ref=e381]
+                - cell "CPU with PAE/SSE2/NX and PrefetchW/LAHF/SAHF/CMPXCHG16B support 64-bit operating system" [ref=e382]
+                - cell "CPU with SSE4.2 support" [ref=e383]
+          - generic [ref=e384]:
+            - table [ref=e385]:
+              - rowgroup [ref=e386]:
+                - row [ref=e387]:
+                  - columnheader "OS X" [ref=e388]
+                - row [ref=e389]:
+                  - columnheader [ref=e390]
+                  - columnheader "Minimum" [ref=e391]
+                - row [ref=e392]:
+                  - rowheader "Operating system (OS)" [ref=e393]
+                  - cell "10.15.5" [ref=e394]
+                - row [ref=e395]:
+                  - rowheader "Processor (CPU)" [ref=e396]
+                  - cell "Intel Core i5 Gen3" [ref=e397]
+                - row [ref=e398]:
+                  - rowheader "System memory (RAM)" [ref=e399]
+                  - cell "4 GB" [ref=e400]
+                - row [ref=e401]:
+                  - columnheader "Storage drive (HDD/SSD)" [ref=e402]
+                  - cell [ref=e403]
+                - row [ref=e404]:
+                  - rowheader "Video card (GPU)" [ref=e405]
+                  - cell "Metal compatible" [ref=e406]
+            - definition [ref=e408]:
+              - generic "Information" [ref=e409]
+              - text: Support for Origin in Windows and macOS was retired on April 17, 2025.
+              - superscript [ref=e410]:
+                - link "[6]" [ref=e411] [cursor=pointer]:
+                  - /url: "#cite_note-8"
+          - paragraph [ref=e412]
+          - heading [level=2] [ref=e413]:
+            - generic [ref=e414]:
+              - text: Notes
+              - generic [ref=e415]:
+                - text: •
+                - link "Link" [ref=e416] [cursor=pointer]:
+                  - /url: "#Notes"
+          - list [ref=e419]:
+            - listitem [ref=e420]:
+              - link "Jump up ↑" [ref=e422] [cursor=pointer]:
+                - /url: "#cite_ref-Note_1-0"
+                - generic [ref=e423]: Jump up
+                - text: ↑
+              - text: This date concerns Origin. The EA app released on October 7th, 2023.
+            - listitem [ref=e424]:
+              - link "Jump up ↑" [ref=e426] [cursor=pointer]:
+                - /url: "#cite_ref-Note1_3-0"
+                - generic [ref=e427]: Jump up
+                - text: ↑
+              - text: This date concerns Origin. The EA app for OS X released on March 6th, 2024.
+          - heading [level=2] [ref=e428]:
+            - generic [ref=e429]:
+              - text: References
+              - generic [ref=e430]:
+                - text: •
+                - link "Link" [ref=e431] [cursor=pointer]:
+                  - /url: "#References"
+          - list [ref=e434]:
+            - listitem [ref=e435]:
+              - link "Jump up ↑" [ref=e437] [cursor=pointer]:
+                - /url: "#cite_ref-2"
+                - generic [ref=e438]: Jump up
+                - text: ↑
+              - generic [ref=e439]:
+                - link "Origin For Mac Is Here! - Origin News (Archived)" [ref=e440] [cursor=pointer]:
+                  - /url: https://web.archive.org/web/20130305074314/http://www.origin.com/us/news/origin-for-mac-launch
+                - text: "- last accessed on 2017-07-31"
+            - listitem [ref=e441]:
+              - link "Jump up ↑" [ref=e443] [cursor=pointer]:
+                - /url: "#cite_ref-4"
+                - generic [ref=e444]: Jump up
+                - text: ↑
+              - generic [ref=e445]:
+                - link "How to redeem your product and promo codes" [ref=e446] [cursor=pointer]:
+                  - /url: https://help.ea.com/en/help/faq/redeem-product-and-promotional-codes/
+                - text: "- last accessed on September 28, 2023"
+            - listitem [ref=e447]:
+              - link "Jump up ↑" [ref=e449] [cursor=pointer]:
+                - /url: "#cite_ref-5"
+                - generic [ref=e450]: Jump up
+                - text: ↑
+              - generic [ref=e451]:
+                - link "How to turn on EA Login Verification - EA Help" [ref=e452] [cursor=pointer]:
+                  - /url: https://help.ea.com/en/help/account/ea-login-verification-information/
+                - text: "- last accessed on September 28, 2023"
+            - listitem [ref=e453]:
+              - link "Jump up ↑" [ref=e455] [cursor=pointer]:
+                - /url: "#cite_ref-6"
+                - generic [ref=e456]: Jump up
+                - text: ↑
+              - generic [ref=e457]:
+                - link "The all-new EA app for Mac - Press Release on Electronic Arts" [ref=e458] [cursor=pointer]:
+                  - /url: https://www.ea.com/news/the-ea-app-for-mac
+                - text: "- last accessed on 2024-05-31"
+            - listitem [ref=e459]:
+              - link "Jump up ↑" [ref=e461] [cursor=pointer]:
+                - /url: "#cite_ref-7"
+                - generic [ref=e462]: Jump up
+                - text: ↑
+              - generic [ref=e463]:
+                - link "[Guide] Moving/Reinstalling Origin and Games Without Re-Downloading" [ref=e464] [cursor=pointer]:
+                  - /url: https://www.overclock.net/t/1222388/guide-moving-reinstalling-origin-and-games-without-re-downloading
+                - text: "- last accessed on 9 June 2023"
+            - listitem [ref=e465]:
+              - link "Jump up ↑" [ref=e467] [cursor=pointer]:
+                - /url: "#cite_ref-8"
+                - generic [ref=e468]: Jump up
+                - text: ↑
+              - generic [ref=e469]:
+                - link "Origin shutdown" [ref=e470] [cursor=pointer]:
+                  - /url: https://help.ea.com/en/help/origin/origin/shutdown/
+                - text: "- last accessed on 2025-04-30"
+        - generic [ref=e472]:
+          - link "Categories" [ref=e473] [cursor=pointer]:
+            - /url: /wiki/Special:Categories
+          - text: ":"
+          - list [ref=e474]:
+            - listitem [ref=e475]:
+              - link "Guide" [ref=e476] [cursor=pointer]:
+                - /url: /wiki/Category:Guide
+            - listitem [ref=e477]:
+              - link "Stores" [ref=e478] [cursor=pointer]:
+                - /url: /wiki/Category:Stores
+            - listitem [ref=e479]:
+              - link "Digital Rights Management" [ref=e480] [cursor=pointer]:
+                - /url: /wiki/Category:Digital_Rights_Management
+  - contentinfo [ref=e482]:
+    - generic [ref=e484]:
+      - link [ref=e485] [cursor=pointer]:
+        - /url: https://www.facebook.com/PCGamingWiki
+      - link [ref=e487] [cursor=pointer]:
+        - /url: https://www.twitter.com/PCGamingWiki
+      - link [ref=e489] [cursor=pointer]:
+        - /url: //www.youtube.com/user/PCGamingWikiTV
+      - link [ref=e491] [cursor=pointer]:
+        - /url: //steamcommunity.com/groups/pcgamingwiki
+      - link [ref=e493] [cursor=pointer]:
+        - /url: https://discord.gg/SU27ykMcsD
+    - generic [ref=e495]:
+      - generic [ref=e496]:
+        - list [ref=e497]:
+          - listitem [ref=e498]: PCGamingWiki
+          - listitem [ref=e499]:
+            - link "About us" [ref=e500] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:About
+          - listitem [ref=e501]:
+            - link "Contact us" [ref=e502] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:About#Contact
+          - listitem [ref=e503]:
+            - link "Advertising" [ref=e504] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:About#Advertising
+          - listitem [ref=e505]:
+            - link "Privacy policy" [ref=e506] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:Privacy_policy
+          - listitem [ref=e507]:
+            - link "General disclaimer" [ref=e508] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:General_disclaimer
+        - list [ref=e509]:
+          - listitem [ref=e510]: Friends
+          - listitem [ref=e511]:
+            - link "Partnerships" [ref=e512] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:Partnerships
+          - listitem [ref=e513]:
+            - link "Extension" [ref=e514] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:Extension
+          - listitem [ref=e515]:
+            - link "API" [ref=e516] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:API
+          - listitem [ref=e517]:
+            - link "AppleGamingWiki" [ref=e518] [cursor=pointer]:
+              - /url: https://www.applegamingwiki.com
+          - listitem [ref=e519]:
+            - link "GOG.com" [ref=e520] [cursor=pointer]:
+              - /url: https://www.gog.com?pp=708a77db476d737e54b8bf4663fc79b346d696d2
+          - listitem [ref=e521]:
+            - link "Gamesplanet" [ref=e522] [cursor=pointer]:
+              - /url: https://gamesplanet.com?ref=pcgwiki
+          - listitem [ref=e523]:
+            - link "CheapShark" [ref=e524] [cursor=pointer]:
+              - /url: https://www.cheapshark.com
+        - list [ref=e525]:
+          - listitem [ref=e526]: Powered by
+          - listitem [ref=e527]:
+            - link "MediaWiki" [ref=e528] [cursor=pointer]:
+              - /url: https://www.mediawiki.org/wiki/MediaWiki
+          - listitem [ref=e529]:
+            - link "Semantic MediaWiki" [ref=e530] [cursor=pointer]:
+              - /url: https://www.semantic-mediawiki.org/wiki/Semantic_MediaWiki
+          - listitem [ref=e531]:
+            - link "Cargo" [ref=e532] [cursor=pointer]:
+              - /url: https://www.mediawiki.org/wiki/Extension:Cargo
+          - listitem [ref=e533]:
+            - link "Open source" [ref=e534] [cursor=pointer]:
+              - /url: https://github.com/PCGamingWiki
+          - listitem [ref=e535]:
+            - link "Patrons" [ref=e536] [cursor=pointer]:
+              - /url: https://www.patreon.com/PCGamingWiki
+          - listitem [ref=e537]: and You <3
+      - generic [ref=e538]: This page was last edited on 7 April 2026, at 09:11.
+      - generic [ref=e539]:
+        - text: Content is available under
+        - link "Creative Commons Attribution Non-Commercial Share Alike" [ref=e540] [cursor=pointer]:
+          - /url: //creativecommons.org/licenses/by-nc-sa/3.0
+        - text: unless otherwise noted.
+      - generic [ref=e541]:
+        - text: Some store links may include affiliate tags. Buying through these links helps support PCGamingWiki (
+        - link "Learn more" [ref=e542] [cursor=pointer]:
+          - /url: /wiki/PCGamingWiki:About#Support_us
+        - text: ).

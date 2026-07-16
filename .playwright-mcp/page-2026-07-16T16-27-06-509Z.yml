@@ -1,0 +1,648 @@
+- generic [active] [ref=f461e1]:
+  - link [ref=f461e3] [cursor=pointer]:
+    - /url: /
+  - link [ref=f461e5] [cursor=pointer]:
+    - /url: /
+    - img "WineHQ" [ref=f461e6]
+  - generic [ref=f461e7]: Bug Tracking Database – Bug 52092
+  - generic [ref=f461e9]:
+    - text: "Search:"
+    - textbox [ref=f461e10]
+  - generic [ref=f461e11]:
+    - list:
+      - listitem [ref=f461e12]:
+        - link "WineHQ" [ref=f461e13] [cursor=pointer]:
+          - /url: https://www.winehq.org/
+      - listitem [ref=f461e14]:
+        - link "Wiki" [ref=f461e15] [cursor=pointer]:
+          - /url: https://wiki.winehq.org/
+      - listitem [ref=f461e16]:
+        - link "AppDB" [ref=f461e17] [cursor=pointer]:
+          - /url: https://appdb.winehq.org/
+      - listitem [ref=f461e18]:
+        - link "Bugzilla" [ref=f461e19] [cursor=pointer]:
+          - /url: https://bugs.winehq.org/
+      - listitem [ref=f461e20]:
+        - link "Forums" [ref=f461e21] [cursor=pointer]:
+          - /url: https://forum.winehq.org/
+  - generic [ref=f461e22]:
+    - list [ref=f461e23]:
+      - listitem [ref=f461e24]:
+        - paragraph [ref=f461e25]: Task Lists
+      - listitem [ref=f461e26]:
+        - paragraph [ref=f461e27]:
+          - link "Regressions" [ref=f461e28] [cursor=pointer]:
+            - /url: buglist.cgi?bug_status=UNCONFIRMED&bug_status=NEW&bug_status=ASSIGNED&bug_status=REOPENED&bug_status=NEEDINFO&bug_status=STAGED&product=Wine&keywords=regression&columnlist=bug_severity,priority,bug_status,cf_regression_sha1sum,short_desc,changeddate&keywords_type=anywords
+      - listitem [ref=f461e29]:
+        - paragraph [ref=f461e30]:
+          - link "With download" [ref=f461e31] [cursor=pointer]:
+            - /url: buglist.cgi?bug_status=UNCONFIRMED&bug_status=NEW&bug_status=ASSIGNED&bug_status=REOPENED&bug_status=NEEDINFO&bug_status=STAGED&product=Wine&keywords=download&keywords_type=anywords
+      - listitem [ref=f461e32]:
+        - paragraph [ref=f461e33]:
+          - link "With patch" [ref=f461e34] [cursor=pointer]:
+            - /url: buglist.cgi?bug_status=UNCONFIRMED&bug_status=NEW&bug_status=ASSIGNED&bug_status=REOPENED&bug_status=NEEDINFO&bug_status=STAGED&product=Wine&keywords=patch&keywords_type=anywords
+    - list [ref=f461e35]:
+      - listitem [ref=f461e36]:
+        - paragraph [ref=f461e37]: Bug Lists
+      - listitem [ref=f461e38]:
+        - paragraph [ref=f461e39]:
+          - link "Available" [ref=f461e40] [cursor=pointer]:
+            - /url: buglist.cgi?bug_status=UNCONFIRMED&bug_status=NEW&bug_status=REOPENED&cmdtype=doit&order=Bug+Number
+      - listitem [ref=f461e41]:
+        - paragraph [ref=f461e42]:
+          - link "Assigned" [ref=f461e43] [cursor=pointer]:
+            - /url: buglist.cgi?bug_status=ASSIGNED
+      - listitem [ref=f461e44]:
+        - paragraph [ref=f461e45]:
+          - link "NeedInfo" [ref=f461e46] [cursor=pointer]:
+            - /url: buglist.cgi?bug_status=NEEDINFO
+      - listitem [ref=f461e47]:
+        - paragraph [ref=f461e48]:
+          - link "Staged" [ref=f461e49] [cursor=pointer]:
+            - /url: buglist.cgi?bug_status=STAGED
+      - listitem [ref=f461e50]:
+        - paragraph [ref=f461e51]:
+          - link "Resolved" [ref=f461e52] [cursor=pointer]:
+            - /url: buglist.cgi?bug_status=RESOLVED
+  - generic [ref=f461e60]:
+    - generic [ref=f461e61]:
+      - table [ref=f461e62]:
+        - rowgroup [ref=f461e63]:
+          - row [ref=f461e64]:
+            - cell [ref=f461e65]:
+              - paragraph [ref=f461e66]: Bugzilla
+            - cell [ref=f461e67]:
+              - paragraph [ref=f461e68]
+            - cell [ref=f461e69]:
+              - paragraph [ref=f461e70]: "Last modified: 2026-07-14 17:42:35 UTC"
+      - list [ref=f461e72]:
+        - listitem [ref=f461e73]:
+          - link "Intro" [ref=f461e74] [cursor=pointer]:
+            - /url: ./
+        - listitem [ref=f461e75]:
+          - text: "|"
+          - link "New" [ref=f461e76] [cursor=pointer]:
+            - /url: enter_bug.cgi
+        - listitem [ref=f461e77]:
+          - text: "|"
+          - link "Browse" [ref=f461e78] [cursor=pointer]:
+            - /url: describecomponents.cgi
+        - listitem [ref=f461e79]:
+          - text: "|"
+          - link "Search" [ref=f461e80] [cursor=pointer]:
+            - /url: query.cgi
+        - listitem [ref=f461e81]:
+          - text: "|"
+          - generic [ref=f461e82]:
+            - textbox "Find" [ref=f461e83]
+            - button "Find" [ref=f461e84]
+          - link "[?]" [ref=f461e85] [cursor=pointer]:
+            - /url: page.cgi?id=quicksearch.html
+        - listitem [ref=f461e86]:
+          - text: "|"
+          - link "Reports" [ref=f461e87] [cursor=pointer]:
+            - /url: report.cgi
+        - listitem
+        - listitem [ref=f461e88]:
+          - text: "|"
+          - link "Help" [ref=f461e89] [cursor=pointer]:
+            - /url: https://bugzilla.readthedocs.org/en/5.2/using/understanding.html
+        - listitem [ref=f461e90]:
+          - text: "|"
+          - link "New Account" [ref=f461e91] [cursor=pointer]:
+            - /url: createaccount.cgi
+        - listitem [ref=f461e92]:
+          - text: "|"
+          - link "Log In" [ref=f461e93] [cursor=pointer]:
+            - /url: show_bug.cgi?id=52092&GoAheadAndLogIn=1
+        - listitem [ref=f461e94]:
+          - text: "|"
+          - link "Forgot Password" [ref=f461e95] [cursor=pointer]:
+            - /url: show_bug.cgi?id=52092&GoAheadAndLogIn=1#forgot
+    - generic [ref=f461e96]:
+      - generic [ref=f461e97]:
+        - generic [ref=f461e98]:
+          - link "Bug 52092" [ref=f461e99] [cursor=pointer]:
+            - /url: show_bug.cgi?id=52092
+          - generic [ref=f461e100]: "- Multiple UWP apps crash at start due to missing \"Windows.Foundation.UniversalApiContract\" (Xbox app for Windows PC, Minecraft installer, Arc browser installer)"
+        - table [ref=f461e101]:
+          - rowgroup [ref=f461e102]:
+            - 'row "Status: NEW Alias: None AppDB: Show Apps affected by this bug Product: Wine Component: -unknown (show other bugs) Version: 6.21 Hardware: x86-64 Linux Importance: P2 normal Target Milestone: --- Assignee: Mr. Bugs URL: https://assets.xbox.com/installer/201... Keywords: download Duplicates (3): 52188 53023 56626 (view as bug list) Depends on: Blocks: Reported: 2021-11-22 19:50 UTC by master.zion@gmail.com Modified: 2026-07-14 17:42 UTC (History) CC List: 16 users (show) See Also: Regression SHA1: Distribution: ---" [ref=f461e103]':
+              - cell [ref=f461e104]:
+                - table [ref=f461e105]:
+                  - rowgroup [ref=f461e106]:
+                    - row [ref=f461e107]:
+                      - rowheader [ref=f461e108]:
+                        - link "Status" [ref=f461e109] [cursor=pointer]:
+                          - /url: page.cgi?id=fields.html#bug_status
+                        - text: ":"
+                      - cell "NEW" [ref=f461e110]
+                    - row [ref=f461e111]:
+                      - cell [ref=f461e112]
+                    - row [ref=f461e113]:
+                      - rowheader [ref=f461e114]:
+                        - link "Alias:" [ref=f461e115]:
+                          - /url: page.cgi?id=fields.html#alias
+                      - cell "None" [ref=f461e116]
+                    - row [ref=f461e117]:
+                      - cell [ref=f461e118]
+                    - row [ref=f461e119]:
+                      - cell "AppDB:" [ref=f461e120]
+                      - cell [ref=f461e121]:
+                        - link "Show Apps affected by this bug" [ref=f461e122] [cursor=pointer]:
+                          - /url: https://appdb.winehq.org/viewbugs.php?iBugId=52092
+                    - row [ref=f461e123]:
+                      - rowheader [ref=f461e124]:
+                        - link "Product:" [ref=f461e125]:
+                          - /url: describecomponents.cgi
+                      - cell "Wine" [ref=f461e126]
+                    - row [ref=f461e127]:
+                      - rowheader [ref=f461e128]:
+                        - link "Component:" [ref=f461e129]:
+                          - /url: describecomponents.cgi?product=Wine
+                      - cell [ref=f461e130]:
+                        - text: "-unknown ("
+                        - link "show other bugs" [ref=f461e131] [cursor=pointer]:
+                          - /url: buglist.cgi?component=-unknown&product=Wine&bug_status=__open__
+                        - text: )
+                    - row [ref=f461e132]:
+                      - rowheader [ref=f461e133]:
+                        - link "Version:" [ref=f461e134]:
+                          - /url: page.cgi?id=fields.html#version
+                      - cell "6.21" [ref=f461e135]
+                    - row [ref=f461e136]:
+                      - rowheader [ref=f461e137]:
+                        - link "Hardware:" [ref=f461e138]:
+                          - /url: page.cgi?id=fields.html#rep_platform
+                      - cell "x86-64 Linux" [ref=f461e139]
+                    - row [ref=f461e140]:
+                      - cell [ref=f461e141]
+                    - row [ref=f461e142]:
+                      - rowheader [ref=f461e143]:
+                        - link "Importance" [ref=f461e145] [cursor=pointer]:
+                          - /url: page.cgi?id=fields.html#severity
+                        - text: ":"
+                      - cell "P2 normal" [ref=f461e146]
+                    - row [ref=f461e147]:
+                      - rowheader [ref=f461e148]:
+                        - link "Target Milestone:" [ref=f461e149]:
+                          - /url: page.cgi?id=fields.html#target_milestone
+                      - cell "---" [ref=f461e150]
+                    - row [ref=f461e151]:
+                      - rowheader [ref=f461e152]:
+                        - link "Assignee:" [ref=f461e153]:
+                          - /url: page.cgi?id=fields.html#assigned_to
+                      - cell "Mr. Bugs" [ref=f461e154]
+                    - row [ref=f461e156]:
+                      - cell [ref=f461e157]
+                    - row [ref=f461e158]:
+                      - rowheader [ref=f461e159]:
+                        - link "URL:" [ref=f461e160]:
+                          - /url: page.cgi?id=fields.html#bug_file_loc
+                      - cell [ref=f461e161]:
+                        - link "https://assets.xbox.com/installer/201..." [ref=f461e163] [cursor=pointer]:
+                          - /url: https://assets.xbox.com/installer/20190628.8/anycpu/XboxInstaller.exe
+                    - row [ref=f461e164]:
+                      - rowheader [ref=f461e165]:
+                        - link "Keywords:" [ref=f461e166]:
+                          - /url: describekeywords.cgi
+                      - cell "download" [ref=f461e167]
+                    - row [ref=f461e168]:
+                      - cell [ref=f461e169]
+                    - row [ref=f461e170]:
+                      - rowheader "Duplicates (3):" [ref=f461e171]
+                      - cell [ref=f461e172]:
+                        - generic [ref=f461e173]:
+                          - link "52188" [ref=f461e174] [cursor=pointer]:
+                            - /url: show_bug.cgi?id=52188
+                          - link "53023" [ref=f461e175] [cursor=pointer]:
+                            - /url: show_bug.cgi?id=53023
+                          - link "56626" [ref=f461e176] [cursor=pointer]:
+                            - /url: show_bug.cgi?id=56626
+                        - text: (
+                        - link "view as bug list" [ref=f461e177] [cursor=pointer]:
+                          - /url: buglist.cgi?bug_id=52188,53023,56626
+                        - text: )
+                    - row [ref=f461e178]:
+                      - rowheader [ref=f461e179]:
+                        - link "Depends on:" [ref=f461e180]:
+                          - /url: page.cgi?id=fields.html#dependson
+                      - cell [ref=f461e181]
+                    - row [ref=f461e182]:
+                      - rowheader [ref=f461e183]:
+                        - link "Blocks:" [ref=f461e184]:
+                          - /url: page.cgi?id=fields.html#blocked
+                      - cell [ref=f461e185]
+              - cell [ref=f461e186]
+              - cell [ref=f461e188]:
+                - table [ref=f461e189]:
+                  - rowgroup [ref=f461e190]:
+                    - row [ref=f461e191]:
+                      - rowheader "Reported:" [ref=f461e192]
+                      - cell "2021-11-22 19:50 UTC by master.zion@gmail.com" [ref=f461e193]:
+                        - text: 2021-11-22 19:50 UTC by
+                        - generic [ref=f461e194]: master.zion@gmail.com
+                    - row [ref=f461e195]:
+                      - rowheader "Modified:" [ref=f461e196]
+                      - cell [ref=f461e197]:
+                        - text: 2026-07-14 17:42 UTC (
+                        - link "History" [ref=f461e198] [cursor=pointer]:
+                          - /url: show_activity.cgi?id=52092
+                        - text: )
+                    - row [ref=f461e199]:
+                      - rowheader "CC List:" [ref=f461e200]
+                      - cell [ref=f461e201]:
+                        - text: 16 users
+                        - generic [ref=f461e202]:
+                          - text: (
+                          - link "show" [ref=f461e203] [cursor=pointer]:
+                            - /url: "#"
+                          - text: )
+                    - row [ref=f461e204]:
+                      - cell [ref=f461e205]
+                    - row [ref=f461e206]:
+                      - columnheader [ref=f461e207]:
+                        - link "See Also:" [ref=f461e208]:
+                          - /url: page.cgi?id=fields.html#see_also
+                      - cell [ref=f461e209]
+                    - row [ref=f461e210]:
+                      - columnheader [ref=f461e211]:
+                        - link "Regression SHA1:" [ref=f461e212]:
+                          - /url: page.cgi?id=fields.html#cf_regression_sha1sum
+                      - cell [ref=f461e213]
+                    - row
+                    - row [ref=f461e214]:
+                      - rowheader [ref=f461e215]:
+                        - link "Distribution:" [ref=f461e216]:
+                          - /url: page.cgi?id=fields.html#cf_distribution
+                      - cell "---" [ref=f461e217]
+                    - row
+                    - row [ref=f461e218]:
+                      - cell [ref=f461e219]
+            - row [ref=f461e220]:
+              - cell [ref=f461e221]:
+                - separator [ref=f461e222]
+        - table [ref=f461e223]:
+          - rowgroup [ref=f461e224]:
+            - row [ref=f461e225]:
+              - cell [ref=f461e226]:
+                - table [ref=f461e227]:
+                  - rowgroup [ref=f461e228]:
+                    - row [ref=f461e229]:
+                      - columnheader "Attachments" [ref=f461e230]
+                    - row [ref=f461e231]:
+                      - cell [ref=f461e232]:
+                        - link "Exception backtrace" [ref=f461e233] [cursor=pointer]:
+                          - /url: attachment.cgi?id=75067
+                        - generic [ref=f461e234]:
+                          - text: (4.24 KB, text/plain)
+                          - link "2023-08-31 00:23 UTC" [ref=f461e235] [cursor=pointer]:
+                            - /url: "#attach_75067"
+                          - text: ", safe.bell6727"
+                      - cell [ref=f461e236]:
+                        - link "Details" [ref=f461e237] [cursor=pointer]:
+                          - /url: attachment.cgi?id=75067&action=edit
+                    - row [ref=f461e238]:
+                      - cell "Patch to avoid the UniversalApiContract 7 crash (413 bytes, patch) 2024-05-28 17:45 UTC, Tobi L" [ref=f461e239]:
+                        - link "Patch to avoid the UniversalApiContract 7 crash" [ref=f461e240] [cursor=pointer]:
+                          - /url: attachment.cgi?id=76521
+                        - generic [ref=f461e241]:
+                          - text: (413 bytes, patch)
+                          - link "2024-05-28 17:45 UTC" [ref=f461e242] [cursor=pointer]:
+                            - /url: "#attach_76521"
+                          - text: ","
+                          - generic [ref=f461e243]: Tobi L
+                      - cell [ref=f461e244]:
+                        - link "Details" [ref=f461e245] [cursor=pointer]:
+                          - /url: attachment.cgi?id=76521&action=edit
+                        - text: "|"
+                        - link "Diff" [ref=f461e246] [cursor=pointer]:
+                          - /url: attachment.cgi?id=76521&action=diff
+                    - row [ref=f461e247]:
+                      - cell "whatsapp console error log (16.96 KB, text/plain) 2026-07-14 17:42 UTC, brandow" [ref=f461e248]:
+                        - link "whatsapp console error log" [ref=f461e249] [cursor=pointer]:
+                          - /url: attachment.cgi?id=81436
+                        - generic [ref=f461e250]:
+                          - text: (16.96 KB, text/plain)
+                          - link "2026-07-14 17:42 UTC" [ref=f461e251] [cursor=pointer]:
+                            - /url: "#attach_81436"
+                          - text: ","
+                          - generic [ref=f461e252]: brandow
+                      - cell [ref=f461e253]:
+                        - link "Details" [ref=f461e254] [cursor=pointer]:
+                          - /url: attachment.cgi?id=81436&action=edit
+                    - row [ref=f461e255]:
+                      - cell [ref=f461e256]:
+                        - link "View All" [ref=f461e258] [cursor=pointer]:
+                          - /url: attachment.cgi?bugid=52092&action=viewall
+                        - link "Add an attachment" [ref=f461e259] [cursor=pointer]:
+                          - /url: attachment.cgi?bugid=52092&action=enter
+                        - text: (back traces, logs, proposed patch, testcase, etc.)
+                - table [ref=f461e261]:
+                  - rowgroup [ref=f461e262]:
+                    - row [ref=f461e263]:
+                      - cell [ref=f461e264]:
+                        - group "Note" [ref=f461e265]:
+                          - text: You need to
+                          - link "log in" [ref=f461e267] [cursor=pointer]:
+                            - /url: show_bug.cgi?id=52092&GoAheadAndLogIn=1
+                          - text: before you can comment on or make changes to this bug.
+              - cell [ref=f461e268]
+        - table [ref=f461e270]:
+          - rowgroup [ref=f461e271]:
+            - row [ref=f461e272]:
+              - cell [ref=f461e273]:
+                - generic [ref=f461e274]:
+                  - generic [ref=f461e275]:
+                    - link "Description" [ref=f461e277] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=52092#c0
+                    - generic [ref=f461e278]: master.zion@gmail.com
+                    - text: 2021-11-22 19:50:00 UTC
+                  - generic [ref=f461e280]:
+                    - text: "Hi everyone... it seems it is not possible to install the xbox application for PC using wine. It would be useful to play Windows games from xbox game pass, and it will be very useful on Steam deck. it fails during the installation startup. ------ Unhandled Exception: 0024:fixme:ntdll:EtwEventRegister ({8e9f5090-2d75-4d03-8a81-e5afbf85daf1}, 05E202EE, 00000000, 01EA96F4) stub. Unhandled Exception: System.IO.FileNotFoundException: Could not load file or assembly 'Windows.Foundation.UniversalApiContract, Version=7.0.0.0, Culture=neutral, PublicKeyToken=null, ContentType=WindowsRunt ime' or one of its dependencies. Module not found. at XboxInstaller.App..ctor() at XboxInstaller.App.Main() ------"
+                    - link "https://www.xbox.com/en-IN/apps/xbox-app-for-pc" [ref=f461e281] [cursor=pointer]:
+                      - /url: https://www.xbox.com/en-IN/apps/xbox-app-for-pc
+                - generic [ref=f461e282]:
+                  - generic [ref=f461e283]:
+                    - link "Comment 1" [ref=f461e285] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=52092#c1
+                    - generic [ref=f461e286]: Louis Lenders
+                    - text: 2021-11-23 13:59:23 UTC
+                  - generic [ref=f461e288]:
+                    - text: Confirming. Seems related to UWP so for now i fear this is future music. The missing Windows.Foundation.UniversalApiContract seems to be contained in
+                    - link "https://globalcdn.nuget.org/packages/microsoft.windows.sdk.contracts.10.0.22000.196.nupkg" [ref=f461e289] [cursor=pointer]:
+                      - /url: https://globalcdn.nuget.org/packages/microsoft.windows.sdk.contracts.10.0.22000.196.nupkg
+                    - text: "Google gives maybe some other useful info on this missing 'Windows.Foundation.UniversalApiContract':"
+                    - link "https://www.thomasclaudiushuber.com/2019/04/26/calling-windows-10-apis-from-your-wpf-application/" [ref=f461e290] [cursor=pointer]:
+                      - /url: https://www.thomasclaudiushuber.com/2019/04/26/calling-windows-10-apis-from-your-wpf-application/
+                    - text: sha1sum XboxInstaller.exe ee07659a7efaa8ba7bd735b7ef8ad4279573e5c7 XboxInstaller.exe
+                - generic [ref=f461e291]:
+                  - generic [ref=f461e292]:
+                    - link "Comment 2" [ref=f461e294] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=52092#c2
+                    - generic [ref=f461e295]: Fabian Maurer
+                    - text: 2022-05-20 18:35:46 UTC
+                  - generic [ref=f461e297]:
+                    - text: "***"
+                    - link "Bug 53023" [ref=f461e298] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=53023
+                    - text: has been marked as a duplicate of this bug. ***
+                - generic [ref=f461e299]:
+                  - generic [ref=f461e300]:
+                    - link "Comment 3" [ref=f461e302] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=52092#c3
+                    - generic [ref=f461e303]: Fabian Maurer
+                    - text: 2022-05-20 18:36:48 UTC
+                  - generic [ref=f461e305]:
+                    - text: "***"
+                    - link "Bug 52188" [ref=f461e306] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=52188
+                    - text: has been marked as a duplicate of this bug. ***
+                - generic [ref=f461e307]:
+                  - generic [ref=f461e308]:
+                    - link "Comment 4" [ref=f461e310] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=52092#c4
+                    - generic [ref=f461e311]: Fabian Maurer
+                    - text: 2022-05-20 18:42:49 UTC
+                  - generic [ref=f461e313]: Adjusting summary to reflect current state better. Not even sure how to properly address this though, the UWP stuff is weird.
+                - generic [ref=f461e314]:
+                  - generic [ref=f461e315]:
+                    - link "Comment 5" [ref=f461e317] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=52092#c5
+                    - generic [ref=f461e318]: safe.bell6727
+                    - text: 2023-08-31 00:23:20 UTC
+                  - generic [ref=f461e319]:
+                    - text: Created
+                    - generic [ref=f461e320]:
+                      - link "attachment 75067" [ref=f461e321] [cursor=pointer]:
+                        - /url: attachment.cgi?id=75067
+                      - link "[details]" [ref=f461e322] [cursor=pointer]:
+                        - /url: attachment.cgi?id=75067&action=edit
+                    - text: Exception backtrace
+                - generic [ref=f461e323]:
+                  - generic [ref=f461e324]:
+                    - link "Comment 6" [ref=f461e326] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=52092#c6
+                    - generic [ref=f461e327]: safe.bell6727
+                    - text: 2023-08-31 00:23:53 UTC
+                  - generic [ref=f461e328]: Same issue on Wine 8.14, I have attached a full backtrace
+                - generic [ref=f461e329]:
+                  - generic [ref=f461e330]:
+                    - link "Comment 7" [ref=f461e332] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=52092#c7
+                    - generic [ref=f461e333]: Ken Sharp
+                    - text: 2024-05-02 18:42:55 UTC
+                  - generic [ref=f461e335]:
+                    - text: "***"
+                    - link "Bug 56626" [ref=f461e336] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=56626
+                    - text: has been marked as a duplicate of this bug. ***
+                - generic [ref=f461e337]:
+                  - generic [ref=f461e338]:
+                    - link "Comment 8" [ref=f461e340] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=52092#c8
+                    - generic [ref=f461e341]: Tobi L
+                    - text: 2024-05-28 15:25:39 UTC
+                  - generic [ref=f461e343]: I am able to workaround this error with XboxInstaller.exe by changing the Windows version to Windows 10. On the download page, it says that Windows 10 is the minimum requirement. However, when the app starts with all required dependencies installed (corefonts, d3dcompiler47 and I think dotnet as well), the app then complains that the Windows version is outdated and then tries to run the Windows updater. The download page also says that 19H1 or higher is required, but I'm not too sure how to deal with that and maybe that's for a separate thread.
+                - generic [ref=f461e344]:
+                  - generic [ref=f461e345]:
+                    - link "Comment 9" [ref=f461e347] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=52092#c9
+                    - generic [ref=f461e348]: Tobi L
+                    - text: 2024-05-28 17:45:37 UTC
+                  - generic [ref=f461e350]:
+                    - text: Created
+                    - generic [ref=f461e351]:
+                      - link "attachment 76521" [ref=f461e352] [cursor=pointer]:
+                        - /url: attachment.cgi?id=76521&action=diff
+                      - link "[details]" [ref=f461e353] [cursor=pointer]:
+                        - /url: attachment.cgi?id=76521&action=edit
+                    - text: Patch to avoid the UniversalApiContract 7 crash This patch seems to avoid the crash when the prefix is set to Windows 7.
+                - generic [ref=f461e354]:
+                  - generic [ref=f461e355]:
+                    - link "Comment 10" [ref=f461e357] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=52092#c10
+                    - generic [ref=f461e358]: Vijay Kamuju
+                    - text: 2024-06-01 19:55:38 UTC
+                  - generic [ref=f461e360]:
+                    - text: "Created a MR with tests for this based on your patch :"
+                    - link "https://gitlab.winehq.org/wine/wine/-/merge_requests/5771" [ref=f461e361] [cursor=pointer]:
+                      - /url: https://gitlab.winehq.org/wine/wine/-/merge_requests/5771
+                - generic [ref=f461e362]:
+                  - generic [ref=f461e363]:
+                    - link "Comment 11" [ref=f461e365] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=52092#c11
+                    - generic [ref=f461e366]: Etaash Mathamsetty
+                    - text: 2024-06-01 21:00:23 UTC
+                  - generic [ref=f461e368]: Hello I just tried the xbox installer, and using Windows 7 I get the same outdated message with the patch. The real issue here is init_current_version returning the wrong version (windows 8) instead of the correct version (using the prefix's windows version), the app calls GetVersionExW to get the windows version
+                - generic [ref=f461e369]:
+                  - generic [ref=f461e370]:
+                    - link "Comment 12" [ref=f461e372] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=52092#c12
+                    - generic [ref=f461e373]: Etaash Mathamsetty
+                    - text: 2024-06-01 21:02:49 UTC
+                  - generic [ref=f461e375]: the logic looks obviously wrong, im kind of curious how it got into this state. (or maybe I just can't read the code properly)
+                - generic [ref=f461e376]:
+                  - generic [ref=f461e377]:
+                    - link "Comment 13" [ref=f461e379] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=52092#c13
+                    - generic [ref=f461e380]: Vijay Kamuju
+                    - text: 2024-06-01 21:08:24 UTC
+                  - generic [ref=f461e382]: Can you try using a clean prefix?
+                - generic [ref=f461e383]:
+                  - generic [ref=f461e384]:
+                    - link "Comment 14" [ref=f461e386] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=52092#c14
+                    - generic [ref=f461e387]: Etaash Mathamsetty
+                    - text: 2024-06-01 21:11:16 UTC
+                  - generic [ref=f461e389]: now it is getting the same crash even with the patch
+                - generic [ref=f461e390]:
+                  - generic [ref=f461e391]:
+                    - link "Comment 15" [ref=f461e393] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=52092#c15
+                    - generic [ref=f461e394]: Vijay Kamuju
+                    - text: 2024-06-01 21:17:26 UTC
+                  - generic [ref=f461e396]: Marked the patch as draft till we clarify the fix.
+                - generic [ref=f461e397]:
+                  - generic [ref=f461e398]:
+                    - link "Comment 16" [ref=f461e400] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=52092#c16
+                    - generic [ref=f461e401]: Tobi L
+                    - text: 2024-06-01 22:38:52 UTC
+                  - generic [ref=f461e403]:
+                    - generic [ref=f461e404]: "> Created a MR with tests for this based on your patch"
+                    - text: Thanks!
+                    - generic [ref=f461e405]: "> I get the same outdated message with the patch"
+                    - text: "To clarify, are you getting the \"Windows.Foundation.UniversalApiContract\" crash? Or are you talking about the incorrect version check once the app starts? Could you confirm the windows version and what the error is. I did some debugging, it seems there is an issue on this line:"
+                    - link "https://gitlab.winehq.org/wine/wine/-/blob/951e0e27a743e52c75c7fedc0b1eaa9eb77e6bb6/dlls/kernelbase/version.c#L243" [ref=f461e406] [cursor=pointer]:
+                      - /url: https://gitlab.winehq.org/wine/wine/-/blob/951e0e27a743e52c75c7fedc0b1eaa9eb77e6bb6/dlls/kernelbase/version.c#L243
+                    - text: Here, nt->OptionalHeader.MajorOperatingSystemVersion is 4, so it reverts to the default current version which is Windows 8.0.
+                - generic [ref=f461e407]:
+                  - generic [ref=f461e408]:
+                    - link "Comment 17" [ref=f461e410] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=52092#c17
+                    - generic [ref=f461e411]: Tobi L
+                    - text: 2024-06-06 18:35:16 UTC
+                  - generic [ref=f461e413]:
+                    - text: "I've opened a separate thread about the version check logic, as that's unrelated to the UniversalApiContract crash:"
+                    - link "https://bugs.winehq.org/show_bug.cgi?id=56795" [ref=f461e414] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=56795
+                - generic [ref=f461e415]:
+                  - generic [ref=f461e416]:
+                    - link "Comment 18" [ref=f461e418] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=52092#c18
+                    - generic [ref=f461e419]: Vijay Kamuju
+                    - text: 2024-06-09 11:28:25 UTC
+                  - generic [ref=f461e421]: Ok then, I am removing the draft status from patch.
+                - generic [ref=f461e422]:
+                  - generic [ref=f461e423]:
+                    - link "Comment 19" [ref=f461e425] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=52092#c19
+                    - generic [ref=f461e426]: Fox2Code
+                    - text: 2024-06-29 19:54:59 UTC
+                  - generic [ref=f461e428]:
+                    - text: "The missing dlls are available on nuget website. There:"
+                    - link "https://www.nuget.org/packages?q=WindowsContract" [ref=f461e429] [cursor=pointer]:
+                      - /url: https://www.nuget.org/packages?q=WindowsContract
+                    - text: The package name doesn't exactly match the dlls names.
+                - generic [ref=f461e430]:
+                  - generic [ref=f461e431]:
+                    - link "Comment 20" [ref=f461e433] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=52092#c20
+                    - generic [ref=f461e434]: Alex Henrie
+                    - text: 2025-07-23 05:45:29 UTC
+                  - generic [ref=f461e436]:
+                    - text: "The Arc web browser installer also needs Windows.Foundation.UniversalApiContract: Unhandled Exception: System.IO.FileNotFoundException: Could not load file or assembly 'Windows.Foundation.UniversalApiContract, Version=10.0.0.0, Culture=neutral, PublicKeyToken=null' or one of its dependencies. File name: 'Windows.Foundation.UniversalApiContract, Version=10.0.0.0, Culture=neutral, PublicKeyToken=null' [ERROR] FATAL UNHANDLED EXCEPTION: System.IO.FileNotFoundException: Could not load file or assembly 'Windows.Foundation.UniversalApiContract, Version=10.0.0.0, Culture=neutral, PublicKeyToken=null' or one of its dependencies."
+                    - link "https://releases.arc.net/windows/ArcInstaller.exe" [ref=f461e437] [cursor=pointer]:
+                      - /url: https://releases.arc.net/windows/ArcInstaller.exe
+                - generic [ref=f461e438]:
+                  - generic [ref=f461e439]:
+                    - link "Comment 21" [ref=f461e441] [cursor=pointer]:
+                      - /url: show_bug.cgi?id=52092#c21
+                    - generic [ref=f461e442]: brandow
+                    - text: 2026-07-14 17:42:35 UTC
+                  - generic [ref=f461e444]:
+                    - text: Created
+                    - generic [ref=f461e445]:
+                      - link "attachment 81436" [ref=f461e446] [cursor=pointer]:
+                        - /url: attachment.cgi?id=81436
+                      - link "[details]" [ref=f461e447] [cursor=pointer]:
+                        - /url: attachment.cgi?id=81436&action=edit
+                    - text: whatsapp console error log Whatsapp desktop also crashes with Windows.Foundation.UniversalApiContract problem.
+                    - link "https://web.archive.org/web/20260712160040/https://get.microsoft.com/installer/download/9NKSQGP7F2NH?cid=website_cta_psi" [ref=f461e448] [cursor=pointer]:
+                      - /url: https://web.archive.org/web/20260712160040/https://get.microsoft.com/installer/download/9NKSQGP7F2NH?cid=website_cta_psi
+                    - text: sha1sum WhatsApp\ Installer.exe 99a5495122ca6c8d86b08f6236ce5ba5de80a2e8 WhatsApp Installer.exe
+              - cell [ref=f461e449]
+      - separator [ref=f461e450]
+      - list [ref=f461e451]:
+        - listitem [ref=f461e452]:
+          - link "Format For Printing" [ref=f461e453] [cursor=pointer]:
+            - /url: show_bug.cgi?format=multiple&id=52092
+        - listitem [ref=f461e454]:
+          - text: "-"
+          - link "XML" [ref=f461e455] [cursor=pointer]:
+            - /url: show_bug.cgi?ctype=xml&id=52092
+        - listitem [ref=f461e456]:
+          - text: "-"
+          - link "Clone This Bug" [ref=f461e457] [cursor=pointer]:
+            - /url: enter_bug.cgi?cloned_bug_id=52092
+        - listitem [ref=f461e458]:
+          - text: "-"
+          - link "Top of page" [ref=f461e459] [cursor=pointer]:
+            - /url: "#"
+    - list [ref=f461e461]:
+      - listitem [ref=f461e462]:
+        - list [ref=f461e463]:
+          - listitem [ref=f461e464]:
+            - link "Intro" [ref=f461e465] [cursor=pointer]:
+              - /url: ./
+          - listitem [ref=f461e466]:
+            - text: "|"
+            - link "New" [ref=f461e467] [cursor=pointer]:
+              - /url: enter_bug.cgi
+          - listitem [ref=f461e468]:
+            - text: "|"
+            - link "Browse" [ref=f461e469] [cursor=pointer]:
+              - /url: describecomponents.cgi
+          - listitem [ref=f461e470]:
+            - text: "|"
+            - link "Search" [ref=f461e471] [cursor=pointer]:
+              - /url: query.cgi
+          - listitem [ref=f461e472]:
+            - text: "|"
+            - generic [ref=f461e473]:
+              - textbox "Find" [ref=f461e474]
+              - button "Find" [ref=f461e475]
+            - link "[?]" [ref=f461e476] [cursor=pointer]:
+              - /url: page.cgi?id=quicksearch.html
+          - listitem [ref=f461e477]:
+            - text: "|"
+            - link "Reports" [ref=f461e478] [cursor=pointer]:
+              - /url: report.cgi
+          - listitem
+          - listitem [ref=f461e479]:
+            - text: "|"
+            - link "Help" [ref=f461e480] [cursor=pointer]:
+              - /url: https://bugzilla.readthedocs.org/en/5.2/using/understanding.html
+          - listitem [ref=f461e481]:
+            - text: "|"
+            - link "New Account" [ref=f461e482] [cursor=pointer]:
+              - /url: createaccount.cgi
+          - listitem [ref=f461e483]:
+            - text: "|"
+            - link "Log In" [ref=f461e484] [cursor=pointer]:
+              - /url: show_bug.cgi?id=52092&GoAheadAndLogIn=1
+          - listitem [ref=f461e485]:
+            - text: "|"
+            - link "Forgot Password" [ref=f461e486] [cursor=pointer]:
+              - /url: show_bug.cgi?id=52092&GoAheadAndLogIn=1#forgot
+  - generic [ref=f461e492]:
+    - link "Privacy Policy" [ref=f461e493] [cursor=pointer]:
+      - /url: https://wiki.winehq.org/WineHQ_Wiki:Privacy_policy
+    - text: If you have a privacy inquiry regarding this site, please write to
+    - link "privacy@winehq.org" [ref=f461e494] [cursor=pointer]:
+      - /url: mailto:privacy@winehq.org
+    - text: Hosted By
+    - link [ref=f461e495] [cursor=pointer]:
+      - /url: https://www.codeweavers.com/
+      - img "CodeWeavers" [ref=f461e496]

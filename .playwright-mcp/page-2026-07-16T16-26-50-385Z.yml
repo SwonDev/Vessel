@@ -1,0 +1,295 @@
+- generic [active] [ref=f460e1]:
+  - banner [ref=f460e2]:
+    - generic [ref=f460e3]:
+      - link [ref=f460e5] [cursor=pointer]:
+        - /url: /wiki/Home
+      - generic [ref=f460e6]:
+        - list [ref=f460e8]:
+          - listitem [ref=f460e9]:
+            - generic [ref=f460e10] [cursor=pointer]: Explore
+          - listitem [ref=f460e11]:
+            - generic [ref=f460e12] [cursor=pointer]: Editing
+          - listitem [ref=f460e13]:
+            - generic [ref=f460e14] [cursor=pointer]: Community
+          - listitem [ref=f460e15]:
+            - generic [ref=f460e16] [cursor=pointer]: About
+          - listitem [ref=f460e17]:
+            - generic [ref=f460e18] [cursor=pointer]: Tools
+        - generic [ref=f460e19]:
+          - searchbox "Search PCGamingWiki [ctrl-option-f]" [ref=f460e22]
+          - list [ref=f460e23]:
+            - listitem [ref=f460e24]:
+              - link "Log in" [ref=f460e25] [cursor=pointer]:
+                - /url: https://auth.pcgamingwiki.com/oauth2/start?rd=https%3A%2F%2Fwww.pcgamingwiki.com%2Fw%2Findex.php%3Ffulltext%3D1%26ns0%3D1%26search%3Dinsource%253A%2522uplay_r1_loader64.dll%2522
+  - generic [ref=f460e27]:
+    - paragraph [ref=f460e30]:
+      - text: Anonymous edits have been disabled on the wiki. If you want to contribute please
+      - link "login" [ref=f460e31] [cursor=pointer]:
+        - /url: https://auth.pcgamingwiki.com/oauth2/start?rd=https://www.pcgamingwiki.com/wiki/Home
+      - text: or
+      - link "create" [ref=f460e32] [cursor=pointer]:
+        - /url: https://sso.pcgamingwiki.com/auth/realms/PCGamingWiki/protocol/openid-connect/registrations?response_type=code&client_id=mediawiki&redirect_uri=https://www.pcgamingwiki.com/wiki/PCGamingWiki:Account/confirmed
+      - text: an account.
+    - generic [ref=f460e33]:
+      - generic [ref=f460e34]:
+        - list [ref=f460e35]:
+          - listitem [ref=f460e36]:
+            - link "Special page" [ref=f460e37] [cursor=pointer]:
+              - /url: /w/index.php?fulltext=1&ns0=1&search=insource%3A%22uplay_r1_loader64.dll%22
+        - list
+      - heading "Search results" [level=1] [ref=f460e39]
+      - generic [ref=f460e42]:
+        - generic [ref=f460e44]:
+          - generic [ref=f460e47]:
+            - combobox [ref=f460e50]: insource:"uplay_r1_loader64.dll"
+            - button "Search PCGamingWiki" [ref=f460e55] [cursor=pointer]
+          - generic [ref=f460e57]:
+            - list:
+              - listitem [ref=f460e58]:
+                - link "Content pages" [ref=f460e59] [cursor=pointer]:
+                  - /url: /w/index.php?title=Special:Search&profile=default&search=insource%3A%22uplay_r1_loader64.dll%22&fulltext=1
+              - listitem [ref=f460e60]:
+                - link "Multimedia" [ref=f460e61] [cursor=pointer]:
+                  - /url: /w/index.php?title=Special:Search&profile=images&search=insource%3A%22uplay_r1_loader64.dll%22&fulltext=1
+              - listitem [ref=f460e62]:
+                - link "Everything" [ref=f460e63] [cursor=pointer]:
+                  - /url: /w/index.php?title=Special:Search&profile=all&search=insource%3A%22uplay_r1_loader64.dll%22&fulltext=1
+              - listitem [ref=f460e64]:
+                - link "Advanced" [ref=f460e65]:
+                  - /url: /w/index.php?title=Special:Search&profile=advanced&search=insource%3A%22uplay_r1_loader64.dll%22&fulltext=1
+          - group "Advanced search" [ref=f460e66]:
+            - heading "Search in namespaces:" [level=4] [ref=f460e67]
+            - generic [ref=f460e68]:
+              - text: "Check:"
+              - button "All" [ref=f460e69]
+              - button "None" [ref=f460e70]
+            - table [ref=f460e72]:
+              - rowgroup [ref=f460e73]:
+                - row [ref=f460e74]:
+                  - cell "(Main)" [ref=f460e75]:
+                    - checkbox "(Main)" [checked] [ref=f460e76]
+                    - text: (Main)
+                  - cell "Talk" [ref=f460e77]:
+                    - checkbox "Talk" [ref=f460e78]
+                    - text: Talk
+                - row [ref=f460e79]:
+                  - cell "User" [ref=f460e80]:
+                    - checkbox "User" [ref=f460e81]
+                    - text: User
+                  - cell "User talk" [ref=f460e82]:
+                    - checkbox "User talk" [ref=f460e83]
+                    - text: User talk
+                - row [ref=f460e84]:
+                  - cell "PCGamingWiki" [ref=f460e85]:
+                    - checkbox "PCGamingWiki" [ref=f460e86]
+                    - text: PCGamingWiki
+                  - cell "PCGamingWiki talk" [ref=f460e87]:
+                    - checkbox "PCGamingWiki talk" [ref=f460e88]
+                    - text: PCGamingWiki talk
+                - row [ref=f460e89]:
+                  - cell "File" [ref=f460e90]:
+                    - checkbox "File" [ref=f460e91]
+                    - text: File
+                  - cell "File talk" [ref=f460e92]:
+                    - checkbox "File talk" [ref=f460e93]
+                    - text: File talk
+            - table [ref=f460e94]:
+              - rowgroup [ref=f460e95]:
+                - row [ref=f460e96]:
+                  - cell "MediaWiki" [ref=f460e97]:
+                    - checkbox "MediaWiki" [ref=f460e98]
+                    - text: MediaWiki
+                  - cell "MediaWiki talk" [ref=f460e99]:
+                    - checkbox "MediaWiki talk" [ref=f460e100]
+                    - text: MediaWiki talk
+                - row [ref=f460e101]:
+                  - cell "Template" [ref=f460e102]:
+                    - checkbox "Template" [ref=f460e103]
+                    - text: Template
+                  - cell "Template talk" [ref=f460e104]:
+                    - checkbox "Template talk" [ref=f460e105]
+                    - text: Template talk
+                - row [ref=f460e106]:
+                  - cell "Help" [ref=f460e107]:
+                    - checkbox "Help" [ref=f460e108]
+                    - text: Help
+                  - cell "Help talk" [ref=f460e109]:
+                    - checkbox "Help talk" [ref=f460e110]
+                    - text: Help talk
+                - row [ref=f460e111]:
+                  - cell "Category" [ref=f460e112]:
+                    - checkbox "Category" [ref=f460e113]
+                    - text: Category
+                  - cell "Category talk" [ref=f460e114]:
+                    - checkbox "Category talk" [ref=f460e115]
+                    - text: Category talk
+            - table [ref=f460e116]:
+              - rowgroup [ref=f460e117]:
+                - row [ref=f460e118]:
+                  - cell "Form" [ref=f460e119]:
+                    - checkbox "Form" [ref=f460e120]
+                    - text: Form
+                  - cell "Form talk" [ref=f460e121]:
+                    - checkbox "Form talk" [ref=f460e122]
+                    - text: Form talk
+                - row [ref=f460e123]:
+                  - cell "Widget" [ref=f460e124]:
+                    - checkbox "Widget" [ref=f460e125]
+                    - text: Widget
+                  - cell "Widget talk" [ref=f460e126]:
+                    - checkbox "Widget talk" [ref=f460e127]
+                    - text: Widget talk
+                - row [ref=f460e128]:
+                  - cell "Development" [ref=f460e129]:
+                    - checkbox "Development" [ref=f460e130]
+                    - text: Development
+                  - cell "Development talk" [ref=f460e131]:
+                    - checkbox "Development talk" [ref=f460e132]
+                    - text: Development talk
+                - row [ref=f460e133]:
+                  - cell "Series" [ref=f460e134]:
+                    - checkbox "Series" [ref=f460e135]
+                    - text: Series
+                  - cell "Series talk" [ref=f460e136]:
+                    - checkbox "Series talk" [ref=f460e137]
+                    - text: Series talk
+            - table [ref=f460e138]:
+              - rowgroup [ref=f460e139]:
+                - row [ref=f460e140]:
+                  - cell "Engine" [ref=f460e141]:
+                    - checkbox "Engine" [ref=f460e142]
+                    - text: Engine
+                  - cell "Engine talk" [ref=f460e143]:
+                    - checkbox "Engine talk" [ref=f460e144]
+                    - text: Engine talk
+                - row [ref=f460e145]:
+                  - cell "Guide" [ref=f460e146]:
+                    - checkbox "Guide" [ref=f460e147]
+                    - text: Guide
+                  - cell "Guide talk" [ref=f460e148]:
+                    - checkbox "Guide talk" [ref=f460e149]
+                    - text: Guide talk
+                - row [ref=f460e150]:
+                  - cell "Emulation" [ref=f460e151]:
+                    - checkbox "Emulation" [ref=f460e152]
+                    - text: Emulation
+                  - cell "Emulation talk" [ref=f460e153]:
+                    - checkbox "Emulation talk" [ref=f460e154]
+                    - text: Emulation talk
+                - row [ref=f460e155]:
+                  - cell "Controller" [ref=f460e156]:
+                    - checkbox "Controller" [ref=f460e157]
+                    - text: Controller
+                  - cell "Controller talk" [ref=f460e158]:
+                    - checkbox "Controller talk" [ref=f460e159]
+                    - text: Controller talk
+            - table [ref=f460e160]:
+              - rowgroup [ref=f460e161]:
+                - row [ref=f460e162]:
+                  - cell "Glossary" [ref=f460e163]:
+                    - checkbox "Glossary" [ref=f460e164]
+                    - text: Glossary
+                  - cell "Glossary talk" [ref=f460e165]:
+                    - checkbox "Glossary talk" [ref=f460e166]
+                    - text: Glossary talk
+                - row [ref=f460e167]:
+                  - cell "Company" [ref=f460e168]:
+                    - checkbox "Company" [ref=f460e169]
+                    - text: Company
+                  - cell "Company talk" [ref=f460e170]:
+                    - checkbox "Company talk" [ref=f460e171]
+                    - text: Company talk
+                - row [ref=f460e172]:
+                  - cell "Store" [ref=f460e173]:
+                    - checkbox "Store" [ref=f460e174]
+                    - text: Store
+                  - cell "Store talk" [ref=f460e175]:
+                    - checkbox "Store talk" [ref=f460e176]
+                    - text: Store talk
+                - row [ref=f460e177]:
+                  - cell "Module" [ref=f460e178]:
+                    - checkbox "Module" [ref=f460e179]
+                    - text: Module
+                  - cell "Module talk" [ref=f460e180]:
+                    - checkbox "Module talk" [ref=f460e181]
+                    - text: Module talk
+        - generic [ref=f460e182]:
+          - paragraph
+          - paragraph [ref=f460e183]: There were no results matching the query.
+  - contentinfo [ref=f460e185]:
+    - generic [ref=f460e187]:
+      - link [ref=f460e188] [cursor=pointer]:
+        - /url: https://www.facebook.com/PCGamingWiki
+      - link [ref=f460e190] [cursor=pointer]:
+        - /url: https://www.twitter.com/PCGamingWiki
+      - link [ref=f460e192] [cursor=pointer]:
+        - /url: //www.youtube.com/user/PCGamingWikiTV
+      - link [ref=f460e194] [cursor=pointer]:
+        - /url: //steamcommunity.com/groups/pcgamingwiki
+      - link [ref=f460e196] [cursor=pointer]:
+        - /url: https://discord.gg/SU27ykMcsD
+    - generic [ref=f460e198]:
+      - generic [ref=f460e199]:
+        - list [ref=f460e200]:
+          - listitem [ref=f460e201]: PCGamingWiki
+          - listitem [ref=f460e202]:
+            - link "About us" [ref=f460e203] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:About
+          - listitem [ref=f460e204]:
+            - link "Contact us" [ref=f460e205] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:About#Contact
+          - listitem [ref=f460e206]:
+            - link "Advertising" [ref=f460e207] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:About#Advertising
+          - listitem [ref=f460e208]:
+            - link "Privacy policy" [ref=f460e209] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:Privacy_policy
+          - listitem [ref=f460e210]:
+            - link "General disclaimer" [ref=f460e211] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:General_disclaimer
+        - list [ref=f460e212]:
+          - listitem [ref=f460e213]: Friends
+          - listitem [ref=f460e214]:
+            - link "Partnerships" [ref=f460e215] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:Partnerships
+          - listitem [ref=f460e216]:
+            - link "Extension" [ref=f460e217] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:Extension
+          - listitem [ref=f460e218]:
+            - link "API" [ref=f460e219] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:API
+          - listitem [ref=f460e220]:
+            - link "AppleGamingWiki" [ref=f460e221] [cursor=pointer]:
+              - /url: https://www.applegamingwiki.com
+          - listitem [ref=f460e222]:
+            - link "GOG.com" [ref=f460e223] [cursor=pointer]:
+              - /url: https://www.gog.com?pp=708a77db476d737e54b8bf4663fc79b346d696d2
+          - listitem [ref=f460e224]:
+            - link "Gamesplanet" [ref=f460e225] [cursor=pointer]:
+              - /url: https://gamesplanet.com?ref=pcgwiki
+          - listitem [ref=f460e226]:
+            - link "CheapShark" [ref=f460e227] [cursor=pointer]:
+              - /url: https://www.cheapshark.com
+        - list [ref=f460e228]:
+          - listitem [ref=f460e229]: Powered by
+          - listitem [ref=f460e230]:
+            - link "MediaWiki" [ref=f460e231] [cursor=pointer]:
+              - /url: https://www.mediawiki.org/wiki/MediaWiki
+          - listitem [ref=f460e232]:
+            - link "Semantic MediaWiki" [ref=f460e233] [cursor=pointer]:
+              - /url: https://www.semantic-mediawiki.org/wiki/Semantic_MediaWiki
+          - listitem [ref=f460e234]:
+            - link "Cargo" [ref=f460e235] [cursor=pointer]:
+              - /url: https://www.mediawiki.org/wiki/Extension:Cargo
+          - listitem [ref=f460e236]:
+            - link "Open source" [ref=f460e237] [cursor=pointer]:
+              - /url: https://github.com/PCGamingWiki
+          - listitem [ref=f460e238]:
+            - link "Patrons" [ref=f460e239] [cursor=pointer]:
+              - /url: https://www.patreon.com/PCGamingWiki
+          - listitem [ref=f460e240]: and You <3
+      - generic [ref=f460e241]:
+        - text: Some store links may include affiliate tags. Buying through these links helps support PCGamingWiki (
+        - link "Learn more" [ref=f460e242] [cursor=pointer]:
+          - /url: /wiki/PCGamingWiki:About#Support_us
+        - text: ).

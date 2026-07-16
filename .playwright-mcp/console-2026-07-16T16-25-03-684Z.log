@@ -1,0 +1,73 @@
+[     310ms] [LOG] false @ https://www.pcgamingwiki.com/wiki/The_big_list_of_third-party_DRM_on_Steam:106
+[     316ms] [LOG] false @ https://www.pcgamingwiki.com/wiki/The_big_list_of_third-party_DRM_on_Steam:6704
+[     316ms] [WARNING] This page is using the deprecated ResourceLoader module "mediawiki.skinning.elements".
+Your default skin ResourceLoader class should use ResourceLoaderSkinModule::class @ https://www.pcgamingwiki.com/wiki/The_big_list_of_third-party_DRM_on_Steam:6807
+[     371ms] [ERROR] Access to XMLHttpRequest at 'https://track.venatusmedia.com/pageload/track' from origin 'https://www.pcgamingwiki.com' has been blocked by CORS policy: Response to preflight request doesn't pass access control check: No 'Access-Control-Allow-Origin' header is present on the requested resource. @ https://www.pcgamingwiki.com/wiki/The_big_list_of_third-party_DRM_on_Steam:0
+[     371ms] [ERROR] Failed to load resource: net::ERR_FAILED @ https://track.venatusmedia.com/pageload/track:0
+[     393ms] [LOG] sendBeacon: URL =  https://go.adt256.com/t/t?a=1578845458&as=1649876489&t=1&tk=1&cl=1&atag=1&sv=1&at_gd=C452ADB40C07A486DC2958A6515BA81171088653&cid=1905898357.1784219036&cacheprev=0.7231918018638052 ; status =  true @ https://cdn.adt598.com/atag.js?as=1649876489:0
+[     411ms] [LOG] JQMIGRATE: Migrate is installed with logging active, version 3.3.2 @ https://www.pcgamingwiki.com/w/load.php?lang=en&modules=jquery&skin=overclocked&version=qtt5t:144
+[     879ms] [WARNING] [GPT] PubAdsService.getTargeting is deprecated, use googletag.getConfig('targeting') instead.
+https://goo.gle/gpt-message#200 @ https://securepubads.g.doubleclick.net/pagead/managed/js/gpt/m202607130101/pubads_impl.js:18
+[    1609ms] [WARNING] JQMIGRATE: jQuery.isFunction() is deprecated @ https://www.pcgamingwiki.com/w/load.php?lang=en&modules=jquery&skin=overclocked&version=qtt5t:145
+[    1610ms] [WARNING] JQMIGRATE: jQuery.fn.offset() requires a valid DOM element @ https://www.pcgamingwiki.com/w/load.php?lang=en&modules=jquery&skin=overclocked&version=qtt5t:145
+[    1610ms] [WARNING] JQMIGRATE: jQuery.fn.hover() is deprecated @ https://www.pcgamingwiki.com/w/load.php?lang=en&modules=jquery&skin=overclocked&version=qtt5t:145
+[    1610ms] [WARNING] JQMIGRATE: jQuery.fn.bind() is deprecated @ https://www.pcgamingwiki.com/w/load.php?lang=en&modules=jquery&skin=overclocked&version=qtt5t:145
+[    1612ms] [LOG] MediaWiki:Common.js executing... rev. 11 @ https://cadmus.script.ac/d1oykxszdrgjgl/script.js:0
+[    1612ms] [LOG] -- Link: https://www.pcgamingwiki.com/wiki/MediaWiki:Common.js @ https://cadmus.script.ac/d1oykxszdrgjgl/script.js:0
+[    2428ms] [WARNING] [GPT] Slot.setTargeting is deprecated, use Slot.setConfig({targeting: ...}) instead.
+https://goo.gle/gpt-message#171 @ https://securepubads.g.doubleclick.net/pagead/managed/js/gpt/m202607130101/pubads_impl.js:18
+[    2663ms] [ERROR] Failed to load resource: the server responded with a status of 400 () @ https://prebid-server.rubiconproject.com/setuid?bidder=yahooAds&uid=y-ruYDPBhE2uHiayLopr9uUUGu.h4NxtEv~A&gdpr=1&gdpr_consent=CQncTYAQncTYAEsACBENCnFoAP_gAEPgAAwIMGsR9C_sTSFDebZ3KbskaYxP0LhgbsQxBgaAEgIFyJKQJJwEgWEJJAiABCACCBAAMFQBIQMAEAAAAUCAIIABLwAMYEwUYBJIJAAAABEYAUBQCAAEgIEgUAAJgiC3EkQgkAiEQIpKWMgCgABGEACwCCQgAJCAAAAAAUIAQAEAEAAEQCwQkAlAmAAAAgEIABBIAEABYCAAICAAABgBAAAAAAAAAAAAAACAADACAAAAAAAAAiAAAAAIAASAAAAAAEAAAAIAIMQMR9C_sTSFDebBXobskKYxf0LgAbsQxBAaAAgIFyJKQJIwAkWEDJEiAACAACBAAIFQBIAEIEAgAAECBAIABLxAMAEwQYBJIAAAAADEYAEBQAAAEgIEgUAAJgCA2EEQggQiEQIpCWEgCABACEACgCCQAAJCAAAABEUIAQAEAECAEwDQAkAlAmAAAAgAIABBIAEABYSAAICAAABgBAAAAAAAAAAAAAACAACACAAAEAAAAQiAAAAAAAASAAAAAAEBAAAIAIAAEAA.IMQMR9C_sTSFDebZ3qbskaYxf0LhgbsQxBgaAEgIFyJKQJJwEkWELJEiABCACCBAAMFQBIQMIEAgAAUCBIIABLxAMYEwUYBJIJAAAADEYAUBQCAAEgIEgUAAJgiC3EkQgkQiEQIpKWMgCgBBGEACwCCQgAJCAAAABEUIAQAEAECAEwDwQkAlAmAAAAgEIABBIAEABYSAAICAAABgBAAAAAAAAAAAAAACAADACAAAEAAAAQiAAAAAIAASAAAAAAEBAAAIAIAAEA.f_wAAAAAAAA:0
+[    3097ms] [WARNING] An iframe which has both allow-scripts and allow-same-origin for its sandbox attribute can escape its sandboxing. @ https://cadmus.script.ac/d1oykxszdrgjgl/script.js:0
+[    3176ms] [ERROR] Failed to load resource: the server responded with a status of 403 () @ https://c1.adform.net/cookie?redirect_url=https%3A%2F%2Fa.bids.ws%2Fsetuid%3Fbidder%3Dadf%26gdpr%3D1%26gdpr_consent%3DCQncTYAQncTYAEsACBENCnFoAP_gAEPgAAwIMGsR9C_sTSFDebZ3KbskaYxP0LhgbsQxBgaAEgIFyJKQJJwEgWEJJAiABCACCBAAMFQBIQMAEAAAAUCAIIABLwAMYEwUYBJIJAAAABEYAUBQCAAEgIEgUAAJgiC3EkQgkAiEQIpKWMgCgABGEACwCCQgAJCAAAAAAUIAQAEAEAAEQCwQkAlAmAAAAgEIABBIAEABYCAAICAAABgBAAAAAAAAAAAAAACAADACAAAAAAAAAiAAAAAIAASAAAAAAEAAAAIAIMQMR9C_sTSFDebBXobskKYxf0LgAbsQxBAaAAgIFyJKQJIwAkWEDJEiAACAACBAAIFQBIAEIEAgAAECBAIABLxAMAEwQYBJIAAAAADEYAEBQAAAEgIEgUAAJgCA2EEQggQiEQIpCWEgCABACEACgCCQAAJCAAAABEUIAQAEAECAEwDQAkAlAmAAAAgAIABBIAEABYSAAICAAABgBAAAAAAAAAAAAAACAACACAAAEAAAAQiAAAAAAAASAAAAAAEBAAAIAIAAEAA.IMQMR9C_sTSFDebZ3qbskaYxf0LhgbsQxBgaAEgIFyJKQJJwEkWELJEiABCACCBAAMFQBIQMIEAgAAUCBIIABLxAMYEwUYBJIJAAAADEYAUBQCAAEgIEgUAAJgiC3EkQgkQiEQIpKWMgCgBBGEACwCCQgAJCAAAABEUIAQAEAECAEwDwQkAlAmAAAAgEIABBIAEABYSAAICAAABgBAAAAAAAAAAAAAACAADACAAAEAAAAQiAAAAAIAASAAAAAAEBAAAIAIAAEA.f_wAAAAAAAA%26us_privacy%3D%26gpp%3D%26gpp_sid%3D-1%26f%3Di%26uid%3D%24UID:0
+[    3178ms] [WARNING] An iframe which has both allow-scripts and allow-same-origin for its sandbox attribute can escape its sandboxing. @ https://cadmus.script.ac/d1oykxszdrgjgl/script.js:0
+[    3841ms] [TIMEEND] a: 0.0009765625 ms @ https://static.adsafeprotected.com/sca.17.6.4.js:31
+[    3964ms] [WARNING] Unrecognized feature: 'attribution-reporting'. @ https://www.googletagservices.com/dcm/impl_v106.js:110
+[    4019ms] [DIR] SyntaxError @ :0
+[    4133ms] TypeError: Cannot convert undefined or null to object
+    at hasOwnProperty (<anonymous>)
+    at bh (https://js.ad-score.com/score.min.js?pid=1000941&tt=g:2:298848)
+    at https://js.ad-score.com/score.min.js?pid=1000941&tt=g:2:299811
+    at https://js.ad-score.com/score.min.js?pid=1000941&tt=g:2:299999
+    at bJ (https://js.ad-score.com/score.min.js?pid=1000941&tt=g:2:300800)
+    at <anonymous>:1:62721
+    at <anonymous>:1:100386
+[    4671ms] Uncaught Error: Window playback event handlers are not defined
+    at <anonymous> (https://d17ebhrlbr4s4.cloudfront.net/preview-utils.js:0:140)
+    at <anonymous> (https://d17ebhrlbr4s4.cloudfront.net/preview-utils.js:0:295)
+[    4694ms] Uncaught Error: Window playback event handlers are not defined
+    at <anonymous> (https://d17ebhrlbr4s4.cloudfront.net/preview-utils.js:0:140)
+    at <anonymous> (https://d17ebhrlbr4s4.cloudfront.net/preview-utils.js:0:295)
+[    4696ms] Uncaught Error: Window playback event handlers are not defined
+    at <anonymous> (https://d17ebhrlbr4s4.cloudfront.net/preview-utils.js:0:140)
+    at <anonymous> (https://d17ebhrlbr4s4.cloudfront.net/preview-utils.js:0:295)
+[    4698ms] Uncaught Error: Window playback event handlers are not defined
+    at <anonymous> (https://d17ebhrlbr4s4.cloudfront.net/preview-utils.js:0:140)
+    at <anonymous> (https://d17ebhrlbr4s4.cloudfront.net/preview-utils.js:0:295)
+[    4698ms] Uncaught Error: Window playback event handlers are not defined
+    at <anonymous> (https://d17ebhrlbr4s4.cloudfront.net/preview-utils.js:0:140)
+    at <anonymous> (https://d17ebhrlbr4s4.cloudfront.net/preview-utils.js:0:295)
+[    4698ms] Uncaught Error: Window playback event handlers are not defined
+    at <anonymous> (https://d17ebhrlbr4s4.cloudfront.net/preview-utils.js:0:140)
+    at <anonymous> (https://d17ebhrlbr4s4.cloudfront.net/preview-utils.js:0:295)
+[    4698ms] Uncaught Error: Window playback event handlers are not defined
+    at <anonymous> (https://d17ebhrlbr4s4.cloudfront.net/preview-utils.js:0:140)
+    at <anonymous> (https://d17ebhrlbr4s4.cloudfront.net/preview-utils.js:0:295)
+[    4698ms] Uncaught Error: Window playback event handlers are not defined
+    at <anonymous> (https://d17ebhrlbr4s4.cloudfront.net/preview-utils.js:0:140)
+    at <anonymous> (https://d17ebhrlbr4s4.cloudfront.net/preview-utils.js:0:295)
+[    4713ms] SecurityError: Failed to read a named property 'document' from 'Window': Blocked a frame with origin "https://af255ee6fc2fcb3bbe156b6272fa0bf4.safeframe.googlesyndication.com" from accessing a cross-origin frame.
+    at <anonymous>:1:62721
+    at fv (<anonymous>:1:114388)
+[    4713ms] SecurityError: Failed to read a named property 'document' from 'Window': Blocked a frame with origin "https://af255ee6fc2fcb3bbe156b6272fa0bf4.safeframe.googlesyndication.com" from accessing a cross-origin frame.
+    at <anonymous>:1:62721
+    at fv (<anonymous>:1:114388)
+[    4812ms] [LOG] Targeted Exit Value: Custom @ https://s0.2mdn.net/sadbundle/16813908662510894814/300x250-Disney-MENA-Display-300x250/invocation.js:65
+[    5041ms] [WARNING] Error with Permissions-Policy header: Unrecognized feature: 'browsing-topics'. @ :0
+[    5047ms] [LOG] addEventListener:  {tcString: CQncTYAQncTYAEsACBENCnFoAP_gAEPgAAwIMGsR9C_sTSFDeb…AAAEAAAAQiAAAAAIAASAAAAAAEBAAAIAIAAEA.f_wAAAAAAAA, tcfPolicyVersion: 5, gdprApplies: true, cmpId: 300, cmpVersion: 2} true @ https://adapter.bidmatic.io/sync.html?aid=959999:0
+[    5064ms] [TIMEEND] a: 0 ms @ https://static.adsafeprotected.com/sca.17.6.4.js:31
+[    5116ms] [WARNING] Error with Permissions-Policy header: Unrecognized feature: 'browsing-topics'. @ :0
+[    5116ms] [ERROR] Failed to load resource: the server responded with a status of 451 (Unavailable For Legal Reasons) @ https://adapter.bidmatic.io/sync/?aid=959999&gdpr_source=tcloaded&refer=https://www.pcgamingwiki.com/&gdpr=1&gdpr_consent=CQncTYAQncTYAEsACBENCnFoAP_gAEPgAAwIMGsR9C_sTSFDebZ3KbskaYxP0LhgbsQxBgaAEgIFyJKQJJwEgWEJJAiABCACCBAAMFQBIQMAEAAAAUCAIIABLwAMYEwUYBJIJAAAABEYAUBQCAAEgIEgUAAJgiC3EkQgkAiEQIpKWMgCgABGEACwCCQgAJCAAAAAAUIAQAEAEAAEQCwQkAlAmAAAAgEIABBIAEABYCAAICAAABgBAAAAAAAAAAAAAACAADACAAAAAAAAAiAAAAAIAASAAAAAAEAAAAIAIMQMR9C_sTSFDebBXobskKYxf0LgAbsQxBAaAAgIFyJKQJIwAkWEDJEiAACAACBAAIFQBIAEIEAgAAECBAIABLxAMAEwQYBJIAAAAADEYAEBQAAAEgIEgUAAJgCA2EEQggQiEQIpCWEgCABACEACgCCQAAJCAAAABEUIAQAEAECAEwDQAkAlAmAAAAgAIABBIAEABYSAAICAAABgBAAAAAAAAAAAAAACAACACAAAEAAAAQiAAAAAAAASAAAAAAEBAAAIAIAAEAA.IMQMR9C_sTSFDebZ3qbskaYxf0LhgbsQxBgaAEgIFyJKQJJwEkWELJEiABCACCBAAMFQBIQMIEAgAAUCBIIABLxAMYEwUYBJIJAAAADEYAUBQCAAEgIEgUAAJgiC3EkQgkQiEQIpKWMgCgBBGEACwCCQgAJCAAAABEUIAQAEAECAEwDwQkAlAmAAAAgEIABBIAEABYSAAICAAABgBAAAAAAAAAAAAAACAADACAAAEAAAAQiAAAAAIAASAAAAAAEBAAAIAIAAEA.f_wAAAAAAAA:0
+[    5658ms] [ERROR] Failed to load resource: the server responded with a status of 403 () @ https://cm.adform.net/cookie?redirect_url=https%3A%2F%2Felb.the-ozone-project.com%2Fsetuid%3Fbidder%3Dadform%26gdpr%3D1%26gdpr_consent%3DCQncTYAQncTYAEsACBENCnFoAP_gAEPgAAwIMGsR9C_sTSFDebZ3KbskaYxP0LhgbsQxBgaAEgIFyJKQJJwEgWEJJAiABCACCBAAMFQBIQMAEAAAAUCAIIABLwAMYEwUYBJIJAAAABEYAUBQCAAEgIEgUAAJgiC3EkQgkAiEQIpKWMgCgABGEACwCCQgAJCAAAAAAUIAQAEAEAAEQCwQkAlAmAAAAgEIABBIAEABYCAAICAAABgBAAAAAAAAAAAAAACAADACAAAAAAAAAiAAAAAIAASAAAAAAEAAAAIAIMQMR9C_sTSFDebBXobskKYxf0LgAbsQxBAaAAgIFyJKQJIwAkWEDJEiAACAACBAAIFQBIAEIEAgAAECBAIABLxAMAEwQYBJIAAAAADEYAEBQAAAEgIEgUAAJgCA2EEQggQiEQIpCWEgCABACEACgCCQAAJCAAAABEUIAQAEAECAEwDQAkAlAmAAAAgAIABBIAEABYSAAICAAABgBAAAAAAAAAAAAAACAACACAAAEAAAAQiAAAAAAAASAAAAAAEBAAAIAIAAEAA.IMQMR9C_sTSFDebZ3qbskaYxf0LhgbsQxBgaAEgIFyJKQJJwEkWELJEiABCACCBAAMFQBIQMIEAgAAUCBIIABLxAMYEwUYBJIJAAAADEYAUBQCAAEgIEgUAAJgiC3EkQgkQiEQIpKWMgCgBBGEACwCCQgAJCAAAABEUIAQAEAECAEwDwQkAlAmAAAAgEIABBIAEABYSAAICAAABgBAAAAAAAAAAAAAACAADACAAAEAAAAQiAAAAAIAASAAAAAAEBAAAIAIAAEA.f_wAAAAAAAA%26us_privacy%3D%26gpp%3D%26gpp_sid%3D-1%26uid%3D%24UID:0
+[    6151ms] [ERROR] Failed to load resource: the server responded with a status of 403 () @ https://cm.adform.net/cookie?redirect_url=https%3A%2F%2Fcsync.smilewanted.com%2Fset_partner_userid_get%2Fadform%2F%24UID:0
+[    6653ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://cs.admanmedia.com/c899400112bd5b9243b3993d9a074653.gif?puid=[UID]&redir=https%3A%2F%2Fcsync.smilewanted.com%2Fset_partner_userid_get%2Fillumin%2F%5BUID%5D&gdpr=1&gdpr_consent=CQncTYAQncTYAEsACBENCnFoAP_gAEPgAAwIMGsR9C_sTSFDebZ3KbskaYxP0LhgbsQxBgaAEgIFyJKQJJwEgWEJJAiABCACCBAAMFQBIQMAEAAAAUCAIIABLwAMYEwUYBJIJAAAABEYAUBQCAAEgIEgUAAJgiC3EkQgkAiEQIpKWMgCgABGEACwCCQgAJCAAAAAAUIAQAEAEAAEQCwQkAlAmAAAAgEIABBIAEABYCAAICAAABgBAAAAAAAAAAAAAACAADACAAAAAAAAAiAAAAAIAASAAAAAAEAAAAIAIMQMR9C_sTSFDebBXobskKYxf0LgAbsQxBAaAAgIFyJKQJIwAkWEDJEiAACAACBAAIFQBIAEIEAgAAECBAIABLxAMAEwQYBJIAAAAADEYAEBQAAAEgIEgUAAJgCA2EEQggQiEQIpCWEgCABACEACgCCQAAJCAAAABEUIAQAEAECAEwDQAkAlAmAAAAgAIABBIAEABYSAAICAAABgBAAAAAAAAAAAAAACAACACAAAEAAAAQiAAAAAAAASAAAAAAEBAAAIAIAAEAA.IMQMR9C_sTSFDebZ3qbskaYxf0LhgbsQxBgaAEgIFyJKQJJwEkWELJEiABCACCBAAMFQBIQMIEAgAAUCBIIABLxAMYEwUYBJIJAAAADEYAUBQCAAEgIEgUAAJgiC3EkQgkQiEQIpKWMgCgBBGEACwCCQgAJCAAAABEUIAQAEAECAEwDwQkAlAmAAAAgEIABBIAEABYSAAICAAABgBAAAAAAAAAAAAAACAADACAAAEAAAAQiAAAAAIAASAAAAAAEBAAAIAIAAEA.f_wAAAAAAAA:0
+[   18337ms] [WARNING] The resource https://static.pcgamingwiki.com/logos/pcgamingwiki.svg was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally. @ https://www.pcgamingwiki.com/wiki/The_big_list_of_third-party_DRM_on_Steam:0

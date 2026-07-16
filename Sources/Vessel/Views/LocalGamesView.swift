@@ -414,7 +414,8 @@ struct LocalGamesView: View {
                 }
                 let name = g.name
                 let installed = try await DRMFreeInstaller.shared.downloadAndInstall(
-                    url: url, headers: headers, slug: name, suggestedName: name, filenameHint: filenameHint
+                    url: url, headers: headers, slug: name, suggestedName: name, filenameHint: filenameHint,
+                    source: g.source.rawValue, sourceId: g.sourceId
                 ) { frac, msg in Task { @MainActor in downloading[g.id] = (frac, msg) } }
                 games.setInstalled(g.id, executablePath: installed.executablePath, installPath: installed.installDir)
                 downloading[g.id] = nil

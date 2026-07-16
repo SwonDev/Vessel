@@ -1,0 +1,769 @@
+- generic [active] [ref=f342e1]:
+  - banner [ref=f342e2]:
+    - generic [ref=f342e3]:
+      - link [ref=f342e5] [cursor=pointer]:
+        - /url: /wiki/Home
+      - generic [ref=f342e6]:
+        - list [ref=f342e8]:
+          - listitem [ref=f342e9]:
+            - generic [ref=f342e10] [cursor=pointer]: Explore
+          - listitem [ref=f342e11]:
+            - generic [ref=f342e12] [cursor=pointer]: Editing
+          - listitem [ref=f342e13]:
+            - generic [ref=f342e14] [cursor=pointer]: Community
+          - listitem [ref=f342e15]:
+            - generic [ref=f342e16] [cursor=pointer]: About
+          - listitem [ref=f342e17]:
+            - generic [ref=f342e18] [cursor=pointer]: Tools
+        - generic [ref=f342e19]:
+          - searchbox "Search PCGamingWiki [ctrl-option-f]" [ref=f342e22]
+          - list [ref=f342e23]:
+            - listitem [ref=f342e24]:
+              - link "Log in" [ref=f342e25] [cursor=pointer]:
+                - /url: https://auth.pcgamingwiki.com/oauth2/start?rd=https%3A%2F%2Fwww.pcgamingwiki.com%2Fwiki%2FStore%3AUbisoft_Connect
+  - generic [ref=f342e27]:
+    - paragraph [ref=f342e31]:
+      - text: Anonymous edits have been disabled on the wiki. If you want to contribute please
+      - link "login" [ref=f342e32] [cursor=pointer]:
+        - /url: https://auth.pcgamingwiki.com/oauth2/start?rd=https://www.pcgamingwiki.com/wiki/Home
+      - text: or
+      - link "create" [ref=f342e33] [cursor=pointer]:
+        - /url: https://sso.pcgamingwiki.com/auth/realms/PCGamingWiki/protocol/openid-connect/registrations?response_type=code&client_id=mediawiki&redirect_uri=https://www.pcgamingwiki.com/wiki/PCGamingWiki:Account/confirmed
+      - text: an account.
+    - generic [ref=f342e34]:
+      - generic [ref=f342e35]:
+        - list [ref=f342e36]:
+          - listitem [ref=f342e37]:
+            - link "Store" [ref=f342e38] [cursor=pointer]:
+              - /url: /wiki/Store:Ubisoft_Connect
+          - listitem [ref=f342e39]:
+            - link "Discussion" [ref=f342e40] [cursor=pointer]:
+              - /url: /wiki/Store_talk:Ubisoft_Connect
+        - list [ref=f342e41]:
+          - listitem [ref=f342e42]:
+            - link "View" [ref=f342e43] [cursor=pointer]:
+              - /url: /wiki/Store:Ubisoft_Connect
+          - listitem [ref=f342e44]:
+            - link "View source" [ref=f342e45] [cursor=pointer]:
+              - /url: /w/index.php?title=Store:Ubisoft_Connect&action=edit
+          - listitem [ref=f342e46]:
+            - link "History" [ref=f342e47] [cursor=pointer]:
+              - /url: /w/index.php?title=Store:Ubisoft_Connect&action=history
+      - generic [ref=f342e54]:
+        - slider [ref=f342e56] [cursor=pointer]: "0.11"
+        - generic [ref=f342e57]:
+          - generic [ref=f342e58]:
+            - generic [ref=f342e60]:
+              - slider: "0"
+            - generic [ref=f342e62] [cursor=pointer]: 00:00 / 02:37
+          - link "Visit venatus.com" [ref=f342e65] [cursor=pointer]:
+            - /url: https://venatus.com/?utm_source=publishers&utm_medium=websites&utm_campaign=PvPlayer
+      - heading "Store:Ubisoft Connect" [level=1] [ref=f342e67]
+      - generic [ref=f342e68]: From PCGamingWiki, the wiki about fixing PC games
+      - generic [ref=f342e69]:
+        - generic [ref=f342e72]:
+          - table [ref=f342e73]:
+            - caption [ref=f342e74]: Ubisoft Connect
+            - rowgroup [ref=f342e75]:
+              - row [ref=f342e76]:
+                - cell [ref=f342e77]:
+                  - link [ref=f342e78] [cursor=pointer]:
+                    - /url: /wiki/File:Ubisoft_Connect_logo.svg
+                    - img "Ubisoft Connect cover" [ref=f342e79]
+              - row [ref=f342e80]:
+                - columnheader "Developers" [ref=f342e81]
+              - row [ref=f342e82]:
+                - cell [ref=f342e83]
+                - cell [ref=f342e84]:
+                  - link "Company:Ubisoft":
+                    - /url: /wiki/Company:Ubisoft
+                  - link "Ubisoft" [ref=f342e85] [cursor=pointer]:
+                    - /url: /wiki/Company:Ubisoft
+              - row [ref=f342e86]:
+                - cell [ref=f342e87]
+                - cell [ref=f342e88]:
+                  - link "Company:Ubisoft Massive":
+                    - /url: /wiki/Company:Ubisoft_Massive
+                  - link "Ubisoft Massive" [ref=f342e89] [cursor=pointer]:
+                    - /url: /wiki/Company:Ubisoft_Massive
+              - row [ref=f342e90]:
+                - columnheader "Release dates" [ref=f342e91]
+              - row [ref=f342e92]:
+                - cell "Windows" [ref=f342e93]
+                - cell "July 3, 2012" [ref=f342e94]
+              - row [ref=f342e95]:
+                - cell [ref=f342e96]:
+                  - generic "Ubisoft Connect at WineHQ" [ref=f342e97]:
+                    - link [ref=f342e98] [cursor=pointer]:
+                      - /url: https://appdb.winehq.org/objectManager.php?sClass=application&iId=16459
+                  - generic "Ubisoft Connect at Wikipedia" [ref=f342e99]:
+                    - link [ref=f342e100] [cursor=pointer]:
+                      - /url: http://en.wikipedia.org/wiki/Ubisoft_Connect
+                      - img "Ubisoft Connect at Wikipedia" [ref=f342e101]
+          - table [ref=f342e102]:
+            - caption [ref=f342e103]: Stores
+            - rowgroup [ref=f342e104]:
+              - row [ref=f342e105]:
+                - cell [ref=f342e106]:
+                  - link "Amazon" [ref=f342e107] [cursor=pointer]:
+                    - /url: /wiki/Store:Amazon
+              - row [ref=f342e108]:
+                - cell [ref=f342e109]:
+                  - link "Battle.net" [ref=f342e110] [cursor=pointer]:
+                    - /url: /wiki/Store:Battle.net
+              - row [ref=f342e111]:
+                - cell [ref=f342e112]:
+                  - link "Bethesda.net" [ref=f342e113] [cursor=pointer]:
+                    - /url: /wiki/Store:Bethesda.net
+              - row [ref=f342e114]:
+                - cell [ref=f342e115]:
+                  - link "Discord" [ref=f342e116] [cursor=pointer]:
+                    - /url: /wiki/Store:Discord
+              - row [ref=f342e117]:
+                - cell [ref=f342e118]:
+                  - link "EA app" [ref=f342e119] [cursor=pointer]:
+                    - /url: /wiki/Store:EA_app
+              - row [ref=f342e120]:
+                - cell [ref=f342e121]:
+                  - link "Epic Games Store" [ref=f342e122] [cursor=pointer]:
+                    - /url: /wiki/Store:Epic_Games_Store
+              - row [ref=f342e123]:
+                - cell [ref=f342e124]:
+                  - link "FireFlower Games" [ref=f342e125] [cursor=pointer]:
+                    - /url: /wiki/Store:FireFlower_Games
+              - row [ref=f342e126]:
+                - cell [ref=f342e127]:
+                  - link "GamersGate" [ref=f342e128] [cursor=pointer]:
+                    - /url: /wiki/Store:GamersGate
+              - row [ref=f342e129]:
+                - cell [ref=f342e130]:
+                  - link "Games for Windows - LIVE" [ref=f342e131] [cursor=pointer]:
+                    - /url: /wiki/Games_for_Windows_-_LIVE
+              - row [ref=f342e132]:
+                - cell [ref=f342e133]:
+                  - link "Gamesplanet" [ref=f342e134] [cursor=pointer]:
+                    - /url: /wiki/Store:Gamesplanet
+              - row [ref=f342e135]:
+                - cell [ref=f342e136]:
+                  - link "GOG.com" [ref=f342e137] [cursor=pointer]:
+                    - /url: /wiki/Store:GOG.com
+              - row [ref=f342e138]:
+                - cell [ref=f342e139]:
+                  - link "Green Man Gaming" [ref=f342e140] [cursor=pointer]:
+                    - /url: /wiki/Store:Green_Man_Gaming
+              - row [ref=f342e141]:
+                - cell [ref=f342e142]:
+                  - link "Humble Store" [ref=f342e143] [cursor=pointer]:
+                    - /url: /wiki/Store:Humble_Store
+              - row [ref=f342e144]:
+                - cell [ref=f342e145]:
+                  - link "Itch.io" [ref=f342e146] [cursor=pointer]:
+                    - /url: /wiki/Store:Itch.io
+              - row [ref=f342e147]:
+                - cell [ref=f342e148]:
+                  - link "Kartridge" [ref=f342e149] [cursor=pointer]:
+                    - /url: /wiki/Store:Kartridge
+              - row [ref=f342e150]:
+                - cell [ref=f342e151]:
+                  - link "Mac App Store" [ref=f342e152] [cursor=pointer]:
+                    - /url: /wiki/Store:Mac_App_Store
+              - row [ref=f342e153]:
+                - cell [ref=f342e154]:
+                  - link "Meta Store" [ref=f342e155] [cursor=pointer]:
+                    - /url: /wiki/Store:Meta_Store
+              - row [ref=f342e156]:
+                - cell [ref=f342e157]:
+                  - link "Microsoft Store" [ref=f342e158] [cursor=pointer]:
+                    - /url: /wiki/Store:Microsoft_Store
+              - row [ref=f342e159]:
+                - cell [ref=f342e160]:
+                  - link "Rockstar Games Launcher" [ref=f342e161] [cursor=pointer]:
+                    - /url: /wiki/Store:Rockstar_Games_Launcher
+              - row [ref=f342e162]:
+                - cell [ref=f342e163]:
+                  - link "Steam" [ref=f342e164] [cursor=pointer]:
+                    - /url: /wiki/Store:Steam
+              - row [ref=f342e165]:
+                - cell "Ubisoft Connect" [ref=f342e166]
+              - row [ref=f342e167]:
+                - cell [ref=f342e168]:
+                  - link "Viveport" [ref=f342e169] [cursor=pointer]:
+                    - /url: /wiki/Store:Viveport
+              - row [ref=f342e170]:
+                - cell [ref=f342e171]:
+                  - link "ZOOM Platform" [ref=f342e172] [cursor=pointer]:
+                    - /url: /wiki/Store:ZOOM_Platform
+          - generic [ref=f342e173]:
+            - paragraph [ref=f342e174]:
+              - text: Ubisoft Connect, formerly Ubisoft Game Launcher and UPlay, is a digital distribution, digital rights management, multiplayer and communications service operated by
+              - link "Ubisoft" [ref=f342e175] [cursor=pointer]:
+                - /url: /wiki/Company:Ubisoft
+              - text: . It was developed by
+              - link "Massive Entertainment" [ref=f342e176] [cursor=pointer]:
+                - /url: /wiki/Company:Massive_Entertainment
+              - text: .
+            - paragraph [ref=f342e177]:
+              - text: The Ubisoft Connect client is used to access the Ubisoft Store, a companion digital game storefront. The use of Ubisoft Connect client is required to download and play games purchased on Ubisoft Store within the app. Support for operating systems predating Windows 10 was retired on January 1, 2024.
+              - superscript [ref=f342e178]:
+                - link "[1]" [ref=f342e179] [cursor=pointer]:
+                  - /url: "#cite_note-1"
+            - paragraph
+            - paragraph [ref=f342e180]: Ubisoft launched the Uplay reward system on November 17, 2009, while offered the Ubisoft Game Launcher to manage the downloads and updating of its games. In October 2020, Ubisoft rebranded the client from Uplay to Ubisoft Connect, with the monthly subscription service being rebranded from Uplay+ to Ubisoft+.
+            - paragraph
+          - generic [ref=f342e181]:
+            - definition [ref=f342e182]:
+              - generic "Information" [ref=f342e183]
+              - text: Ubisoft Connect itself is also protected with
+              - link "VMProtect" [ref=f342e184] [cursor=pointer]:
+                - /url: /wiki/Digital_rights_management_(DRM)#VMProtect
+              - link "DRM" [ref=f342e185] [cursor=pointer]:
+                - /url: /wiki/Digital_rights_management_(DRM)
+              - text: .
+              - superscript [ref=f342e186]:
+                - link "[2]" [ref=f342e187] [cursor=pointer]:
+                  - /url: "#cite_note-2"
+            - definition [ref=f342e188]:
+              - generic "Information" [ref=f342e189]
+              - text: Start from October 2025, the Offline Mode for Ubisoft Connect is unavailable for use.
+              - superscript [ref=f342e190]:
+                - link "[3]" [ref=f342e191] [cursor=pointer]:
+                  - /url: "#cite_note-3"
+          - paragraph [ref=f342e192]: General information
+          - generic [ref=f342e193]:
+            - definition [ref=f342e194]:
+              - generic "Information" [ref=f342e195]
+              - link "List of Ubisoft+ games" [ref=f342e196] [cursor=pointer]:
+                - /url: /wiki/List_of_Ubisoft%2B_games
+            - definition [ref=f342e197]:
+              - generic "Information" [ref=f342e198]
+              - link "List of games available on Ubisoft Store" [ref=f342e199] [cursor=pointer]:
+                - /url: /wiki/List_of_games_available_on_Ubisoft_Store
+            - definition [ref=f342e200]:
+              - generic "More information" [ref=f342e201]
+              - link "Official Support" [ref=f342e202] [cursor=pointer]:
+                - /url: https://support.ubi.com/en-US/games/3888
+          - navigation [ref=f342e203]:
+            - button "h" [ref=f342e204]
+            - generic [ref=f342e205]:
+              - heading "Contents" [level=2] [ref=f342e206]
+              - generic [ref=f342e207]:
+                - text: "["
+                - generic [ref=f342e208] [cursor=pointer]: h
+                - text: "]"
+            - list [ref=f342e209]:
+              - listitem [ref=f342e210]:
+                - link "Download" [ref=f342e211] [cursor=pointer]:
+                  - /url: "#Download"
+              - listitem [ref=f342e212]:
+                - link "Ubisoft+" [ref=f342e213] [cursor=pointer]:
+                  - /url: "#Ubisoft.2B"
+              - listitem [ref=f342e214]:
+                - link "Client data" [ref=f342e215] [cursor=pointer]:
+                  - /url: "#Client_data"
+                - list [ref=f342e216]:
+                  - listitem [ref=f342e217]:
+                    - link "Configuration file(s) location" [ref=f342e218] [cursor=pointer]:
+                      - /url: "#Configuration_file.28s.29_location"
+              - listitem [ref=f342e219]:
+                - link "Issues fixed" [ref=f342e220] [cursor=pointer]:
+                  - /url: "#Issues_fixed"
+                - list [ref=f342e221]:
+                  - listitem [ref=f342e222]:
+                    - link "Game runs an installer from the installation media when updating" [ref=f342e223] [cursor=pointer]:
+                      - /url: "#Game_runs_an_installer_from_the_installation_media_when_updating"
+                  - listitem [ref=f342e224]:
+                    - link "Incorrect email or password" [ref=f342e225] [cursor=pointer]:
+                      - /url: "#Incorrect_email_or_password"
+                  - listitem [ref=f342e226]:
+                    - link "Ubisoft Connect crashes during save game synchronization" [ref=f342e227] [cursor=pointer]:
+                      - /url: "#Ubisoft_Connect_crashes_during_save_game_synchronization"
+                  - listitem [ref=f342e228]:
+                    - link "Manage game installations and folders" [ref=f342e229] [cursor=pointer]:
+                      - /url: "#Manage_game_installations_and_folders"
+                  - listitem [ref=f342e230]:
+                    - link "Verify game files" [ref=f342e231] [cursor=pointer]:
+                      - /url: "#Verify_game_files"
+              - listitem [ref=f342e232]:
+                - link "System requirements" [ref=f342e233] [cursor=pointer]:
+                  - /url: "#System_requirements"
+              - listitem [ref=f342e234]:
+                - link "References" [ref=f342e235] [cursor=pointer]:
+                  - /url: "#References"
+          - heading [level=2] [ref=f342e236]:
+            - generic [ref=f342e237]:
+              - text: Download
+              - generic [ref=f342e238]:
+                - text: •
+                - link "Link" [ref=f342e239] [cursor=pointer]:
+                  - /url: "#Download"
+          - definition [ref=f342e241]:
+            - generic "More information" [ref=f342e242]
+            - text: Latest version can be downloaded
+            - link "here." [ref=f342e243] [cursor=pointer]:
+              - /url: https://ubisoftconnect.com/
+          - heading [level=2] [ref=f342e244]:
+            - generic [ref=f342e245]:
+              - text: Ubisoft+
+              - generic [ref=f342e246]:
+                - text: •
+                - link "Link" [ref=f342e247] [cursor=pointer]:
+                  - /url: "#Ubisoft.2B"
+          - paragraph [ref=f342e248]: Ubisoft+ (formerly Uplay+) is a monthly subscription service from Ubisoft that grants access to a catalog of games and content through the Uplay store.
+          - generic [ref=f342e249]:
+            - definition [ref=f342e250]:
+              - generic "Information" [ref=f342e251]
+              - text: Note that playing a more expensive edition of an owned game through Ubisoft+ may render existing save files inaccessible through the owned edition.
+              - superscript [ref=f342e252]:
+                - link "[4]" [ref=f342e253] [cursor=pointer]:
+                  - /url: "#cite_note-4"
+            - definition [ref=f342e254]:
+              - generic "Information" [ref=f342e255]
+              - text: A Ubisoft+ subscription will also grant access to Ubisoft games on
+              - link "Amazon Luna" [ref=f342e256] [cursor=pointer]:
+                - /url: http://en.wikipedia.org/wiki/Amazon_Luna
+              - text: and formerly on
+              - link "Google Stadia" [ref=f342e257] [cursor=pointer]:
+                - /url: http://en.wikipedia.org/wiki/Google_Stadia
+              - text: .
+              - superscript [ref=f342e258]:
+                - link "[5]" [ref=f342e259] [cursor=pointer]:
+                  - /url: "#cite_note-5"
+          - definition [ref=f342e261]:
+            - generic "More information" [ref=f342e262]
+            - link "List of Ubisoft+ games" [ref=f342e263] [cursor=pointer]:
+              - /url: /wiki/List_of_Ubisoft%2B_games
+          - heading [level=2] [ref=f342e264]:
+            - generic [ref=f342e265]:
+              - text: Client data
+              - generic [ref=f342e266]:
+                - text: •
+                - link "Link" [ref=f342e267] [cursor=pointer]:
+                  - /url: "#Client_data"
+          - heading [level=3] [ref=f342e268]:
+            - generic [ref=f342e269]:
+              - text: Configuration file(s) location
+              - generic [ref=f342e270]:
+                - text: •
+                - link "Link" [ref=f342e271] [cursor=pointer]:
+                  - /url: "#Configuration_file.28s.29_location"
+          - table [ref=f342e273]:
+            - rowgroup [ref=f342e274]:
+              - row [ref=f342e275]:
+                - columnheader "Element" [ref=f342e276]
+                - columnheader "Location" [ref=f342e277]
+              - row [ref=f342e278]:
+                - cell "Ubisoft Connect DRM activations" [ref=f342e279]
+                - cell [ref=f342e280]:
+                  - link "<Ubisoft-Connect-folder>" [ref=f342e281] [cursor=pointer]:
+                    - /url: /wiki/Glossary:Game_data#Ubisoft_Connect
+                  - text: \cache\activations\
+              - row [ref=f342e282]:
+                - cell "Games launch configuration" [ref=f342e283]
+                - cell [ref=f342e284]:
+                  - link "<Ubisoft-Connect-folder>" [ref=f342e285] [cursor=pointer]:
+                    - /url: /wiki/Glossary:Game_data#Ubisoft_Connect
+                  - text: \cache\configuration\configurations
+              - row [ref=f342e286]:
+                - cell [ref=f342e287]:
+                  - text: Games account ownership
+                  - superscript [ref=f342e288]:
+                    - link "[6]" [ref=f342e289] [cursor=pointer]:
+                      - /url: "#cite_note-6"
+                - cell [ref=f342e290]:
+                  - link "<Ubisoft-Connect-folder>" [ref=f342e291] [cursor=pointer]:
+                    - /url: /wiki/Glossary:Game_data#Ubisoft_Connect
+                  - text: \cache\ownership\
+              - row [ref=f342e292]:
+                - cell "Cloud saves" [ref=f342e293]
+                - cell [ref=f342e294]:
+                  - link "<Ubisoft-Connect-folder>" [ref=f342e295] [cursor=pointer]:
+                    - /url: /wiki/Glossary:Game_data#Ubisoft_Connect
+                  - text: \savegames\
+              - row [ref=f342e296]:
+                - cell "User settings" [ref=f342e297]
+                - cell [ref=f342e298]:
+                  - link "%LOCALAPPDATA%" [ref=f342e299] [cursor=pointer]:
+                    - /url: /wiki/Glossary:Game_data#User_application_data
+                  - text: \Ubisoft Game Launcher\settings.yml
+          - heading [level=2] [ref=f342e300]:
+            - generic [ref=f342e301]:
+              - text: Issues fixed
+              - generic [ref=f342e302]:
+                - text: •
+                - link "Link" [ref=f342e303] [cursor=pointer]:
+                  - /url: "#Issues_fixed"
+          - heading [level=3] [ref=f342e304]:
+            - generic [ref=f342e305]:
+              - text: Game runs an installer from the installation media when updating
+              - generic [ref=f342e306]:
+                - text: •
+                - link "Link" [ref=f342e307] [cursor=pointer]:
+                  - /url: "#Game_runs_an_installer_from_the_installation_media_when_updating"
+          - definition [ref=f342e309]:
+            - generic "Disadvantage" [ref=f342e310]
+            - text: Some early Ubisoft Connect games (c. 2010-2013) include a standalone installer on the installation media. The Ubisoft Connect client will run the setup from that media after the update process has finished. To fix that just eject the disc or unmount the ISO and update the game again.
+          - heading [level=3] [ref=f342e311]:
+            - generic [ref=f342e312]:
+              - text: Incorrect email or password
+              - generic [ref=f342e313]:
+                - text: •
+                - link "Link" [ref=f342e314] [cursor=pointer]:
+                  - /url: "#Incorrect_email_or_password"
+          - paragraph [ref=f342e315]: If you can log in on the website but not when using the Ubisoft Connect client and you have a long password; enter the first 14 characters of your password when logging in.
+          - heading [level=3] [ref=f342e316]:
+            - generic [ref=f342e317]:
+              - text: Ubisoft Connect crashes during save game synchronization
+              - generic [ref=f342e318]:
+                - text: •
+                - link "Link" [ref=f342e319] [cursor=pointer]:
+                  - /url: "#Ubisoft_Connect_crashes_during_save_game_synchronization"
+          - table [ref=f342e320]:
+            - rowgroup [ref=f342e321]:
+              - row [ref=f342e322]:
+                - columnheader "Fix Instructions[7]" [ref=f342e323]:
+                  - generic "Fix" [ref=f342e324]
+                  - text: Instructions
+                  - superscript [ref=f342e325]:
+                    - link "[7]" [ref=f342e326] [cursor=pointer]:
+                      - /url: "#cite_note-7"
+              - row [ref=f342e327]:
+                - cell [ref=f342e328]:
+                  - list [ref=f342e329]:
+                    - listitem [ref=f342e330]: First, you will need to uninstall the "Ubisoft Game Launcher", "Uplay" or "Ubisoft Connect" from the 'Add/Remove Programs' (Windows XP) / 'Installed Programs' (Windows Vista and 7) icon in your computer's control panel. It's possible that the "Ubisoft Game Launcher/Uplay" software will not be listed if you have already uninstalled it, or the game. If so, you can skip this step.
+                    - listitem [ref=f342e331]: "After uninstalling the software, you will need to manually delete any leftover files in the C:\\Program Files\\Ubisoft\\Ubisoft Game Launcher (32-bit versions of Windows) or C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher (64-bit versions of Windows) folder.NOTE: Please do not skip this step, it is very important. If this folder does not exist, please go to the next step."
+                    - listitem [ref=f342e332]:
+                      - text: Try resetting your HOSTS file by following the steps in the following
+                      - link "Microsoft article" [ref=f342e333] [cursor=pointer]:
+                        - /url: https://support.microsoft.com/kb/972034/en#FixItForMeAlways
+                      - text: .
+                    - listitem [ref=f342e334]:
+                      - text: Reinstall Ubisoft Connect from
+                      - link "HERE" [ref=f342e335] [cursor=pointer]:
+                        - /url: https://ubistatic3-a.akamaihd.net/orbit/launcher_installer/UbisoftConnectInstaller.exe
+                      - text: .
+          - heading [level=3] [ref=f342e336]:
+            - generic [ref=f342e337]:
+              - text: Manage game installations and folders
+              - generic [ref=f342e338]:
+                - text: •
+                - link "Link" [ref=f342e339] [cursor=pointer]:
+                  - /url: "#Manage_game_installations_and_folders"
+          - generic [ref=f342e340]:
+            - definition [ref=f342e341]:
+              - generic "Information" [ref=f342e342]
+              - text: Follow these steps to restore/import or move a game installation to another computer or partition.
+            - definition [ref=f342e343]:
+              - generic "More information" [ref=f342e344]
+              - text: These instructions are only applicable for games that are owned, downloaded, and played through Ubisoft Connect only. For games bought on
+              - link "Steam" [ref=f342e345] [cursor=pointer]:
+                - /url: /wiki/Steam
+              - text: ", refer to the article for that platform."
+          - table [ref=f342e346]:
+            - rowgroup [ref=f342e347]:
+              - row [ref=f342e348]:
+                - columnheader "Fix Restore/import a game install folder[8]" [ref=f342e349]:
+                  - generic "Fix" [ref=f342e350]
+                  - text: Restore/import a game install folder
+                  - superscript [ref=f342e351]:
+                    - link "[8]" [ref=f342e352] [cursor=pointer]:
+                      - /url: "#cite_note-aemony-2018-09-16-8"
+              - row [ref=f342e353]:
+                - cell [ref=f342e354]:
+                  - list [ref=f342e355]:
+                    - listitem [ref=f342e356]: Launch Ubisoft Connect.
+                    - listitem [ref=f342e357]: Select the game.
+                    - listitem [ref=f342e358]: Click on the Locate installed game button just beneath the Download button.
+                    - listitem [ref=f342e359]:
+                      - text: Navigate and select
+                      - link "<path-to-game>" [ref=f342e360] [cursor=pointer]:
+                        - /url: /wiki/Glossary:Game_data#Installation_folder
+                      - text: ", then click OK."
+                    - listitem [ref=f342e361]: Ubisoft Connect will perform a file discovery and verification pass on the selected folder and verify all game files.
+                    - listitem [ref=f342e362]: When Ubisoft Connect has verified all game files, click on Play to launch the game.
+          - table [ref=f342e363]:
+            - rowgroup [ref=f342e364]:
+              - row [ref=f342e365]:
+                - columnheader "Fix Move an installed game to another location[8]" [ref=f342e366]:
+                  - generic "Fix" [ref=f342e367]
+                  - text: Move an installed game to another location
+                  - superscript [ref=f342e368]:
+                    - link "[8]" [ref=f342e369] [cursor=pointer]:
+                      - /url: "#cite_note-aemony-2018-09-16-8"
+              - row [ref=f342e370]:
+                - cell [ref=f342e371]:
+                  - list [ref=f342e372]:
+                    - listitem [ref=f342e373]: Open the File Manager of Windows.
+                    - listitem [ref=f342e374]:
+                      - text: Navigate to
+                      - link "<path-to-game>" [ref=f342e375] [cursor=pointer]:
+                        - /url: /wiki/Glossary:Game_data#Installation_folder
+                      - text: .
+                    - listitem [ref=f342e376]: Move the game folder and everything contained within it to the desired location.
+                    - listitem [ref=f342e377]: Launch Ubisoft Connect.
+                    - listitem [ref=f342e378]: Select the game and click on Play
+                    - listitem [ref=f342e379]: An error prompt about Ubisoft Connect being unable to start the game should show up. Click on the Locate game folder button.
+                    - listitem [ref=f342e380]:
+                      - text: Navigate and select the new
+                      - link "<path-to-game>" [ref=f342e381] [cursor=pointer]:
+                        - /url: /wiki/Glossary:Game_data#Installation_folder
+                      - text: ", then click OK."
+                    - listitem [ref=f342e382]: Ubisoft Connect will perform a file discovery and verification pass on the selected folder and verify all game files.
+                    - listitem [ref=f342e383]: When Ubisoft Connect has verified all game files, click on Play to launch the game from its new location.
+          - heading [level=3] [ref=f342e384]:
+            - generic [ref=f342e385]:
+              - text: Verify game files
+              - generic [ref=f342e386]:
+                - text: •
+                - link "Link" [ref=f342e387] [cursor=pointer]:
+                  - /url: "#Verify_game_files"
+          - table [ref=f342e388]:
+            - rowgroup [ref=f342e389]:
+              - row [ref=f342e390]:
+                - columnheader "Fix Verify game files[9]" [ref=f342e391]:
+                  - generic "Fix" [ref=f342e392]
+                  - text: Verify game files
+                  - superscript [ref=f342e393]:
+                    - link "[9]" [ref=f342e394] [cursor=pointer]:
+                      - /url: "#cite_note-9"
+              - row [ref=f342e395]:
+                - cell [ref=f342e396]:
+                  - list [ref=f342e397]:
+                    - listitem [ref=f342e398]: Click on the game in the client list.
+                    - listitem [ref=f342e399]: Click on the down arrow to the right of Play.
+                    - listitem [ref=f342e400]: Choose Verify files.
+                    - listitem [ref=f342e401]: Wait for verification to complete.
+          - heading [level=2] [ref=f342e402]:
+            - generic [ref=f342e403]:
+              - text: System requirements
+              - generic [ref=f342e404]:
+                - text: •
+                - link "Link" [ref=f342e405] [cursor=pointer]:
+                  - /url: "#System_requirements"
+          - table [ref=f342e407]:
+            - rowgroup [ref=f342e408]:
+              - row [ref=f342e409]:
+                - columnheader "Windows" [ref=f342e410]
+              - row [ref=f342e411]:
+                - columnheader [ref=f342e412]
+                - columnheader "Minimum" [ref=f342e413]
+                - columnheader "Recommended" [ref=f342e414]
+              - row [ref=f342e415]:
+                - rowheader "Operating system (OS)" [ref=f342e416]
+                - cell "10" [ref=f342e417]
+                - cell "11" [ref=f342e418]
+              - row [ref=f342e419]:
+                - rowheader "Processor (CPU)" [ref=f342e420]
+                - cell "1 GHz" [ref=f342e421]
+                - cell "Dual core" [ref=f342e422]
+              - row [ref=f342e423]:
+                - rowheader "System memory (RAM)" [ref=f342e424]
+                - cell "2 GB" [ref=f342e425]
+                - cell "4 GB" [ref=f342e426]
+              - row [ref=f342e427]:
+                - columnheader "Storage drive (HDD/SSD)" [ref=f342e428]
+                - cell [ref=f342e429]
+                - cell [ref=f342e430]
+              - row [ref=f342e431]:
+                - rowheader "Video card (GPU)" [ref=f342e432]
+                - cell "DirectX 9 compatible" [ref=f342e433]
+                - cell "DirectX 12 compatible" [ref=f342e434]
+              - row [ref=f342e435]:
+                - rowheader "Other" [ref=f342e436]
+                - cell "CPU with PAE/SSE2/NX and PrefetchW/LAHF/SAHF/CMPXCHG16B support" [ref=f342e437]
+                - cell "CPU with SSE4.2 support" [ref=f342e438]
+          - paragraph [ref=f342e439]
+          - heading [level=2] [ref=f342e440]:
+            - generic [ref=f342e441]:
+              - text: References
+              - generic [ref=f342e442]:
+                - text: •
+                - link "Link" [ref=f342e443] [cursor=pointer]:
+                  - /url: "#References"
+          - list [ref=f342e446]:
+            - listitem [ref=f342e447]:
+              - link "Jump up ↑" [ref=f342e449] [cursor=pointer]:
+                - /url: "#cite_ref-1"
+                - generic [ref=f342e450]: Jump up
+                - text: ↑
+              - generic [ref=f342e451]:
+                - link "Ubisoft Connect PC compatibility with older versions of Windows" [ref=f342e452] [cursor=pointer]:
+                  - /url: https://www.ubisoft.com/en-us/help/connectivity-and-performance/article/ubisoft-connect-pc-compatibility-with-older-versions-of-windows/000104482?origin=middle
+                - text: "- last accessed on 2026-01-11"
+            - listitem [ref=f342e453]:
+              - link "Jump up ↑" [ref=f342e455] [cursor=pointer]:
+                - /url: "#cite_ref-2"
+                - generic [ref=f342e456]: Jump up
+                - text: ↑
+              - generic [ref=f342e457]:
+                - text: Verified by
+                - link "User:Qinlili" [ref=f342e458] [cursor=pointer]:
+                  - /url: /wiki/User:Qinlili
+                - text: on 2024-12-04
+                - definition [ref=f342e460]: Scanned upc.exe with DIE.
+            - listitem [ref=f342e461]:
+              - link "Jump up ↑" [ref=f342e463] [cursor=pointer]:
+                - /url: "#cite_ref-3"
+                - generic [ref=f342e464]: Jump up
+                - text: ↑
+              - generic [ref=f342e465]:
+                - text: Verified by
+                - link "User:Cldominic" [ref=f342e466] [cursor=pointer]:
+                  - /url: /wiki/User:Cldominic
+                - text: on 2025-10-20
+                - definition [ref=f342e468]: Hard to locate the exact client version of this change, but as of writing time now, if trying login when login page noticed "No connection. Log in to continue with the offline experience, or check your connection to enable online functionalities.", Ubisoft Connect no longer load into offline mode but an error page instead, click "Try again" will return to login page.
+            - listitem [ref=f342e469]:
+              - link "Jump up ↑" [ref=f342e471] [cursor=pointer]:
+                - /url: "#cite_ref-4"
+                - generic [ref=f342e472]: Jump up
+                - text: ↑
+              - generic [ref=f342e473]:
+                - link "Saved games compatibility for titles available on UPLAY+" [ref=f342e474] [cursor=pointer]:
+                  - /url: https://support.ubi.com/en-US/Faqs/000047597/Saved-games-compatibility-for-titles-available-on-UPLAY/
+                - text: "- last accessed on 2019-10-03"
+            - listitem [ref=f342e475]:
+              - link "Jump up ↑" [ref=f342e477] [cursor=pointer]:
+                - /url: "#cite_ref-5"
+                - generic [ref=f342e478]: Jump up
+                - text: ↑
+              - generic [ref=f342e479]:
+                - link "Ubisoft - UPLAY+ Becomes Ubisoft+, Introduces Beta with Stadia and Amazon Luna" [ref=f342e480] [cursor=pointer]:
+                  - /url: https://news.ubisoft.com/en-us/article/5FFLV80PgIMlKf4CPyFnwi/uplay-becomes-ubisoft-introduces-beta-with-stadia-and-amazon-luna
+                - text: "- last accessed on 2020-10-27"
+            - listitem [ref=f342e481]:
+              - link "Jump up ↑" [ref=f342e483] [cursor=pointer]:
+                - /url: "#cite_ref-6"
+                - generic [ref=f342e484]: Jump up
+                - text: ↑
+              - generic [ref=f342e485]:
+                - 'link "Error message: \"There was a problem authenticating the ownership of this product\" - Ubisoft Support" [ref=f342e486] [cursor=pointer]':
+                  - /url: https://support.ubisoft.com/en-US/Faqs/000034098/Error-message-There-was-a-problem-authenticating-the-ownership-of-this-product-UPC
+                - text: "- last accessed on May 2023"
+            - listitem [ref=f342e487]:
+              - link "Jump up ↑" [ref=f342e489] [cursor=pointer]:
+                - /url: "#cite_ref-7"
+                - generic [ref=f342e490]: Jump up
+                - text: ↑
+              - generic [ref=f342e491]:
+                - link "support.ubi.com - Unknown page title (retrieval failure)" [ref=f342e492] [cursor=pointer]:
+                  - /url: https://www.ubisoft.com/en-gb/help
+                - text: "- last accessed on 2025-10-20"
+            - listitem [ref=f342e493]:
+              - generic [ref=f342e494]:
+                - text: ↑
+                - superscript [ref=f342e495]:
+                  - 'link "Jump up to: 8.0" [ref=f342e496] [cursor=pointer]':
+                    - /url: "#cite_ref-aemony-2018-09-16_8-0"
+                    - generic [ref=f342e497]: "Jump up to:"
+                    - text: "8.0"
+                - superscript [ref=f342e498]:
+                  - link "8.1" [ref=f342e499] [cursor=pointer]:
+                    - /url: "#cite_ref-aemony-2018-09-16_8-1"
+              - generic [ref=f342e500]:
+                - text: Verified by
+                - link "User:Aemony" [ref=f342e501] [cursor=pointer]:
+                  - /url: /wiki/User:Aemony
+                - text: on 2018-09-16
+                - definition [ref=f342e503]: Verified using Far Cry Primal.
+            - listitem [ref=f342e504]:
+              - link "Jump up ↑" [ref=f342e506] [cursor=pointer]:
+                - /url: "#cite_ref-9"
+                - generic [ref=f342e507]: Jump up
+                - text: ↑
+              - generic [ref=f342e508]:
+                - link "How Do I Install / Uninstall / Verify A Game in Uplay? - Uplay - Uplay - Ubisoft Customer Support Site" [ref=f342e509] [cursor=pointer]:
+                  - /url: https://support.ubi.com/en-US/FAQ/60/3888/how-do-i-install--uninstall--verify-a-game-in-uplay/kA030000000ee85CAA
+                - text: "- last accessed on May 2023"
+        - generic [ref=f342e511]:
+          - link "Categories" [ref=f342e512] [cursor=pointer]:
+            - /url: /wiki/Special:Categories
+          - text: ":"
+          - list [ref=f342e513]:
+            - listitem [ref=f342e514]:
+              - link "Digital Rights Management" [ref=f342e515] [cursor=pointer]:
+                - /url: /wiki/Category:Digital_Rights_Management
+            - listitem [ref=f342e516]:
+              - link "Stores" [ref=f342e517] [cursor=pointer]:
+                - /url: /wiki/Category:Stores
+  - contentinfo [ref=f342e519]:
+    - generic [ref=f342e521]:
+      - link [ref=f342e522] [cursor=pointer]:
+        - /url: https://www.facebook.com/PCGamingWiki
+      - link [ref=f342e524] [cursor=pointer]:
+        - /url: https://www.twitter.com/PCGamingWiki
+      - link [ref=f342e526] [cursor=pointer]:
+        - /url: //www.youtube.com/user/PCGamingWikiTV
+      - link [ref=f342e528] [cursor=pointer]:
+        - /url: //steamcommunity.com/groups/pcgamingwiki
+      - link [ref=f342e530] [cursor=pointer]:
+        - /url: https://discord.gg/SU27ykMcsD
+    - generic [ref=f342e532]:
+      - generic [ref=f342e533]:
+        - list [ref=f342e534]:
+          - listitem [ref=f342e535]: PCGamingWiki
+          - listitem [ref=f342e536]:
+            - link "About us" [ref=f342e537] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:About
+          - listitem [ref=f342e538]:
+            - link "Contact us" [ref=f342e539] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:About#Contact
+          - listitem [ref=f342e540]:
+            - link "Advertising" [ref=f342e541] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:About#Advertising
+          - listitem [ref=f342e542]:
+            - link "Privacy policy" [ref=f342e543] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:Privacy_policy
+          - listitem [ref=f342e544]:
+            - link "General disclaimer" [ref=f342e545] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:General_disclaimer
+        - list [ref=f342e546]:
+          - listitem [ref=f342e547]: Friends
+          - listitem [ref=f342e548]:
+            - link "Partnerships" [ref=f342e549] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:Partnerships
+          - listitem [ref=f342e550]:
+            - link "Extension" [ref=f342e551] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:Extension
+          - listitem [ref=f342e552]:
+            - link "API" [ref=f342e553] [cursor=pointer]:
+              - /url: //pcgamingwiki.com/wiki/PCGamingWiki:API
+          - listitem [ref=f342e554]:
+            - link "AppleGamingWiki" [ref=f342e555] [cursor=pointer]:
+              - /url: https://www.applegamingwiki.com
+          - listitem [ref=f342e556]:
+            - link "GOG.com" [ref=f342e557] [cursor=pointer]:
+              - /url: https://www.gog.com?pp=708a77db476d737e54b8bf4663fc79b346d696d2
+          - listitem [ref=f342e558]:
+            - link "Gamesplanet" [ref=f342e559] [cursor=pointer]:
+              - /url: https://gamesplanet.com?ref=pcgwiki
+          - listitem [ref=f342e560]:
+            - link "CheapShark" [ref=f342e561] [cursor=pointer]:
+              - /url: https://www.cheapshark.com
+        - list [ref=f342e562]:
+          - listitem [ref=f342e563]: Powered by
+          - listitem [ref=f342e564]:
+            - link "MediaWiki" [ref=f342e565] [cursor=pointer]:
+              - /url: https://www.mediawiki.org/wiki/MediaWiki
+          - listitem [ref=f342e566]:
+            - link "Semantic MediaWiki" [ref=f342e567] [cursor=pointer]:
+              - /url: https://www.semantic-mediawiki.org/wiki/Semantic_MediaWiki
+          - listitem [ref=f342e568]:
+            - link "Cargo" [ref=f342e569] [cursor=pointer]:
+              - /url: https://www.mediawiki.org/wiki/Extension:Cargo
+          - listitem [ref=f342e570]:
+            - link "Open source" [ref=f342e571] [cursor=pointer]:
+              - /url: https://github.com/PCGamingWiki
+          - listitem [ref=f342e572]:
+            - link "Patrons" [ref=f342e573] [cursor=pointer]:
+              - /url: https://www.patreon.com/PCGamingWiki
+          - listitem [ref=f342e574]: and You <3
+      - generic [ref=f342e575]: This page was last edited on 13 March 2026, at 07:10.
+      - generic [ref=f342e576]:
+        - text: Content is available under
+        - link "Creative Commons Attribution Non-Commercial Share Alike" [ref=f342e577] [cursor=pointer]:
+          - /url: //creativecommons.org/licenses/by-nc-sa/3.0
+        - text: unless otherwise noted.
+      - generic [ref=f342e578]:
+        - text: Some store links may include affiliate tags. Buying through these links helps support PCGamingWiki (
+        - link "Learn more" [ref=f342e579] [cursor=pointer]:
+          - /url: /wiki/PCGamingWiki:About#Support_us
+        - text: ).

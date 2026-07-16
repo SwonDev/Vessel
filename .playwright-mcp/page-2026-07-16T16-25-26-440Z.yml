@@ -1,0 +1,20 @@
+- main [ref=f340e2]:
+  - heading "Making sure you're not a bot!" [level=1] [ref=f340e4]
+  - generic [ref=f340e5]:
+    - paragraph [ref=f340e7]: Calculating...
+    - group [ref=f340e8]:
+      - generic "Why am I seeing this?" [ref=f340e9]
+  - generic [ref=f340e11]:
+    - paragraph [ref=f340e12]:
+      - text: Protected by
+      - link "Anubis" [ref=f340e13] [cursor=pointer]:
+        - /url: https://github.com/TecharoHQ/anubis
+      - text: from
+      - link "Techaro" [ref=f340e14] [cursor=pointer]:
+        - /url: https://techaro.lol
+      - text: . Made with ❤️ in 🇨🇦.
+    - paragraph [ref=f340e15]:
+      - text: Mascot design by
+      - link "CELPHASE" [ref=f340e16] [cursor=pointer]:
+        - /url: https://bsky.app/profile/celphase.bsky.social
+      - text: .

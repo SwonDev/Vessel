@@ -109,10 +109,21 @@ final class SteamDRMScanner {
 
         // Aplicar Goldberg a la COPIA (sustituye steam_api por la emulación → corre sin Steam).
         if c.status == .steamworks {
-            progress(0.94, "Aplicando emulación de Steam (Goldberg)…")
+            progress(0.90, "Aplicando emulación de Steam (Goldberg)…")
             _ = goldberg.applyToGame(gameExecutable: destExe, appId: c.appId)
         }
         await Self.stripQuarantine(dest)
+
+        // **Manifiesto de archivo**: metadatos + SHA‑256 de cada fichero. Convierte la copia en un
+        // archivo autodescriptivo y VERIFICABLE (dentro de años se puede comprobar que no se ha
+        // corrompido). Viaja solo con cualquier exportación, porque vive dentro de la carpeta.
+        let relExe = destExe.hasPrefix(dest + "/") ? String(destExe.dropFirst(dest.count + 1)) : (destExe as NSString).lastPathComponent
+        _ = try? await DRMFreeArchive.shared.writeManifest(
+            folder: dest, title: c.name, source: "steam", sourceId: c.appId, executable: relExe,
+            drm: c.status == .steamworks ? "Steamworks (no es DRM) → emulado con Goldberg; corre sin Steam"
+                                         : "Ninguno (DRM‑free de origen)"
+        ) { frac, msg in progress(0.92 + frac * 0.08, msg) }
+
         progress(1.0, "Listo")
         return (destExe, dest)
     }
