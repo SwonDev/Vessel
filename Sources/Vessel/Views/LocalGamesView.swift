@@ -245,6 +245,23 @@ struct LocalGamesView: View {
                 try p.run()
                 while p.isRunning { try? await Task.sleep(for: .milliseconds(500)) }
                 let ok = p.terminationStatus == 0
+                if ok {
+                    let exeName = (g.executablePath as NSString).lastPathComponent
+                    let readme = """
+                    \(g.name) — juego DRM‑free para Windows
+                    Creado con Vessel · https://github.com/SwonDev/Vessel
+
+                    Este juego es TUYO y no lleva DRM: se ejecuta en cualquier PC con Windows SIN Steam.
+
+                    CÓMO JUGAR
+                    1. Copia esta carpeta a tu PC con Windows.
+                    2. Ejecuta «\(exeName)».
+
+                    Si el juego pide algún componente (Visual C++, .NET…), instálalo desde Microsoft.
+                    No necesitas Steam ni ninguna cuenta.
+                    """
+                    try? readme.write(to: dest.appendingPathComponent("LÉEME.txt"), atomically: true, encoding: .utf8)
+                }
                 flash(ok ? "«\(g.name)» exportado a \(destParent.lastPathComponent) — listo para llevártelo."
                          : "La copia falló (código \(p.terminationStatus)).", !ok)
             } catch {

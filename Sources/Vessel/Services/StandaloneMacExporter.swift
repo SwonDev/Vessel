@@ -98,8 +98,38 @@ actor StandaloneMacExporter {
         await Self.stripQuarantine(appURL.path)
         _ = await Self.run("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", appURL.path])
 
+        // 6) LÉEME junto al .app (explica el aviso de Gatekeeper la 1ª vez, Rosetta y dónde van las
+        // partidas). Va FUERA del .app para no alterar la firma.
+        let readme = destParent.appendingPathComponent("LÉEME — Cómo abrir \(slug).txt")
+        try? Self.macReadme(name: slug).write(to: readme, atomically: true, encoding: .utf8)
+
         progress(1.0, "Listo")
         return appURL
+    }
+
+    private static func macReadme(name: String) -> String {
+        """
+        \(name) — juego DRM‑free para Mac (Apple Silicon)
+        Creado con Vessel · https://github.com/SwonDev/Vessel
+
+        Este juego es TUYO y no lleva DRM: se ejecuta SIN Steam y SIN Vessel.
+
+        CÓMO ABRIR (solo la primera vez, en otro Mac)
+        1. Haz clic derecho (o Control+clic) sobre «\(name).app» y elige «Abrir».
+        2. En el aviso de seguridad de macOS, pulsa «Abrir» otra vez.
+           (La app va firmada localmente, no con una cuenta de desarrollador de Apple,
+            así que macOS pide esta confirmación una única vez.)
+
+        REQUISITOS
+        · Mac con Apple Silicon (M1 o posterior).
+        · Rosetta 2. Si falta, en la Terminal:
+            softwareupdate --install-rosetta --agree-to-license
+
+        TUS PARTIDAS se guardan en:
+            ~/Library/Application Support/Vessel Games/\(name)/
+
+        Motor incluido en la app: Wine + DXMT (Direct3D → Metal). Todo autocontenido.
+        """
     }
 
     // MARK: - Launcher
