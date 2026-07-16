@@ -59,6 +59,7 @@ final class EpicStore {
             // Paso 2: Autenticación con el código capturado por el WebView
             phase = .working("Autenticando con Epic Games…")
             try await legendary.authenticate(code: code)
+            NotificationCenter.default.post(name: .accountProfileDidChange, object: StoreKind.epic)
 
             // Paso 3: Biblioteca
             phase = .working("Cargando tu biblioteca de Epic Games…")
@@ -84,6 +85,7 @@ final class EpicStore {
     func disconnect() {
         legendary.logout()
         phase = .disconnected
+        NotificationCenter.default.post(name: .accountProfileDidChange, object: StoreKind.epic)
     }
 
     // MARK: - Privado
@@ -462,6 +464,8 @@ struct EpicWebLoginSheet: View {
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(.escape, modifiers: [])
+                .accessibilityLabel("Cerrar inicio de sesión")
+                .vesselHelp("Cerrar inicio de sesión", shortcut: "Esc")
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 14)

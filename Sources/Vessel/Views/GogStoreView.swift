@@ -63,6 +63,7 @@ final class GogStore {
             // Paso 2: Autenticación con el código de GOG
             phase = .working("Autenticando con GOG…")
             try await gogdl.authenticate(code: code)
+            NotificationCenter.default.post(name: .accountProfileDidChange, object: StoreKind.gog)
 
             // Paso 3: Biblioteca
             phase = .working("Cargando tu biblioteca de GOG…")
@@ -95,6 +96,7 @@ final class GogStore {
     func disconnect() {
         gogdl.logout()
         phase = .disconnected
+        NotificationCenter.default.post(name: .accountProfileDidChange, object: StoreKind.gog)
     }
 
     // MARK: - Privado
@@ -480,6 +482,8 @@ struct GogWebLoginSheet: View {
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(.escape, modifiers: [])
+                .accessibilityLabel("Cerrar inicio de sesión")
+                .vesselHelp("Cerrar inicio de sesión", shortcut: "Esc")
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 14)

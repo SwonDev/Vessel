@@ -125,6 +125,7 @@ struct GameSettingsView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Cerrar ajustes")
+                .vesselHelp("Cerrar ajustes", shortcut: "Esc")
             }
             .padding(.bottom, 22)
 

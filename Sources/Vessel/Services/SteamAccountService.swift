@@ -56,6 +56,12 @@ final class SteamAccountService {
     @discardableResult
     private func remember(_ account: Account) -> Account {
         UserDefaults.standard.set(account.steamID64, forKey: "steam.steamID64")
+        if !account.personaName.isEmpty, account.personaName != "Steam" {
+            UserDefaults.standard.set(account.personaName, forKey: "steam.personaName")
+        }
+        if !account.accountName.isEmpty {
+            UserDefaults.standard.set(account.accountName, forKey: "steam.accountName")
+        }
         return account
     }
 

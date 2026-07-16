@@ -6,6 +6,7 @@ import AppKit
 /// biblioteca en dos paneles (lista de juegos + ficha). Sin sidebar de tiendas.
 struct ContentView: View {
     @State private var selectedStore: StoreKind = .steam
+    @State private var profileStore = PlatformProfileStore.shared
     @State private var showingSettings = false
     @State private var showingLogs = false
     @State private var showingAbout = false
@@ -28,8 +29,28 @@ struct ContentView: View {
                     ToolbarItem(placement: .principal) {
                         StoreSwitcher(selection: $selectedStore.animation(.smooth(duration: 0.28)))
                     }
-                    ToolbarItem(placement: .primaryAction) {
+                    ToolbarItemGroup(placement: .primaryAction) {
+                        if let profile = profileStore.profile(for: selectedStore) {
+                            PlatformProfileMenu(
+                                store: selectedStore,
+                                profile: profile,
+                                isRefreshing: profileStore.isLoading(selectedStore),
+                                onRefreshProfile: {
+                                    Task { await profileStore.refresh(selectedStore, force: true) }
+                                },
+                                onRefreshLibrary: {
+                                    NotificationCenter.default.post(name: .libraryRefresh, object: nil)
+                                }
+                            )
+                        }
+
                         Menu {
+                            Button {
+                                NotificationCenter.default.post(name: .libraryRefresh, object: nil)
+                            } label: {
+                                Label("Actualizar biblioteca", systemImage: "arrow.clockwise")
+                            }
+                            Divider()
                             Button("Ajustes…") { showingSettings = true }
                             Button("Ver logs…") { showingLogs = true }
                             Divider()
@@ -37,6 +58,8 @@ struct ContentView: View {
                         } label: {
                             Label("Más", systemImage: "ellipsis.circle")
                         }
+                        .vesselHelp("Más opciones", detail: "Abre ajustes, registros y acciones de la biblioteca.")
+                        .accessibilityLabel("Más opciones")
                     }
                 }
                 // Ocultamos el material del toolbar del sistema: la barra de cristal la pone
@@ -69,6 +92,17 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .openSettings)) { _ in showingSettings = true }
         .onReceive(NotificationCenter.default.publisher(for: .openLogs)) { _ in showingLogs = true }
         .onReceive(NotificationCenter.default.publisher(for: .openAbout)) { _ in showingAbout = true }
+        .onReceive(NotificationCenter.default.publisher(for: .selectStore)) { note in
+            guard let store = note.object as? StoreKind else { return }
+            withAnimation(.smooth(duration: 0.28)) { selectedStore = store }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .accountProfileDidChange)) { note in
+            guard let store = note.object as? StoreKind else { return }
+            Task { await profileStore.accountDidChange(store) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await profileStore.refresh(selectedStore) }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .launchMessage)) { note in
             launchAlertTitle = note.userInfo?["title"] as? String ?? "Vessel"
             launchAlertBody = note.userInfo?["body"] as? String ?? ""
@@ -93,6 +127,9 @@ struct ContentView: View {
                     .padding(.bottom, 28)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+        }
+        .task(id: selectedStore) {
+            await profileStore.refresh(selectedStore)
         }
     }
 

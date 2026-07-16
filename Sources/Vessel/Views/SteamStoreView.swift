@@ -78,6 +78,7 @@ final class SteamStore {
                 if accountService.detectAccount(bottle: b) != nil {
                     store.touch(b.id)
                     phase = .connected
+                    NotificationCenter.default.post(name: .accountProfileDidChange, object: StoreKind.steam)
                     return
                 }
             }
