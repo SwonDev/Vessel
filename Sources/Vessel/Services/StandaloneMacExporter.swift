@@ -69,12 +69,22 @@ actor StandaloneMacExporter {
         // (`ensureGameDXMTDLLs`): sin esto, UnityPlayer no encuentra d3d11.dll y el juego no arranca.
         // VALIDADO: con estas DLLs el juego renderiza standalone por DXMT→Metal. Solo en la copia del
         // `.app` (la exportación Windows queda limpia, porque en un PC Windows manda su propio d3d11).
-        let exeDirInApp = (resources.appendingPathComponent("game").appendingPathComponent(relExe).path as NSString).deletingLastPathComponent
+        let destExe = resources.appendingPathComponent("game").appendingPathComponent(relExe).path
+        let exeDirInApp = (destExe as NSString).deletingLastPathComponent
         let dxmtSrc = "\(engineDir)/lib/wine/x86_64-windows"
         for dll in ["d3d11.dll", "dxgi.dll", "d3d10core.dll", "d3d10.dll", "d3d10_1.dll", "winemetal.dll"] {
             let src = "\(dxmtSrc)/\(dll)", dst = "\(exeDirInApp)/\(dll)"
             if fm.fileExists(atPath: src) { try? fm.removeItem(atPath: dst); try? fm.copyItem(atPath: src, toPath: dst) }
         }
+
+        // 2c) **Runtimes**: el prefijo del .app se crea desde cero en el equipo destino, así que hay que
+        // llevarse lo que Vessel provisiona al jugar. `RuntimeDependencyProvisioner` copia junto al exe
+        // los helpers NATIVOS de DirectX 9 (d3dx9_43/42, d3dcompiler_43) que empaquetamos: el builtin de
+        // Wine no compila los efectos `.fx` y sin ellos varios juegos DX9/DX11 no arrancan. El resto
+        // (Visual C++, .NET→Mono, XInput, XAudio2) lo cubren los builtins del motor, que VA DENTRO del
+        // .app — por eso no hace falta ni winetricks ni descargas en el equipo destino.
+        let deps = await MainActor.run { RuntimeDependencyProvisioner.provision(executable: destExe) }
+        let depsSummary = deps.isEmpty ? nil : deps.map(\.label).joined(separator: ", ")
 
         // 3) Icono del juego (carátula → .icns squircle). Si no hay portada (p. ej. un .exe suelto
         // añadido a mano), cae al logo DRM‑free bundleado para que el .app nunca salga sin icono.
@@ -105,18 +115,20 @@ actor StandaloneMacExporter {
         // 6) LÉEME junto al .app (explica el aviso de Gatekeeper la 1ª vez, Rosetta y dónde van las
         // partidas). Va FUERA del .app para no alterar la firma.
         let readme = destParent.appendingPathComponent("LÉEME — Cómo abrir \(slug).txt")
-        try? Self.macReadme(name: slug).write(to: readme, atomically: true, encoding: .utf8)
+        try? Self.macReadme(name: slug, deps: depsSummary).write(to: readme, atomically: true, encoding: .utf8)
 
         progress(1.0, "Listo")
         return appURL
     }
 
-    private static func macReadme(name: String) -> String {
-        """
+    private static func macReadme(name: String, deps: String?) -> String {
+        let depsLine = deps.map { "\n        Runtimes que usa el juego (ya resueltos dentro de la app): \($0)\n" } ?? ""
+        return """
         \(name) — juego DRM‑free para Mac (Apple Silicon)
         Creado con Vessel · https://github.com/SwonDev/Vessel
 
         Este juego es TUYO y no lleva DRM: se ejecuta SIN Steam y SIN Vessel.
+        \(depsLine)
 
         CÓMO ABRIR (solo la primera vez, en otro Mac)
         1. Haz clic derecho (o Control+clic) sobre «\(name).app» y elige «Abrir».
