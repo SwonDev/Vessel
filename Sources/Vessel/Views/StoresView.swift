@@ -44,6 +44,15 @@ enum StoreKind: String, CaseIterable, Identifiable {
         }
     }
 
+    var keyboardShortcut: String {
+        switch self {
+        case .steam: return "⌘1"
+        case .epic: return "⌘2"
+        case .gog: return "⌘3"
+        case .local: return "⌘4"
+        }
+    }
+
     /// El logo debe LLENAR el tile (clip a esquinas redondeadas) en vez de ir centrado sobre el
     /// gradiente: para logos que ya son un icono cuadrado con fondo propio (Humble Bundle en `.local`).
     var logoFillsTile: Bool { self == .local }
@@ -168,7 +177,11 @@ private struct StoreSwitchButton: View {
             .scaleEffect(hovering && !isSelected ? 1.08 : 1)
         }
         .buttonStyle(.plain)
-        .help(store.displayName)
+        .vesselHelp(
+            "Cambiar a \(store.displayName)",
+            detail: isSelected ? "Plataforma activa." : "Muestra la biblioteca de \(store.displayName).",
+            shortcut: store.keyboardShortcut
+        )
         .accessibilityLabel("Tienda \(store.displayName)")
         .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelected)

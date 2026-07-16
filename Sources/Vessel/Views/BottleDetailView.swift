@@ -136,6 +136,7 @@ struct BottleDetailView: View {
                             refreshToken: tokens.refreshToken, in: localBottle, wine: wine)
                     }
                     await loadSteamLibrary()
+                    NotificationCenter.default.post(name: .accountProfileDidChange, object: StoreKind.steam)
                 }
             }
         }
@@ -153,6 +154,7 @@ struct BottleDetailView: View {
             UserDefaults.standard.removeObject(forKey: "steam.refreshToken")
             ownedGames = []
             statusMessage = "Sesión cerrada. Abre el menú «…» → Iniciar sesión para volver a entrar."
+            NotificationCenter.default.post(name: .accountProfileDidChange, object: StoreKind.steam)
         }
     }
 
@@ -432,4 +434,3 @@ struct BottleDetailView: View {
     }
 
 }
-

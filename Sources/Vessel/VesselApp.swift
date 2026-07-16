@@ -58,6 +58,29 @@ struct VesselApp: App {
                 Button("Mostrar juegos ocultos") {
                     NotificationCenter.default.post(name: .libraryShowHidden, object: nil)
                 }
+                Divider()
+                Button("Actualizar biblioteca") {
+                    NotificationCenter.default.post(name: .libraryRefresh, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: .command)
+            }
+            CommandMenu("Plataforma") {
+                Button(StoreKind.steam.displayName) {
+                    NotificationCenter.default.post(name: .selectStore, object: StoreKind.steam)
+                }
+                .keyboardShortcut("1", modifiers: .command)
+                Button(StoreKind.epic.displayName) {
+                    NotificationCenter.default.post(name: .selectStore, object: StoreKind.epic)
+                }
+                .keyboardShortcut("2", modifiers: .command)
+                Button(StoreKind.gog.displayName) {
+                    NotificationCenter.default.post(name: .selectStore, object: StoreKind.gog)
+                }
+                .keyboardShortcut("3", modifiers: .command)
+                Button(StoreKind.local.displayName) {
+                    NotificationCenter.default.post(name: .selectStore, object: StoreKind.local)
+                }
+                .keyboardShortcut("4", modifiers: .command)
             }
             CommandGroup(after: .appSettings) {
                 Button("Ajustes…") {
@@ -78,6 +101,7 @@ struct VesselApp: App {
             }
         }
     }
+
 }
 
 extension Notification.Name {
@@ -88,6 +112,9 @@ extension Notification.Name {
     static let libraryToggleSidebar = Notification.Name("vessel.libraryToggleSidebar")
     static let libraryShowAll = Notification.Name("vessel.libraryShowAll")
     static let libraryShowHidden = Notification.Name("vessel.libraryShowHidden")
+    static let libraryRefresh = Notification.Name("vessel.libraryRefresh")
+    static let selectStore = Notification.Name("vessel.selectStore")
+    static let accountProfileDidChange = Notification.Name("vessel.accountProfileDidChange")
     /// Aviso de lanzamiento visible in-app (p. ej. "el juego necesita Steam"). userInfo: title, body.
     static let launchMessage = Notification.Name("vessel.launchMessage")
     /// Estado EN VIVO de lanzamiento (banner no bloqueante). userInfo: message (ausente = ocultar).

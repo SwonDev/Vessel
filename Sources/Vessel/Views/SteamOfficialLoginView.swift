@@ -42,6 +42,8 @@ struct SteamOfficialLoginView: View {
                     Image(systemName: "xmark").font(.body.weight(.medium)).foregroundStyle(.white.opacity(0.5))
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Cerrar inicio de sesión")
+                .vesselHelp("Cerrar inicio de sesión", shortcut: "Esc")
             }
             .padding(.bottom, 26)
 

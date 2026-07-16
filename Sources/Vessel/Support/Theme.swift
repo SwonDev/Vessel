@@ -226,6 +226,19 @@ extension View {
     }
 }
 
+// MARK: - Ayuda contextual nativa
+
+extension View {
+    /// Tooltip nativo de macOS con microcopy consistente y una pista accesible equivalente.
+    /// La ayuda aparece solo tras mantener el cursor: mejora la descubribilidad sin añadir ruido.
+    func vesselHelp(_ title: String, detail: String? = nil, shortcut: String? = nil) -> some View {
+        let parts = [title, detail, shortcut.map { "Atajo: \($0)" }].compactMap { $0 }
+        return self
+            .help(Text(parts.joined(separator: "\n")))
+            .accessibilityHint(Text(detail ?? title))
+    }
+}
+
 // MARK: - Elevación en hover
 
 private struct HoverLift: ViewModifier {

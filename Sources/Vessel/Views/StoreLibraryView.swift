@@ -385,7 +385,7 @@ struct StoreLibraryView: View {
                         .liquidGlass(in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 }
                 .buttonStyle(.plain).padding(.top, 12).padding(.leading, 12)
-                .help("Mostrar la lista")
+                .vesselHelp("Mostrar la lista", shortcut: "⌘L")
                 .transition(.opacity.combined(with: .move(edge: .leading)))
             }
         }
@@ -443,6 +443,9 @@ struct StoreLibraryView: View {
             filter = .ocultos
             showFavoritesOnly = false
             selectedGame = nil
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .libraryRefresh)) { _ in
+            onReload()
         }
     }
 
@@ -747,7 +750,7 @@ struct StoreLibraryView: View {
             .onHover { inside in
                 if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
             }
-            .help("Abrir Steam · juega desde Steam con nube y logros nativos")
+            .vesselHelp("Abrir Steam", detail: "Juega desde Steam con la nube y los logros nativos.")
             .popover(isPresented: $showSteamHint, arrowEdge: .bottom) {
                 steamHintTooltip
             }
@@ -783,7 +786,8 @@ struct StoreLibraryView: View {
                 Image(systemName: "sidebar.left").font(.body.weight(.medium))
                     .foregroundStyle(.white.opacity(0.55)).frame(width: 26, height: 26).contentShape(Rectangle())
             }
-            .buttonStyle(.plain).help("Ocultar la lista")
+            .buttonStyle(.plain)
+            .vesselHelp("Ocultar la lista", shortcut: "⌘L")
             Menu {
                 Button { onReload() } label: { Label("Actualizar biblioteca", systemImage: "arrow.clockwise") }
                 if let onLogin {
@@ -803,6 +807,7 @@ struct StoreLibraryView: View {
             }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
             .accessibilityLabel("Opciones de \(store.displayName)")
+            .vesselHelp("Opciones de \(store.displayName)", detail: "Actualiza la biblioteca o gestiona la sesión.")
         }
         .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 10)
     }
@@ -816,7 +821,9 @@ struct StoreLibraryView: View {
                 Button { search = "" } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain).accessibilityLabel("Borrar búsqueda")
+                .buttonStyle(.plain)
+                .accessibilityLabel("Borrar búsqueda")
+                .vesselHelp("Borrar búsqueda")
             }
         }
         .padding(8)
@@ -849,7 +856,7 @@ struct StoreLibraryView: View {
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
         .accessibilityLabel("Filtrar por estado")
-        .help("Filtrar juegos por estado")
+        .vesselHelp("Filtrar juegos por estado")
     }
 
     /// Menú de orden (reutilizado por la sidebar y la cabecera del grid al colapsar).
@@ -865,7 +872,7 @@ struct StoreLibraryView: View {
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
         .accessibilityLabel("Ordenar")
-        .help("Ordenar la biblioteca")
+        .vesselHelp("Ordenar la biblioteca")
     }
 
     /// Botón de solo-favoritos (reutilizado).
@@ -876,7 +883,7 @@ struct StoreLibraryView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(showFavoritesOnly ? "Mostrar todos los juegos" : "Mostrar solo favoritos")
-        .help(showFavoritesOnly ? "Mostrar todos los juegos" : "Mostrar solo favoritos")
+        .vesselHelp(showFavoritesOnly ? "Mostrar todos los juegos" : "Mostrar solo favoritos")
     }
 
     // MARK: - Controles en la cabecera del grid (visibles al colapsar la sidebar)
@@ -891,7 +898,9 @@ struct StoreLibraryView: View {
                 Button { search = "" } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain).accessibilityLabel("Borrar búsqueda")
+                .buttonStyle(.plain)
+                .accessibilityLabel("Borrar búsqueda")
+                .vesselHelp("Borrar búsqueda")
             }
         }
         .padding(.horizontal, 10).padding(.vertical, 7)
@@ -999,7 +1008,7 @@ struct StoreLibraryView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(d.help)
+                .vesselHelp(d.help)
             }
         }
         .padding(3)
@@ -1107,7 +1116,7 @@ private struct LibraryScopeChip: View {
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityAddTraits(selected ? .isSelected : [])
-        .help(count == nil ? "Quitar los filtros activos" : "Mostrar \(title.lowercased())")
+        .vesselHelp(count == nil ? "Quitar los filtros activos" : "Mostrar \(title.lowercased())")
     }
 
     private var accessibilityLabel: String {
@@ -1161,7 +1170,7 @@ struct StoreGameCard: View {
             .buttonStyle(.plain)
             .padding(7)
             .accessibilityLabel(isFavorite ? "Quitar de favoritos" : "Añadir a favoritos")
-            .help(isFavorite ? "Quitar de favoritos" : "Añadir a favoritos")
+            .vesselHelp(isFavorite ? "Quitar de favoritos" : "Añadir a favoritos")
         }
             .overlay {
                 if installing {
@@ -1570,7 +1579,9 @@ struct GameDetailView: View {
                             Image(systemName: "xmark").font(.body.weight(.bold)).foregroundStyle(.white)
                                 .frame(width: 38, height: 38).liquidGlass(in: Circle())
                         }
-                        .buttonStyle(.plain).accessibilityLabel("Cerrar visor")
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Cerrar visor")
+                        .vesselHelp("Cerrar visor", shortcut: "Esc")
                     }.padding(20)
                     Spacer()
                 }
@@ -1586,6 +1597,7 @@ struct GameDetailView: View {
         }
         .buttonStyle(.plain).opacity(enabled ? 1 : 0.25).disabled(!enabled)
         .accessibilityLabel(icon.contains("left") ? "Captura anterior" : "Captura siguiente")
+        .vesselHelp(icon.contains("left") ? "Captura anterior" : "Captura siguiente")
     }
 
     private var hero: some View {
@@ -1657,14 +1669,14 @@ struct GameDetailView: View {
                 .font(.title3.weight(.bold)).frame(minWidth: 170).frame(height: 28)
             }
             .vesselButton(tint: steamGreen).disabled(true)
-            .help("Preparando el juego y arrancando…")
+            .vesselHelp("Preparando el juego y arrancando…")
         case .running:
             Button { GameLaunchTracker.shared.stop(game.id) } label: {
                 Label("Ejecutándose", systemImage: "stop.fill")
                     .font(.title3.weight(.bold)).frame(minWidth: 170).frame(height: 28)
             }
             .vesselButton(tint: runningRed)
-            .help("El juego está en ejecución. Pulsa para forzar su cierre.")
+            .vesselHelp("Detener el juego", detail: "El juego está en ejecución. Pulsa para forzar su cierre.")
         case .idle:
             if installing {
                 VStack(alignment: .leading, spacing: 7) {
@@ -2300,6 +2312,7 @@ struct GameDetailView: View {
         }
         .buttonStyle(.plain).padding(16)
         .accessibilityLabel("Volver a la biblioteca")
+        .vesselHelp("Volver a la biblioteca")
     }
 
     private func stat(_ icon: String, _ label: String, _ value: String) -> some View {
@@ -2323,6 +2336,6 @@ struct GameDetailView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
-        .help(label)
+        .vesselHelp(label)
     }
 }

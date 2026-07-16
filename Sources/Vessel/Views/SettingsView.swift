@@ -179,6 +179,8 @@ struct SettingsView: View {
                             Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("Borrar clave Web API de Steam")
+                        .vesselHelp("Borrar clave Web API de Steam")
                     }
                 }
                 .padding(8)
@@ -200,6 +202,8 @@ struct SettingsView: View {
                             Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("Borrar clave de SteamGridDB")
+                        .vesselHelp("Borrar clave de SteamGridDB")
                     }
                 }
                 .padding(8)
