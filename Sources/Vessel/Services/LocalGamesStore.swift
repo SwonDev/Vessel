@@ -50,6 +50,11 @@ final class LocalGamesStore {
         var executablePath: String = ""
         /// Windows (vía Wine) o nativo de macOS. Se decide al descargar, prefiriendo lo nativo.
         var platform: Platform = .windows
+        /// Huella de la versión instalada (md5/build del origen). Si el build publicado tiene otra,
+        /// hay actualización. `nil` = instalado antes de que existiera este control, o fuente sin versión.
+        var installedVersion: String?
+        /// `true` si la última comprobación encontró una versión nueva en el origen.
+        var updateAvailable: Bool = false
         /// Directorio donde Vessel instaló el juego (para descargas de itch/humble). `nil` si es
         /// un `.exe` que el usuario apuntó en su sitio.
         var installPath: String?
@@ -90,6 +95,8 @@ final class LocalGamesStore {
             sourceId = try? c.decodeIfPresent(String.self, forKey: .sourceId)
             executablePath = (try? c.decode(String.self, forKey: .executablePath)) ?? ""
             platform = (try? c.decode(Platform.self, forKey: .platform)) ?? .windows
+            installedVersion = try? c.decodeIfPresent(String.self, forKey: .installedVersion)
+            updateAvailable = (try? c.decode(Bool.self, forKey: .updateAvailable)) ?? false
             installPath = try? c.decodeIfPresent(String.self, forKey: .installPath)
             downloadURL = try? c.decodeIfPresent(String.self, forKey: .downloadURL)
             coverPath = try? c.decodeIfPresent(String.self, forKey: .coverPath)
@@ -164,15 +171,27 @@ final class LocalGamesStore {
         return g.id
     }
 
-    /// Marca una entrada como instalada tras descargarla (fija exe/app + dir + plataforma).
+    /// Marca una entrada como instalada tras descargarla (fija exe/app + dir + plataforma + versión).
     func setInstalled(_ id: UUID, executablePath: String, installPath: String?,
-                      platform: Platform = .windows) {
+                      platform: Platform = .windows, version: String? = nil) {
         guard let i = games.firstIndex(where: { $0.id == id }) else { return }
         games[i].executablePath = executablePath
         games[i].installPath = installPath
         games[i].platform = platform
+        if let version { games[i].installedVersion = version }
+        games[i].updateAvailable = false     // acabamos de instalar: estamos al día
         save()
     }
+
+    /// Marca (o desmarca) que hay una versión nueva en el origen.
+    func setUpdateAvailable(_ id: UUID, _ available: Bool) {
+        guard let i = games.firstIndex(where: { $0.id == id }), games[i].updateAvailable != available else { return }
+        games[i].updateAvailable = available
+        save()
+    }
+
+    /// Juegos instalados con actualización pendiente.
+    var gamesWithUpdates: [Game] { games.filter { $0.installed && $0.updateAvailable } }
 
     /// Quita SOLO el juego de una fuente vinculada (p. ej. al desvincular la cuenta).
     func removeAll(source: Source) { games.removeAll { $0.source == source }; save() }

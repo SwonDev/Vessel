@@ -44,9 +44,12 @@ struct LocalGamesView: View {
                 coverURL: g.coverURL,
                 steamAppId: g.source == .steam ? g.sourceId : nil,
                 installed: g.installed,
+                updateAvailable: g.updateAvailable,
                 installPath: folder,
-                // Insignia con la FUENTE (Steam / itch.io / Humble / GOG offline); los locales no la llevan.
-                badge: g.source == .local ? nil : g.source.displayName
+                // Insignia con la FUENTE (Steam / itch.io / Humble / GOG offline) y, si es nativo de
+                // Mac, se dice: es la mejor noticia posible (corre sin Wine).
+                badge: g.platform == .mac ? "Nativo de Mac"
+                                          : (g.source == .local ? nil : g.source.displayName)
             )
         }
     }
@@ -350,9 +353,30 @@ struct LocalGamesView: View {
                                              name: g.title ?? "Juego", coverURL: g.cover_url, pageURL: g.url)
                 }
                 flash("itch.io: \(keys.count) juego(s) sincronizados.", false)
+                await checkItchUpdates()
             } catch { flash((error as? LocalizedError)?.errorDescription ?? "Error al sincronizar itch.io.", true) }
             syncing = false
         }
+    }
+
+    /// Comprueba si los juegos de itch.io **instalados** tienen versión nueva en el origen. Los indies
+    /// actualizan a menudo; hasta ahora no había forma de enterarse. Compara el token de versión
+    /// (md5/build) guardado al instalar con el del build publicado.
+    private func checkItchUpdates() async {
+        let installed = games.games.filter { $0.source == .itch && $0.installed && ($0.installedVersion?.isEmpty == false) }
+        guard !installed.isEmpty else { return }
+        var found = 0
+        for g in installed {
+            guard let sid = g.sourceId, let v = g.installedVersion else { continue }
+            let parts = sid.split(separator: ":").map(String.init)
+            guard parts.count == 2, let gid = Int(parts[0]), let dkid = Int(parts[1]) else { continue }
+            let has = await ItchService.shared.hasUpdate(gameId: gid, downloadKeyId: dkid,
+                                                         installedVersion: v,
+                                                         preferNative: g.platform == .mac)
+            games.setUpdateAvailable(g.id, has)
+            if has { found += 1 }
+        }
+        if found > 0 { flash("itch.io: \(found) juego(s) con actualización disponible.", false) }
     }
 
     private func syncHumble() {
@@ -388,6 +412,7 @@ struct LocalGamesView: View {
                 var filenameHint: String? = nil
                 // Preferimos SIEMPRE el build nativo de macOS si existe: corre sin Wine ni Rosetta.
                 var native = false
+                var version: String? = nil
                 switch g.source {
                 case .itch:
                     let parts = sid.split(separator: ":").map(String.init)
@@ -395,7 +420,7 @@ struct LocalGamesView: View {
                         throw NSError(domain: "Vessel", code: 1, userInfo: [NSLocalizedDescriptionKey: "Id de itch.io inválido."])
                     }
                     let r = try await ItchService.shared.bestDownload(gameId: gid, downloadKeyId: dkid)
-                    url = r.url; filenameHint = r.filename; native = (r.platform == .mac)
+                    url = r.url; filenameHint = r.filename; native = (r.platform == .mac); version = r.version
                 case .humble:
                     guard let colon = sid.firstIndex(of: ":") else {
                         throw NSError(domain: "Vessel", code: 1, userInfo: [NSLocalizedDescriptionKey: "Id de Humble inválido."])
@@ -422,7 +447,8 @@ struct LocalGamesView: View {
                 ) { frac, msg in Task { @MainActor in downloading[g.id] = (frac, msg) } }
                 games.setInstalled(g.id, executablePath: installed.executablePath,
                                    installPath: installed.installDir,
-                                   platform: installed.isNativeMac ? .mac : .windows)
+                                   platform: installed.isNativeMac ? .mac : .windows,
+                                   version: version)
                 downloading[g.id] = nil
                 if installed.isInstaller {
                     // Lo descargado es un instalador (típico en itch.io): ejecútalo y fija el exe real.

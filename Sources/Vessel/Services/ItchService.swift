@@ -54,6 +54,11 @@ actor ItchService {
         let id: Int?
         let filename: String?
         let size: Int64?
+        /// Huella de la versión publicada. `md5_hash` es la señal definitiva (cambia con cada build);
+        /// `updated_at` y `build_id` (uploads de butler/wharf) sirven de respaldo.
+        let md5_hash: String?
+        let updated_at: String?
+        let build_id: Int?
         let type: String?                     // "default", "soundtrack", "book", "html"…
         let demo: Bool?
         let platforms: [String: String]?      // API moderna: {"windows":"all", "osx":"all", ...}
@@ -66,6 +71,11 @@ actor ItchService {
         var isDemo: Bool { demo ?? false }
         /// Descarta descargas que no son un ejecutable (soundtrack, libro, html play-in-browser).
         var isRunnable: Bool { !["soundtrack", "book", "html"].contains((type ?? "default").lowercased()) }
+        /// Token opaco de versión: si cambia, hay actualización. Se guarda al instalar y se compara.
+        var versionToken: String {
+            [md5_hash, build_id.map(String.init), updated_at, size.map(String.init)]
+                .compactMap { $0 }.first ?? String(id ?? 0)
+        }
     }
 
     enum ItchError: LocalizedError {
@@ -137,7 +147,7 @@ actor ItchService {
     /// Devuelve la URL (endpoint moderno con Bearer, que responde 302 al CDN firmado), el nombre de
     /// fichero real (para conocer la extensión) y la plataforma que se ha elegido.
     func bestDownload(gameId: Int, downloadKeyId: Int,
-                      preferNative: Bool = true) async throws -> (url: URL, filename: String?, platform: BuildPlatform) {
+                      preferNative: Bool = true) async throws -> (url: URL, filename: String?, platform: BuildPlatform, version: String) {
         guard let key = apiKey, !key.isEmpty else { throw ItchError.notLinked }
         let ur = try await request("games/\(gameId)/uploads",
                                    query: [URLQueryItem(name: "download_key_id", value: String(downloadKeyId))],
@@ -163,13 +173,31 @@ actor ItchService {
         comps.queryItems = [URLQueryItem(name: "download_key_id", value: String(downloadKeyId))]
         guard let apiURL = comps.url else { throw ItchError.http(0) }
         let signed = try await Self.resolveSignedURL(apiURL, bearer: key)
-        return (signed, up.filename, platform)
+        return (signed, up.filename, platform, up.versionToken)
     }
 
     /// Compatibilidad: la variante que fuerza Windows (la usan flujos que ya asumen Wine).
     func windowsDownload(gameId: Int, downloadKeyId: Int) async throws -> (url: URL, filename: String?) {
         let r = try await bestDownload(gameId: gameId, downloadKeyId: downloadKeyId, preferNative: false)
         return (r.url, r.filename)
+    }
+
+    /// **¿Hay versión nueva?** Compara el token de versión del build publicado con el que se guardó al
+    /// instalar. Los indies de itch actualizan a menudo y hasta ahora no había forma de enterarse.
+    func hasUpdate(gameId: Int, downloadKeyId: Int, installedVersion: String,
+                   preferNative: Bool = true) async -> Bool {
+        guard !installedVersion.isEmpty,
+              let ur = try? await request("games/\(gameId)/uploads",
+                                          query: [URLQueryItem(name: "download_key_id", value: String(downloadKeyId))],
+                                          as: UploadsResponse.self) else { return false }
+        let uploads = (ur.uploads ?? []).filter { $0.isRunnable }
+        func pick(_ f: (Upload) -> Bool) -> Upload? {
+            uploads.filter { f($0) && !$0.isDemo }.sorted { ($0.size ?? 0) > ($1.size ?? 0) }.first
+                ?? uploads.filter(f).sorted { ($0.size ?? 0) > ($1.size ?? 0) }.first
+        }
+        let current = (preferNative ? pick({ $0.isMac }) : nil) ?? pick({ $0.isWindows })
+        guard let token = current?.versionToken else { return false }
+        return token != installedVersion
     }
 
     /// Hace un GET autenticado con Bearer al endpoint de descarga y devuelve la URL del `Location`
