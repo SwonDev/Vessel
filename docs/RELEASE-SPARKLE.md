@@ -14,7 +14,23 @@ repo una vez al día y con el menú **Vessel → Buscar actualizaciones…**.
 > Con firma ad-hoc (sin Developer ID) Sparkle valida la integridad del update por su **firma EdDSA**
 > (no por la firma de código). Es el modelo correcto para apps auto-distribuidas por GitHub.
 
-## Publicar una versión nueva
+## Publicar una versión nueva — automático (recomendado)
+
+```bash
+./release.sh 0.0.2 "Qué trae esta versión"
+```
+
+`release.sh` hace **todo el ciclo**: sube `VERSION.txt` (build entero incremental) → compila y monta el
+`.app` → lo comprime → lo **firma** con la clave EdDSA del llavero → crea el **GitHub Release** con el
+`.zip` (tag `vX.Y.Z`) → añade el `<item>` al `appcast.xml` → commit + push. Los usuarios reciben la
+actualización solos por Sparkle.
+
+- **Versionado**: `VERSION.txt` es la ÚNICA fuente de verdad (`X.Y.Z<TAB>N`). `build_and_run.sh` la lee
+  para el `Info.plist`. La serie empezó en **0.0.1** y avanza 0.0.2, 0.0.3…
+- Exige el árbol de git limpio (para que el release refleje exactamente lo commiteado).
+- Re-publicar la misma versión reemplaza el asset y su `<item>` (no duplica).
+
+## Publicar a mano (si hace falta)
 Herramientas en `.build/artifacts/sparkle/Sparkle/bin/` (tras `swift build`).
 
 1. **Sube la versión** en `build_and_run.sh` (Info.plist): `CFBundleShortVersionString` (X.Y.Z) y

@@ -7,6 +7,13 @@ BUILD_DIR="build"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
 ICON_PATH="Resources/icon.icns"
 
+# Versión: ÚNICA fuente de verdad en VERSION.txt ("X.Y.Z<TAB>N" → versión visible + build incremental).
+# La usa el Info.plist de abajo y `release.sh` al publicar. Súbela con: ./release.sh <X.Y.Z>
+VERSION=$(cut -f1 VERSION.txt 2>/dev/null | tr -d '[:space:]')
+BUILD_NUMBER=$(cut -f2 VERSION.txt 2>/dev/null | tr -d '[:space:]')
+VERSION="${VERSION:-0.0.1}"
+BUILD_NUMBER="${BUILD_NUMBER:-1}"
+
 echo "==> Building $APP_NAME (release)..."
 swift build -c release
 
@@ -83,9 +90,9 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>$VERSION</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>$BUILD_NUMBER</string>
     <key>LSMinimumSystemVersion</key>
     <string>15.0</string>
     <key>LSApplicationCategoryType</key>
@@ -156,5 +163,10 @@ cp -R "$APP_BUNDLE" "/Applications/$APP_NAME.app"
 codesign --force --deep --sign - "/Applications/$APP_NAME.app"
 
 echo "==> App instalada: /Applications/$APP_NAME.app"
-echo "==> Launching..."
-open "/Applications/$APP_NAME.app"
+# `release.sh` compila con VESSEL_NO_LAUNCH=1: empaqueta para publicar sin abrir la app.
+if [ "${VESSEL_NO_LAUNCH:-0}" = "1" ]; then
+    echo "==> (VESSEL_NO_LAUNCH=1: no se abre la app)"
+else
+    echo "==> Launching..."
+    open "/Applications/$APP_NAME.app"
+fi
