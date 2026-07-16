@@ -6,6 +6,19 @@
     <description>Actualizaciones de Vessel — la mejor app para jugar a Steam en Mac Silicon.</description>
     <language>es</language>
     <item>
+      <title>Versión 0.0.2</title>
+      <sparkle:version>2</sparkle:version>
+      <sparkle:shortVersionString>0.0.2</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[ GOG y Epic en el hub DRM-free, sellado de copias con SHA-256 y soporte de disco físico. ]]></description>
+      <pubDate>Thu, 16 Jul 2026 20:55:10 +0100</pubDate>
+      <enclosure
+        url="https://github.com/SwonDev/Vessel/releases/download/v0.0.2/Vessel-0.0.2.zip"
+        sparkle:edSignature="rUEJXB7WB9hjWGHNkDmIxkTLW10ggytfm/tSoQatEcXrLO4wsn5sDuoe1bAJztrv13htJRp6H5b34/Eg5uXiCQ=="
+        length="19203300"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>Versión 0.0.1</title>
       <sparkle:version>1</sparkle:version>
       <sparkle:shortVersionString>0.0.1</sparkle:shortVersionString>
