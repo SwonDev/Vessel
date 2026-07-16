@@ -86,6 +86,28 @@ enum StoreLibraryFilter: String, CaseIterable, Identifiable {
     }
 }
 
+/// Accesos directos visibles a los criterios que más se usan en una biblioteca grande.
+/// Los filtros menos frecuentes siguen disponibles en el menú avanzado de la sidebar.
+private enum LibraryQuickScope: String, CaseIterable, Identifiable {
+    case todos = "Todos"
+    case listos = "Listos para jugar"
+    case actualizaciones = "Actualizaciones"
+    case sinJugar = "Sin jugar"
+    case favoritos = "Favoritos"
+
+    var id: String { rawValue }
+
+    var symbol: String {
+        switch self {
+        case .todos:           return "square.grid.2x2"
+        case .listos:          return "play.circle.fill"
+        case .actualizaciones: return "arrow.triangle.2.circlepath"
+        case .sinJugar:        return "sparkles"
+        case .favoritos:       return "star.fill"
+        }
+    }
+}
+
 /// Densidad del grid de carátulas (tamaño de las portadas), persistente. Como el slider de
 /// tamaño de la biblioteca de Steam, aquí en 3 pasos premium — clave para navegar bibliotecas
 /// de miles de juegos según prefieras densidad o tamaño.
@@ -179,6 +201,7 @@ struct StoreLibraryView: View {
 
     private var tint: Color { store.tint }
     private var favKey: String { "favorites.\(store.rawValue)" }
+    private var preferencePrefix: String { "vessel.library.\(store.rawValue)" }
     /// Columnas adaptativas según la densidad elegida (tamaño de carátula).
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: gridDensity.coverRange.min, maximum: gridDensity.coverRange.max),
@@ -189,6 +212,66 @@ struct StoreLibraryView: View {
     private func toggleFav(_ id: String) {
         if favorites.contains(id) { favorites.remove(id) } else { favorites.insert(id) }
         UserDefaults.standard.set(Array(favorites), forKey: favKey)
+    }
+
+    private var activeQuickScope: LibraryQuickScope? {
+        if showFavoritesOnly && filter == .todos { return .favoritos }
+        guard !showFavoritesOnly else { return nil }
+        switch filter {
+        case .todos:            return .todos
+        case .instalados:       return .listos
+        case .conActualizacion: return .actualizaciones
+        case .sinJugar:         return .sinJugar
+        case .porInstalar, .jugados: return nil
+        }
+    }
+
+    private func apply(_ scope: LibraryQuickScope) {
+        switch scope {
+        case .todos:
+            filter = .todos
+            showFavoritesOnly = false
+        case .listos:
+            filter = .instalados
+            showFavoritesOnly = false
+        case .actualizaciones:
+            filter = .conActualizacion
+            showFavoritesOnly = false
+        case .sinJugar:
+            filter = .sinJugar
+            showFavoritesOnly = false
+        case .favoritos:
+            filter = .todos
+            showFavoritesOnly = true
+        }
+    }
+
+    private func resetQuery() {
+        search = ""
+        filter = .todos
+        showFavoritesOnly = false
+    }
+
+    /// Steam conserva la forma de explorar cada biblioteca. Vessel hace lo mismo por tienda,
+    /// sin persistir el texto buscado (evita sorpresas y no almacena consultas del usuario).
+    private func restoreLibraryPreferences() {
+        let defaults = UserDefaults.standard
+        if let raw = defaults.string(forKey: "\(preferencePrefix).filter"),
+           let stored = StoreLibraryFilter(rawValue: raw) {
+            filter = stored
+        }
+        if let raw = defaults.string(forKey: "\(preferencePrefix).sort"),
+           let stored = StoreSortOrder(rawValue: raw) {
+            sortOrder = stored
+        }
+        showFavoritesOnly = defaults.bool(forKey: "\(preferencePrefix).favoritesOnly")
+    }
+
+    private func persistLibraryPreferences() {
+        let defaults = UserDefaults.standard
+        defaults.set(filter.rawValue, forKey: "\(preferencePrefix).filter")
+        defaults.set(sortOrder.rawValue, forKey: "\(preferencePrefix).sort")
+        defaults.set(showFavoritesOnly, forKey: "\(preferencePrefix).favoritesOnly")
     }
 
     /// Clave de estadística de juego (`"<tienda>:<id>"`), la misma que escribe el
@@ -302,14 +385,15 @@ struct StoreLibraryView: View {
         }
         .onAppear {
             favorites = Set(UserDefaults.standard.stringArray(forKey: favKey) ?? [])
+            restoreLibraryPreferences()
             displayed = computeFiltered()
             updateDockProgress()
         }
         // Recalcular la lista mostrada SOLO al cambiar una entrada (no en cada render).
         .onChange(of: search) { _, _ in refreshDisplayed() }
-        .onChange(of: filter) { _, _ in refreshDisplayed() }
-        .onChange(of: sortOrder) { _, _ in refreshDisplayed() }
-        .onChange(of: showFavoritesOnly) { _, _ in refreshDisplayed() }
+        .onChange(of: filter) { _, _ in persistLibraryPreferences(); refreshDisplayed() }
+        .onChange(of: sortOrder) { _, _ in persistLibraryPreferences(); refreshDisplayed() }
+        .onChange(of: showFavoritesOnly) { _, _ in persistLibraryPreferences(); refreshDisplayed() }
         .onChange(of: favorites) { _, _ in refreshDisplayed() }
         .onChange(of: selectedGame) { _, selected in
             if selected != nil { dismissHoverPreview(immediately: true) }
@@ -409,20 +493,23 @@ struct StoreLibraryView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.section) {
                 if !recentlyPlayed.isEmpty { recentlyPlayedSection }
-                HStack(alignment: .center, spacing: 12) {
-                    Text("Todos los juegos").font(.title.bold()).foregroundStyle(.white)
-                    // Con la sidebar colapsada, el buscador (y filtro/orden) viven en la sidebar y se
-                    // ocultan → los traemos aquí para no perder la búsqueda. Estilo Steam.
-                    if sidebarCollapsed {
-                        headerSearchField
-                        headerFilterMenu
-                        headerSortMenu
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .center, spacing: 12) {
+                        Text("Todos los juegos").font(.title.bold()).foregroundStyle(.white)
+                        // Con la sidebar colapsada, el buscador (y filtro/orden) viven en la sidebar y se
+                        // ocultan → los traemos aquí para no perder la búsqueda. Estilo Steam.
+                        if sidebarCollapsed {
+                            headerSearchField
+                            headerFilterMenu
+                            headerSortMenu
+                        }
+                        Spacer()
+                        Text("\(displayed.count) juego\(displayed.count == 1 ? "" : "s")")
+                            .font(.subheadline).foregroundStyle(.white.opacity(0.5))
+                        if let toolbarExtra { toolbarExtra }
+                        gridDensityToggle
                     }
-                    Spacer()
-                    Text("\(displayed.count) juego\(displayed.count == 1 ? "" : "s")")
-                        .font(.subheadline).foregroundStyle(.white.opacity(0.5))
-                    if let toolbarExtra { toolbarExtra }
-                    gridDensityToggle
+                    quickScopeBar
                 }
                 grid
             }
@@ -525,6 +612,57 @@ struct StoreLibraryView: View {
                 .padding(.vertical, 4).padding(.horizontal, 2)
             }
         }
+    }
+
+    /// Barra de ámbitos siempre visible. Es el equivalente ligero a las colecciones dinámicas de
+    /// Steam y a una scope bar de macOS: un clic aplica el criterio y el contador anticipa el resultado.
+    private var quickScopeBar: some View {
+        let source = enriched
+        let counts: [LibraryQuickScope: Int] = [
+            .todos: source.count,
+            .listos: source.count(where: \.installed),
+            .actualizaciones: source.count(where: \.updateAvailable),
+            .sinJugar: source.count { $0.lastPlayed == nil && ($0.playtimeMinutes ?? 0) == 0 },
+            .favoritos: source.count { favorites.contains($0.id) }
+        ]
+
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(LibraryQuickScope.allCases) { scope in
+                    LibraryScopeChip(
+                        title: scope.rawValue,
+                        symbol: scope.symbol,
+                        count: counts[scope, default: 0],
+                        selected: activeQuickScope == scope,
+                        tint: tint
+                    ) {
+                        apply(scope)
+                    }
+                }
+
+                if activeQuickScope == nil {
+                    LibraryScopeChip(
+                        title: activeConstraintLabel,
+                        symbol: "xmark",
+                        count: nil,
+                        selected: true,
+                        tint: tint,
+                        action: resetQuery
+                    )
+                }
+            }
+            .padding(.vertical, 3)
+            .padding(.horizontal, 2)
+        }
+        .scrollClipDisabled()
+        .accessibilityLabel("Filtros rápidos de la biblioteca")
+    }
+
+    private var activeConstraintLabel: String {
+        var parts: [String] = []
+        if filter != .todos { parts.append(filter.rawValue) }
+        if showFavoritesOnly { parts.append("Favoritos") }
+        return parts.isEmpty ? "Filtros activos" : parts.joined(separator: " · ")
     }
 
     // MARK: - Sidebar: lista de juegos buscable (estilo Steam)
@@ -634,7 +772,8 @@ struct StoreLibraryView: View {
     private var searchBar: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.caption)
-            TextField("Buscar…", text: $search).textFieldStyle(.plain).font(.callout).focused($searchFocused)
+            TextField("Buscar en \(store.displayName)…", text: $search)
+                .textFieldStyle(.plain).font(.callout).focused($searchFocused)
             if !search.isEmpty {
                 Button { search = "" } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
@@ -672,6 +811,7 @@ struct StoreLibraryView: View {
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
         .accessibilityLabel("Filtrar por estado")
+        .help("Filtrar juegos por estado")
     }
 
     /// Menú de orden (reutilizado por la sidebar y la cabecera del grid al colapsar).
@@ -687,6 +827,7 @@ struct StoreLibraryView: View {
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
         .accessibilityLabel("Ordenar")
+        .help("Ordenar la biblioteca")
     }
 
     /// Botón de solo-favoritos (reutilizado).
@@ -695,7 +836,9 @@ struct StoreLibraryView: View {
             Image(systemName: showFavoritesOnly ? "star.fill" : "star").font(.caption)
                 .foregroundStyle(showFavoritesOnly ? .yellow : .white.opacity(0.6))
         }
-        .buttonStyle(.plain).accessibilityLabel("Mostrar solo favoritos")
+        .buttonStyle(.plain)
+        .accessibilityLabel(showFavoritesOnly ? "Mostrar todos los juegos" : "Mostrar solo favoritos")
+        .help(showFavoritesOnly ? "Mostrar todos los juegos" : "Mostrar solo favoritos")
     }
 
     // MARK: - Controles en la cabecera del grid (visibles al colapsar la sidebar)
@@ -704,7 +847,8 @@ struct StoreLibraryView: View {
     private var headerSearchField: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.caption)
-            TextField("Buscar…", text: $search).textFieldStyle(.plain).font(.callout).frame(width: 180).focused($searchFocused)
+            TextField("Buscar en \(store.displayName)…", text: $search)
+                .textFieldStyle(.plain).font(.callout).frame(width: 180).focused($searchFocused)
             if !search.isEmpty {
                 Button { search = "" } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
@@ -737,6 +881,11 @@ struct StoreLibraryView: View {
                     .font(.system(size: 30)).foregroundStyle(.white.opacity(0.25))
                 Text(search.isEmpty && !showFavoritesOnly ? "Sin juegos." : "Sin resultados.")
                     .font(.caption).foregroundStyle(.secondary)
+                if !search.isEmpty || filter != .todos || showFavoritesOnly {
+                    Button("Mostrar todos", action: resetQuery)
+                        .vesselButton(false, tint: tint)
+                        .controlSize(.small)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -744,13 +893,17 @@ struct StoreLibraryView: View {
             // Glass tintado (premium), no el azul sólido del sistema. Ver DESIGN.md §7.
             List {
                 ForEach(displayed) { game in
-                    StoreGameRow(game: game, tint: tint,
-                                 isFavorite: isFav(game.id),
-                                 isSelected: selectedGame?.id == game.id)
+                    Button { selectedGame = game } label: {
+                        StoreGameRow(game: game, tint: tint,
+                                     isFavorite: isFav(game.id),
+                                     isSelected: selectedGame?.id == game.id)
+                    }
+                        .buttonStyle(.plain)
                         .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
                         .listRowBackground(Color.clear)
-                        .contentShape(Rectangle())
-                        .onTapGesture { selectedGame = game }
+                        .accessibilityLabel(game.title)
+                        .accessibilityValue(game.installed ? "Instalado" : "Sin instalar")
+                        .accessibilityHint("Abre los detalles del juego")
                         .contextMenu { rowContextMenu(game) }
                 }
             }
@@ -822,6 +975,14 @@ struct StoreLibraryView: View {
                      ? "No hay juegos que mostrar."
                      : "Sin resultados con los filtros actuales.")
                     .font(.callout).foregroundStyle(.secondary)
+                if !search.isEmpty || filter != .todos || showFavoritesOnly {
+                    Button {
+                        resetQuery()
+                    } label: {
+                        Label("Mostrar todos los juegos", systemImage: "arrow.counterclockwise")
+                    }
+                    .vesselButton(false, tint: tint)
+                }
             }
             .frame(maxWidth: .infinity)
             .padding(.top, 60)
@@ -855,6 +1016,58 @@ struct StoreLibraryView: View {
     }
 }
 
+// MARK: - Ámbito rápido de biblioteca
+
+/// Cápsula de filtro con cristal neutro. La selección usa solo un velo y borde de acento,
+/// respetando el contrato Liquid Glass de `DESIGN.md` sin convertir el cristal en un relleno plano.
+private struct LibraryScopeChip: View {
+    let title: String
+    let symbol: String
+    let count: Int?
+    let selected: Bool
+    let tint: Color
+    let action: () -> Void
+
+    var body: some View {
+        let shape = Capsule(style: .continuous)
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.caption.weight(.semibold))
+                Text(title)
+                    .font(.caption.weight(.medium))
+                if let count {
+                    Text(count, format: .number)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.white.opacity(selected ? 0.72 : 0.46))
+                }
+            }
+            .foregroundStyle(selected ? Color.white : .white.opacity(0.68))
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
+            .background {
+                ZStack {
+                    Color.clear.liquidGlass(in: shape, interactive: true)
+                    if selected { shape.fill(tint.opacity(0.12)) }
+                }
+            }
+            .overlay {
+                shape.strokeBorder(tint.opacity(selected ? 0.45 : 0.10), lineWidth: 0.8)
+            }
+            .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .help(count == nil ? "Quitar los filtros activos" : "Mostrar \(title.lowercased())")
+    }
+
+    private var accessibilityLabel: String {
+        guard let count else { return "Quitar filtros: \(title)" }
+        return "\(title), \(count) juego\(count == 1 ? "" : "s")"
+    }
+}
+
 // MARK: - Tarjeta de juego genérica
 
 /// Tarjeta de juego **genérica y premium** (carátula 2:3 + título superpuesto + favorito +
@@ -880,20 +1093,41 @@ struct StoreGameCard: View {
     private var initials: String { game.initials }
 
     var body: some View {
-        coverArt
+        ZStack(alignment: .topTrailing) {
+            Button(action: onOpen) {
+                coverArt
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(game.title)
+            .accessibilityValue(accessibilityStatus)
+            .accessibilityHint("Abre los detalles del juego")
+
+            Button(action: onToggleFavorite) {
+                Image(systemName: isFavorite ? "star.fill" : "star")
+                    .font(.callout).foregroundStyle(isFavorite ? .yellow : .white)
+                    .padding(7)
+                    .liquidGlass(in: Circle(), interactive: true)
+            }
+            .buttonStyle(.plain)
+            .padding(7)
+            .accessibilityLabel(isFavorite ? "Quitar de favoritos" : "Añadir a favoritos")
+            .help(isFavorite ? "Quitar de favoritos" : "Añadir a favoritos")
+        }
             .overlay {
                 if installing {
                     statusOverlay(progress ?? "Instalando…", spinner: percent == nil, percent: percent)
+                        .allowsHitTesting(false)
                 } else if GameLaunchTracker.shared.state(game.id) == .launching {
                     statusOverlay("Iniciando…", spinner: true)
+                        .allowsHitTesting(false)
                 } else if GameLaunchTracker.shared.state(game.id) == .running {
                     statusOverlay("Ejecutándose", spinner: false, icon: "play.circle.fill")
+                        .allowsHitTesting(false)
                 }
             }
             .hoverLift()
             .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous))
             .onHover(perform: onHoverChanged)
-            .onTapGesture { onOpen() }
             .contextMenu {
                 if game.installed {
                     Button { onPlay() } label: { Label("Jugar", systemImage: "play.fill") }
@@ -916,6 +1150,12 @@ struct StoreGameCard: View {
                           systemImage: isFavorite ? "star.slash" : "star")
                 }
             }
+    }
+
+    private var accessibilityStatus: String {
+        if installing { return progress ?? "Instalando" }
+        if game.updateAvailable { return "Actualización disponible" }
+        return game.installed ? "Instalado" : "Sin instalar"
     }
 
     /// Superposición de estado sobre la carátula (instalando / iniciando / ejecutándose).
@@ -954,23 +1194,21 @@ struct StoreGameCard: View {
                     .padding(10)
             }
             .overlay(alignment: .topLeading) {
-                if let badge = game.badge {
-                    Text(badge)
-                        .font(.caption2.weight(.semibold)).foregroundStyle(.white)
-                        .padding(.horizontal, 7).padding(.vertical, 3)
-                        .background(.black.opacity(0.55), in: Capsule())
-                        .padding(8)
+                if game.badge != nil || game.updateAvailable {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if let badge = game.badge {
+                            coverBadge(badge)
+                        }
+                        if game.updateAvailable {
+                            Label("Actualizar", systemImage: "arrow.triangle.2.circlepath")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 7).padding(.vertical, 4)
+                                .liquidGlass(in: Capsule())
+                        }
+                    }
+                    .padding(8)
                 }
-            }
-            .overlay(alignment: .topTrailing) {
-                Button(action: onToggleFavorite) {
-                    Image(systemName: isFavorite ? "star.fill" : "star")
-                        .font(.callout).foregroundStyle(isFavorite ? .yellow : .white)
-                        .padding(7)
-                        .liquidGlass(in: Circle())
-                }
-                .buttonStyle(.plain).padding(7)
-                .accessibilityLabel(isFavorite ? "Quitar de favoritos" : "Añadir a favoritos")
             }
             .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous))
             .overlay {
@@ -978,6 +1216,15 @@ struct StoreGameCard: View {
                     .strokeBorder(.white.opacity(0.10), lineWidth: 0.5)
             }
             .shadow(color: .black.opacity(0.32), radius: 9, y: 5)
+    }
+
+    private func coverBadge(_ text: String) -> some View {
+        Text(text)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .liquidGlass(in: Capsule())
     }
 
     @ViewBuilder private var cover: some View {
@@ -1096,32 +1343,37 @@ struct RecentlyPlayedCard: View {
     }
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            GameCoverImage(cacheKey: "\(game.id)-banner", candidates: bannerCandidates) {
-                game.placeholderColor
-            }
-            .frame(width: 280, height: 130).clipped()
-            LinearGradient(colors: [.clear, .black.opacity(0.2), .black.opacity(0.8)],
-                           startPoint: .center, endPoint: .bottom)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(game.title).font(.callout.weight(.semibold)).foregroundStyle(.white).lineLimit(1)
-                if let pt = playtimeText {
-                    Text(pt).font(.caption2).foregroundStyle(.white.opacity(0.75))
-                } else if let last = game.lastPlayed {
-                    Text("Última vez: \(last.formatted(date: .abbreviated, time: .omitted))")
-                        .font(.caption2).foregroundStyle(.white.opacity(0.7))
+        Button(action: onOpen) {
+            ZStack(alignment: .bottomLeading) {
+                GameCoverImage(cacheKey: "\(game.id)-banner", candidates: bannerCandidates) {
+                    game.placeholderColor
                 }
+                .frame(width: 280, height: 130).clipped()
+                LinearGradient(colors: [.clear, .black.opacity(0.2), .black.opacity(0.8)],
+                               startPoint: .center, endPoint: .bottom)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(game.title).font(.callout.weight(.semibold)).foregroundStyle(.white).lineLimit(1)
+                    if let pt = playtimeText {
+                        Text(pt).font(.caption2).foregroundStyle(.white.opacity(0.75))
+                    } else if let last = game.lastPlayed {
+                        Text("Última vez: \(last.formatted(date: .abbreviated, time: .omitted))")
+                            .font(.caption2).foregroundStyle(.white.opacity(0.7))
+                    }
+                }
+                .padding(10)
             }
-            .padding(10)
+            .frame(width: 280, height: 130)
         }
-        .frame(width: 280, height: 130)
+        .buttonStyle(.plain)
         .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
             .strokeBorder(.white.opacity(0.10), lineWidth: 0.5))
         .shadow(color: .black.opacity(0.32), radius: 8, y: 4)
         .hoverLift(scale: 1.02)
         .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-        .onTapGesture { onOpen() }
+        .accessibilityLabel(game.title)
+        .accessibilityValue(playtimeText ?? "Jugado recientemente")
+        .accessibilityHint("Abre los detalles del juego")
     }
 }
 
