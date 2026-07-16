@@ -167,6 +167,11 @@ struct StoreLibraryView: View {
     @AppStorage("vessel.gridDensity") private var gridDensity: GridDensity = .normal
     @State private var favorites: Set<String> = []
     @State private var selectedGame: StoreGame?
+    /// Hover intencional del grid. Se separa el candidato de la vista presentada para poder
+    /// aplicar retardo, cancelar al cruzar huecos y evitar parpadeos en bibliotecas grandes.
+    @State private var hoverCandidateID: String?
+    @State private var previewedGame: StoreGame?
+    @State private var hoverPresentationTask: Task<Void, Never>?
     /// Tooltip de "Abrir Steam" sobre el logo: se muestra una vez y se auto-oculta.
     @State private var showSteamHint = false
     @State private var steamHintDisplayed = false
@@ -301,11 +306,14 @@ struct StoreLibraryView: View {
             updateDockProgress()
         }
         // Recalcular la lista mostrada SOLO al cambiar una entrada (no en cada render).
-        .onChange(of: search) { _, _ in displayed = computeFiltered() }
-        .onChange(of: filter) { _, _ in displayed = computeFiltered() }
-        .onChange(of: sortOrder) { _, _ in displayed = computeFiltered() }
-        .onChange(of: showFavoritesOnly) { _, _ in displayed = computeFiltered() }
-        .onChange(of: favorites) { _, _ in displayed = computeFiltered() }
+        .onChange(of: search) { _, _ in refreshDisplayed() }
+        .onChange(of: filter) { _, _ in refreshDisplayed() }
+        .onChange(of: sortOrder) { _, _ in refreshDisplayed() }
+        .onChange(of: showFavoritesOnly) { _, _ in refreshDisplayed() }
+        .onChange(of: favorites) { _, _ in refreshDisplayed() }
+        .onChange(of: selectedGame) { _, selected in
+            if selected != nil { dismissHoverPreview(immediately: true) }
+        }
         .onChange(of: dockProgressSnapshot) { _, _ in updateDockProgress() }
         // Pre-descarga TODAS las carátulas de la tienda a disco en 2º plano (cuando la lista carga),
         // para que ninguna cargue de red al hacer scroll: instantáneas siempre. Idempotente.
@@ -313,8 +321,12 @@ struct StoreLibraryView: View {
         // sí su estado (installed/updateAvailable/título) — como StoreGame es Equatable, esto
         // recalcula la lista y refresca ficha/grid/sidebar (antes seguía diciendo "Sin instalar").
         .task(id: games) {
-            displayed = computeFiltered()
+            refreshDisplayed()
             CoverCache.shared.prefetch(games.map { ($0.id, $0.coverCandidates) })
+        }
+        .onDisappear {
+            hoverPresentationTask?.cancel()
+            hoverPresentationTask = nil
         }
     }
 
@@ -418,6 +430,79 @@ struct StoreLibraryView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .vesselBackground(tint: tint)
+        .overlayPreferenceValue(GameCardBoundsPreferenceKey.self) { anchors in
+            GeometryReader { proxy in
+                if let game = previewedGame, let anchor = anchors[game.id] {
+                    let cardBounds = proxy[anchor]
+                    GameHoverPreviewView(game: game, store: store, tint: tint)
+                        .frame(width: GameHoverPreviewView.panelSize.width,
+                               height: GameHoverPreviewView.panelSize.height)
+                        .position(previewPosition(for: cardBounds, in: proxy.size))
+                        .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                        .zIndex(100)
+                }
+            }
+            .allowsHitTesting(false)
+        }
+    }
+
+    /// Posiciona el panel al lado de la carátula, cambia a la izquierda si no cabe y limita su
+    /// centro al viewport. Los bordes nunca se salen de la ventana, incluso al hacer scroll.
+    private func previewPosition(for card: CGRect, in viewport: CGSize) -> CGPoint {
+        let panel = GameHoverPreviewView.panelSize
+        let margin: CGFloat = 12
+        let right = card.maxX + margin + panel.width / 2
+        let left = card.minX - margin - panel.width / 2
+        let minimumX = panel.width / 2 + margin
+        let maximumX = max(minimumX, viewport.width - panel.width / 2 - margin)
+        let x = right + panel.width / 2 <= viewport.width - margin ? right : max(minimumX, left)
+
+        let minimumY = panel.height / 2 + margin
+        let maximumY = max(minimumY, viewport.height - panel.height / 2 - margin)
+        return CGPoint(x: min(maximumX, max(minimumX, x)),
+                       y: min(maximumY, max(minimumY, card.midY)))
+    }
+
+    /// Steam espera un instante antes de abrir la tarjeta rica: recorrer el grid no provoca red
+    /// ni paneles fugaces. Una vez abierta, cambiar de juego es más rápido para sentirse continuo.
+    private func handleGridHover(_ hovering: Bool, game: StoreGame) {
+        hoverPresentationTask?.cancel()
+
+        if hovering {
+            hoverCandidateID = game.id
+            let delay: Duration = previewedGame == nil ? .milliseconds(420) : .milliseconds(130)
+            hoverPresentationTask = Task { @MainActor in
+                do { try await Task.sleep(for: delay) } catch { return }
+                guard !Task.isCancelled, hoverCandidateID == game.id else { return }
+                let enriched = enrichedGame(game)
+                if reduceMotion { previewedGame = enriched }
+                else { withAnimation(.smooth(duration: 0.20)) { previewedGame = enriched } }
+            }
+        } else {
+            guard hoverCandidateID == game.id else { return }
+            hoverCandidateID = nil
+            hoverPresentationTask = Task { @MainActor in
+                do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+                guard !Task.isCancelled, hoverCandidateID == nil,
+                      previewedGame?.id == game.id else { return }
+                dismissHoverPreview(immediately: false)
+            }
+        }
+    }
+
+    private func dismissHoverPreview(immediately: Bool) {
+        hoverPresentationTask?.cancel()
+        hoverPresentationTask = nil
+        hoverCandidateID = nil
+        if immediately || reduceMotion { previewedGame = nil }
+        else { withAnimation(.smooth(duration: 0.16)) { previewedGame = nil } }
+    }
+
+    /// Los cambios de consulta/orden pueden retirar o desplazar la carátula ancla. Cierra antes
+    /// el panel para que nunca reaparezca al restaurar un filtro sin un hover nuevo.
+    private func refreshDisplayed() {
+        dismissHoverPreview(immediately: true)
+        displayed = computeFiltered()
     }
 
     /// Juegos jugados recientemente (los que tienen `lastPlayed`), más recientes primero.
@@ -755,8 +840,12 @@ struct StoreLibraryView: View {
                         onToggleFavorite: { toggleFav(game.id) },
                         onUninstall: { onUninstall(game) },
                         onOpen: { selectedGame = game },
+                        onHoverChanged: { handleGridHover($0, game: game) },
                         onExport: onExport.map { cb in { cb(game) } }
                     )
+                    .anchorPreference(key: GameCardBoundsPreferenceKey.self, value: .bounds) {
+                        [game.id: $0]
+                    }
                     .transition(.opacity.combined(with: .scale(scale: 0.97)))
                 }
             }
@@ -782,6 +871,7 @@ struct StoreGameCard: View {
     var onToggleFavorite: () -> Void = {}
     var onUninstall: () -> Void = {}
     var onOpen: () -> Void = {}
+    var onHoverChanged: (Bool) -> Void = { _ in }
     /// Exportar (copiar a USB/disco). Si es `nil`, no se muestra la opción. Lo usa DRM‑free.
     var onExport: (() -> Void)? = nil
 
@@ -802,6 +892,7 @@ struct StoreGameCard: View {
             }
             .hoverLift()
             .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous))
+            .onHover(perform: onHoverChanged)
             .onTapGesture { onOpen() }
             .contextMenu {
                 if game.installed {
@@ -1036,29 +1127,10 @@ struct RecentlyPlayedCard: View {
 
 // MARK: - Ficha de juego (estilo Steam)
 
-/// Metadatos **públicos** de un juego de Steam (API `appdetails`), para enriquecer la ficha
-/// igual que las carátulas: solo datos públicos del juego (descripción, géneros, capturas,
-/// estudio, fecha, Metacritic). Nada personal. Ver `loadDetails`.
-struct SteamGameDetails {
-    var description: String?
-    var developers: [String] = []
-    var publishers: [String] = []
-    var releaseDate: String?
-    var genres: [String] = []
-    var metacritic: Int?
-    var screenshots: [URL] = []
-    /// Versión a resolución completa de cada captura (para el visor ampliado). Paralelo a `screenshots`.
-    var screenshotsFull: [URL] = []
-    /// Características del juego (categorías de Steam): un jugador, mando, logros, nube, etc.
-    var categories: [String] = []
-    /// Número de reseñas de Steam (recommendations.total), para paridad con la tienda.
-    var reviewCount: Int?
-    /// Logros del juego (número total) y los iconos destacados (datos públicos de appdetails).
-    var achievementsTotal: Int?
-    var achievementIcons: [URL] = []
-    /// AppIDs de DLC del juego (para mostrar la sección de DLC).
-    var dlcIds: [Int] = []
-}
+/// Alias conservado para la ficha existente. El modelo compartido reúne únicamente metadatos
+/// públicos (descripción, géneros, capturas, vídeos, estudio, fecha y puntuaciones), nunca datos
+/// personales. Ver `StoreGameMetadataService`.
+typealias SteamGameDetails = StoreGameMetadata
 
 /// Un DLC resuelto (nombre + carátula) para mostrarlo en la ficha.
 struct StoreDLC: Identifiable, Hashable {
@@ -1829,27 +1901,9 @@ struct GameDetailView: View {
     /// Enriquece la ficha de un juego de **GOG** con su API pública (descripción + capturas).
     /// Reutiliza el visor y las secciones comunes — paridad visual también en GOG.
     @MainActor private func loadGogDetails(_ id: String) async {
-        guard let url = URL(string: "https://api.gog.com/products/\(id)?expand=description,screenshots") else { return }
         loadingDetails = true
         defer { loadingDetails = false }
-        do {
-            var req = URLRequest(url: url); req.timeoutInterval = 12
-            let (data, _) = try await URLSession.shared.data(for: req)
-            guard let d = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-            var det = SteamGameDetails()
-            if let desc = d["description"] as? [String: Any] {
-                let body = (desc["full"] as? String) ?? (desc["lead"] as? String) ?? ""
-                det.description = Self.stripHTML(body)
-            }
-            let shots = ((d["screenshots"] as? [[String: Any]]) ?? []).prefix(12)
-            func gogURL(_ s: [String: Any], _ formatter: String) -> URL? {
-                (s["formatter_template_url"] as? String)
-                    .flatMap { URL(string: $0.replacingOccurrences(of: "{formatter}", with: formatter)) }
-            }
-            det.screenshots = shots.compactMap { gogURL($0, "ggvgm_2x") }       // miniatura
-            det.screenshotsFull = shots.compactMap { gogURL($0, "ggvgl_2x") }   // resolución grande
-            details = det
-        } catch { }
+        details = await StoreGameMetadataService.shared.gogDetails(productID: id, title: game.title)
     }
 
     /// Enriquece la ficha de un juego de **Steam** con la API pública `appdetails`.
@@ -1865,74 +1919,20 @@ struct GameDetailView: View {
     /// desarrolladores, géneros, logros, DLCs y CAPTURAS reales. Reutilizable como fuente de
     /// enriquecimiento para Epic (que no expone capturas por su backend). Sin clave ni auth.
     static func fetchSteamDetails(appId: String) async -> SteamGameDetails? {
-        guard let url = URL(string: "https://store.steampowered.com/api/appdetails?appids=\(appId)&l=spanish")
-        else { return nil }
-        do {
-            var req = URLRequest(url: url); req.timeoutInterval = 12
-            let (data, _) = try await URLSession.shared.data(for: req)
-            guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let entry = obj[appId] as? [String: Any],
-                  (entry["success"] as? Bool) == true,
-                  let d = entry["data"] as? [String: Any] else { return nil }
-            var det = SteamGameDetails()
-            if let desc = (d["short_description"] as? String) ?? (d["about_the_game"] as? String) {
-                det.description = stripHTML(desc)
-            }
-            det.developers = (d["developers"] as? [String]) ?? []
-            det.publishers = (d["publishers"] as? [String]) ?? []
-            det.releaseDate = (d["release_date"] as? [String: Any])?["date"] as? String
-            det.genres = ((d["genres"] as? [[String: Any]]) ?? []).compactMap { $0["description"] as? String }
-            det.categories = ((d["categories"] as? [[String: Any]]) ?? []).compactMap { $0["description"] as? String }
-            det.metacritic = (d["metacritic"] as? [String: Any])?["score"] as? Int
-            det.reviewCount = (d["recommendations"] as? [String: Any])?["total"] as? Int
-            if let ach = d["achievements"] as? [String: Any] {
-                det.achievementsTotal = ach["total"] as? Int
-                det.achievementIcons = ((ach["highlighted"] as? [[String: Any]]) ?? []).prefix(10).compactMap {
-                    ($0["path"] as? String).flatMap { URL(string: $0) }
-                }
-            }
-            det.dlcIds = (d["dlc"] as? [Int]) ?? []
-            let shots = ((d["screenshots"] as? [[String: Any]]) ?? []).prefix(12)
-            det.screenshots = shots.compactMap { ($0["path_thumbnail"] as? String).flatMap { URL(string: $0) } }
-            det.screenshotsFull = shots.compactMap { ($0["path_full"] as? String).flatMap { URL(string: $0) } }
-            return det
-        } catch { return nil }
+        await StoreGameMetadataService.shared.steamDetails(appId: appId)
     }
 
     /// Busca en Steam el `appid` de un juego por su título (API pública `storesearch`, sin clave).
     /// Solo devuelve un match si el nombre coincide de forma estricta (normalizado) — evita
     /// enriquecer un juego de Epic con capturas de otro juego distinto de nombre parecido.
     static func steamAppId(forTitle title: String) async -> String? {
-        let norm = normalizedTitle(title)
-        guard !norm.isEmpty,
-              let enc = title.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "https://store.steampowered.com/api/storesearch/?term=\(enc)&cc=us&l=en")
-        else { return nil }
-        do {
-            var req = URLRequest(url: url); req.timeoutInterval = 12
-            let (data, _) = try await URLSession.shared.data(for: req)
-            guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let items = obj["items"] as? [[String: Any]] else { return nil }
-            for it in items.prefix(5) {
-                guard let name = it["name"] as? String, let id = it["id"] as? Int else { continue }
-                if normalizedTitle(name) == norm { return String(id) }
-            }
-            return nil
-        } catch { return nil }
+        await StoreGameMetadataService.shared.steamAppId(matching: title)
     }
 
     /// Normaliza un título para comparar: minúsculas, sin ™®©, sin puntuación, sin sufijos de
     /// edición y sin espacios (así "Layers of Fear" == "Layers of Fear™").
     static func normalizedTitle(_ s: String) -> String {
-        var t = s.lowercased()
-        for junk in ["™", "®", "©", "’", "'", ":", "-", "–", "—", ".", ",", "!", "?", "(", ")"] {
-            t = t.replacingOccurrences(of: junk, with: " ")
-        }
-        for suffix in ["definitive edition", "game of the year edition", "goty edition",
-                       "complete edition", "deluxe edition", "remastered", "the "] {
-            t = t.replacingOccurrences(of: suffix, with: " ")
-        }
-        return t.components(separatedBy: .whitespaces).filter { !$0.isEmpty }.joined()
+        StoreGameMetadataService.normalizedTitle(s)
     }
 
     /// Resuelve nombre + carátula de los primeros DLC (datos públicos de Steam, en paralelo).
