@@ -574,10 +574,42 @@ final class WineManager {
     /// emulador — SDL puro, sin Direct3D, y con su configuración en el `.conf`/`.ini` que le pasa
     /// el propio playTask. Basta un Wine que ejecute 32-bit, sin capas de traducción.
     func isRetroWrapper(_ executable: String) -> Bool {
+        isDOSBoxWrapper(executable) || isScummVMWrapper(executable)
+    }
+
+    /// `true` si es el **DOSBox de Windows** que envuelve un juego de DOS. Estos NO se lanzan con
+    /// Wine: Vessel usa su DOSBox **nativo** (ver `DOSBoxManager`) — el 0.74-2 de GOG usa SDL 1.2 y
+    /// bajo Wine en Apple Silicon no crea ventana con ninguna salida de vídeo.
+    nonisolated func isDOSBoxWrapper(_ executable: String) -> Bool {
         let name = ((executable as NSString).lastPathComponent as NSString)
             .deletingPathExtension.lowercased()
-        // `dosbox`, `dosbox_x`, `dosbox-staging`… y `scummvm`.
-        return name == "scummvm" || name == "dosbox" || name.hasPrefix("dosbox_") || name.hasPrefix("dosbox-")
+        return name == "dosbox" || name.hasPrefix("dosbox_") || name.hasPrefix("dosbox-")
+    }
+
+    /// `true` si es el **ScummVM de Windows** de una aventura gráfica clásica. Este sí va por Wine
+    /// (SDL2, y con `SDL_RENDER_DRIVER=software` renderiza bien — validado con Beneath a Steel Sky).
+    nonisolated func isScummVMWrapper(_ executable: String) -> Bool {
+        ((executable as NSString).lastPathComponent as NSString)
+            .deletingPathExtension.lowercased() == "scummvm"
+    }
+
+    /// Raíz del juego a partir del exe del emulador: GOG lo mete en una subcarpeta (`…/DOSBOX/`),
+    /// así que la raíz es su padre — que es donde están los `.conf` y el juego en sí. Se confirma
+    /// buscando el `goggame-<id>.info`; si no aparece, se asume el padre igualmente.
+    nonisolated func retroGameRoot(forExecutable executable: String) -> String? {
+        let dir = (executable as NSString).deletingLastPathComponent      // …/DOSBOX
+        let parent = (dir as NSString).deletingLastPathComponent          // …/<juego>
+        guard !parent.isEmpty, parent != "/" else { return nil }
+        return parent
+    }
+
+    /// AppID de GOG leído del `goggame-<id>.info` de la carpeta (para nombrar la config traducida).
+    nonisolated func retroAppId(_ gameRoot: String) -> String? {
+        guard let items = try? FileManager.default.contentsOfDirectory(atPath: gameRoot) else { return nil }
+        for f in items where f.hasPrefix("goggame-") && f.hasSuffix(".info") {
+            return String(f.dropFirst("goggame-".count).dropLast(".info".count))
+        }
+        return nil
     }
 
     func detectGraphicsAPI(forExecutable executable: String) -> GameGraphicsAPI {
@@ -808,6 +840,23 @@ final class WineManager {
                 try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
             }
         }
+        // ⭐ **Envoltorios retro (DOSBox/ScummVM): ANTES que cualquier override de capa gráfica.**
+        // Estos no son juegos de Direct3D — son emuladores SDL —, así que "forzar Gcenx/DXMT/GPTK"
+        // no significa nada para ellos y solo hace daño: bastaba con que un intento anterior hubiera
+        // dejado `graphicsLayer = .gcenx` en su config (lo persiste el propio fallback) para que
+        // cayeran en la ruta D3D9→wined3d, que es justo la que hay que evitar. Aquí manda lo que ES
+        // el binario, por encima de lo que diga la config.
+        if isRetroWrapper(executable) {
+            // **Juegos de DOS → DOSBox NATIVO**, saltándose Wine entero: el DOSBox de Windows que
+            // trae GOG es SDL 1.2 y aquí no crea ventana ni con una salida de vídeo. El juego es de
+            // DOS; no necesita Windows. ScummVM sí va por Wine (SDL2, y renderiza bien).
+            if isDOSBoxWrapper(executable), let root = retroGameRoot(forExecutable: executable) {
+                return try await launchNativeDOSBox(executable: executable, arguments: allArgs,
+                                                    gameRoot: root, appId: retroAppId(root) ?? "game")
+            }
+            return try await launchRetroWrapper(executable: executable, in: bottle,
+                                                arguments: allArgs, effective: eff)
+        }
         // Capa gráfica: override por juego (Ajustes/perfil) o auto-detección por API.
         // D3D12 (AAA, FF Tactics) → GPTK/D3DMetal (Metal nativo, ignora el Agility
         // SDK), con el cliente Steam en el mismo wineserver para el DRM.
@@ -835,16 +884,6 @@ final class WineManager {
             // wine-d3dmetal queda para el modo Steam-real (que ya se gestiona arriba y comparte
             // wineserver con el cliente Steam).
             return try await launchD3D12Game(executable: executable, in: bottle, steamAppId: steamAppId, effective: eff, forceGPTK: true)
-        }
-        // **Envoltorios retro (DOSBox/ScummVM) → Gcenx, sin capa.** VA ANTES que la detección de API
-        // a propósito: `dosbox.exe` IMPORTA d3d9 (se lo trae SDL2, que en Windows usa Direct3D 9 de
-        // backend por defecto), así que la detección lo clasifica como "juego D3D9" y lo mandaba a
-        // la ruta de wined3d — que es justo la que hay que evitar. Estos no son juegos de Direct3D:
-        // son emuladores SDL que pintan por software, y con `SDL_RENDER_DRIVER=software` ni tocan
-        // wined3d. Aquí manda lo que ES el binario, no lo que importa.
-        if isRetroWrapper(executable) {
-            return try await launchRetroWrapper(executable: executable, in: bottle,
-                                                arguments: allArgs, effective: eff)
         }
         // Juegos D3D9/D3D8/DDraw → Gcenx (wine-osx64, Wine 11 completo, wined3d→Metal).
         // wine-dxmt no resuelve el d3d9 (falla con c0000135 "d3d9.dll not found"); Gcenx sí.
@@ -1038,6 +1077,43 @@ final class WineManager {
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: effective
         )
+    }
+
+    /// Lanza un juego de **DOS con el DOSBox NATIVO** de Vessel — sin Wine y sin Rosetta.
+    ///
+    /// El `.exe` que declara GOG es un DOSBox **para Windows**, pero el juego que hay dentro es de
+    /// DOS: no necesita Windows para nada. Se descarta ese envoltorio y se ejecuta el mismo juego,
+    /// con la misma configuración que GOG afinó, sobre DOSBox Staging nativo (arm64). Sale mejor
+    /// que en Windows: sin dos capas de emulación de por medio.
+    ///
+    /// Motivo de fondo: el DOSBox 0.74-2 de GOG usa SDL 1.2, que bajo este Wine en Apple Silicon no
+    /// crea ventana con NINGUNA salida de vídeo (probadas `surface`/`overlay`/`opengl`/`openglnb`/
+    /// `ddraw`: todas negras). No es un ajuste que falte: es un muro.
+    private func launchNativeDOSBox(executable: String, arguments: [String],
+                                    gameRoot: String, appId: String) async throws -> Process {
+        let binary = try await DOSBoxManager.shared.ensureInstalled { [weak self] msg in
+            self?.log.log(msg, level: .info)
+        }
+        let args = DOSBoxManager.nativeArguments(from: arguments, gameRoot: gameRoot, appId: appId)
+        // El directorio de trabajo es la carpeta del `dosbox.exe` de GOG: sus `.conf` montan las
+        // unidades con rutas RELATIVAS a ella (`mount C ".."` = la raíz del juego).
+        let workingDir = (executable as NSString).deletingLastPathComponent
+        log.log("Juego de DOS: usando el DOSBox NATIVO (arm64, sin Wine ni Rosetta).", level: .info)
+        log.log("CMD: dosbox \(args.joined(separator: " "))", level: .debug)
+
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: binary)
+        p.arguments = args
+        if FileManager.default.fileExists(atPath: workingDir) {
+            p.currentDirectoryURL = URL(fileURLWithPath: workingDir)
+        }
+        // Log del juego en el mismo sitio que el resto, para diagnóstico real.
+        let logPath = "\(NSHomeDirectory())/Library/Logs/Vessel/game-launch.log"
+        FileManager.default.createFile(atPath: logPath, contents: nil)
+        if let h = FileHandle(forWritingAtPath: logPath) { p.standardOutput = h; p.standardError = h }
+        do { try p.run() } catch { throw WineError.launchFailed(error.localizedDescription) }
+        log.log("DOSBox nativo lanzado (pid=\(p.processIdentifier))", level: .info)
+        return p
     }
 
     /// Lanza un **envoltorio retro** (DOSBox / ScummVM) con Gcenx y **sin tocar nada más**.
