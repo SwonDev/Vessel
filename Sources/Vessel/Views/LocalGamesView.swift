@@ -11,6 +11,9 @@ struct LocalGamesView: View {
     private var games = LocalGamesStore.shared
     private let store = BottleStore.shared
     @State private var wineManager = WineManager()
+    /// Solo para localizar los juegos de GOG ya instalados (todo GOG es DRM‑free por política de
+    /// la tienda) — la instalación/actualización sigue viviendo en la sección de GOG.
+    @State private var gogdl = GogdlManager()
     private var tracker = GameLaunchTracker.shared
 
     @State private var showingItchLink = false
@@ -32,12 +35,19 @@ struct LocalGamesView: View {
             ?? store.bottles.first
     }
 
+    /// Carpeta local del juego: la de instalación o, si no consta, la del ejecutable. `nil` si el
+    /// juego aún no está en disco. Fuente única para exportar/verificar/abrir carpeta.
+    private func folder(of g: LocalGamesStore.Game) -> String? {
+        if let ip = g.installPath, !ip.isEmpty { return ip }
+        guard !g.executablePath.isEmpty else { return nil }
+        return (g.executablePath as NSString).deletingLastPathComponent
+    }
+
     // MARK: - Mapeo a StoreGame (para reutilizar StoreLibraryView)
 
     private var storeGames: [StoreGame] {
         games.games.map { g in
-            let folder = g.installPath
-                ?? (g.installed ? (g.executablePath as NSString).deletingLastPathComponent : nil)
+            let folder = g.installPath ?? (g.installed ? folder(of: g) : nil)
             return StoreGame(
                 id: g.id.uuidString,
                 title: g.name,
@@ -69,11 +79,14 @@ struct LocalGamesView: View {
             onInstall: { sg in if let g = game(sg) { download(g) } },
             onPlay: { sg in if let g = game(sg) { play(g) } },
             onUninstall: { sg in if let g = game(sg) { games.uninstall(g.id) } },
+            onVerify: { sg in if let g = game(sg) { verifyIntegrity(g) } },
+            onUpdate: { sg in if let g = game(sg) { updateGame(g) } },
             onReload: { refresh() },
             onLogout: { },
             toolbarExtra: AnyView(drmFreeMenu),
             onExport: { sg in if let g = game(sg) { exportChoice = g } }
         )
+        .task { syncStores() }
         .overlay(alignment: .bottom) { bannerView }
         .confirmationDialog("Exportar «\(exportChoice?.name ?? "")»",
                             isPresented: Binding(get: { exportChoice != nil }, set: { if !$0 { exportChoice = nil } }),
@@ -109,6 +122,23 @@ struct LocalGamesView: View {
             Button { addGame() } label: { Label("Añadir un .exe de juego…", systemImage: "plus.app") }
             Button { runInstaller() } label: { Label("Ejecutar un instalador…", systemImage: "shippingbox") }
             Divider()
+            Menu("Disco físico") {
+                Button { pickImageAndInstall() } label: { Label("Instalar desde una imagen (.iso)…", systemImage: "opticaldiscdrive") }
+                let discs = PhysicalMediaImporter.mountedGameDiscs()
+                if discs.isEmpty {
+                    Text("No hay ningún disco de juego insertado")
+                } else {
+                    Divider()
+                    ForEach(discs, id: \.self) { disc in
+                        let name = (disc as NSString).lastPathComponent
+                        Menu(name) {
+                            Button { installFromMedia(mountedAt: disc) } label: { Label("Instalar desde este disco", systemImage: "arrow.down.circle") }
+                            Button { preserveDisc(disc) } label: { Label("Preservar como imagen ISO…", systemImage: "archivebox") }
+                        }
+                    }
+                }
+            }
+            Divider()
             if ItchService.shared.isLinked {
                 Menu("itch.io") {
                     Button { syncItch() } label: { Label("Sincronizar biblioteca", systemImage: "arrow.clockwise") }
@@ -139,9 +169,15 @@ struct LocalGamesView: View {
             VStack(spacing: 8) {
                 HStack(spacing: 10) {
                     ProgressView().controlSize(.small).tint(.white)
-                    Text("Exportando «\(ep.name)» — \(ep.msg)").font(.callout.weight(.medium)).foregroundStyle(.white).lineLimit(1)
+                    Text("\(ep.name) — \(ep.msg)").font(.callout.weight(.medium)).foregroundStyle(.white).lineLimit(1)
                 }
-                ProgressView(value: ep.frac).tint(StoreKind.local.tint).frame(width: 320)
+                // `frac` negativa = no se conoce el avance (p. ej. el volcado de un disco, que no
+                // reporta progreso): barra indeterminada en vez de un porcentaje inventado.
+                if ep.frac < 0 {
+                    ProgressView().progressViewStyle(.linear).tint(StoreKind.local.tint).frame(width: 320)
+                } else {
+                    ProgressView(value: ep.frac).tint(StoreKind.local.tint).frame(width: 320)
+                }
             }
             .padding(.horizontal, 18).padding(.vertical, 13)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -161,11 +197,147 @@ struct LocalGamesView: View {
         }
     }
 
+    /// Recoge de las tiendas todo lo que ya es DRM‑free sin tener que generar nada: GOG (todo su
+    /// catálogo lo es) y los juegos de Epic que la propia Epic declara sin token de propiedad.
+    @discardableResult
+    private func syncStores() -> String? {
+        let gog = GOGDRMFreeImporter.sync(gogdl: gogdl)
+        let epic = EpicDRMFreeImporter.sync()
+        var parts: [String] = []
+        if gog > 0 { parts.append("\(gog) de GOG") }
+        if epic.imported > 0 { parts.append("\(epic.imported) de Epic") }
+        return parts.isEmpty ? nil : parts.joined(separator: " y ")
+    }
+
     private func refresh() {
+        let fromStores = syncStores()
         if ItchService.shared.isLinked { syncItch() }
         if HumbleService.shared.isLinked { syncHumble() }
         if !ItchService.shared.isLinked && !HumbleService.shared.isLinked {
-            flash("Biblioteca DRM‑free actualizada.", false)
+            flash(fromStores.map { "Biblioteca DRM‑free actualizada — \($0) incluidos." }
+                  ?? "Biblioteca DRM‑free actualizada.", false)
+        }
+    }
+
+    // MARK: - Verificar / sellar (preservación)
+
+    /// **Verifica la integridad** de la copia, o la **sella** si aún no lo estaba. Sellar = escribir
+    /// un manifiesto con el SHA‑256 de cada fichero; verificar = recomprobarlos. Es lo que convierte
+    /// una carpeta en un archivo preservado de verdad: dentro de diez años sabrás si tu copia sigue
+    /// intacta o si el disco se ha ido degradando (bit rot) sin avisar.
+    private func verifyIntegrity(_ g: LocalGamesStore.Game) {
+        guard let dir = folder(of: g), FileManager.default.fileExists(atPath: dir) else {
+            flash("Este juego no tiene una carpeta local que verificar.", true); return
+        }
+        let sealed = DRMFreeArchive.readManifest(folder: dir) != nil
+        exportProgress = (g.name, -1, sealed ? "Verificando…" : "Sellando la copia…")
+        Task {
+            do {
+                if sealed {
+                    let r = try await DRMFreeArchive.shared.verify(folder: dir) { frac, msg in
+                        Task { @MainActor in exportProgress = (g.name, frac, msg) }
+                    }
+                    exportProgress = nil
+                    flash(r.summary, !r.isIntact)
+                } else {
+                    let m = try await DRMFreeArchive.shared.writeManifest(
+                        folder: dir, title: g.name, source: g.source.rawValue, sourceId: g.sourceId,
+                        executable: (g.executablePath as NSString).lastPathComponent
+                    ) { frac, msg in Task { @MainActor in exportProgress = (g.name, frac, msg) } }
+                    exportProgress = nil
+                    flash("«\(g.name)» sellado: \(m.files.count) fichero(s) con huella SHA‑256. Ya puedes verificarlo cuando quieras.", false)
+                }
+            } catch {
+                exportProgress = nil
+                flash((error as? LocalizedError)?.errorDescription ?? "No se pudo verificar la copia.", true)
+            }
+        }
+    }
+
+    /// "Actualizar" = re‑descargar el build nuevo del origen. Solo itch.io y Humble publican builds
+    /// que Vessel pueda traerse; el resto se actualiza desde su propia tienda.
+    private func updateGame(_ g: LocalGamesStore.Game) {
+        switch g.source {
+        case .itch, .humble: download(g)
+        case .gog: flash("Los juegos de GOG se actualizan desde la sección de GOG.", false)
+        case .steam: flash("Vuelve a generar la copia local desde Steam para actualizarla.", false)
+        default: flash("«\(g.name)» no tiene un origen del que descargar actualizaciones.", false)
+        }
+    }
+
+    // MARK: - Medio físico (disco / imagen ISO)
+
+    /// **Instala desde un disco o una imagen.** El juego en disco es el DRM‑free original: lo
+    /// compraste, es tuyo y no depende de que ninguna tienda siga existiendo. Monta la imagen en
+    /// solo lectura, busca el instalador que declara el propio disco (`autorun.inf`) y lo ejecuta.
+    private func installFromMedia(imagePath: String? = nil, mountedAt: String? = nil) {
+        guard let bottle else { flash("Aún no hay un entorno de Wine listo.", true); return }
+        Task {
+            var mounted: PhysicalMediaImporter.Media?
+            do {
+                let mountPoint: String
+                if let mountedAt {
+                    mountPoint = mountedAt
+                } else if let imagePath {
+                    flash("Montando la imagen…", false)
+                    let m = try await PhysicalMediaImporter.shared.mount(imageAt: imagePath)
+                    mounted = m
+                    mountPoint = m.mountPoint
+                } else { return }
+                guard let installer = PhysicalMediaImporter.findInstaller(in: mountPoint) else {
+                    throw PhysicalMediaImporter.MediaError.noInstaller
+                }
+                flash("Ejecutando «\((installer as NSString).lastPathComponent)» del disco… al acabar, elige el ejecutable del juego.", false)
+                let proc = try await wineManager.launch(executable: installer, in: bottle,
+                                                        arguments: [], effective: EffectiveLaunchConfig())
+                while proc.isRunning { try? await Task.sleep(for: .seconds(1)) }
+                promptForInstalledExe(in: bottle)
+            } catch {
+                flash((error as? LocalizedError)?.errorDescription ?? "No se pudo instalar desde el disco.", true)
+            }
+            // Se desmonta SIEMPRE lo que montamos nosotros; un disco que ya estaba montado no se toca.
+            if let mounted { await PhysicalMediaImporter.shared.unmount(mounted) }
+        }
+    }
+
+    private func pickImageAndInstall() {
+        let panel = NSOpenPanel()
+        panel.title = "Elige la imagen del disco (.iso / .img)"
+        panel.prompt = "Instalar desde aquí"
+        panel.message = "Se montará en solo lectura y se ejecutará su instalador dentro de Vessel."
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = ["iso", "img", "cdr", "dmg"].compactMap { UTType(filenameExtension: $0) }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        installFromMedia(imagePath: url.path)
+    }
+
+    /// **Preserva el disco**: lo vuelca a un `.iso` que conservas para siempre — aunque el disco se
+    /// raye, se pierda o ya no tengas lector. Con la industria retirando el formato físico, esto es
+    /// lo único que garantiza que tu copia siga siendo tuya dentro de veinte años.
+    private func preserveDisc(_ mountPoint: String) {
+        let discName = (mountPoint as NSString).lastPathComponent
+        let panel = NSSavePanel()
+        panel.title = "Guardar la imagen de «\(discName)»"
+        panel.prompt = "Preservar"
+        panel.message = "Se creará una imagen ISO estándar, legible en cualquier sistema."
+        panel.nameFieldStringValue = "\(discName).iso"
+        panel.allowedContentTypes = [UTType(filenameExtension: "iso")].compactMap { $0 }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        exportProgress = (discName, -1, "Volcando el disco…")
+        Task {
+            do {
+                let iso = try await PhysicalMediaImporter.shared.ripDiscToISO(
+                    mountPoint: mountPoint, dest: url.path
+                ) { msg in Task { @MainActor in exportProgress = (discName, -1, msg) } }
+                exportProgress = nil
+                flash("«\(discName)» preservado como \((iso as NSString).lastPathComponent).", false)
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: iso)])
+            } catch {
+                exportProgress = nil
+                flash((error as? LocalizedError)?.errorDescription ?? "No se pudo preservar el disco.", true)
+            }
         }
     }
 

@@ -15,7 +15,9 @@ final class LocalGamesStore {
         case local        // .exe / instalador añadido a mano
         case itch         // itch.io (biblioteca vinculada)
         case humble       // Humble Bundle (biblioteca vinculada)
+        case gog          // GOG (biblioteca vinculada) — DRM‑free por política de la tienda
         case gogOffline   // instalador offline de GOG añadido a mano
+        case epic         // Epic — solo los que la propia Epic declara sin token de propiedad
         case steam        // copia local DRM‑free generada desde un juego de Steam sin CEG
 
         var displayName: String {
@@ -23,7 +25,9 @@ final class LocalGamesStore {
             case .local: return "Local"
             case .itch: return "itch.io"
             case .humble: return "Humble Bundle"
+            case .gog: return "GOG"
             case .gogOffline: return "GOG offline"
+            case .epic: return "Epic"
             case .steam: return "Steam (DRM‑free)"
             }
         }
@@ -150,25 +154,49 @@ final class LocalGamesStore {
         return g.id
     }
 
-    /// Registra (o actualiza) una **copia local DRM‑free generada desde Steam** — ya instalada.
-    /// Dedup por appId (sourceId). Devuelve el id.
+    /// Registra (o actualiza) un juego **ya instalado en disco** que entra al hub DRM‑free
+    /// (copia generada desde Steam, juego de GOG…). Dedup por `source`+`sourceId`. Devuelve el id.
     @discardableResult
-    func upsertSteamCopy(appId: String, name: String, executablePath: String,
-                         installPath: String, coverURL: String?) -> UUID {
-        if let i = games.firstIndex(where: { $0.source == .steam && $0.sourceId == appId }) {
+    func upsertInstalledCopy(source: Source, sourceId: String, name: String,
+                             executablePath: String, installPath: String,
+                             coverURL: String? = nil, pageURL: String? = nil,
+                             platform: Platform = .windows) -> UUID {
+        if let i = games.firstIndex(where: { $0.source == source && $0.sourceId == sourceId }) {
             games[i].name = name
             games[i].executablePath = executablePath
             games[i].installPath = installPath
-            games[i].coverURL = coverURL
+            games[i].platform = platform
+            if let coverURL { games[i].coverURL = coverURL }
+            if let pageURL { games[i].pageURL = pageURL }
             save()
             return games[i].id
         }
-        var g = Game(name: name, source: .steam, sourceId: appId,
-                     executablePath: executablePath, installPath: installPath, coverURL: coverURL)
-        g.pageURL = "https://store.steampowered.com/app/\(appId)"
+        let g = Game(name: name, source: source, sourceId: sourceId,
+                     executablePath: executablePath, platform: platform,
+                     installPath: installPath, coverURL: coverURL, pageURL: pageURL)
         games.insert(g, at: 0)
         save()
         return g.id
+    }
+
+    /// Registra (o actualiza) una **copia local DRM‑free generada desde Steam** — ya instalada.
+    @discardableResult
+    func upsertSteamCopy(appId: String, name: String, executablePath: String,
+                         installPath: String, coverURL: String?) -> UUID {
+        upsertInstalledCopy(source: .steam, sourceId: appId, name: name,
+                            executablePath: executablePath, installPath: installPath,
+                            coverURL: coverURL,
+                            pageURL: "https://store.steampowered.com/app/\(appId)")
+    }
+
+    /// Quita del hub las entradas de una fuente **espejo del disco** (GOG/Steam) cuyo ejecutable
+    /// ya no existe — p. ej. porque el juego se desinstaló desde su tienda. Nunca borra archivos:
+    /// solo deja de listar lo que ya no está. No aplica a itch/Humble, donde la entrada de
+    /// biblioteca debe sobrevivir a la desinstalación (es re‑descargable).
+    func pruneMissing(source: Source) {
+        let before = games.count
+        games.removeAll { $0.source == source && !$0.installed }
+        if games.count != before { save() }
     }
 
     /// Marca una entrada como instalada tras descargarla (fija exe/app + dir + plataforma + versión).

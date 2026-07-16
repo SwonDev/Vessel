@@ -128,6 +128,15 @@ struct GameCoverImage<Placeholder: View>: View {
     @State private var image: NSImage?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// Identidad del `.task`: el key **y** las candidatas. Si dependiera solo del key, una carátula
+    /// que llega TARDE no se pintaría nunca: al sincronizar la biblioteca después del primer render
+    /// (DRM‑free rellena la portada de Epic/GOG al importar, y SteamGridDB al meter la clave) cambian
+    /// las candidatas pero NO el id del juego → el `.task` no se relanzaba y la tarjeta se quedaba
+    /// en el placeholder hasta reabrir la app.
+    private var loadID: String {
+        cacheKey + "\u{1}" + candidates.map(\.absoluteString).joined(separator: "\u{2}")
+    }
+
     init(cacheKey: String, candidates: [URL], @ViewBuilder placeholder: @escaping () -> Placeholder) {
         self.cacheKey = cacheKey
         self.candidates = candidates
@@ -148,10 +157,11 @@ struct GameCoverImage<Placeholder: View>: View {
                 }
             }
             .clipped()
-            .task(id: cacheKey) {
+            .task(id: loadID) {
                 // Re-derivar para el `cacheKey` ACTUAL (cubre el reuso de celda con otro key):
                 // si está en caché (memoria/disco) se pinta al instante; si no, se descarga.
                 if let hit = CoverCache.shared.cached(cacheKey) { image = hit; return }
+                guard !candidates.isEmpty else { image = nil; return }   // aún no hay portada que pedir
                 image = nil   // no cacheada aún → placeholder + shimmer mientras baja
                 let loaded = await CoverCache.shared.load(cacheKey, candidates: candidates)
                 guard !Task.isCancelled else { return }

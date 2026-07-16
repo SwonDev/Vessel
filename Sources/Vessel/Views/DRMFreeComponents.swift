@@ -88,12 +88,23 @@ struct SteamDRMImportSheet: View {
     @State private var pendingInstall: (appId: String, name: String)?
     @AppStorage("steamcmd.user") private var steamCMDUser = ""
 
+    /// AppIDs que PCGamingWiki confirma **DRM‑free** (índice completo de Steam, cacheado 7 días).
+    @State private var drmFreeAppIds: Set<String> = []
+    /// Mostrar solo los juegos de tu biblioteca confirmados DRM‑free.
+    @State private var onlyDRMFree = false
+
     private var generable: [SteamDRMScanner.Candidate] { candidates.filter { $0.status.isGenerable } }
     private var installedAppIds: Set<String> { Set(candidates.map { $0.appId }) }
+    /// Los juegos de tu biblioteca que PCGamingWiki confirma DRM‑free y aún no tienes instalados:
+    /// literalmente la lista de lo que puedes liberar ahora mismo.
+    private var ownedDRMFreeCount: Int {
+        ownedGames.count { drmFreeAppIds.contains($0.appId) && !installedAppIds.contains($0.appId) }
+    }
     private var ownedNotInstalled: [SteamAccountService.OwnedGame] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
         return ownedGames
             .filter { !installedAppIds.contains($0.appId) && !done.contains($0.appId) }
+            .filter { !onlyDRMFree || drmFreeAppIds.contains($0.appId) }
             .filter { q.isEmpty || $0.name.lowercased().contains(q) }
     }
 
@@ -109,7 +120,7 @@ struct SteamDRMImportSheet: View {
             }
         }
         .frame(width: 700, height: 640)
-        .task { await scan(); await loadOwned() }
+        .task { await scan(); await loadOwned(); await loadDRMFreeIndex() }
         .sheet(isPresented: $showSteamCMDLogin) {
             SteamCMDLoginView(suggestedUser: steamCMDUser.isEmpty ? (accountService.detectAccount(bottle: bottle)?.accountName ?? "") : steamCMDUser) { user in
                 steamCMDUser = user
@@ -144,9 +155,12 @@ struct SteamDRMImportSheet: View {
                             .font(.callout).foregroundStyle(.secondary).padding(14)
                     } else {
                         ForEach(candidates) { c in
+                            // El detalle dice QUÉ se ha detectado (Denuvo, Steamworks, EOS…) en vez de
+                            // dejar al usuario con una etiqueta opaca: si algo no se puede liberar,
+                            // que se vea el motivo exacto.
                             gameRow(appId: c.appId, name: c.name, cover: c.coverURL,
                                     badge: (c.status.label, badgeColor(c.status)),
-                                    detail: byteString(c.sizeBytes)) { installedAction(c) }
+                                    detail: c.drmDetail ?? byteString(c.sizeBytes)) { installedAction(c) }
                             Divider()
                         }
                     }
@@ -161,9 +175,12 @@ struct SteamDRMImportSheet: View {
                             .font(.caption).foregroundStyle(.secondary).padding(14)
                     }
                     ForEach(ownedNotInstalled.prefix(150)) { g in
+                        let confirmed = drmFreeAppIds.contains(g.appId)
                         gameRow(appId: g.appId, name: g.name,
                                 cover: "https://cdn.akamai.steamstatic.com/steam/apps/\(g.appId)/library_600x900_2x.jpg",
-                                badge: nil, detail: "AppID \(g.appId)") { ownedAction(g) }
+                                badge: confirmed ? ("DRM‑free confirmado", .green) : nil,
+                                detail: confirmed ? "PCGamingWiki lo confirma · AppID \(g.appId)"
+                                                  : "AppID \(g.appId)") { ownedAction(g) }
                         Divider()
                     }
                     if ownedNotInstalled.count > 150 {
@@ -183,11 +200,27 @@ struct SteamDRMImportSheet: View {
     }
 
     private var searchField: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.caption)
-            TextField("Buscar en tu biblioteca de Steam…", text: $search).textFieldStyle(.plain).font(.callout)
+        VStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.caption)
+                TextField("Buscar en tu biblioteca de Steam…", text: $search).textFieldStyle(.plain).font(.callout)
+            }
+            .padding(8).background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+
+            // Cuántos de TUS juegos son DRM‑free según PCGamingWiki: el dato que nadie te da.
+            if !drmFreeAppIds.isEmpty {
+                HStack(spacing: 8) {
+                    Toggle(isOn: $onlyDRMFree) {
+                        Label("Solo DRM‑free confirmados", systemImage: "lock.open.fill")
+                            .font(.caption.weight(.medium))
+                    }
+                    .toggleStyle(.checkbox)
+                    Spacer()
+                    Text("\(ownedDRMFreeCount) de \(ownedGames.count) juegos tuyos son DRM‑free")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
         }
-        .padding(8).background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
         .padding(.horizontal, 14).padding(.vertical, 8)
     }
 
@@ -259,8 +292,19 @@ struct SteamDRMImportSheet: View {
 
     private func scan() async {
         scanning = true
-        let result = SteamDRMScanner.shared.scan(bottle: bottle)
-        candidates = result; scanning = false
+        // 1) El disco manda: análisis local, inmediato y sin red.
+        candidates = SteamDRMScanner.shared.scan(bottle: bottle)
+        scanning = false
+        // 2) Las bases de datos en vivo (PCGamingWiki, avisos de Steam, anti‑cheat) añaden lo que el
+        //    disco NO puede saber: un Denuvo cuyo token vive en el servidor no deja rastro en el .exe.
+        //    Best‑effort y cacheado — si no hay red, se queda lo del disco.
+        candidates = await SteamDRMScanner.shared.enrichWithDatabases(candidates)
+    }
+
+    /// Carga el índice de AppIDs **confirmados DRM‑free** por PCGamingWiki (cacheado 7 días). Sirve
+    /// para señalar en TU biblioteca qué juegos puedes liberar antes siquiera de instalarlos.
+    private func loadDRMFreeIndex() async {
+        drmFreeAppIds = await DRMDatabase.shared.drmFreeAppIds()
     }
 
     private func loadOwned() async {
