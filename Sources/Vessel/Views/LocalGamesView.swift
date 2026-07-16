@@ -273,7 +273,8 @@ struct LocalGamesView: View {
         Task {
             do {
                 let appURL = try await StandaloneMacExporter.shared.exportMacApp(
-                    name: g.name, gameFolder: folder, exePath: g.executablePath, destParent: destParent
+                    name: g.name, gameFolder: folder, exePath: g.executablePath,
+                    coverURL: g.coverURL, destParent: destParent
                 ) { frac, msg in Task { @MainActor in exportProgress = (g.name, frac, msg) } }
                 exportProgress = nil
                 flash("App de «\(g.name)» creada en \(destParent.lastPathComponent) — arranca en cualquier Mac Silicon.", false)

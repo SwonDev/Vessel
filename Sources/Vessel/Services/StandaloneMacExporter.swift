@@ -1,4 +1,7 @@
 import Foundation
+import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
 
 /// Exporta un juego DRM‑free como una **app de macOS autónoma** (`.app`) para **Apple Silicon**:
 /// empaqueta el juego + el **motor unificado ya compilado** (Wine+DXMT) + un launcher que crea su
@@ -25,7 +28,8 @@ actor StandaloneMacExporter {
 
     /// Genera `<destParent>/<Nombre>.app` autónomo. `gameFolder` es la carpeta del juego DRM‑free,
     /// `exePath` su ejecutable. `progress` = (fracción 0…1, mensaje).
-    func exportMacApp(name: String, gameFolder: String, exePath: String, destParent: URL,
+    func exportMacApp(name: String, gameFolder: String, exePath: String, coverURL: String? = nil,
+                      destParent: URL,
                       progress: @Sendable @escaping (Double, String) -> Void) async throws -> URL {
         let fm = FileManager.default
         let engineDir = "\(VesselPaths.enginesDirectory)/\(WineEngineLocator.unifiedEngineName)"
@@ -72,15 +76,24 @@ actor StandaloneMacExporter {
             if fm.fileExists(atPath: src) { try? fm.removeItem(atPath: dst); try? fm.copyItem(atPath: src, toPath: dst) }
         }
 
-        // 3) Launcher + Info.plist.
-        progress(0.95, "Escribiendo el launcher…")
+        // 3) Icono del juego (carátula → .icns squircle), si hay portada.
+        var hasIcon = false
+        if let coverURL, let url = URL(string: coverURL) {
+            progress(0.95, "Creando el icono…")
+            if let (data, _) = try? await URLSession.shared.data(from: url) {
+                hasIcon = Self.buildAppIcon(coverData: data, into: resources.path)
+            }
+        }
+
+        // 4) Launcher + Info.plist.
+        progress(0.96, "Escribiendo el launcher…")
         try Self.launcherScript(appName: slug, relExe: relExe).write(
             to: macOS.appendingPathComponent("launch"), atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: macOS.appendingPathComponent("launch").path)
-        try Self.infoPlist(appName: slug).write(
+        try Self.infoPlist(appName: slug, hasIcon: hasIcon).write(
             to: contents.appendingPathComponent("Info.plist"), atomically: true, encoding: .utf8)
 
-        // 4) Firma ad-hoc (deep) + quitar quarantine local.
+        // 5) Firma ad-hoc (deep) + quitar quarantine local.
         progress(0.98, "Firmando la app…")
         await Self.stripQuarantine(appURL.path)
         _ = await Self.run("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", appURL.path])
@@ -134,8 +147,9 @@ actor StandaloneMacExporter {
         """
     }
 
-    private static func infoPlist(appName: String) -> String {
-        """
+    private static func infoPlist(appName: String, hasIcon: Bool) -> String {
+        let iconKey = hasIcon ? "  <key>CFBundleIconFile</key><string>icon</string>\n" : ""
+        return """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
         <plist version="1.0">
@@ -144,7 +158,7 @@ actor StandaloneMacExporter {
           <key>CFBundleDisplayName</key><string>\(appName)</string>
           <key>CFBundleIdentifier</key><string>com.swondev.vessel.export.\(Self.bundleSlug(appName))</string>
           <key>CFBundleExecutable</key><string>launch</string>
-          <key>CFBundlePackageType</key><string>APPL</string>
+        \(iconKey)  <key>CFBundlePackageType</key><string>APPL</string>
           <key>CFBundleShortVersionString</key><string>1.0</string>
           <key>CFBundleVersion</key><string>1</string>
           <key>LSMinimumSystemVersion</key><string>13.0</string>
@@ -152,6 +166,70 @@ actor StandaloneMacExporter {
         </dict>
         </plist>
         """
+    }
+
+    // MARK: - Icono (.icns squircle desde la carátula, con CoreGraphics)
+
+    /// Construye `Resources/icon.icns` a partir de la carátula: recorte a cuadrado (aspect‑fill) con
+    /// máscara **squircle** (esquinas redondeadas, estilo macOS), y genera todas las resoluciones vía
+    /// `iconutil`. Todo con CoreGraphics (sin ImageMagick).
+    private static func buildAppIcon(coverData: Data, into resourcesDir: String) -> Bool {
+        guard let src = CGImageSourceCreateWithData(coverData as CFData, nil),
+              let cover = CGImageSourceCreateImageAtIndex(src, 0, nil),
+              let master = renderSquircle(cover, size: 1024) else { return false }
+        let iconset = "\(NSTemporaryDirectory())vessel-icon-\(UUID().uuidString).iconset"
+        try? FileManager.default.createDirectory(atPath: iconset, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: iconset) }
+        let variants: [(String, Int)] = [
+            ("icon_16x16", 16), ("icon_16x16@2x", 32), ("icon_32x32", 32), ("icon_32x32@2x", 64),
+            ("icon_128x128", 128), ("icon_128x128@2x", 256), ("icon_256x256", 256),
+            ("icon_256x256@2x", 512), ("icon_512x512", 512), ("icon_512x512@2x", 1024)
+        ]
+        for (nm, sz) in variants {
+            guard let scaled = scaleImage(master, to: sz), writePNG(scaled, to: "\(iconset)/\(nm).png") else { return false }
+        }
+        let out = "\(resourcesDir)/icon.icns"
+        let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
+        p.arguments = ["-c", "icns", iconset, "-o", out]
+        p.standardError = Pipe()
+        do { try p.run(); p.waitUntilExit() } catch { return false }
+        return FileManager.default.fileExists(atPath: out)
+    }
+
+    private static func renderSquircle(_ image: CGImage, size: Int) -> CGImage? {
+        let cs = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: cs,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.interpolationQuality = .high
+        let rect = CGRect(x: 0, y: 0, width: size, height: size)
+        let radius = CGFloat(size) * 0.2237   // ~squircle de macOS
+        ctx.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
+        ctx.clip()
+        // aspect‑fill (recorta al centro para llenar el cuadrado)
+        let iw = CGFloat(image.width), ih = CGFloat(image.height)
+        let scale = max(CGFloat(size) / iw, CGFloat(size) / ih)
+        let dw = iw * scale, dh = ih * scale
+        ctx.draw(image, in: CGRect(x: (CGFloat(size) - dw) / 2, y: (CGFloat(size) - dh) / 2, width: dw, height: dh))
+        return ctx.makeImage()
+    }
+
+    private static func scaleImage(_ image: CGImage, to size: Int) -> CGImage? {
+        if image.width == size && image.height == size { return image }
+        let cs = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: cs,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.interpolationQuality = .high
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: size, height: size))
+        return ctx.makeImage()
+    }
+
+    private static func writePNG(_ image: CGImage, to path: String) -> Bool {
+        guard let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL,
+                                                         UTType.png.identifier as CFString, 1, nil) else { return false }
+        CGImageDestinationAddImage(dest, image, nil)
+        return CGImageDestinationFinalize(dest)
     }
 
     // MARK: - Utilidades (copia con progreso, tamaño, firma)
