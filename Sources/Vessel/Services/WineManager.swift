@@ -1207,7 +1207,12 @@ final class WineManager {
     /// separado. Quita el directorio real que `wineboot` hubiera creado antes de enlazar.
     private func linkSharedPrefixData(scoped: String, base: String) {
         let fm = FileManager.default
-        for rel in ["Program Files (x86)", "Program Files", "users"] {
+        // ⭐ `Games` NO es opcional: es donde Vessel instala los juegos de **Epic y GOG**
+        // (`drive_c/Games/…`). Sin enlazarla, `scopedPath` reescribe el ejecutable a un prefijo
+        // aislado donde ese juego NO EXISTE, y el lanzamiento muere con un "falta una librería del
+        // sistema" que no tiene nada que ver con la causa real. Pasaba con A Short Hike (Epic,
+        // Unity 32-bit → prefijo `__gptk`).
+        for rel in ["Program Files (x86)", "Program Files", "Games", "users"] {
             let link = "\(scoped)/drive_c/\(rel)"
             let target = "\(base)/drive_c/\(rel)"
             guard fm.fileExists(atPath: target) else { continue }
