@@ -32,9 +32,17 @@ actor StandaloneMacExporter {
                       arguments: [String] = [], destParent: URL,
                       progress: @Sendable @escaping (Double, String) -> Void) async throws -> URL {
         let fm = FileManager.default
+        guard fm.fileExists(atPath: gameFolder) else { throw ExportError.noGameFolder }
+        // **Juegos de DOS**: no llevan Wine. Se empaqueta el DOSBox NATIVO → una app de ~35 MB en
+        // vez de 2,2 GB, que además corre en arm64 puro. Meter Wine aquí sería absurdo (y no
+        // funcionaría: el DOSBox de Windows no crea ventana bajo Wine en Apple Silicon).
+        if Self.isDOSGame(exePath) {
+            return try await exportNativeDOSApp(name: name, gameFolder: gameFolder, exePath: exePath,
+                                                coverURL: coverURL, arguments: arguments,
+                                                destParent: destParent, progress: progress)
+        }
         let engineDir = "\(VesselPaths.enginesDirectory)/\(WineEngineLocator.unifiedEngineName)"
         guard fm.isExecutableFile(atPath: "\(engineDir)/bin/wine") else { throw ExportError.noEngine }
-        guard fm.fileExists(atPath: gameFolder) else { throw ExportError.noGameFolder }
 
         let slug = Self.sanitize(name)
         let appURL = destParent.appendingPathComponent("\(slug).app")
@@ -121,6 +129,131 @@ actor StandaloneMacExporter {
         return appURL
     }
 
+    /// `true` si lo que se lanza es un DOSBox (el envoltorio con el que GOG distribuye los juegos
+    /// de DOS). Mismo criterio que `WineManager.isDOSBoxWrapper`.
+    nonisolated static func isDOSGame(_ exePath: String) -> Bool {
+        let n = ((exePath as NSString).lastPathComponent as NSString).deletingPathExtension.lowercased()
+        return n == "dosbox" || n.hasPrefix("dosbox_") || n.hasPrefix("dosbox-")
+    }
+
+    /// **Exporta un juego de DOS como app de Mac NATIVA.** Empaqueta el juego + DOSBox Staging
+    /// (universal arm64) + su config: unos 35 MB que arrancan en cualquier Mac **sin Vessel, sin
+    /// Wine y sin Rosetta**. Es la mejor versión posible de "este juego es mío y me lo llevo".
+    private func exportNativeDOSApp(name: String, gameFolder: String, exePath: String, coverURL: String?,
+                                    arguments: [String], destParent: URL,
+                                    progress: @Sendable @escaping (Double, String) -> Void) async throws -> URL {
+        let fm = FileManager.default
+        progress(0.02, "Preparando DOSBox nativo…")
+        let dosboxBinary = try await DOSBoxManager.shared.ensureInstalled { progress(0.05, $0) }
+        // El `.app` de DOSBox está dos niveles por encima del binario (Contents/MacOS/dosbox).
+        let dosboxApp = ((dosboxBinary as NSString).deletingLastPathComponent as NSString)
+            .deletingLastPathComponent as NSString
+        let dosboxAppPath = dosboxApp.deletingLastPathComponent
+
+        let slug = Self.sanitize(name)
+        let appURL = destParent.appendingPathComponent("\(slug).app")
+        try? fm.removeItem(at: appURL)
+        let contents = appURL.appendingPathComponent("Contents")
+        let macOS = contents.appendingPathComponent("MacOS")
+        let resources = contents.appendingPathComponent("Resources")
+        try fm.createDirectory(at: macOS, withIntermediateDirectories: true)
+        try fm.createDirectory(at: resources, withIntermediateDirectories: true)
+
+        progress(0.15, "Copiando DOSBox…")
+        try await Self.copyTree(from: dosboxAppPath, to: resources.appendingPathComponent("dosbox").path,
+                                totalBytes: Self.dirSize(dosboxAppPath)) { _ in }
+
+        progress(0.35, "Copiando los archivos del juego…")
+        let gameDest = resources.appendingPathComponent("game").path
+        try await Self.copyTree(from: gameFolder, to: gameDest,
+                                totalBytes: Self.dirSize(gameFolder)) { f in
+            progress(0.35 + f * 0.5, "Copiando el juego… \(Int(f*100))%")
+        }
+
+        // Config traducida DENTRO de la copia (no se toca la instalación del usuario). Se referencia
+        // con rutas relativas para que la app funcione la muevas donde la muevas (USB incluido).
+        progress(0.88, "Adaptando la configuración…")
+        let exeDir = (exePath as NSString).deletingLastPathComponent
+        let relExeDir = exeDir.hasPrefix(gameFolder)
+            ? String(exeDir.dropFirst(gameFolder.count)).drop(while: { $0 == "/" }).description
+            : "DOSBOX"
+        var confArgs: [String] = []
+        var i = 0
+        while i < arguments.count {
+            let a = arguments[i].lowercased()
+            if a == "-conf" || a == "--conf", i + 1 < arguments.count {
+                let rel = arguments[i + 1].replacingOccurrences(of: "\\", with: "/")
+                let src = URL(fileURLWithPath: "\(exeDir)/\(rel)").standardizedFileURL.path
+                let base = (src as NSString).lastPathComponent
+                if let raw = try? String(contentsOfFile: src, encoding: .isoLatin1) {
+                    var out: [String] = [], inAuto = false
+                    for line in raw.components(separatedBy: .newlines) {
+                        let t = line.trimmingCharacters(in: .whitespaces).lowercased()
+                        if t.hasPrefix("[") { inAuto = (t == "[autoexec]") }
+                        out.append(inAuto ? line.replacingOccurrences(of: "\\", with: "/") : line)
+                    }
+                    let dest = "\(gameDest)/vessel-\(base)"
+                    try? out.joined(separator: "\n").write(toFile: dest, atomically: true, encoding: .utf8)
+                    // Relativa a la carpeta del exe, que es el directorio de trabajo del launcher.
+                    confArgs += ["-conf", "../vessel-\(base)"]
+                }
+                i += 2
+            } else if a == "-noconsole" || a == "--noconsole" {
+                i += 1                                   // solo existe en el DOSBox 0.74 de Windows
+            } else {
+                confArgs.append(arguments[i]); i += 1
+            }
+        }
+        confArgs.append("-noprimaryconf")
+
+        progress(0.92, "Creando el icono…")
+        var hasIcon = false
+        if let cover = coverURL, let url = URL(string: cover),
+           let (data, _) = try? await URLSession.shared.data(from: url) {
+            hasIcon = Self.buildAppIcon(coverData: data, into: resources.path)
+        }
+
+        progress(0.95, "Escribiendo el launcher…")
+        try Self.dosLauncherScript(relExeDir: relExeDir, arguments: confArgs)
+            .write(to: macOS.appendingPathComponent("launch"), atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755],
+                             ofItemAtPath: macOS.appendingPathComponent("launch").path)
+        try Self.infoPlist(appName: name, hasIcon: hasIcon)
+            .write(to: contents.appendingPathComponent("Info.plist"), atomically: true, encoding: .utf8)
+
+        progress(0.98, "Firmando la app…")
+        await Self.stripQuarantine(appURL.path)
+        _ = await Self.run("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", appURL.path])
+        try? Self.macReadme(name: name, deps: nil)
+            .write(to: destParent.appendingPathComponent("LÉEME — \(slug).txt"),
+                   atomically: true, encoding: .utf8)
+        progress(1.0, "Listo")
+        return appURL
+    }
+
+    /// Launcher de un juego de DOS exportado: DOSBox nativo, sin Wine y sin Rosetta.
+    private static func dosLauncherScript(relExeDir: String, arguments: [String]) -> String {
+        let args = arguments.map(shellQuote).joined(separator: " ")
+        return """
+        #!/bin/bash
+        # Launcher generado por Vessel — juego de DOS DRM‑free, con DOSBox nativo empaquetado.
+        # Arranca en cualquier Mac SIN Vessel, SIN Wine y SIN Rosetta.
+        HERE="$(cd "$(dirname "$0")" && pwd)"
+        RES="$(dirname "$HERE")/Resources"
+        DOSBOX="$RES/dosbox/Contents/MacOS/dosbox"
+        # Primera ejecución desde un USB: quitar quarantine o macOS bloquearía el binario.
+        FLAG="$RES/.ready"
+        if [ ! -f "$FLAG" ]; then
+          /usr/bin/xattr -dr com.apple.quarantine "$RES" >/dev/null 2>&1 || true
+          touch "$FLAG" 2>/dev/null || true
+        fi
+        # El directorio de trabajo es la carpeta del DOSBox del juego: sus .conf montan las unidades
+        # con rutas relativas a ella (`mount C ".."` = la raíz del juego).
+        cd "$RES/game/\(relExeDir)" 2>/dev/null || cd "$RES/game" || exit 1
+        exec "$DOSBOX" \(args) "$@"
+        """
+    }
+
     private static func macReadme(name: String, deps: String?) -> String {
         let depsLine = deps.map { "\n        Runtimes que usa el juego (ya resueltos dentro de la app): \($0)\n" } ?? ""
         return """
@@ -186,6 +319,10 @@ actor StandaloneMacExporter {
         export WINEDEBUG="-all"
         export WINEESYNC="1"
         export DYLD_FALLBACK_LIBRARY_PATH="$ENGINE/lib:/usr/lib"
+        # SDL pinta por software: en Windows elige Direct3D 9 de backend por defecto, y bajo Wine eso
+        # sale cortado por una diagonal o directamente en negro. Inofensivo para lo que no use SDL.
+        export SDL_RENDER_DRIVER="software"
+        export SDL_FRAMEBUFFER_ACCELERATION="0"
 
         # Primera ejecución (venimos de un USB/copia): quitar quarantine de todo el runtime, o macOS
         # bloqueará las dylibs del motor. Requiere que el usuario haya abierto la app una vez (botón

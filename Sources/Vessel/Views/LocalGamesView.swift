@@ -44,6 +44,19 @@ struct LocalGamesView: View {
             ?? bottle
     }
 
+    /// Explica qué se va a exportar **con datos ciertos**: un juego de DOS no lleva Wine (va con el
+    /// DOSBox nativo, decenas de MB), así que prometerle 2,2 GB sería mentirle al usuario.
+    private func exportExplanation(_ g: LocalGamesStore.Game) -> String {
+        if StandaloneMacExporter.isDOSGame(g.executablePath) {
+            return "«App para Mac» empaqueta el juego + DOSBox nativo (unas decenas de MB) en un .app "
+                 + "que arranca en cualquier Mac SIN Vessel, sin Wine y sin Rosetta. «Carpeta Windows» "
+                 + "copia el juego DRM‑free tal cual para ejecutarlo en un PC."
+        }
+        return "«App para Mac» empaqueta el juego + el motor (~2,2 GB) en un .app que arranca en "
+             + "cualquier Mac Apple Silicon sin Vessel. «Carpeta Windows» copia el juego DRM‑free "
+             + "para ejecutarlo en un PC."
+    }
+
     /// Carpeta local del juego: la de instalación o, si no consta, la del ejecutable. `nil` si el
     /// juego aún no está en disco. Fuente única para exportar/verificar/abrir carpeta.
     private func folder(of g: LocalGamesStore.Game) -> String? {
@@ -104,7 +117,7 @@ struct LocalGamesView: View {
             Button("Carpeta Windows (para USB/PC)") { if let g = exportChoice { exportChoice = nil; exportGame(g) } }
             Button("Cancelar", role: .cancel) { exportChoice = nil }
         } message: {
-            Text("«App para Mac» empaqueta el juego + el motor (~2,2 GB) en un .app que arranca en cualquier Mac Apple Silicon sin Vessel. «Carpeta Windows» copia el juego DRM‑free para ejecutarlo en un PC.")
+            Text(exportChoice.map(exportExplanation) ?? "")
         }
         .sheet(isPresented: $showingItchLink) { ItchLinkSheet { user in
             flash("itch.io vinculado como \(user).", false); syncItch()
