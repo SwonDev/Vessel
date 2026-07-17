@@ -1045,6 +1045,19 @@ final class WineManager {
     ///
     /// Todo lo prepara `ensureD3D9Support`. Mismo prefijo, distinto motor según la carga.
     private func launchD3D9Game(executable: String, in bottle: Bottle, arguments: [String], steamAppId: String?, effective: EffectiveLaunchConfig = EffectiveLaunchConfig()) async throws -> Process {
+        // ⭐ **D3D9 de 32-bit → wine-full (el Wine de CrossOver)**, no Gcenx. El new-WoW64 de Gcenx
+        // NO crea el dispositivo D3D9 de un binario de 32-bit: el juego muere con su propio diálogo
+        // ("d3d creation failed") con CUALQUIER combinación de renderer (gl/vulkan) y de d3d9
+        // (builtin/native) — probadas todas. El Wine de CrossOver sí, porque lleva años resolviendo
+        // justo el 32-bit sobre Rosetta. Verificado en vivo: 20XX (32-bit, D3D9 + d3dx9_43)
+        // renderiza su pantalla de inicio con wine-full y falla con Gcenx en todas las variantes.
+        // Los D3D9 de 64-bit se quedan en Gcenx, que es donde están validados.
+        let fullWine = "\(WineEngineLocator.fullEngineDir())/bin/wine"
+        if isExecutable32Bit(executable), FileManager.default.isExecutableFile(atPath: fullWine) {
+            return try await launchD3D9GameWithCrossOver(executable: executable, in: bottle,
+                                                         arguments: arguments, effective: effective,
+                                                         wine: fullWine)
+        }
         let clientWine = resolveClientWine(for: bottle)
         log.log("Capa gráfica: wined3d → Vulkan → Metal (juego D3D9/D3D8) con Gcenx", level: .info)
         log.log("Preparando prefijo para el juego…", level: .info)
@@ -1074,6 +1087,31 @@ final class WineManager {
             prefix: bottle.prefixPath,
             arguments: [executable] + arguments,
             environment: env,
+            workingDirectory: gameWorkingDirectory(forExecutable: executable),
+            effective: effective
+        )
+    }
+
+    /// Lanza un **D3D9 de 32-bit con el Wine de CrossOver** (`wine-full`).
+    ///
+    /// Es el único que crea el dispositivo D3D9 de un binario de 32-bit en Apple Silicon: el
+    /// new-WoW64 de Gcenx falla con "d3d creation failed" con TODAS las combinaciones de renderer
+    /// (gl/vulkan) y de d3d9 (builtin/native). `wine-full` no necesita capa de traducción extra —
+    /// trae su propio wined3d y su `cxcompatdb` — así que se lanza tal cual, con el contexto LIMPIO
+    /// (`env -i` vía `launchWineProcess`, que ya trata este motor). Validado: 20XX renderiza.
+    private func launchD3D9GameWithCrossOver(executable: String, in bottle: Bottle, arguments: [String],
+                                             effective: EffectiveLaunchConfig, wine: String) async throws -> Process {
+        log.log("Capa gráfica: wined3d de CrossOver (juego D3D9 de 32-bit) — el único que crea el device", level: .info)
+        cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
+        try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+        await resyncGamePrefix(gameWine: wine, prefix: bottle.prefixPath)
+        return try await launchWineProcess(
+            winePath: wine,
+            prefix: bottle.prefixPath,
+            arguments: [executable] + arguments,
+            environment: ["WINEPREFIX": bottle.prefixPath, "WINEDEBUG": "-all",
+                          "WINEDLLOVERRIDES": "winemenubuilder.exe=d"],
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: effective
         )
