@@ -995,7 +995,7 @@ final class WineManager {
                                      renderer: "gl", forExecutable: exeName)
             cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
             try? await terminateWineProcesses(winePath: fullEngineWine, prefix: bottle.prefixPath)
-            try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+            try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: fullEngineWine)
             await resyncGamePrefix(gameWine: fullEngineWine, prefix: bottle.prefixPath)
             var env = ["WINEPREFIX": bottle.prefixPath, "WINEDEBUG": "-all",
                        "WINEDLLOVERRIDES": "winemenubuilder.exe=d",
@@ -1026,7 +1026,7 @@ final class WineManager {
             log.log("Juego Godot: render por Vulkan (MoltenVK→Metal) con el Wine completo.", level: .info)
             cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
             try? await terminateWineProcesses(winePath: fullEngineWine, prefix: bottle.prefixPath)
-            try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+            try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: fullEngineWine)
             await resyncGamePrefix(gameWine: fullEngineWine, prefix: bottle.prefixPath)
             return try await launchWineProcess(
                 winePath: fullEngineWine,
@@ -1146,7 +1146,7 @@ final class WineManager {
         // en su versión; hay que liberarlo antes de re-sincronizar a wine-dxmt).
         log.log("Preparando prefijo para el juego…", level: .info)
         try? await terminateWineProcesses(winePath: gameWine, prefix: bottle.prefixPath)
-        try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: gameWine)
         // Re-sincronizar el prefix al motor de juegos. Imprescindible: tras lanzar
         // el cliente Steam (Gcenx) el prefix queda desincronizado y DXMT no carga
         // (el juego falla con InitializeEngineGraphics). `wineboot -u` lo restaura.
@@ -1257,7 +1257,7 @@ final class WineManager {
         // sus propias d3d9/wined3d.
         cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
         try? await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
-        try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: clientWine)
         // Re-sincronizar el prefix al motor Gcenx (tras el cliente Steam o un juego
         // D3D11 el prefix puede quedar en otro motor).
         await resyncGamePrefix(gameWine: clientWine, prefix: bottle.prefixPath)
@@ -1300,7 +1300,7 @@ final class WineManager {
         await dependencyManager.applyDDrawFix()
         cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
         try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
-        try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: wine)
         await resyncGamePrefix(gameWine: wine, prefix: bottle.prefixPath)
         // Estos juegos son de la era de Windows 95: la comprobación de "Windows NT no soportado"
         // los para en seco. Se les dice que corren en un Windows de su época (solo a este exe).
@@ -1334,7 +1334,7 @@ final class WineManager {
         log.log("Capa gráfica: wined3d de CrossOver (juego D3D9 de 32-bit) — el único que crea el device", level: .info)
         cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
         try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
-        try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: wine)
         await resyncGamePrefix(gameWine: wine, prefix: bottle.prefixPath)
         return try await launchWineProcess(
             winePath: wine,
@@ -1366,7 +1366,7 @@ final class WineManager {
         let prefix = await engineScopedPrefix(base: bottle.prefixPath, engineTag: "net48", engineWine: wine)
         let executable = scopedPath(rawExecutable, base: bottle.prefixPath, scoped: prefix)
         try? await terminateWineProcesses(winePath: wine, prefix: prefix)
-        try? await killOrphanWineProcesses(prefix: prefix)
+        try? await killOrphanWineProcesses(prefix: prefix, gameWine: wine)
         await resyncGamePrefix(gameWine: wine, prefix: prefix)
         // Retina OFF: sin esto Wine le dice al juego que la pantalla mide 3024×1964 (los PÍXELES de
         // una Retina de 1512×982), y un juego de esta época no es DPI-aware: se lo cree, pide una
@@ -1454,7 +1454,7 @@ final class WineManager {
         cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
         cleanGameFolderGraphicsDLLs(forExecutable: executable)
         try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
-        try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: wine)
         await resyncGamePrefix(gameWine: wine, prefix: bottle.prefixPath)
         return try await launchWineProcess(
             winePath: wine,
@@ -1522,7 +1522,7 @@ final class WineManager {
         // Si un intento anterior con DXMT dejó sus DLLs junto al exe, con Gcenx abortan.
         cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
         try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
-        try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: wine)
         await resyncGamePrefix(gameWine: wine, prefix: bottle.prefixPath)
         // ⭐ `renderer=gl`, y NO es opcional. SDL (que es lo que usan DOSBox y ScummVM) pinta su
         // framebuffer como un quad = DOS triángulos. Con `renderer=vulkan` (que otro juego D3D9 del
@@ -1652,7 +1652,7 @@ final class WineManager {
             : "Capa gráfica: wined3d → OpenGL de Apple (GLD→Metal) (juego 32-bit) con CrossOver", level: .info)
         log.log("Preparando prefijo para el juego…", level: .info)
         try? await terminateWineProcesses(winePath: gptkWine, prefix: prefix)
-        try? await killOrphanWineProcesses(prefix: prefix)
+        try? await killOrphanWineProcesses(prefix: prefix, gameWine: gptkWine)
         await resyncGamePrefix(gameWine: gptkWine, prefix: prefix)
         // Quitar DLLs de traducción gráfica de OTROS motores (DXMT/vkd3d) del prefijo AISLADO Y de la
         // carpeta del juego (una DXMT local pisaría wined3d y forzaría MoltenVK → `vkCreateBufferView`).
@@ -1938,7 +1938,7 @@ final class WineManager {
         //    (p.ej. el cliente Steam en otro motor). El juego corre solo en D3DMetal.
         log.log("Preparando el prefijo para el motor D3D12…", level: .info)
         try? await terminateWineProcesses(winePath: d3d12Wine, prefix: bottle.prefixPath)
-        try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: d3d12Wine)
         await resyncGamePrefix(gameWine: d3d12Wine, prefix: bottle.prefixPath)
 
         // 5) Lanzar el juego con el entorno de D3DMetal (del motor propio o de GPTK).
@@ -2112,7 +2112,7 @@ final class WineManager {
                 NotificationService.shared.status("Steam no responde; reiniciándolo automáticamente…")
                 log.log("Reinicio limpio del cliente Steam (intento \(restarts); \(hung ? "webhelper colgado" : connectedNoWindow ? "conectado sin ventana (CEF colgado)" : "sin login en \(elapsed)s"))…", level: .warn)
                 try? await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
-                try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+                try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: clientWine)
                 cleanCEFCache(in: bottle)
                 do { _ = try await launchSteam(in: bottle, using: clientWine) }
                 catch { log.log("No se pudo relanzar el cliente Steam: \(error.localizedDescription)", level: .error) }
@@ -2126,7 +2126,7 @@ final class WineManager {
         if !background, isSteamWebHelperHung() {
             log.log("Steam no llegó a iniciar sesión y su webhelper sigue colgado; se cierra el cliente roto.", level: .warn)
             try? await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
-            try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+            try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: clientWine)
         }
         NotificationService.shared.status(nil)
         return isSteamConnected(in: bottle)
@@ -2465,7 +2465,7 @@ final class WineManager {
         // le quitaría el vídeo a los juegos). Arranque mucho más rápido.
         if WineEngineLocator.isModernSteamEngine(wine), !WineEngineLocator.isFullEngine(wine) {
             try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
-            try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+            try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: wine)
             await applyWinetricksVerbs(["corefonts", "vcrun2022"], prefix: bottle.prefixPath, wine: wine)
             // Config POR-JUEGO en el registro (AppDefaults): evita el crash de vídeo (winegstreamer) de
             // los juegos Unity lanzados desde Steam en el unificado (que no trae GStreamer).
@@ -2479,7 +2479,7 @@ final class WineManager {
         if WineEngineLocator.isModernSteamEngine(wine) {
             if !WineEngineLocator.isFullEngine(wine) {
                 try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
-                try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+                try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: wine)
             }
             await ensureCrossOverCompatOverrides(prefix: bottle.prefixPath, wine: wine)
         }
@@ -2503,7 +2503,7 @@ final class WineManager {
         if newManifests > 0, isWineProcessRunning(matching: "steam.exe") {
             log.log("Reiniciando Steam para que recoja los \(newManifests) juego(s) recién marcados como instalados…", level: .info)
             try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
-            try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+            try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: wine)
             try? await Task.sleep(nanoseconds: 2_000_000_000)
         }
 
@@ -2555,7 +2555,7 @@ final class WineManager {
         log.log("Cliente de Steam actualizado ✓ — aplicando wrapper y configuración…", level: .info)
         try? await Task.sleep(nanoseconds: 10_000_000_000)
         try? await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
-        try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: clientWine)
         try? await Task.sleep(nanoseconds: 2_000_000_000)
         ensureSteamConfig(in: bottle)
         try? await ensureWrapperInstalled(in: bottle)
@@ -2571,7 +2571,7 @@ final class WineManager {
         if !wrapperInstaller.isInstalled(in: bottle) {
             log.log("El self-check del cliente nuevo deshizo el wrapper; re-aplicándolo…", level: .info)
             try? await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
-            try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+            try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: clientWine)
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             cleanCEFCache(in: bottle)                  // los crashes del GPU corrompen la caché
             try? await ensureWrapperInstalled(in: bottle)
@@ -3205,7 +3205,7 @@ final class WineManager {
             }
             // Cerrar el Steam del bootstrap para relanzarlo limpio con el wrapper.
             try? await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
-            try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+            try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: clientWine)
             try? await Task.sleep(nanoseconds: 2_000_000_000)
         }
         // Ya bootstrapped → este lanzamiento aplica wrapper + steam.cfg + caché limpia,
@@ -3243,10 +3243,10 @@ final class WineManager {
     /// Mata procesos Wine huérfanos asociados a este prefix usando `pkill -f`
     /// con la ruta del prefix. Más agresivo que `wineserver -k` cuando hay
     /// procesos zombi de Steam CEF.
-    private func killOrphanWineProcesses(prefix: String) async throws {
+    private func killOrphanWineProcesses(prefix: String, gameWine: String? = nil) async throws {
         // Con una descarga de Steam a medias no se limpia el prefijo: se llevaría por delante el
         // cliente y el usuario perdería la descarga por lanzar un juego (ver `terminateWineProcesses`).
-        if steamHasActiveDownloads(prefix: prefix) {
+        if steamHasActiveDownloads(prefix: prefix, gameWine: gameWine) {
             log.log("Steam está descargando: se respeta el prefijo para no cortar la descarga.", level: .info)
             return
         }
@@ -3270,28 +3270,73 @@ final class WineManager {
         // cuyos descriptores abiertos apuntan a ESTE prefix vía `lsof` y les mandamos
         // SIGKILL. `wineserver -k` no vale aquí porque también dialoga por protocolo y
         // falla igual con el mismatch de versión.
-        await killPrefixWineservers(prefix: prefix)
+        await killPrefixWineservers(prefix: prefix, gameWine: gameWine)
         // Los procesos Wine CLIENTE (steam.exe, steamwebhelper…) TAMPOCO llevan el
         // prefix en su argv: Wine lo reescribe a la línea de comandos de Windows
         // ("C:\Program Files…\steam.exe"), así que `pkill -f <prefix>` tampoco los
         // alcanza y sobreviven entre sesiones. Un steam.exe zombi hace que
         // `launchSteam` crea que "Steam ya está en marcha" y no lo relance jamás.
         // Igual que con el wineserver: se localizan por `lsof` contra ESTE prefix.
-        await killPrefixWineClients(prefix: prefix)
+        await killPrefixWineClients(prefix: prefix, gameWine: gameWine)
     }
 
-    /// `true` si Steam tiene **descargas a medias** en este prefijo.
+    /// `true` si hay una **descarga de Steam a medias** en este prefijo Y se puede respetar sin
+    /// romperle el arranque al juego.
     ///
-    /// Se mira la carpeta `steamapps/downloading`, donde Steam deja los trozos del juego que está
-    /// bajando: si hay una subcarpeta con un appID, esa descarga está en curso o pausada a medias.
-    /// Es el dato que hay en disco — no hace falta preguntarle a Steam.
-    private func steamHasActiveDownloads(prefix: String) -> Bool {
+    /// Lo primero se mira en disco: `steamapps/downloading/<appid>` son los trozos que Steam está
+    /// bajando. No hace falta preguntarle a nadie.
+    ///
+    /// Lo segundo es la parte delicada. Dentro de un prefijo solo puede haber **un wineserver**, y
+    /// tiene que ser de la misma versión de Wine que el juego: si el cliente dejó uno de `wine-full`
+    /// y el juego arranca con otro motor, muere al instante con *"wine client error: version
+    /// mismatch"*. Por eso solo se respeta a Steam cuando el juego usa **su mismo motor**; si no,
+    /// toca echarlo (y el usuario pierde la descarga, que es el mal menor frente a que el juego no
+    /// abra). Con `gameWine` a `nil` se asume que sí, para las limpiezas que no van atadas a un
+    /// motor concreto.
+    private func steamHasActiveDownloads(prefix: String, gameWine: String? = nil) -> Bool {
+        var hayDescarga = false
         for base in ["Program Files (x86)", "Program Files"] {
             let dir = "\(prefix)/drive_c/\(base)/Steam/steamapps/downloading"
             guard let items = try? FileManager.default.contentsOfDirectory(atPath: dir) else { continue }
-            if items.contains(where: { Int($0) != nil }) { return true }
+            if items.contains(where: { Int($0) != nil }) { hayDescarga = true; break }
         }
-        return false
+        guard hayDescarga else { return false }
+        // Hay descarga: solo se puede respetar si el wineserver que está vivo es del MISMO motor que
+        // el juego. Si no, el juego moriría con "version mismatch" nada más arrancar, y eso es peor
+        // que perder la descarga. NO basta con mirar el motor del juego: el server vivo puede haberlo
+        // dejado OTRO juego (pasó con DOOM: server de wine-unified + juego de wine-full → mismatch).
+        guard let wine = gameWine else { return true }
+        return liveWineserverEngine(prefix: prefix).map { $0 == engineDirectory(forWine: wine) } ?? true
+    }
+
+    /// Directorio del motor al que pertenece un binario `wine` (…/<motor>/bin/wine → …/<motor>).
+    private func engineDirectory(forWine wine: String) -> String {
+        ((wine as NSString).deletingLastPathComponent as NSString).deletingLastPathComponent
+    }
+
+    /// Motor del `wineserver` que está vivo en este prefijo, o `nil` si no hay ninguno.
+    private func liveWineserverEngine(prefix: String) -> String? {
+        let shell = Process()
+        shell.executableURL = URL(fileURLWithPath: "/bin/sh")
+        shell.arguments = ["-c", """
+        for pid in $(/usr/bin/pgrep -x wineserver 2>/dev/null); do
+          if /usr/sbin/lsof -p "$pid" 2>/dev/null | /usr/bin/grep -qF '\(prefix)'; then
+            /bin/ps -o command= -p "$pid"; break
+          fi
+        done
+        """]
+        let pipe = Pipe()
+        shell.standardOutput = pipe; shell.standardError = FileHandle(forWritingAtPath: "/dev/null")
+        guard (try? shell.run()) != nil else { return nil }
+        let salida = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        shell.waitUntilExit()
+        let ruta = salida.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !ruta.isEmpty else { return nil }
+        // …/<motor>/bin/wineserver o …/<motor>/lib/wine/…/wineserver → quedarse con <motor>.
+        guard let r = ruta.range(of: "/Engines/") else { return nil }
+        let resto = ruta[r.upperBound...]
+        guard let barra = resto.firstIndex(of: "/") else { return nil }
+        return String(ruta[..<r.upperBound]) + String(resto[..<barra])
     }
 
     /// Mata por SIGKILL los procesos Wine CLIENTE (argv de Windows, con `.exe`) que
@@ -3303,8 +3348,8 @@ final class WineManager {
     /// motor que el juego, así que no hay choque de versiones de wineserver que justifique echarlo
     /// (de hecho los juegos con DRM COMPARTEN wineserver con el cliente a propósito). Si no hay
     /// descargas, se mantiene el comportamiento de siempre: fuera, para que el juego arranque limpio.
-    private func killPrefixWineClients(prefix: String) async {
-        let preservarSteam = steamHasActiveDownloads(prefix: prefix)
+    private func killPrefixWineClients(prefix: String, gameWine: String? = nil) async {
+        let preservarSteam = steamHasActiveDownloads(prefix: prefix, gameWine: gameWine)
         if preservarSteam {
             log.log("Steam está descargando: se deja abierto para no cortar la descarga.", level: .info)
         }
@@ -3335,12 +3380,12 @@ final class WineManager {
     /// Mata por SIGKILL cualquier `wineserver` ligado a `prefix`, sea cual sea el motor
     /// (versión) que lo arrancó. Evita el "version mismatch" que deja colgado al juego
     /// tras un cambio de motor. Silencioso e idempotente.
-    private func killPrefixWineservers(prefix: String) async {
+    private func killPrefixWineservers(prefix: String, gameWine: String? = nil) async {
         // El wineserver es la raíz del prefijo: matarlo se lleva por delante TODO lo que corre
         // dentro, incluido el Steam que esté descargando. Si hay una descarga a medias se respeta;
         // el cliente usa el mismo motor que el juego, así que no hay mismatch de versión que temer
         // (que es para lo que existe esta limpieza).
-        if steamHasActiveDownloads(prefix: prefix) { return }
+        if steamHasActiveDownloads(prefix: prefix, gameWine: gameWine) { return }
         let shell = Process()
         shell.executableURL = URL(fileURLWithPath: "/bin/sh")
         // Para cada wineserver vivo, si tiene ABIERTO algo bajo el prefix → SIGKILL.
@@ -3461,7 +3506,7 @@ final class WineManager {
         // LIMPIO con el prefijo ya actualizado. Si el juego corre sobre el wineserver de
         // wineboot, DXMT no engancha y falla con "InitializeEngineGraphics failed".
         try? await terminateWineProcesses(winePath: gameWine, prefix: prefix)
-        try? await killOrphanWineProcesses(prefix: prefix)
+        try? await killOrphanWineProcesses(prefix: prefix, gameWine: gameWine)
         // Registrar el motor con el que quedó sincronizado el prefijo (lo consume
         // `ensurePrefixSyncedToEngine` para el camino del cliente de Steam).
         try? engineID(forWine: gameWine)
@@ -3667,8 +3712,8 @@ final class WineManager {
         // que está descargando: al usuario se le cortaba la descarga por lanzar un juego, sin
         // avisarle. Si hay una descarga a medias se respeta — el cliente usa el mismo motor que el
         // juego, así que no hay choque de versiones que justifique echarlo (de hecho los juegos con
-        // DRM comparten wineserver con él a propósito).
-        if steamHasActiveDownloads(prefix: prefix) { return }
+        // DRM comparten wineserver con él a propósito). Solo si el juego usa SU MISMO motor.
+        if steamHasActiveDownloads(prefix: prefix, gameWine: winePath) { return }
         guard let wineserverPath = siblingTool(named: "wineserver", forWinePath: winePath) else {
             return
         }
@@ -4078,7 +4123,7 @@ final class WineManager {
             // usuario por la cara: ahí se respeta. El juego no necesita que Steam muera — comparten
             // motor y prefijo, y los que llevan DRM hasta lo agradecen.
             let esSteam = arguments.first?.lowercased().hasSuffix("steam.exe") ?? false
-            let matarSteam = (esSteam || !steamHasActiveDownloads(prefix: prefix))
+            let matarSteam = (esSteam || !steamHasActiveDownloads(prefix: prefix, gameWine: winePath))
                 ? "/usr/bin/pkill -9 -f 'steam\\.exe' 2>/dev/null; /usr/bin/pkill -9 -f steamwebhelper 2>/dev/null; "
                   + "for i in 1 2 3 4 5 6 7 8; do /usr/bin/pgrep -f 'steam\\.exe' >/dev/null 2>&1 || break; sleep 1; done; "
                 : ""
