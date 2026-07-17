@@ -911,7 +911,9 @@ final class WineManager {
             eff.msync = false; eff.esync = false; eff.fsync = false
         }
         let go = eff.graphicsOverride
-        let allArgs = arguments + eff.launchArgs
+        // Los de Unreal llevan siempre `-nohmd`: sin él se quedan buscando un visor de VR que aquí no
+        // existe y mueren sin abrir ventana (ver `unrealEngineArguments`). Vale para cualquier ruta.
+        let allArgs = arguments + eff.launchArgs + unrealEngineArguments(forExecutable: executable)
         if eff.fromProfile, let r = eff.rating {
             log.log("Perfil de compatibilidad aplicado: \(r.label)\(eff.verified ? " ✓ verificado" : " (sin verificar)")", level: .info)
         }
@@ -1046,6 +1048,16 @@ final class WineManager {
             return try await launchFNAGameWithCrossOver(executable: executable, in: bottle,
                                                         arguments: allArgs, effective: eff,
                                                         wine: fullEngineWine)
+        }
+        // **Unreal Engine 4** (D3D11, sin d3d12): no arranca ni por DXMT ni por GPTK — solo con el
+        // Wine completo. Va aquí, antes de la detección de API, porque el problema no es la capa
+        // gráfica sino el motor. Solo cuando el usuario no ha forzado una capa a mano. Verificado
+        // con ASTRONEER. (UE5 con d3d12 —Palworld— NO entra aquí: sigue por GPTK/D3DMetal.)
+        if go == .auto, isUnrealEngine4Game(executable),
+           FileManager.default.isExecutableFile(atPath: fullEngineWine) {
+            return try await launchUnreal4WithCrossOver(executable: executable, in: bottle,
+                                                        arguments: allArgs, steamAppId: steamAppId,
+                                                        effective: eff, wine: fullEngineWine)
         }
         // Capa gráfica: override por juego (Ajustes/perfil) o auto-detección por API.
         // D3D12 (AAA, FF Tactics) → GPTK/D3DMetal (Metal nativo, ignora el Agility
@@ -1436,6 +1448,33 @@ final class WineManager {
                 log.log("Resolución guardada del juego (\(w)×\(h)) mayor que la pantalla: se descarta para que la vuelva a calcular.", level: .info)
             }
         }
+    }
+
+    /// Lanza un **Unreal Engine 4** con el Wine COMPLETO de CrossOver (`wine-full`).
+    ///
+    /// UE4 no arranca por DXMT ni por GPTK: se queda a medias, sin ventana y sin dejar ni su log.
+    /// Con `wine-full` abre. Es la misma razón que en los Unity 32-bit y los D3D9: es el motor que
+    /// da un contexto gráfico de verdad. Se queda en el prefijo base (64-bit, comparte con Steam).
+    private func launchUnreal4WithCrossOver(executable rawExecutable: String, in bottle: Bottle,
+                                            arguments: [String], steamAppId: String?,
+                                            effective: EffectiveLaunchConfig, wine: String) async throws -> Process {
+        log.log("Capa gráfica: Wine completo de CrossOver (Unreal Engine 4) — el único que le da contexto gráfico", level: .info)
+        cleanExeAdjacentDXMTDLLs(gameExecutable: rawExecutable)
+        cleanGameFolderGraphicsDLLs(forExecutable: rawExecutable)
+        try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: wine)
+        await resyncGamePrefix(gameWine: wine, prefix: bottle.prefixPath)
+        var env = ["WINEPREFIX": bottle.prefixPath, "WINEDEBUG": "-all",
+                   "WINEDLLOVERRIDES": "winemenubuilder.exe=d", "WINEMSYNC": "1", "WINEESYNC": "1"]
+        if let appId = steamAppId, !appId.isEmpty { env["SteamAppId"] = appId; env["SteamGameId"] = appId }
+        return try await launchWineProcess(
+            winePath: wine,
+            prefix: bottle.prefixPath,
+            arguments: [rawExecutable] + arguments,
+            environment: env,
+            workingDirectory: gameWorkingDirectory(forExecutable: rawExecutable),
+            effective: effective
+        )
     }
 
     /// Lanza un **Unity de 32-bit** con el Wine COMPLETO de CrossOver (`wine-full`).
@@ -1958,7 +1997,11 @@ final class WineManager {
         return try await launchWineProcess(
             winePath: d3d12Wine,
             prefix: bottle.prefixPath,
-            arguments: [executable] + unityArgs + effective.launchArgs,
+            // `unrealEngineArguments` (`-nohmd`) también aquí: esta ruta arma su propia lista y se
+            // saltaba los argumentos del motor. Justo los juegos de UE con D3D12 son los que más lo
+            // necesitan — sin él se quedan buscando un visor de VR y no abren (ASTRONEER).
+            arguments: [executable] + unityArgs + unrealEngineArguments(forExecutable: executable)
+                + effective.launchArgs,
             environment: env,
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: effective,
@@ -2708,6 +2751,22 @@ final class WineManager {
         return d.contains("/binaries/win64") || d.contains("/binaries/win32") || d.contains("/binaries/wingdk")
     }
 
+    /// `true` si es un **Unreal Engine 4** (no 5).
+    ///
+    /// La diferencia importa para el motor. Un UE5 va por GPTK/D3DMetal (Palworld), pero un UE4 no
+    /// arranca ni por DXMT ni por GPTK — se queda a medias sin dejar ni el log. Con el Wine COMPLETO
+    /// de CrossOver sí abre. Verificado con ASTRONEER: pasó de no abrir a su menú completo. El
+    /// `-nohmd` (ver `unrealEngineArguments`) es aparte y hace falta igual: apaga la VR que lo cuelga.
+    ///
+    /// La versión se lee de las CADENAS del binario (`UE4` / `UE5`), no de la tabla de imports: UE4
+    /// carga `d3d12.dll` dinámicamente (sí aparece en el PE) aunque su RHI real sea D3D11, así que
+    /// mirar los imports lo confunde con un UE5. Astroneer trae 35 veces "UE4" y ninguna "UE5".
+    func isUnrealEngine4Game(_ executable: String) -> Bool {
+        guard isUnrealGame(executable) else { return false }
+        if exeContains(executable, anyOf: ["UE5", "++UE5+"]) { return false }
+        return exeContains(executable, anyOf: ["UE4", "++UE4+"])
+    }
+
     /// Flags para juegos Unreal Engine en el path DXMT: `-d3d11` fuerza el RHI D3D11 de UE (su default
     /// es D3D12, que en Mac via GPTK/D3DMetal se reporta como GPU AMD y provoca el aviso "AMD driver
     /// known issues"). Con DXMT+`-d3d11` arranca limpio. Para juegos no-UE, vacío.
@@ -2749,6 +2808,23 @@ final class WineManager {
         return isUnityGame(executable)
             ? ["-force-gfx-direct", "-force-glcore", "-screen-fullscreen", "1", "-window-mode", "borderless"]
             : []
+    }
+
+    /// Argumentos para los juegos de **Unreal Engine**: apagar la realidad virtual.
+    ///
+    /// Un UE con el plugin de OpenXR compilado **busca un visor de VR al arrancar**, y bajo Wine no
+    /// hay ninguno: el buscador entra en bucle (*"Failed to find default runtime"*, *"RuntimeManifestFile
+    /// ::FindManifestFiles - failed to find active runtime file"*, una y otra vez) y el juego **muere
+    /// sin llegar a escribir su log ni a abrir ventana** — desde fuera parece que no arranca y ya.
+    /// Con `-nohmd` ni lo intenta. Verificado con ASTRONEER, que pasó de no abrir a su menú completo.
+    ///
+    /// A un Unreal sin VR no le molesta: es una opción del motor, no del juego. `-nosplash` quita la
+    /// ventanita de carga, que bajo Wine a veces se queda encima del juego.
+    func unrealEngineArguments(forExecutable executable: String) -> [String] {
+        let dir = (executable as NSString).deletingLastPathComponent.lowercased()
+        guard dir.contains("/binaries/win64") || dir.contains("/binaries/win32")
+                || dir.contains("/binaries/wingdk") else { return [] }
+        return ["-nohmd", "-nosplash"]
     }
 
     /// Garantiza que el motor de JUEGOS (wine-dxmt) tiene la `d3d11` de DXMT en su
