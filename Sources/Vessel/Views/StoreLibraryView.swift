@@ -2047,6 +2047,13 @@ struct RecentlyPlayedCard: View {
 /// personales. Ver `StoreGameMetadataService`.
 typealias SteamGameDetails = StoreGameMetadata
 
+/// Símbolos utilizados en las acciones de la ficha. Se mantienen centralizados para poder
+/// comprobar su disponibilidad real en macOS y evitar botones vacíos si un nombre no existe.
+enum GameDetailSymbols {
+    static let note = "note.text"
+    static let savedNoteBadge = "checkmark.circle.fill"
+}
+
 /// Un DLC resuelto (nombre + carátula) para mostrarlo en la ficha.
 struct StoreDLC: Identifiable, Hashable {
     let id: String
@@ -2246,9 +2253,12 @@ struct GameDetailView: View {
             if game.installed && !installing { iconButton("checkmark.shield", label: "Verificar o reparar", action: onVerify) }
             if game.installed { iconButton("trash", label: "Desinstalar", action: onUninstall) }
             iconButton("gearshape.fill", label: "Ajustes del juego") { showingSettings = true }
-            iconButton(hasNote ? "note.text.badge.checkmark" : "note.text",
+            iconButton(GameDetailSymbols.note,
                        label: hasNote ? "Editar notas del juego" : "Añadir notas del juego",
-                       tinted: hasNote, action: onOpenNotes)
+                       tinted: hasNote,
+                       accent: tint,
+                       badgeIcon: hasNote ? GameDetailSymbols.savedNoteBadge : nil,
+                       action: onOpenNotes)
             iconButton(isFavorite ? "heart.fill" : "heart",
                        label: isFavorite ? "Quitar de favoritos" : "Añadir a favoritos",
                        tinted: isFavorite, action: onToggleFavorite)
@@ -2955,12 +2965,23 @@ struct GameDetailView: View {
     }
 
     private func iconButton(_ icon: String, label: String, tinted: Bool = false,
+                            accent: Color = .pink, badgeIcon: String? = nil,
                             action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: icon).font(.body)
-                .foregroundStyle(tinted ? Color.pink : .white.opacity(0.7))
-                .frame(width: 38, height: 38)
-                .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: icon)
+                    .font(.body)
+                    .foregroundStyle(tinted ? accent : .white.opacity(0.7))
+                if let badgeIcon {
+                    Image(systemName: badgeIcon)
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(accent)
+                        .offset(x: 5, y: -5)
+                        .accessibilityHidden(true)
+                }
+            }
+            .frame(width: 38, height: 38)
+            .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
