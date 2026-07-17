@@ -1219,6 +1219,13 @@ final class WineManager {
         try? await terminateWineProcesses(winePath: wine, prefix: prefix)
         try? await killOrphanWineProcesses(prefix: prefix)
         await resyncGamePrefix(gameWine: wine, prefix: prefix)
+        // Retina OFF: sin esto Wine le dice al juego que la pantalla mide 3024×1964 (los PÍXELES de
+        // una Retina de 1512×982), y un juego de esta época no es DPI-aware: se lo cree, pide una
+        // ventana de ese tamaño —el doble de la pantalla, desbordada— y **se guarda esa resolución
+        // en su config**. A partir de ahí ya da igual lo que haga Wine: el juego lee su fichero.
+        await setMacDriverRetinaMode(prefix: prefix, wine: wine, enabled: false)
+        // …y por eso hay que tirar la config envenenada de arranques anteriores (ver `resetFNASettings`).
+        resetFNAScreenSettings(prefix: prefix, executable: rawExecutable)
         // Idempotente: la primera vez tarda (descarga el redistribuible de Microsoft), luego no.
         await applyWinetricksVerbs(["dotnet48"], prefix: prefix, wine: wine)
         cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
@@ -1226,21 +1233,56 @@ final class WineManager {
         return try await launchWineProcess(
             winePath: wine,
             prefix: prefix,
-            // Escritorio virtual, igual que en los DirectDraw clásicos, pero por otro motivo: **el
-            // factor Retina se les aplica DOS VECES**. FEZ pide una pantalla de 1512×982 y acaba con
-            // un backbuffer de 6048×3928 (4×) — dibuja en una superficie el doble de grande que la
-            // ventana, así que solo se ve una cuarta parte, en la esquina inferior izquierda (el
-            // origen de OpenGL). No lo arregla `RetinaMode`: se probó en HKCU, HKLM y AppDefaults, y
-            // el backbuffer no se mueve de 6048×3928. Con escritorio virtual, Wine le da al juego una
-            // pantalla propia de tamaño fijo, deja de preguntarle a macOS y el doble factor
-            // desaparece. Verificado con FEZ: renderiza nítido y centrado.
-            arguments: ["explorer", "/desktop=Vessel,1280x720", executable] + arguments,
+            arguments: [executable] + arguments,
             environment: ["WINEPREFIX": prefix, "WINEDEBUG": "-all",
                           "WINEDLLOVERRIDES": "winemenubuilder.exe=d",
                           "WINEMSYNC": "1", "WINEESYNC": "1"],
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: effective
         )
+    }
+
+    /// Tira la resolución guardada por un juego FNA/XNA si es **más grande que la pantalla**.
+    ///
+    /// Estos juegos **se guardan la resolución en su propio fichero** en el primer arranque. Si ese
+    /// primer arranque fue con Retina activado, el juego anotó los PÍXELES de la pantalla (6048×3928
+    /// en una Retina de 1512×982) y desde entonces **lee su fichero y se ignora al sistema**: da
+    /// igual lo que haga Wine después, sigue dibujando en una superficie enorme y solo se ve una
+    /// esquina, ampliada. Esa era la causa real de que FEZ se viera recortado.
+    ///
+    /// Se borra solo el bloque de pantalla y solo si está fuera de rango, así que no se pierde nada
+    /// del jugador (volumen, idioma, mandos): el juego regenera esas líneas en el siguiente arranque
+    /// con lo que Wine le diga, que ahora es correcto. Si la resolución guardada cabe en la pantalla,
+    /// se respeta — es una elección del usuario.
+    private func resetFNAScreenSettings(prefix: String, executable: String) {
+        let fm = FileManager.default
+        // Tamaño de la pantalla en PUNTOS (que es en lo que piensan estos juegos), vía CoreGraphics
+        // para no arrastrar AppKit a la capa de servicios.
+        let mode = CGDisplayCopyDisplayMode(CGMainDisplayID())
+        let screen = CGSize(width: mode?.width ?? 1512, height: mode?.height ?? 982)
+        // OJO: el usuario DENTRO del prefijo no tiene por qué llamarse como el del Mac — el motor de
+        // CrossOver usa `crossover`. Se recorren todos los del prefijo.
+        let usersDir = "\(prefix)/drive_c/users"
+        let users = (try? fm.contentsOfDirectory(atPath: usersDir)) ?? []
+        for user in users {
+            let roaming = "\(usersDir)/\(user)/AppData/Roaming"
+            guard let dirs = try? fm.contentsOfDirectory(atPath: roaming) else { continue }
+            for dir in dirs {
+                let settings = "\(roaming)/\(dir)/Settings"
+                guard fm.fileExists(atPath: settings),
+                      let raw = try? String(contentsOfFile: settings, encoding: .isoLatin1) else { continue }
+                // `width`/`height` en el formato de FezEngine.Tools.Settings.
+                func value(_ key: String) -> Int? {
+                    guard let r = raw.range(of: #"(?m)^\s*\#(key)\s+(\d+)"#, options: .regularExpression)
+                    else { return nil }
+                    return Int(raw[r].split(separator: " ").last.map(String.init) ?? "")
+                }
+                guard let w = value("width"), let h = value("height"),
+                      Double(w) > screen.width || Double(h) > screen.height else { continue }
+                try? fm.removeItem(atPath: settings)
+                log.log("Resolución guardada del juego (\(w)×\(h)) mayor que la pantalla: se descarta para que la vuelva a calcular.", level: .info)
+            }
+        }
     }
 
     /// Lanza un **Unity de 32-bit** con el Wine COMPLETO de CrossOver (`wine-full`).
