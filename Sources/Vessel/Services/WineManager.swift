@@ -617,6 +617,23 @@ final class WineManager {
         }
     }
 
+    /// `true` si el juego usa el **XNA de Microsoft** y NO se lo trae consigo: entonces hay que
+    /// instalarle el redistribuible, porque lo busca en el sistema.
+    ///
+    /// Distingue los dos mundos: **FNA** (la reimplementación libre) va en `FNA.dll` dentro de la
+    /// carpeta del juego y se basta sola — FEZ. **XNA** de verdad vive en el GAC de Windows, y sin él
+    /// el juego muere nada más arrancar con `Could not load file or assembly
+    /// 'Microsoft.Xna.Framework'` — Terraria. Traer `...Content.Pipeline.dll` (una herramienta de
+    /// desarrollo) no cuenta: lo que hace falta es el runtime.
+    func needsXNARedistributable(_ executable: String) -> Bool {
+        let dir = (executable as NSString).deletingLastPathComponent
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return false }
+        let traeFNA = files.contains { $0.caseInsensitiveCompare("FNA.dll") == .orderedSame }
+        let usaXNA = files.contains { $0.lowercased().hasPrefix("microsoft.xna.framework") }
+        let traeRuntimeXNA = files.contains { $0.caseInsensitiveCompare("Microsoft.Xna.Framework.dll") == .orderedSame }
+        return usaXNA && !traeFNA && !traeRuntimeXNA
+    }
+
     /// Raíz del juego a partir del exe del emulador: GOG lo mete en una subcarpeta (`…/DOSBOX/`),
     /// así que la raíz es su padre — que es donde están los `.conf` y el juego en sí. Se confirma
     /// buscando el `goggame-<id>.info`; si no aparece, se asume el padre igualmente.
@@ -1227,7 +1244,11 @@ final class WineManager {
         // …y por eso hay que tirar la config envenenada de arranques anteriores (ver `resetFNASettings`).
         resetFNAScreenSettings(prefix: prefix, executable: rawExecutable)
         // Idempotente: la primera vez tarda (descarga el redistribuible de Microsoft), luego no.
-        await applyWinetricksVerbs(["dotnet48"], prefix: prefix, wine: wine)
+        // `xna40` solo para los que usan el XNA de Microsoft sin traérselo (Terraria); los de FNA
+        // (FEZ) no lo necesitan y no se les instala de más.
+        var verbs = ["dotnet48"]
+        if needsXNARedistributable(rawExecutable) { verbs.append("xna40") }
+        await applyWinetricksVerbs(verbs, prefix: prefix, wine: wine)
         cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
         cleanGameFolderGraphicsDLLs(forExecutable: executable)
         return try await launchWineProcess(
