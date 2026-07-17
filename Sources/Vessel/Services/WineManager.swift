@@ -617,6 +617,27 @@ final class WineManager {
         }
     }
 
+    /// `true` si el `.exe` contiene alguna de estas cadenas. Se mapea el fichero en memoria en vez
+    /// de leerlo entero: los ejecutables de Godot pesan más de 100 MB.
+    private func exeContains(_ executable: String, anyOf needles: [String]) -> Bool {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: executable), options: .mappedIfSafe)
+        else { return false }
+        return needles.contains { data.range(of: Data($0.utf8)) != nil }
+    }
+
+    /// `true` si es un **Godot con Vulkan** (Godot 4 con su render por defecto).
+    ///
+    /// No vale mirar la tabla de imports: Godot carga `vulkan-1.dll` en tiempo de ejecución, así que
+    /// su PE no la declara y la detección de "Vulkan nativo" no lo ve. Acaba clasificado por
+    /// descarte y va al motor equivocado: arranca (su log dice "Godot Engine v4.3") pero **no abre
+    /// ventana nunca**. Hay que mirar sus cadenas.
+    ///
+    /// Solo los que traen Vulkan: un Godot compilado únicamente con OpenGL (Cassette Beasts) NO cae
+    /// aquí — a ese, forzarle Vulkan lo rompería, y ya funciona por su camino.
+    func isGodotVulkanGame(_ executable: String) -> Bool {
+        exeContains(executable, anyOf: ["Godot Engine"]) && exeContains(executable, anyOf: ["vulkan"])
+    }
+
     /// `true` si el juego usa el **XNA de Microsoft** y NO se lo trae consigo: entonces hay que
     /// instalarle el redistribuible, porque lo busca en el sistema.
     ///
@@ -906,6 +927,27 @@ final class WineManager {
             return try await launchLegacyDirectDrawGame(executable: executable, in: bottle,
                                                         arguments: allArgs, effective: eff,
                                                         wine: fullEngineWine)
+        }
+        // **Godot con Vulkan**: se le dice explícitamente que use Vulkan y va por el Wine completo.
+        // Sin esto acaba clasificado por descarte (su PE no declara `vulkan-1.dll`, la carga en
+        // runtime), arranca —su log escribe "Godot Engine v4.3"— y NO abre ventana jamás.
+        // Verificado con Halls of Torment; Cassette Beasts (Godot solo-OpenGL) no entra aquí.
+        if isGodotVulkanGame(executable), FileManager.default.isExecutableFile(atPath: fullEngineWine) {
+            log.log("Juego Godot: render por Vulkan (MoltenVK→Metal) con el Wine completo.", level: .info)
+            cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
+            try? await terminateWineProcesses(winePath: fullEngineWine, prefix: bottle.prefixPath)
+            try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+            await resyncGamePrefix(gameWine: fullEngineWine, prefix: bottle.prefixPath)
+            return try await launchWineProcess(
+                winePath: fullEngineWine,
+                prefix: bottle.prefixPath,
+                arguments: [executable] + allArgs + ["--rendering-driver", "vulkan"],
+                environment: ["WINEPREFIX": bottle.prefixPath, "WINEDEBUG": "-all",
+                              "WINEDLLOVERRIDES": "winemenubuilder.exe=d",
+                              "WINEMSYNC": "1", "WINEESYNC": "1"],
+                workingDirectory: gameWorkingDirectory(forExecutable: executable),
+                effective: eff
+            )
         }
         // **FNA/XNA**: lo que les falla no es la capa gráfica sino el RUNTIME — quieren el .NET
         // Framework de verdad, no wine-mono. Por eso va antes de detectar la API: con mono se
