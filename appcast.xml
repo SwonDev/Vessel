@@ -6,6 +6,19 @@
     <description>Actualizaciones de Vessel — la mejor app para jugar a Steam en Mac Silicon.</description>
     <language>es</language>
     <item>
+      <title>Versión 0.0.3</title>
+      <sparkle:version>3</sparkle:version>
+      <sparkle:shortVersionString>0.0.3</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[ Compatibilidad masiva de motores de juego (I+D): ahora funcionan Love2D (Balatro), Godot 3 y 4 en OpenGL y Vulkan (Brotato, Cassette Beasts, Halls of Torment), MonoGame (Stardew Valley), RPG Maker (To the Moon), FNA (FEZ), XNA (Terraria), Source (Portal), id Tech/KEX (DOOM + DOOM II), Unreal Engine 4 (Astroneer) y Java/JVM (Wurm). DRM-free: War Wind y todos los juegos de DirectDraw de los 90 (parche de Wine), con exportación autodocumentada. winetricks vuelve a instalar runtimes en el motor completo. Las descargas de Steam ya no se cortan al jugar. Correcciones de escala Retina y detección de ejecutables (MS-DOS, JRE, UE4). ]]></description>
+      <pubDate>Fri, 17 Jul 2026 20:00:13 +0100</pubDate>
+      <enclosure
+        url="https://github.com/SwonDev/Vessel/releases/download/v0.0.3/Vessel-0.0.3.zip"
+        sparkle:edSignature="8zGr1gtPB5rfzzovpKeT6Dnbl/FxgNlRybbkZsRILTmWzw5sMcV4W55swSdTORG14K4L13RFed/MRuzgjld9BQ=="
+        length="21916626"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>Versión 0.0.2</title>
       <sparkle:version>2</sparkle:version>
       <sparkle:shortVersionString>0.0.2</sparkle:shortVersionString>
