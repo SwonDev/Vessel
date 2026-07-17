@@ -1,0 +1,37 @@
+--- /dev/fd/11	2026-07-17 09:12:08
++++ dlls/ddraw/ddraw.c	2026-07-17 09:09:25
+@@ -21,6 +21,7 @@
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
+ 
++#include <math.h>
+ #include "ddraw_private.h"
+ #include "ddrawi.h"
+ #include "d3dhal.h"
+@@ -2221,6 +2222,26 @@
+     /* MSDN says DDWAITVB_BLOCKBEGINEVENT is not supported */
+     if(Flags & DDWAITVB_BLOCKBEGINEVENT)
+         return DDERR_UNSUPPORTED; /* unchecked */
++
++    /* VESSEL: espera de barrido REAL. El stub devolvia al instante, asi que los juegos que
++     * pacean su bucle con el vblank giran a millones de iteraciones/s (98% CPU) y su maquina
++     * de estados nunca avanza. Dormimos hasta el siguiente barrido a ~60 Hz. */
++    if (Flags & (DDWAITVB_BLOCKBEGIN | DDWAITVB_BLOCKEND))
++    {
++        LARGE_INTEGER freq, now;
++        DWORD ms;
++        QueryPerformanceFrequency(&freq);
++        QueryPerformanceCounter(&now);
++        /* tiempo hasta el proximo limite de 16.667 ms */
++        {
++            double t = (double)now.QuadPart * 1000.0 / (double)freq.QuadPart;
++            double period = 1000.0 / 60.0;
++            double wait = period - fmod(t, period);
++            ms = (DWORD)(wait + 0.5);
++            if (!ms) ms = 1;
++        }
++        Sleep(ms);
++    }
+ 
+     return DD_OK;
+ }

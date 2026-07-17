@@ -88,3 +88,31 @@ if (device->shader_backend != &glsl_shader_backend)
 ```
 
 Canal de traza en Wine 11: **`+d3d`** (no `+wined3d`).
+
+---
+
+## Caso War Wind (tarea #58) — qué se probó con este build
+
+Todo lo de abajo está **medido con instrumentación propia** (`ERR(...)` en el código de Wine),
+no supuesto. Sirve para no repetir el camino.
+
+| Hipótesis | Cómo se comprobó | Resultado |
+|---|---|---|
+| No se crea el blitter GLSL (el que hace `COMPLEX_FIXUP_P8`) | `ERR` en `wined3d_glsl_blitter_create` | ❌ FALSA: **sí se crea** |
+| El blitter rechaza el blit del juego | `ERR` en los 8 puntos de `glsl_blitter_supported` | ❌ FALSA: **lo ACEPTA** (5/5) |
+| La paleta llega vacía / a negro | volcado de `palette->colors[]` | ❌ FALSA: **254/256 colores reales** |
+| El dibujo no llega a la pantalla | shader forzado a rojo sólido | ❌ FALSA: **100% de la ventana en rojo** |
+| La textura P8 llega vacía | shader pintando el índice en gris + `ERR` en `wined3d_texture_gl_upload_data` | ⚠️ **el juego sube 396 bytes ≠ 0 de 307.200** |
+
+**Conclusión: la ruta P8/paleta de Wine FUNCIONA.** El blit del juego es
+`op=0 (COLOR_BLIT) src=P8_UINT dst=P8_UINT src_loc=TEXTURE_RGB dst_loc=DRAWABLE`, lo acepta el
+blitter GLSL, con la paleta real, y el draw llega a la ventana. Lo que falla es que **el juego
+apenas dibuja** (396 píxeles + un cursor de 27×26) y esos píxeles tampoco aparecen: se sube a una
+textura y se presenta otra cosa. Ese es el hilo pendiente.
+
+Lo que **sí** salió de aquí y es reutilizable:
+`docs/wine-patches/0001-ddraw-WaitForVerticalBlank-real.patch` — `WaitForVerticalBlank` era un
+**stub que devolvía al instante**; ahora duerme hasta el siguiente barrido (~60 Hz). Baja el
+consumo de War Wind del 98% al 84% de CPU. ⚠️ **No está integrado en ningún motor**: es correcto
+por definición, pero cambia el pacing de CUALQUIER juego de DirectDraw y hay que regresionarlo
+antes de distribuirlo.
