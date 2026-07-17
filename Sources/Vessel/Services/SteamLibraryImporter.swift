@@ -135,6 +135,23 @@ final class SteamLibraryImporter {
     ///  - Premia el marcador de cliente Unity: existe la carpeta hermana `<exe>_Data`.
     ///  - Premia que el nombre del exe ≈ nombre de la carpeta (normalizado, ignora espacios).
     ///  - Prefiere la raíz del juego frente a subcarpetas; penaliza launchers de terceros.
+    /// `true` si el `.exe` es de **MS-DOS** (16 bits), no de Windows.
+    ///
+    /// Todo ejecutable de Windows empieza por la cabecera `MZ` de DOS, pero lleva detrás una firma
+    /// `PE\0\0` en el desplazamiento que marca `e_lfanew` (offset 0x3C). Si esa firma no está, es un
+    /// binario de DOS puro: Wine no lo ejecuta en un macOS de 64 bits (necesitaría DOSBox).
+    static func isDOSExecutable(_ path: String) -> Bool {
+        guard let fh = FileHandle(forReadingAtPath: path) else { return false }
+        defer { try? fh.close() }
+        guard let head = try? fh.read(upToCount: 0x40), head.count >= 0x40,
+              head[0] == 0x4D, head[1] == 0x5A else { return false }        // sin 'MZ' no es ejecutable
+        let lfanew = head.withUnsafeBytes { $0.load(fromByteOffset: 0x3C, as: UInt32.self) }
+        guard lfanew > 0, lfanew < 0x1000_0000,
+              (try? fh.seek(toOffset: UInt64(lfanew))) != nil,
+              let sig = try? fh.read(upToCount: 4), sig.count == 4 else { return true }
+        return !(sig[0] == 0x50 && sig[1] == 0x45 && sig[2] == 0 && sig[3] == 0)   // 'PE\0\0'
+    }
+
     static func mainGameExecutable(in dir: String) -> String? {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(atPath: dir) else { return nil }
@@ -148,6 +165,12 @@ final class SteamLibraryImporter {
                 || lower.contains("dotnet") || lower.contains("directx") || lower.contains("uninstall") {
                 continue
             }
+            // **Ejecutables de MS-DOS**: fuera. Wine no corre binarios de 16 bits en un macOS de 64,
+            // así que elegirlos es garantía de que el juego no arranca. Y los hay: las recopilaciones
+            // modernas incluyen el original junto al remaster (DOOM + DOOM II trae `base/DOOM.EXE` de
+            // 1993 **y** `rerelease/doom.exe` de 2024 — Vessel se quedaba con el de 1993 y no abría
+            // nada). Se reconocen porque su cabecera MZ no lleva un PE detrás.
+            if isDOSExecutable("\(dir)/\(path)") { continue }
             exes.append((lower, "\(dir)/\(path)"))
         }
         guard !exes.isEmpty else { return nil }

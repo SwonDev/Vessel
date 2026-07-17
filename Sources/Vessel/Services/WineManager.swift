@@ -3244,6 +3244,12 @@ final class WineManager {
     /// con la ruta del prefix. Más agresivo que `wineserver -k` cuando hay
     /// procesos zombi de Steam CEF.
     private func killOrphanWineProcesses(prefix: String) async throws {
+        // Con una descarga de Steam a medias no se limpia el prefijo: se llevaría por delante el
+        // cliente y el usuario perdería la descarga por lanzar un juego (ver `terminateWineProcesses`).
+        if steamHasActiveDownloads(prefix: prefix) {
+            log.log("Steam está descargando: se respeta el prefijo para no cortar la descarga.", level: .info)
+            return
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
         process.arguments = ["-9", "-f", prefix]
@@ -3657,6 +3663,12 @@ final class WineManager {
     }
 
     private func terminateWineProcesses(winePath: String, prefix: String) async throws {
+        // `wineserver -k` tumba TODO lo que corre en el prefijo, y ahí dentro puede estar el Steam
+        // que está descargando: al usuario se le cortaba la descarga por lanzar un juego, sin
+        // avisarle. Si hay una descarga a medias se respeta — el cliente usa el mismo motor que el
+        // juego, así que no hay choque de versiones que justifique echarlo (de hecho los juegos con
+        // DRM comparten wineserver con él a propósito).
+        if steamHasActiveDownloads(prefix: prefix) { return }
         guard let wineserverPath = siblingTool(named: "wineserver", forWinePath: winePath) else {
             return
         }
@@ -4061,10 +4073,18 @@ final class WineManager {
             // terminate (el wineserver anterior aún cerrándose): validado in-vivo (1er arranque falla,
             // pero un `kickstart` posterior arranca). Por eso se REINTENTA con kickstart hasta que
             // steam.exe viva. El agente (Steam) cuelga de launchd, no de este bash → queda desacoplado.
+            // Ese "mata residuos" es para cuando lo que arranca es STEAM (single-instance). Cuando lo
+            // que arranca es un JUEGO y Steam está descargando, matarlo le corta la descarga al
+            // usuario por la cara: ahí se respeta. El juego no necesita que Steam muera — comparten
+            // motor y prefijo, y los que llevan DRM hasta lo agradecen.
+            let esSteam = arguments.first?.lowercased().hasSuffix("steam.exe") ?? false
+            let matarSteam = (esSteam || !steamHasActiveDownloads(prefix: prefix))
+                ? "/usr/bin/pkill -9 -f 'steam\\.exe' 2>/dev/null; /usr/bin/pkill -9 -f steamwebhelper 2>/dev/null; "
+                  + "for i in 1 2 3 4 5 6 7 8; do /usr/bin/pgrep -f 'steam\\.exe' >/dev/null 2>&1 || break; sleep 1; done; "
+                : ""
             let bootCmd =
                 "/bin/launchctl bootout gui/\(uid)/\(agentLabel) 2>/dev/null; "
-                + "/usr/bin/pkill -9 -f 'steam\\.exe' 2>/dev/null; /usr/bin/pkill -9 -f steamwebhelper 2>/dev/null; "
-                + "for i in 1 2 3 4 5 6 7 8; do /usr/bin/pgrep -f 'steam\\.exe' >/dev/null 2>&1 || break; sleep 1; done; "
+                + matarSteam
                 + "sleep 2; "
                 + "/bin/launchctl bootstrap gui/\(uid) '\(agentPlist)' 2>/dev/null; "
                 + "for r in 1 2 3 4 5 6; do sleep 4; /usr/bin/pgrep -f 'steam\\.exe' >/dev/null 2>&1 && break; "
