@@ -43,6 +43,10 @@ struct VesselApp: App {
         .commands {
             LibraryGameCommands()
             CommandMenu("Biblioteca") {
+                Button("Abrir juego rápidamente…") {
+                    NotificationCenter.default.post(name: .libraryQuickOpen, object: nil)
+                }
+                .keyboardShortcut("k", modifiers: .command)
                 Button("Buscar en la biblioteca") {
                     NotificationCenter.default.post(name: .libraryFind, object: nil)
                 }
@@ -117,6 +121,7 @@ extension Notification.Name {
     static let openAbout = Notification.Name("vessel.openAbout")
     static let openShortcutReference = Notification.Name("vessel.openShortcutReference")
     static let libraryFind = Notification.Name("vessel.libraryFind")
+    static let libraryQuickOpen = Notification.Name("vessel.libraryQuickOpen")
     static let libraryToggleSidebar = Notification.Name("vessel.libraryToggleSidebar")
     static let libraryShowAll = Notification.Name("vessel.libraryShowAll")
     static let libraryShowHidden = Notification.Name("vessel.libraryShowHidden")

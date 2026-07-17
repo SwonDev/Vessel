@@ -30,6 +30,8 @@ invisible) y la estética premium (DESIGN.md). Basado en auditoría de huecos fr
 - **Logros interactivos**: progreso real, desbloqueados/bloqueados, rareza e iconos cuando la sesión
   o la Web API de Steam lo permiten; degradación honesta si el perfil es privado.
 - Ficha de compatibilidad con acceso directo a ProtonDB y enlace a la página del juego en Steam.
+- **Acceso rápido y notas**: buscador de apertura con `⌘K` para bibliotecas grandes y notas privadas
+  por juego, con guardado automático local y acceso desde la ficha, menús contextuales y menú Juego.
 
 ## 🔜 Pendiente (orden por impacto en catálogo/UX)
 

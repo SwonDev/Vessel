@@ -11,6 +11,8 @@ struct LibraryFocusedActions {
     var toggleHidden: (() -> Void)?
     var revealInFinder: (() -> Void)?
     var copyTitle: (() -> Void)?
+    var notesTitle: String?
+    var openNotes: (() -> Void)?
     var navigateBack: (() -> Void)?
     var navigateForward: (() -> Void)?
 }
@@ -59,6 +61,12 @@ struct LibraryGameCommands: Commands {
                 actions?.copyTitle?()
             }
             .disabled(actions?.copyTitle == nil)
+
+            Button(actions?.notesTitle ?? "Notas del juego…") {
+                actions?.openNotes?()
+            }
+            .keyboardShortcut("n", modifiers: [.command, .option])
+            .disabled(actions?.openNotes == nil)
 
             Divider()
 

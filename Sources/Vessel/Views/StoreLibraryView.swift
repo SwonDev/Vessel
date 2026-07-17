@@ -224,9 +224,12 @@ struct StoreLibraryView: View {
     @State private var hiddenGames: Set<String> = []
     @State private var selectedGame: StoreGame?
     @State private var collectionsStore = LibraryCollectionsStore.shared
+    @State private var notesStore = GameNotesStore.shared
     @State private var selectedCollectionID: UUID?
     @State private var collectionEditorRequest: CollectionEditorRequest?
     @State private var collectionPendingDeletion: LibraryCollectionsStore.Collection?
+    @State private var quickOpenPresented = false
+    @State private var notesEditorGame: StoreGame?
     /// Historial de navegación estilo Steam/navegador. Se limita para no retener una sesión
     /// indefinidamente y solo guarda identificadores, nunca modelos ni datos remotos.
     @State private var backHistory: [LibraryDestination] = []
@@ -368,6 +371,11 @@ struct StoreLibraryView: View {
         collectionEditorRequest = CollectionEditorRequest(mode: .rename(selectedCollection))
     }
 
+    private func openNotes(for game: StoreGame) {
+        dismissHoverPreview(immediately: true)
+        notesEditorGame = enrichedGame(game)
+    }
+
     private var activeQuickScope: LibraryQuickScope? {
         guard selectedCollectionID == nil else { return nil }
         if showFavoritesOnly && filter == .todos { return .favoritos }
@@ -507,6 +515,9 @@ struct StoreLibraryView: View {
             toggleHidden: { toggleHidden(game.id) },
             revealInFinder: reveal,
             copyTitle: { copyGameTitle(game) },
+            notesTitle: notesStore.hasNote(storeID: store.rawValue, gameID: game.id)
+                ? "Editar notas de \(game.title)…" : "Añadir notas a \(game.title)…",
+            openNotes: { openNotes(for: game) },
             navigateBack: navigationBack,
             navigateForward: navigationForward
         )
@@ -662,6 +673,10 @@ struct StoreLibraryView: View {
             if sidebarCollapsed { sidebarCollapsed = false }
             searchFocused = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: .libraryQuickOpen)) { _ in
+            dismissHoverPreview(immediately: true)
+            quickOpenPresented = true
+        }
         .onReceive(NotificationCenter.default.publisher(for: .libraryToggleSidebar)) { _ in
             sidebarCollapsed.toggle()
         }
@@ -684,6 +699,31 @@ struct StoreLibraryView: View {
     private var libraryPresentationLayer: some View {
         libraryCommandLayer
         .sheet(item: $collectionEditorRequest, content: collectionEditor)
+        .sheet(isPresented: $quickOpenPresented) {
+            LibraryQuickOpenView(
+                store: store,
+                games: enriched,
+                favorites: favorites,
+                tint: tint,
+                onOpen: openGame
+            )
+        }
+        .sheet(item: $notesEditorGame) { game in
+            let note = notesStore.note(storeID: store.rawValue, gameID: game.id)
+            GameNotesEditorView(
+                game: game,
+                store: store,
+                tint: tint,
+                initialText: note?.text ?? "",
+                updatedAt: note?.updatedAt,
+                onSave: { text in
+                    notesStore.update(storeID: store.rawValue, gameID: game.id, text: text)
+                },
+                onDelete: {
+                    notesStore.remove(storeID: store.rawValue, gameID: game.id)
+                }
+            )
+        }
         .confirmationDialog(
             "¿Eliminar la colección «\(collectionPendingDeletion?.name ?? "")»?",
             isPresented: collectionDeletionPresented
@@ -842,6 +882,8 @@ struct StoreLibraryView: View {
                 onUpdate: { onUpdate(game) },
                 onToggleFavorite: { toggleFav(game.id) },
                 onToggleHidden: { toggleHidden(game.id) },
+                hasNote: notesStore.hasNote(storeID: store.rawValue, gameID: game.id),
+                onOpenNotes: { openNotes(for: game) },
                 onBack: navigateBackOrHome
             )
             .id(game.id)
@@ -1359,6 +1401,10 @@ struct StoreLibraryView: View {
             }
         }
         Button { copyGameTitle(game) } label: { Label("Copiar nombre", systemImage: "doc.on.doc") }
+        Button { openNotes(for: game) } label: {
+            Label(notesStore.hasNote(storeID: store.rawValue, gameID: game.id)
+                  ? "Editar notas…" : "Añadir notas…", systemImage: "note.text")
+        }
         collectionContextMenu(for: game)
         Button { toggleFav(game.id) } label: {
             Label(isFav(game.id) ? "Quitar de favoritos" : "Añadir a favoritos",
@@ -1457,6 +1503,7 @@ struct StoreLibraryView: View {
                         collectionIDs: Set(storeCollections.filter { $0.gameIDs.contains(game.id) }.map(\.id)),
                         onToggleCollection: { toggleCollection($0, for: game) },
                         onCreateCollection: { requestNewCollection(including: game) },
+                        onOpenNotes: { openNotes(for: game) },
                         onHoverChanged: { handleGridHover($0, game: game) },
                         onExport: onExport.map { cb in { cb(game) } }
                     )
@@ -1668,6 +1715,7 @@ struct StoreGameCard: View {
     var collectionIDs: Set<UUID> = []
     var onToggleCollection: (UUID) -> Void = { _ in }
     var onCreateCollection: () -> Void = {}
+    var onOpenNotes: () -> Void = {}
     var onHoverChanged: (Bool) -> Void = { _ in }
     /// Exportar (copiar a USB/disco). Si es `nil`, no se muestra la opción. Lo usa DRM‑free.
     var onExport: (() -> Void)? = nil
@@ -1738,6 +1786,9 @@ struct StoreGameCard: View {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(game.title, forType: .string)
                 } label: { Label("Copiar nombre", systemImage: "doc.on.doc") }
+                Button(action: onOpenNotes) {
+                    Label("Notas del juego…", systemImage: "note.text")
+                }
                 Menu {
                     ForEach(collections) { collection in
                         Button { onToggleCollection(collection.id) } label: {
@@ -2024,6 +2075,8 @@ struct GameDetailView: View {
     var onUpdate: () -> Void = {}
     var onToggleFavorite: () -> Void = {}
     var onToggleHidden: () -> Void = {}
+    var hasNote: Bool = false
+    var onOpenNotes: () -> Void = {}
     var onBack: () -> Void = {}
 
     @State private var showingSettings = false
@@ -2193,6 +2246,9 @@ struct GameDetailView: View {
             if game.installed && !installing { iconButton("checkmark.shield", label: "Verificar o reparar", action: onVerify) }
             if game.installed { iconButton("trash", label: "Desinstalar", action: onUninstall) }
             iconButton("gearshape.fill", label: "Ajustes del juego") { showingSettings = true }
+            iconButton(hasNote ? "note.text.badge.checkmark" : "note.text",
+                       label: hasNote ? "Editar notas del juego" : "Añadir notas del juego",
+                       tinted: hasNote, action: onOpenNotes)
             iconButton(isFavorite ? "heart.fill" : "heart",
                        label: isFavorite ? "Quitar de favoritos" : "Añadir a favoritos",
                        tinted: isFavorite, action: onToggleFavorite)
@@ -2366,6 +2422,7 @@ struct GameDetailView: View {
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("Ampliar captura \(idx + 1)")
+                            .vesselHelp("Ampliar captura \(idx + 1)")
                         }
                     }
                     .padding(.horizontal, 32).padding(.vertical, 4)

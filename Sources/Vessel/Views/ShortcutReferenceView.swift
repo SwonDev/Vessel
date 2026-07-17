@@ -5,6 +5,7 @@ struct ShortcutReferenceView: View {
 
     private let sections: [(String, [(String, String)])] = [
         ("Biblioteca", [
+            ("⌘K", "Abrir un juego rápidamente"),
             ("⌘F", "Buscar juegos"),
             ("⌘L", "Mostrar u ocultar la lista"),
             ("⌘R", "Actualizar la biblioteca"),
@@ -13,6 +14,7 @@ struct ShortcutReferenceView: View {
         ("Juego seleccionado", [
             ("⌘↩", "Jugar, detener o instalar"),
             ("⇧⌘F", "Añadir o quitar de favoritos"),
+            ("⌥⌘N", "Abrir las notas del juego"),
             ("⌘[", "Navegar atrás"),
             ("⌘]", "Navegar adelante"),
             ("Esc", "Cerrar la ficha o limpiar la búsqueda")
