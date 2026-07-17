@@ -251,6 +251,7 @@ struct StoreLibraryView: View {
     private var favKey: String { "favorites.\(store.rawValue)" }
     private var hiddenKey: String { "hiddenGames.\(store.rawValue)" }
     private var preferencePrefix: String { "vessel.library.\(store.rawValue)" }
+    private var selectionKey: String { "\(preferencePrefix).selectedGame" }
     private var storeCollections: [LibraryCollectionsStore.Collection] {
         collectionsStore.collections(for: store.rawValue)
     }
@@ -313,6 +314,28 @@ struct StoreLibraryView: View {
     private func copyGameTitle(_ game: StoreGame) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(game.title, forType: .string)
+    }
+
+    /// Doble clic en la lista, como Steam: ejecuta la acción primaria sin añadir ningún control.
+    /// Un juego que ya está arrancando o ejecutándose se ignora para evitar cierres accidentales.
+    private func performDoubleClickAction(for game: StoreGame) {
+        guard !installingIDs.contains(game.id),
+              GameLaunchTracker.shared.state(game.id) == .idle else { return }
+        if game.installed { onPlay(game) } else { onInstall(game) }
+    }
+
+    /// Soltar sobre "Colecciones" crea una nueva; si ya se está viendo una colección, añade el
+    /// juego a ella. La carga incluye la tienda para impedir cruces accidentales entre catálogos.
+    private func handleCollectionDrop(_ payload: LibraryGameDragPayload) -> Bool {
+        guard payload.storeID == store.rawValue,
+              let game = games.first(where: { $0.id == payload.gameID }) else { return false }
+        dismissHoverPreview(immediately: true)
+        if let selectedCollectionID {
+            _ = collectionsStore.add(gameID: game.id, to: selectedCollectionID)
+        } else {
+            requestNewCollection(including: enrichedGame(game))
+        }
+        return true
     }
 
     private var currentDestination: LibraryDestination {
@@ -434,6 +457,13 @@ struct StoreLibraryView: View {
            let id = UUID(uuidString: raw), collectionsStore.collection(id: id) != nil {
             selectedCollectionID = id
         }
+        if let gameID = defaults.string(forKey: selectionKey),
+           let game = games.first(where: { $0.id == gameID }),
+           !isHidden(gameID) {
+            selectedGame = enrichedGame(game)
+        } else {
+            defaults.removeObject(forKey: selectionKey)
+        }
     }
 
     private func persistLibraryPreferences() {
@@ -445,6 +475,14 @@ struct StoreLibraryView: View {
             defaults.set(selectedCollectionID.uuidString, forKey: "\(preferencePrefix).collection")
         } else {
             defaults.removeObject(forKey: "\(preferencePrefix).collection")
+        }
+    }
+
+    private func persistSelectedGame() {
+        if let selectedGame {
+            UserDefaults.standard.set(selectedGame.id, forKey: selectionKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: selectionKey)
         }
     }
 
@@ -653,6 +691,7 @@ struct StoreLibraryView: View {
         }
         .onChange(of: selectedGame) { _, selected in
             if selected != nil { dismissHoverPreview(immediately: true) }
+            persistSelectedGame()
         }
         .onChange(of: dockProgressSnapshot) { _, _ in updateDockProgress() }
         // Pre-descarga TODAS las carátulas de la tienda a disco en 2º plano (cuando la lista carga),
@@ -1028,6 +1067,7 @@ struct StoreLibraryView: View {
                 HStack(spacing: 14) {
                     ForEach(recentlyPlayed) { game in
                         RecentlyPlayedCard(game: game, tint: tint) { openGame(game) }
+                            .draggable(LibraryGameDragPayload(storeID: store.rawValue, gameID: game.id))
                     }
                 }
                 .padding(.vertical, 4).padding(.horizontal, 2)
@@ -1061,29 +1101,28 @@ struct StoreLibraryView: View {
                     }
                 }
 
-                if !storeCollections.isEmpty {
-                    LibraryCollectionScopeMenu(
-                        collections: storeCollections,
-                        selectedID: selectedCollectionID,
-                        tint: tint,
-                        onSelect: { id in
-                            search = ""
-                            filter = .todos
-                            showFavoritesOnly = false
-                            selectedCollectionID = id
-                            navigateHome()
-                        },
-                        onClear: {
-                            resetQuery()
-                            navigateHome()
-                        },
-                        onCreate: { requestNewCollection() },
-                        onRenameSelected: requestRenameSelectedCollection,
-                        onDeleteSelected: {
-                            collectionPendingDeletion = selectedCollection
-                        }
-                    )
-                }
+                LibraryCollectionScopeMenu(
+                    collections: storeCollections,
+                    selectedID: selectedCollectionID,
+                    tint: tint,
+                    onSelect: { id in
+                        search = ""
+                        filter = .todos
+                        showFavoritesOnly = false
+                        selectedCollectionID = id
+                        navigateHome()
+                    },
+                    onClear: {
+                        resetQuery()
+                        navigateHome()
+                    },
+                    onCreate: { requestNewCollection() },
+                    onRenameSelected: requestRenameSelectedCollection,
+                    onDeleteSelected: {
+                        collectionPendingDeletion = selectedCollection
+                    },
+                    onDropGame: handleCollectionDrop
+                )
 
                 if activeQuickScope == nil && selectedCollectionID == nil {
                     LibraryScopeChip(
@@ -1236,6 +1275,8 @@ struct StoreLibraryView: View {
         }
         .padding(8)
         .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .vesselHelp("Buscar en \(store.displayName)",
+                    detail: "Filtra la biblioteca por el título del juego.", shortcut: "⌘F")
         .padding(.horizontal, 12).padding(.bottom, 8)
     }
 
@@ -1313,6 +1354,8 @@ struct StoreLibraryView: View {
         }
         .padding(.horizontal, 10).padding(.vertical, 7)
         .liquidGlass(in: Capsule())
+        .vesselHelp("Buscar en \(store.displayName)",
+                    detail: "Filtra la biblioteca por el título del juego.", shortcut: "⌘F")
     }
 
     /// Filtro + favoritos en cristal, para la cabecera del grid al colapsar.
@@ -1358,7 +1401,17 @@ struct StoreLibraryView: View {
                         .listRowBackground(Color.clear)
                         .accessibilityLabel(game.title)
                         .accessibilityValue(game.installed ? "Instalado" : "Sin instalar")
-                        .accessibilityHint("Abre los detalles del juego")
+                        .accessibilityHint(game.installed
+                            ? "Abre los detalles; haz doble clic para jugar"
+                            : "Abre los detalles; haz doble clic para instalar")
+                        .vesselHelp("Abrir detalles de \(game.title)",
+                                    detail: game.installed
+                                        ? "Doble clic para jugar. Arrastra a Colecciones para organizarlo."
+                                        : "Doble clic para instalar. Arrastra a Colecciones para organizarlo.")
+                        .simultaneousGesture(TapGesture(count: 2).onEnded {
+                            performDoubleClickAction(for: game)
+                        })
+                        .draggable(LibraryGameDragPayload(storeID: store.rawValue, gameID: game.id))
                         .contextMenu { rowContextMenu(game) }
                 }
             }
@@ -1507,6 +1560,7 @@ struct StoreLibraryView: View {
                         onHoverChanged: { handleGridHover($0, game: game) },
                         onExport: onExport.map { cb in { cb(game) } }
                     )
+                    .draggable(LibraryGameDragPayload(storeID: store.rawValue, gameID: game.id))
                     .anchorPreference(key: GameCardBoundsPreferenceKey.self, value: .bounds) {
                         [game.id: $0]
                     }
@@ -1580,8 +1634,8 @@ private struct LibraryScopeChip: View {
     }
 }
 
-/// Menú de colecciones integrado en la scope bar. Solo aparece cuando existe al menos una,
-/// evitando ocupar espacio en bibliotecas que no usan esta función.
+/// Menú de colecciones integrado en la scope bar. También es un destino de arrastre: al soltar
+/// sobre una colección activa añade el juego; sobre el estado general inicia una colección nueva.
 private struct LibraryCollectionScopeMenu: View {
     let collections: [LibraryCollectionsStore.Collection]
     let selectedID: UUID?
@@ -1591,6 +1645,8 @@ private struct LibraryCollectionScopeMenu: View {
     let onCreate: () -> Void
     let onRenameSelected: () -> Void
     let onDeleteSelected: () -> Void
+    let onDropGame: (LibraryGameDragPayload) -> Bool
+    @State private var dropTargeted = false
 
     private var selected: LibraryCollectionsStore.Collection? {
         collections.first { $0.id == selectedID }
@@ -1649,18 +1705,33 @@ private struct LibraryCollectionScopeMenu: View {
             .background {
                 ZStack {
                     Color.clear.liquidGlass(in: shape, interactive: true)
-                    if selected != nil { shape.fill(tint.opacity(0.12)) }
+                    if selected != nil || dropTargeted {
+                        shape.fill(tint.opacity(dropTargeted ? 0.20 : 0.12))
+                    }
                 }
             }
             .overlay {
-                shape.strokeBorder(tint.opacity(selected == nil ? 0.10 : 0.45), lineWidth: 0.8)
+                shape.strokeBorder(
+                    tint.opacity(dropTargeted ? 0.72 : (selected == nil ? 0.10 : 0.45)),
+                    lineWidth: dropTargeted ? 1.2 : 0.8
+                )
             }
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
         .accessibilityLabel(selected.map { "Colección \($0.name), \($0.gameIDs.count) juegos" } ?? "Colecciones")
-        .vesselHelp(selected == nil ? "Mostrar colecciones" : "Colección: \(selected?.name ?? "")")
+        .vesselHelp(
+            selected == nil ? "Mostrar colecciones" : "Colección: \(selected?.name ?? "")",
+            detail: selected == nil
+                ? "Crea o gestiona colecciones. Suelta aquí un juego para crear una nueva."
+                : "Suelta aquí un juego para añadirlo a esta colección."
+        )
+        .dropDestination(for: LibraryGameDragPayload.self) { payloads, _ in
+            payloads.contains(where: onDropGame)
+        } isTargeted: { targeted in
+            withAnimation(.smooth(duration: 0.18)) { dropTargeted = targeted }
+        }
     }
 }
 
@@ -1733,6 +1804,8 @@ struct StoreGameCard: View {
             .accessibilityLabel(game.title)
             .accessibilityValue(accessibilityStatus)
             .accessibilityHint("Abre los detalles del juego")
+            .vesselHelp("Abrir detalles de \(game.title)",
+                        detail: "Haz clic derecho para ver más acciones o arrástralo a Colecciones.")
 
             Button(action: onToggleFavorite) {
                 Image(systemName: isFavorite ? "star.fill" : "star")
