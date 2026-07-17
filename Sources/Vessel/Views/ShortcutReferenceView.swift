@@ -13,7 +13,8 @@ struct ShortcutReferenceView: View {
         ("Juego seleccionado", [
             ("⌘↩", "Jugar, detener o instalar"),
             ("⇧⌘F", "Añadir o quitar de favoritos"),
-            ("⌘[", "Volver a la biblioteca"),
+            ("⌘[", "Navegar atrás"),
+            ("⌘]", "Navegar adelante"),
             ("Esc", "Cerrar la ficha o limpiar la búsqueda")
         ]),
         ("Plataformas", [

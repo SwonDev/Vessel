@@ -50,6 +50,18 @@ struct StoreGame: Identifiable, Hashable {
         for c in id.unicodeScalars { h = ((h << 5) &+ h) &+ Int(c.value) }
         return Color(hue: Double(abs(h) % 360) / 360.0, saturation: 0.48, brightness: 0.42)
     }
+
+    var steamStoreURL: URL? {
+        guard let steamAppId, !steamAppId.isEmpty,
+              steamAppId.allSatisfy(\.isNumber) else { return nil }
+        return URL(string: "https://store.steampowered.com/app/\(steamAppId)")
+    }
+
+    var protonDBURL: URL? {
+        guard let steamAppId, !steamAppId.isEmpty,
+              steamAppId.allSatisfy(\.isNumber) else { return nil }
+        return URL(string: "https://www.protondb.com/app/\(steamAppId)")
+    }
 }
 
 enum StoreSortOrder: String, CaseIterable, Identifiable {
@@ -108,6 +120,23 @@ private enum LibraryQuickScope: String, CaseIterable, Identifiable {
         case .favoritos:       return "star.fill"
         }
     }
+}
+
+/// Destino interno del navegador de biblioteca. Permite atrás/adelante sin exponer rutas ni
+/// añadir controles permanentes a la ventana.
+private enum LibraryDestination: Equatable {
+    case home
+    case game(String)
+}
+
+private struct CollectionEditorRequest: Identifiable {
+    enum Mode {
+        case create(game: StoreGame?)
+        case rename(LibraryCollectionsStore.Collection)
+    }
+
+    let id = UUID()
+    let mode: Mode
 }
 
 /// Densidad del grid de carátulas (tamaño de las portadas), persistente. Como el slider de
@@ -194,6 +223,17 @@ struct StoreLibraryView: View {
     /// tienda: nunca borra archivos, estadísticas, favoritos ni copias de partida.
     @State private var hiddenGames: Set<String> = []
     @State private var selectedGame: StoreGame?
+    @State private var collectionsStore = LibraryCollectionsStore.shared
+    @State private var selectedCollectionID: UUID?
+    @State private var collectionEditorRequest: CollectionEditorRequest?
+    @State private var collectionPendingDeletion: LibraryCollectionsStore.Collection?
+    /// Historial de navegación estilo Steam/navegador. Se limita para no retener una sesión
+    /// indefinidamente y solo guarda identificadores, nunca modelos ni datos remotos.
+    @State private var backHistory: [LibraryDestination] = []
+    @State private var forwardHistory: [LibraryDestination] = []
+    /// Acción reversible al ocultar: evita que un clic accidental haga "desaparecer" un juego.
+    @State private var undoHiddenGame: StoreGame?
+    @State private var undoHiddenTask: Task<Void, Never>?
     /// Hover intencional del grid. Se separa el candidato de la vista presentada para poder
     /// aplicar retardo, cancelar al cruzar huecos y evitar parpadeos en bibliotecas grandes.
     @State private var hoverCandidateID: String?
@@ -208,6 +248,13 @@ struct StoreLibraryView: View {
     private var favKey: String { "favorites.\(store.rawValue)" }
     private var hiddenKey: String { "hiddenGames.\(store.rawValue)" }
     private var preferencePrefix: String { "vessel.library.\(store.rawValue)" }
+    private var storeCollections: [LibraryCollectionsStore.Collection] {
+        collectionsStore.collections(for: store.rawValue)
+    }
+    private var selectedCollection: LibraryCollectionsStore.Collection? {
+        guard let selectedCollectionID else { return nil }
+        return collectionsStore.collection(id: selectedCollectionID)
+    }
     /// Columnas adaptativas según la densidad elegida (tamaño de carátula).
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: gridDensity.coverRange.min, maximum: gridDensity.coverRange.max),
@@ -223,9 +270,41 @@ struct StoreLibraryView: View {
     private func isHidden(_ id: String) -> Bool { hiddenGames.contains(id) }
 
     private func toggleHidden(_ id: String) {
-        if hiddenGames.contains(id) { hiddenGames.remove(id) } else { hiddenGames.insert(id) }
+        if hiddenGames.contains(id) {
+            hiddenGames.remove(id)
+            if undoHiddenGame?.id == id { dismissUndoHidden() }
+        } else {
+            hiddenGames.insert(id)
+            if let game = games.first(where: { $0.id == id }) {
+                presentUndoHidden(for: enrichedGame(game))
+            }
+            if selectedGame?.id == id { navigate(to: .home, recordingHistory: true) }
+        }
         UserDefaults.standard.set(Array(hiddenGames), forKey: hiddenKey)
-        if selectedGame?.id == id { selectedGame = nil }
+    }
+
+    private func presentUndoHidden(for game: StoreGame) {
+        undoHiddenTask?.cancel()
+        undoHiddenGame = game
+        undoHiddenTask = Task { @MainActor in
+            do { try await Task.sleep(for: .seconds(6)) } catch { return }
+            guard !Task.isCancelled, undoHiddenGame?.id == game.id else { return }
+            undoHiddenGame = nil
+        }
+    }
+
+    private func dismissUndoHidden() {
+        undoHiddenTask?.cancel()
+        undoHiddenTask = nil
+        undoHiddenGame = nil
+    }
+
+    private func undoHidden() {
+        guard let game = undoHiddenGame else { return }
+        hiddenGames.remove(game.id)
+        UserDefaults.standard.set(Array(hiddenGames), forKey: hiddenKey)
+        dismissUndoHidden()
+        openGame(game)
     }
 
     private func copyGameTitle(_ game: StoreGame) {
@@ -233,7 +312,64 @@ struct StoreLibraryView: View {
         NSPasteboard.general.setString(game.title, forType: .string)
     }
 
+    private var currentDestination: LibraryDestination {
+        selectedGame.map { .game($0.id) } ?? .home
+    }
+
+    private func openGame(_ game: StoreGame) {
+        navigate(to: .game(game.id), recordingHistory: true)
+    }
+
+    private func navigateHome() {
+        navigate(to: .home, recordingHistory: true)
+    }
+
+    private func navigate(to destination: LibraryDestination, recordingHistory: Bool) {
+        guard destination != currentDestination else { return }
+        if recordingHistory {
+            backHistory.append(currentDestination)
+            if backHistory.count > 50 { backHistory.removeFirst(backHistory.count - 50) }
+            forwardHistory.removeAll(keepingCapacity: true)
+        }
+        switch destination {
+        case .home:
+            selectedGame = nil
+        case .game(let id):
+            selectedGame = games.first(where: { $0.id == id })
+        }
+    }
+
+    private func navigateBack() {
+        guard let destination = backHistory.popLast() else { return }
+        forwardHistory.append(currentDestination)
+        navigate(to: destination, recordingHistory: false)
+    }
+
+    private func navigateForward() {
+        guard let destination = forwardHistory.popLast() else { return }
+        backHistory.append(currentDestination)
+        navigate(to: destination, recordingHistory: false)
+    }
+
+    private func navigateBackOrHome() {
+        if backHistory.isEmpty { navigateHome() } else { navigateBack() }
+    }
+
+    private func toggleCollection(_ collectionID: UUID, for game: StoreGame) {
+        collectionsStore.toggle(gameID: game.id, in: collectionID)
+    }
+
+    private func requestNewCollection(including game: StoreGame? = nil) {
+        collectionEditorRequest = CollectionEditorRequest(mode: .create(game: game))
+    }
+
+    private func requestRenameSelectedCollection() {
+        guard let selectedCollection else { return }
+        collectionEditorRequest = CollectionEditorRequest(mode: .rename(selectedCollection))
+    }
+
     private var activeQuickScope: LibraryQuickScope? {
+        guard selectedCollectionID == nil else { return nil }
         if showFavoritesOnly && filter == .todos { return .favoritos }
         guard !showFavoritesOnly else { return nil }
         switch filter {
@@ -246,6 +382,7 @@ struct StoreLibraryView: View {
     }
 
     private func apply(_ scope: LibraryQuickScope) {
+        selectedCollectionID = nil
         switch scope {
         case .todos:
             filter = .todos
@@ -269,6 +406,7 @@ struct StoreLibraryView: View {
         search = ""
         filter = .todos
         showFavoritesOnly = false
+        selectedCollectionID = nil
     }
 
     /// Steam conserva la forma de explorar cada biblioteca. Vessel hace lo mismo por tienda,
@@ -284,6 +422,10 @@ struct StoreLibraryView: View {
             sortOrder = stored
         }
         showFavoritesOnly = defaults.bool(forKey: "\(preferencePrefix).favoritesOnly")
+        if let raw = defaults.string(forKey: "\(preferencePrefix).collection"),
+           let id = UUID(uuidString: raw), collectionsStore.collection(id: id) != nil {
+            selectedCollectionID = id
+        }
     }
 
     private func persistLibraryPreferences() {
@@ -291,6 +433,11 @@ struct StoreLibraryView: View {
         defaults.set(filter.rawValue, forKey: "\(preferencePrefix).filter")
         defaults.set(sortOrder.rawValue, forKey: "\(preferencePrefix).sort")
         defaults.set(showFavoritesOnly, forKey: "\(preferencePrefix).favoritesOnly")
+        if let selectedCollectionID {
+            defaults.set(selectedCollectionID.uuidString, forKey: "\(preferencePrefix).collection")
+        } else {
+            defaults.removeObject(forKey: "\(preferencePrefix).collection")
+        }
     }
 
     /// Clave de estadística de juego (`"<tienda>:<id>"`), la misma que escribe el
@@ -323,7 +470,16 @@ struct StoreLibraryView: View {
     /// Menú Juego y atajos nativos. No añade controles visibles: ofrece las acciones de Steam a
     /// usuarios de teclado y mantiene los comandos desactivados cuando no existe una selección.
     private var libraryFocusedActions: LibraryFocusedActions {
-        guard let game = currentSelectedGame else { return LibraryFocusedActions() }
+        let navigationBack: (() -> Void)?
+        let navigationForward: (() -> Void)?
+        if backHistory.isEmpty { navigationBack = nil } else { navigationBack = { navigateBack() } }
+        if forwardHistory.isEmpty { navigationForward = nil } else { navigationForward = { navigateForward() } }
+        guard let game = currentSelectedGame else {
+            return LibraryFocusedActions(
+                navigateBack: navigationBack,
+                navigateForward: navigationForward
+            )
+        }
 
         let launchState = GameLaunchTracker.shared.state(game.id)
         let primary: (String?, (() -> Void)?)
@@ -351,7 +507,8 @@ struct StoreLibraryView: View {
             toggleHidden: { toggleHidden(game.id) },
             revealInFinder: reveal,
             copyTitle: { copyGameTitle(game) },
-            backToLibrary: { selectedGame = nil }
+            navigateBack: navigationBack,
+            navigateForward: navigationForward
         )
     }
 
@@ -376,6 +533,9 @@ struct StoreLibraryView: View {
             case .jugados:          list = list.filter { $0.lastPlayed != nil || ($0.playtimeMinutes ?? 0) > 0 }
             case .todos, .ocultos:  break
             }
+        }
+        if let selectedCollection {
+            list = list.filter { selectedCollection.gameIDs.contains($0.id) }
         }
         if showFavoritesOnly { list = list.filter { isFav($0.id) } }
         if !search.isEmpty {
@@ -402,7 +562,11 @@ struct StoreLibraryView: View {
     @State private var liveSidebarWidth: Double? = nil
     private var sidebarWidth: CGFloat { CGFloat(min(360, max(200, liveSidebarWidth ?? sidebarWidthRaw))) }
 
-    var body: some View {
+    var body: some View { libraryPresentationLayer }
+
+    /// Separar layout, estado, comandos y presentaciones reduce drásticamente el trabajo del
+    /// type-checker de SwiftUI en esta vista coordinadora de gran tamaño.
+    private var libraryLayout: some View {
         HStack(spacing: 0) {
             // Sidebar con ancho ANIMADO: el contenido va a ancho fijo dentro de un marco que se
             // encoge a 0 y recorta → colapsa/expande deslizándose, fluido y premium. (HSplitView,
@@ -438,9 +602,15 @@ struct StoreLibraryView: View {
         }
         .focusedSceneValue(\.libraryActions, libraryFocusedActions)
         .vesselBackground(tint: tint)
+    }
+
+    private var libraryStateLayer: some View {
+        libraryLayout
         // Esc: volver de la ficha; si no, limpiar la búsqueda; si no, soltar el foco.
         .onExitCommand {
-            if selectedGame != nil { selectedGame = nil }
+            if selectedGame != nil {
+                if backHistory.isEmpty { selectedGame = nil } else { navigateBack() }
+            }
             else if !search.isEmpty { search = "" }
             else { searchFocused = false }
         }
@@ -458,6 +628,18 @@ struct StoreLibraryView: View {
         .onChange(of: showFavoritesOnly) { _, _ in persistLibraryPreferences(); refreshDisplayed() }
         .onChange(of: favorites) { _, _ in refreshDisplayed() }
         .onChange(of: hiddenGames) { _, _ in refreshDisplayed() }
+        .onChange(of: collectionsStore.collections) { _, _ in
+            if let selectedCollectionID,
+               collectionsStore.collection(id: selectedCollectionID) == nil {
+                self.selectedCollectionID = nil
+            }
+            persistLibraryPreferences()
+            refreshDisplayed()
+        }
+        .onChange(of: selectedCollectionID) { _, _ in
+            persistLibraryPreferences()
+            refreshDisplayed()
+        }
         .onChange(of: selectedGame) { _, selected in
             if selected != nil { dismissHoverPreview(immediately: true) }
         }
@@ -471,10 +653,11 @@ struct StoreLibraryView: View {
             refreshDisplayed()
             CoverCache.shared.prefetch(games.map { ($0.id, $0.coverCandidates) })
         }
-        .onDisappear {
-            hoverPresentationTask?.cancel()
-            hoverPresentationTask = nil
-        }
+        .onDisappear(perform: cancelTransientTasks)
+    }
+
+    private var libraryCommandLayer: some View {
+        libraryStateLayer
         .onReceive(NotificationCenter.default.publisher(for: .libraryFind)) { _ in
             if sidebarCollapsed { sidebarCollapsed = false }
             searchFocused = true
@@ -484,16 +667,102 @@ struct StoreLibraryView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .libraryShowAll)) { _ in
             resetQuery()
-            selectedGame = nil
+            navigateHome()
         }
         .onReceive(NotificationCenter.default.publisher(for: .libraryShowHidden)) { _ in
             search = ""
             filter = .ocultos
             showFavoritesOnly = false
-            selectedGame = nil
+            selectedCollectionID = nil
+            navigateHome()
         }
         .onReceive(NotificationCenter.default.publisher(for: .libraryRefresh)) { _ in
             onReload()
+        }
+    }
+
+    private var libraryPresentationLayer: some View {
+        libraryCommandLayer
+        .sheet(item: $collectionEditorRequest, content: collectionEditor)
+        .confirmationDialog(
+            "¿Eliminar la colección «\(collectionPendingDeletion?.name ?? "")»?",
+            isPresented: collectionDeletionPresented
+        ) {
+            Button("Eliminar colección", role: .destructive, action: deletePendingCollection)
+            Button("Cancelar", role: .cancel) { collectionPendingDeletion = nil }
+        } message: {
+            Text("Los juegos y sus archivos no se eliminarán.")
+        }
+        .overlay(alignment: .bottom) { undoHiddenOverlay }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.24), value: undoHiddenGame?.id)
+    }
+
+    private func cancelTransientTasks() {
+        hoverPresentationTask?.cancel()
+        hoverPresentationTask = nil
+        undoHiddenTask?.cancel()
+        undoHiddenTask = nil
+    }
+
+    @ViewBuilder
+    private func collectionEditor(_ request: CollectionEditorRequest) -> some View {
+        switch request.mode {
+        case .create(let game):
+            LibraryCollectionEditorView(
+                title: "Nueva colección",
+                subtitle: game.map { "Organiza «\($0.title)» sin mover ni modificar sus archivos." }
+                    ?? "Crea una colección local para organizar esta biblioteca.",
+                actionTitle: "Crear",
+                tint: tint
+            ) { name in
+                guard let id = collectionsStore.create(
+                    name: name,
+                    storeID: store.rawValue,
+                    including: game?.id
+                ) else { return false }
+                if game == nil {
+                    filter = .todos
+                    showFavoritesOnly = false
+                    selectedCollectionID = id
+                    navigateHome()
+                }
+                return true
+            }
+        case .rename(let collection):
+            LibraryCollectionEditorView(
+                title: "Renombrar colección",
+                subtitle: "El cambio solo afecta a la organización local de Vessel.",
+                actionTitle: "Guardar",
+                initialName: collection.name,
+                tint: tint
+            ) { name in
+                collectionsStore.rename(collection.id, to: name)
+            }
+        }
+    }
+
+    private var collectionDeletionPresented: Binding<Bool> {
+        Binding(
+            get: { collectionPendingDeletion != nil },
+            set: { if !$0 { collectionPendingDeletion = nil } }
+        )
+    }
+
+    private func deletePendingCollection() {
+        guard let collectionPendingDeletion else { return }
+        collectionsStore.delete(collectionPendingDeletion.id)
+        self.collectionPendingDeletion = nil
+    }
+
+    @ViewBuilder private var undoHiddenOverlay: some View {
+        if let undoHiddenGame {
+            LibraryUndoBanner(
+                message: "«\(undoHiddenGame.title)» se ha ocultado",
+                tint: tint,
+                onUndo: undoHidden
+            )
+            .padding(.bottom, 26)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
 
@@ -573,7 +842,7 @@ struct StoreLibraryView: View {
                 onUpdate: { onUpdate(game) },
                 onToggleFavorite: { toggleFav(game.id) },
                 onToggleHidden: { toggleHidden(game.id) },
-                onBack: { selectedGame = nil }
+                onBack: navigateBackOrHome
             )
             .id(game.id)
             .transition(.opacity)
@@ -587,10 +856,10 @@ struct StoreLibraryView: View {
     private var homeGrid: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.section) {
-                if filter != .ocultos && !recentlyPlayed.isEmpty { recentlyPlayedSection }
+                if showsRecentlyPlayed && !recentlyPlayed.isEmpty { recentlyPlayedSection }
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(alignment: .center, spacing: 12) {
-                        Text(filter == .ocultos ? "Juegos ocultos" : "Todos los juegos")
+                        Text(homeTitle)
                             .font(.title.bold()).foregroundStyle(.white)
                         // Con la sidebar colapsada, el buscador (y filtro/orden) viven en la sidebar y se
                         // ocultan → los traemos aquí para no perder la búsqueda. Estilo Steam.
@@ -698,6 +967,17 @@ struct StoreLibraryView: View {
             .prefix(8).map { $0 }
     }
 
+    /// La estantería global solo pertenece a la portada sin restricciones. Al entrar en una
+    /// colección o aplicar una consulta, ocultarla evita mezclar juegos ajenos al resultado.
+    private var showsRecentlyPlayed: Bool {
+        selectedCollectionID == nil && filter == .todos && !showFavoritesOnly && search.isEmpty
+    }
+
+    private var homeTitle: String {
+        if let selectedCollection { return selectedCollection.name }
+        return filter == .ocultos ? "Juegos ocultos" : "Todos los juegos"
+    }
+
     /// Carrusel horizontal "Jugados recientemente" (estilo Steam) con cápsulas apaisadas.
     private var recentlyPlayedSection: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -705,7 +985,7 @@ struct StoreLibraryView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 14) {
                     ForEach(recentlyPlayed) { game in
-                        RecentlyPlayedCard(game: game, tint: tint) { selectedGame = game }
+                        RecentlyPlayedCard(game: game, tint: tint) { openGame(game) }
                     }
                 }
                 .padding(.vertical, 4).padding(.horizontal, 2)
@@ -739,7 +1019,31 @@ struct StoreLibraryView: View {
                     }
                 }
 
-                if activeQuickScope == nil {
+                if !storeCollections.isEmpty {
+                    LibraryCollectionScopeMenu(
+                        collections: storeCollections,
+                        selectedID: selectedCollectionID,
+                        tint: tint,
+                        onSelect: { id in
+                            search = ""
+                            filter = .todos
+                            showFavoritesOnly = false
+                            selectedCollectionID = id
+                            navigateHome()
+                        },
+                        onClear: {
+                            resetQuery()
+                            navigateHome()
+                        },
+                        onCreate: { requestNewCollection() },
+                        onRenameSelected: requestRenameSelectedCollection,
+                        onDeleteSelected: {
+                            collectionPendingDeletion = selectedCollection
+                        }
+                    )
+                }
+
+                if activeQuickScope == nil && selectedCollectionID == nil {
                     LibraryScopeChip(
                         title: activeConstraintLabel,
                         symbol: "xmark",
@@ -759,6 +1063,7 @@ struct StoreLibraryView: View {
 
     private var activeConstraintLabel: String {
         var parts: [String] = []
+        if let selectedCollection { parts.append(selectedCollection.name) }
         if filter != .todos { parts.append(filter.rawValue) }
         if showFavoritesOnly { parts.append("Favoritos") }
         return parts.isEmpty ? "Filtros activos" : parts.joined(separator: " · ")
@@ -848,6 +1153,9 @@ struct StoreLibraryView: View {
             .vesselHelp("Ocultar la lista", shortcut: "⌘L")
             Menu {
                 Button { onReload() } label: { Label("Actualizar biblioteca", systemImage: "arrow.clockwise") }
+                Button { requestNewCollection() } label: {
+                    Label("Nueva colección…", systemImage: "square.stack.3d.up.badge.plus")
+                }
                 if let onLogin {
                     Button { onLogin() } label: { Label("Iniciar sesión", systemImage: "person.crop.circle.badge.plus") }
                 }
@@ -998,7 +1306,7 @@ struct StoreLibraryView: View {
             // Glass tintado (premium), no el azul sólido del sistema. Ver DESIGN.md §7.
             List {
                 ForEach(displayed) { game in
-                    Button { selectedGame = game } label: {
+                    Button { openGame(game) } label: {
                         StoreGameRow(game: game, tint: tint,
                                      isFavorite: isFav(game.id),
                                      isSelected: selectedGame?.id == game.id)
@@ -1020,7 +1328,7 @@ struct StoreLibraryView: View {
     }
 
     @ViewBuilder private func rowContextMenu(_ game: StoreGame) -> some View {
-        Button { selectedGame = game } label: { Label("Ver detalles", systemImage: "info.circle") }
+        Button { openGame(game) } label: { Label("Ver detalles", systemImage: "info.circle") }
         if game.installed {
             Button { onPlay(game) } label: { Label("Jugar", systemImage: "play.fill") }
             if !installingIDs.contains(game.id) {
@@ -1045,7 +1353,13 @@ struct StoreLibraryView: View {
             Button { onInstall(game) } label: { Label("Instalar", systemImage: "arrow.down.circle") }
         }
         Divider()
+        if let url = game.steamStoreURL {
+            Button { NSWorkspace.shared.open(url) } label: {
+                Label("Ver en Steam", systemImage: "storefront")
+            }
+        }
         Button { copyGameTitle(game) } label: { Label("Copiar nombre", systemImage: "doc.on.doc") }
+        collectionContextMenu(for: game)
         Button { toggleFav(game.id) } label: {
             Label(isFav(game.id) ? "Quitar de favoritos" : "Añadir a favoritos",
                   systemImage: isFav(game.id) ? "star.slash" : "star")
@@ -1053,6 +1367,23 @@ struct StoreLibraryView: View {
         Button { toggleHidden(game.id) } label: {
             Label(isHidden(game.id) ? "Mostrar en la biblioteca" : "Ocultar de la biblioteca",
                   systemImage: isHidden(game.id) ? "eye" : "eye.slash")
+        }
+    }
+
+    private func collectionContextMenu(for game: StoreGame) -> some View {
+        Menu {
+            ForEach(storeCollections) { collection in
+                let included = collection.gameIDs.contains(game.id)
+                Button { toggleCollection(collection.id, for: game) } label: {
+                    Label(collection.name, systemImage: included ? "checkmark" : "square.stack.3d.up")
+                }
+            }
+            if !storeCollections.isEmpty { Divider() }
+            Button { requestNewCollection(including: game) } label: {
+                Label("Nueva colección…", systemImage: "plus")
+            }
+        } label: {
+            Label("Colecciones", systemImage: "square.stack.3d.up")
         }
     }
 
@@ -1121,7 +1452,11 @@ struct StoreLibraryView: View {
                         onToggleFavorite: { toggleFav(game.id) },
                         onToggleHidden: { toggleHidden(game.id) },
                         onUninstall: { onUninstall(game) },
-                        onOpen: { selectedGame = game },
+                        onOpen: { openGame(game) },
+                        collections: storeCollections,
+                        collectionIDs: Set(storeCollections.filter { $0.gameIDs.contains(game.id) }.map(\.id)),
+                        onToggleCollection: { toggleCollection($0, for: game) },
+                        onCreateCollection: { requestNewCollection(including: game) },
                         onHoverChanged: { handleGridHover($0, game: game) },
                         onExport: onExport.map { cb in { cb(game) } }
                     )
@@ -1137,6 +1472,9 @@ struct StoreLibraryView: View {
     }
 
     private func emptyStateTitle(compact: Bool) -> String {
+        if let selectedCollection, search.isEmpty {
+            return compact ? "Colección vacía." : "«\(selectedCollection.name)» todavía no tiene juegos."
+        }
         if filter == .ocultos && search.isEmpty { return compact ? "No hay juegos ocultos." : "Tu biblioteca no tiene juegos ocultos." }
         if search.isEmpty && !showFavoritesOnly { return compact ? "Sin juegos." : "No hay juegos que mostrar." }
         return compact ? "Sin resultados." : "Sin resultados con los filtros actuales."
@@ -1195,6 +1533,119 @@ private struct LibraryScopeChip: View {
     }
 }
 
+/// Menú de colecciones integrado en la scope bar. Solo aparece cuando existe al menos una,
+/// evitando ocupar espacio en bibliotecas que no usan esta función.
+private struct LibraryCollectionScopeMenu: View {
+    let collections: [LibraryCollectionsStore.Collection]
+    let selectedID: UUID?
+    let tint: Color
+    let onSelect: (UUID) -> Void
+    let onClear: () -> Void
+    let onCreate: () -> Void
+    let onRenameSelected: () -> Void
+    let onDeleteSelected: () -> Void
+
+    private var selected: LibraryCollectionsStore.Collection? {
+        collections.first { $0.id == selectedID }
+    }
+
+    var body: some View {
+        let shape = Capsule(style: .continuous)
+        Menu {
+            if selectedID != nil {
+                Button { onClear() } label: {
+                    Label("Mostrar todos los juegos", systemImage: "square.grid.2x2")
+                }
+                Divider()
+            }
+            ForEach(collections) { collection in
+                Button { onSelect(collection.id) } label: {
+                    Label {
+                        Text("\(collection.name)  \(collection.gameIDs.count)")
+                    } icon: {
+                        Image(systemName: selectedID == collection.id ? "checkmark" : "square.stack.3d.up")
+                    }
+                }
+            }
+            Divider()
+            Button(action: onCreate) {
+                Label("Nueva colección…", systemImage: "plus")
+            }
+            if selected != nil {
+                Button(action: onRenameSelected) {
+                    Label("Renombrar colección…", systemImage: "pencil")
+                }
+                Button(role: .destructive, action: onDeleteSelected) {
+                    Label("Eliminar colección…", systemImage: "trash")
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "square.stack.3d.up.fill")
+                    .font(.caption.weight(.semibold))
+                Text(selected?.name ?? "Colecciones")
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                    .frame(maxWidth: 140, alignment: .leading)
+                if let selected {
+                    Text(selected.gameIDs.count, format: .number)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.72))
+                }
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.45))
+            }
+            .foregroundStyle(selected == nil ? .white.opacity(0.68) : Color.white)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
+            .background {
+                ZStack {
+                    Color.clear.liquidGlass(in: shape, interactive: true)
+                    if selected != nil { shape.fill(tint.opacity(0.12)) }
+                }
+            }
+            .overlay {
+                shape.strokeBorder(tint.opacity(selected == nil ? 0.10 : 0.45), lineWidth: 0.8)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .accessibilityLabel(selected.map { "Colección \($0.name), \($0.gameIDs.count) juegos" } ?? "Colecciones")
+        .vesselHelp(selected == nil ? "Mostrar colecciones" : "Colección: \(selected?.name ?? "")")
+    }
+}
+
+/// Confirmación reversible para acciones que retiran contenido de la vista. El botón interior es
+/// plano a propósito: el contenedor ya es cristal y DESIGN.md prohíbe apilar cristal sobre cristal.
+private struct LibraryUndoBanner: View {
+    let message: String
+    let tint: Color
+    let onUndo: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "eye.slash.fill")
+                .foregroundStyle(.secondary)
+            Text(message)
+                .font(.callout.weight(.medium))
+                .lineLimit(1)
+            Divider().frame(height: 18)
+            Button("Deshacer", action: onUndo)
+                .buttonStyle(.plain)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(tint)
+                .vesselHelp("Volver a mostrar el juego")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 11)
+        .liquidGlass(in: Capsule())
+        .shadow(color: .black.opacity(0.34), radius: 14, y: 6)
+        .accessibilityElement(children: .contain)
+    }
+}
+
 // MARK: - Tarjeta de juego genérica
 
 /// Tarjeta de juego **genérica y premium** (carátula 2:3 + título superpuesto + favorito +
@@ -1213,6 +1664,10 @@ struct StoreGameCard: View {
     var onToggleHidden: () -> Void = {}
     var onUninstall: () -> Void = {}
     var onOpen: () -> Void = {}
+    var collections: [LibraryCollectionsStore.Collection] = []
+    var collectionIDs: Set<UUID> = []
+    var onToggleCollection: (UUID) -> Void = { _ in }
+    var onCreateCollection: () -> Void = {}
     var onHoverChanged: (Bool) -> Void = { _ in }
     /// Exportar (copiar a USB/disco). Si es `nil`, no se muestra la opción. Lo usa DRM‑free.
     var onExport: (() -> Void)? = nil
@@ -1274,10 +1729,29 @@ struct StoreGameCard: View {
                     Button { onOpen() } label: { Label("Ver detalles", systemImage: "info.circle") }
                 }
                 Divider()
+                if let url = game.steamStoreURL {
+                    Button { NSWorkspace.shared.open(url) } label: {
+                        Label("Ver en Steam", systemImage: "storefront")
+                    }
+                }
                 Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(game.title, forType: .string)
                 } label: { Label("Copiar nombre", systemImage: "doc.on.doc") }
+                Menu {
+                    ForEach(collections) { collection in
+                        Button { onToggleCollection(collection.id) } label: {
+                            Label(collection.name,
+                                  systemImage: collectionIDs.contains(collection.id) ? "checkmark" : "square.stack.3d.up")
+                        }
+                    }
+                    if !collections.isEmpty { Divider() }
+                    Button(action: onCreateCollection) {
+                        Label("Nueva colección…", systemImage: "plus")
+                    }
+                } label: {
+                    Label("Colecciones", systemImage: "square.stack.3d.up")
+                }
                 Button { onToggleFavorite() } label: {
                     Label(isFavorite ? "Quitar de favoritos" : "Añadir a favoritos",
                           systemImage: isFavorite ? "star.slash" : "star")
@@ -2157,6 +2631,16 @@ struct GameDetailView: View {
                     Text(notes).font(.caption).foregroundStyle(.white.opacity(0.6))
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                if let url = game.protonDBURL {
+                    Divider().overlay(.white.opacity(0.06)).padding(.vertical, 2)
+                    Link(destination: url) {
+                        Label("Ver informes en ProtonDB", systemImage: "arrow.up.right.square")
+                            .font(.caption.weight(.medium))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(tint)
+                    .vesselHelp("Abrir los informes comunitarios de compatibilidad en ProtonDB")
+                }
             }
         }
     }
@@ -2176,6 +2660,16 @@ struct GameDetailView: View {
                 detailRow("Tiempo de juego", playtimeText)
                 if let last = SaveBackupManager.shared.lastBackupDate(store: saveStore, id: saveId) {
                     detailRow("Copia de partida", last.formatted(date: .abbreviated, time: .shortened), valueColor: steamGreen)
+                }
+                if let url = game.steamStoreURL {
+                    Divider().overlay(.white.opacity(0.06)).padding(.vertical, 4)
+                    Link(destination: url) {
+                        Label("Ver en Steam", systemImage: "storefront")
+                            .font(.caption).frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(tint)
+                    .vesselHelp("Abrir la página del juego en Steam")
                 }
                 if let path = game.installPath, !path.isEmpty {
                     Divider().overlay(.white.opacity(0.06)).padding(.vertical, 4)
@@ -2388,8 +2882,8 @@ struct GameDetailView: View {
                 .liquidGlass(in: Circle())
         }
         .buttonStyle(.plain).padding(16)
-        .accessibilityLabel("Volver a la biblioteca")
-        .vesselHelp("Volver a la biblioteca")
+        .accessibilityLabel("Atrás")
+        .vesselHelp("Atrás", detail: "Vuelve al juego o a la biblioteca anterior.", shortcut: "⌘[")
     }
 
     private func stat(_ icon: String, _ label: String, _ value: String) -> some View {

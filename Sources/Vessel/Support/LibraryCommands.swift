@@ -11,7 +11,8 @@ struct LibraryFocusedActions {
     var toggleHidden: (() -> Void)?
     var revealInFinder: (() -> Void)?
     var copyTitle: (() -> Void)?
-    var backToLibrary: (() -> Void)?
+    var navigateBack: (() -> Void)?
+    var navigateForward: (() -> Void)?
 }
 
 private struct LibraryFocusedActionsKey: FocusedValueKey {
@@ -61,11 +62,17 @@ struct LibraryGameCommands: Commands {
 
             Divider()
 
-            Button("Volver a la biblioteca") {
-                actions?.backToLibrary?()
+            Button("Atrás") {
+                actions?.navigateBack?()
             }
             .keyboardShortcut("[", modifiers: .command)
-            .disabled(actions?.backToLibrary == nil)
+            .disabled(actions?.navigateBack == nil)
+
+            Button("Adelante") {
+                actions?.navigateForward?()
+            }
+            .keyboardShortcut("]", modifiers: .command)
+            .disabled(actions?.navigateForward == nil)
         }
     }
 }
