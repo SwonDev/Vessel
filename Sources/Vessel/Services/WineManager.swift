@@ -679,6 +679,50 @@ final class WineManager {
         return needles.contains { data.range(of: Data($0.utf8)) != nil }
     }
 
+    /// `true` si es un juego sobre el **motor KEX** de Nightdive (las remasterizaciones de DOOM,
+    /// Quake, Blood, Turok…). Se reconoce por su DLL de UI, que siempre acompaña al `.exe`.
+    func isKexEngineGame(_ executable: String) -> Bool {
+        let dir = (executable as NSString).deletingLastPathComponent
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return false }
+        return files.contains { $0.lowercased().hasPrefix("cohtml") || $0.caseInsensitiveCompare("kex.dll") == .orderedSame }
+            || exeContains(executable, anyOf: ["kexengine", "KEX Engine"])
+    }
+
+    /// Fija la resolución en el `kexengine.cfg` a los **píxeles reales** de la pantalla.
+    ///
+    /// El motor KEX pregunta la resolución al arrancar y guarda `v_width`/`v_height` en su cfg. Bajo
+    /// Wine con Retina, esa resolución llega en PÍXELES (3024×1964 en un panel de 1512×982 puntos), y
+    /// el juego abre una ventana de ESE tamaño en puntos → el doble de la pantalla, se ve solo el
+    /// centro ampliado. La vuelta: escribirle nosotros `v_width`/`v_height` = los píxeles reales, que
+    /// es lo que el motor espera; entonces la ventana sale a los puntos correctos y llena la pantalla.
+    /// Verificado con DOOM + DOOM II (KEX/Vulkan): pasó de doble-desbordado a pantalla completa.
+    private func fixKexResolution(prefix: String) {
+        let mode = CGDisplayCopyDisplayMode(CGMainDisplayID())
+        let w = mode?.pixelWidth ?? 3024, h = mode?.pixelHeight ?? 1964
+        let fm = FileManager.default
+        let usersDir = "\(prefix)/drive_c/users"
+        for user in (try? fm.contentsOfDirectory(atPath: usersDir)) ?? [] {
+            // Los KEX guardan su cfg en `Saved Games/<estudio>/<juego>/kexengine.cfg`.
+            let saved = "\(usersDir)/\(user)/Saved Games"
+            guard let e = fm.enumerator(atPath: saved) else { continue }
+            for case let rel as String in e where (rel as NSString).lastPathComponent == "kexengine.cfg" {
+                let path = "\(saved)/\(rel)"
+                var cfg = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+                func setCvar(_ name: String, _ value: Int) {
+                    let line = "seta \(name) \"\(value)\""
+                    if let r = cfg.range(of: #"(?m)^seta \#(name) "[^"]*""#, options: .regularExpression) {
+                        cfg.replaceSubrange(r, with: line)
+                    } else {
+                        cfg += (cfg.hasSuffix("\n") || cfg.isEmpty ? "" : "\n") + line + "\n"
+                    }
+                }
+                setCvar("v_width", w); setCvar("v_height", h); setCvar("v_windowmode", 1)
+                try? cfg.write(toFile: path, atomically: true, encoding: .utf8)
+                log.log("Motor KEX: resolución fijada a \(w)×\(h) (píxeles reales) para que llene la pantalla.", level: .info)
+            }
+        }
+    }
+
     /// `true` si es un **Godot con Vulkan** (Godot 4 con su render por defecto).
     ///
     /// No vale mirar la tabla de imports: Godot carga `vulkan-1.dll` en tiempo de ejecución, así que
@@ -913,7 +957,15 @@ final class WineManager {
         let go = eff.graphicsOverride
         // Los de Unreal llevan siempre `-nohmd`: sin él se quedan buscando un visor de VR que aquí no
         // existe y mueren sin abrir ventana (ver `unrealEngineArguments`). Vale para cualquier ruta.
-        let allArgs = arguments + eff.launchArgs + unrealEngineArguments(forExecutable: executable)
+        var allArgs = arguments + eff.launchArgs + unrealEngineArguments(forExecutable: executable)
+        // Motor KEX (remasters de Nightdive: DOOM, Quake…): fijar la resolución a los píxeles reales,
+        // o abre al doble de la pantalla (ver `fixKexResolution`). Se escribe en su cfg Y se pasa por
+        // línea de comandos, para que valga también en el PRIMER arranque, cuando el cfg aún no existe.
+        if isKexEngineGame(executable) {
+            fixKexResolution(prefix: bottle.prefixPath)
+            let mode = CGDisplayCopyDisplayMode(CGMainDisplayID())
+            allArgs += ["+v_width", "\(mode?.pixelWidth ?? 3024)", "+v_height", "\(mode?.pixelHeight ?? 1964)"]
+        }
         if eff.fromProfile, let r = eff.rating {
             log.log("Perfil de compatibilidad aplicado: \(r.label)\(eff.verified ? " ✓ verificado" : " (sin verificar)")", level: .info)
         }
