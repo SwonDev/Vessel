@@ -230,6 +230,7 @@ struct StoreLibraryView: View {
     @State private var collectionPendingDeletion: LibraryCollectionsStore.Collection?
     @State private var quickOpenPresented = false
     @State private var notesEditorGame: StoreGame?
+    @State private var transferCenterPresented = false
     /// Historial de navegación estilo Steam/navegador. Se limita para no retener una sesión
     /// indefinidamente y solo guarda identificadores, nunca modelos ni datos remotos.
     @State private var backHistory: [LibraryDestination] = []
@@ -258,6 +259,19 @@ struct StoreLibraryView: View {
     private var selectedCollection: LibraryCollectionsStore.Collection? {
         guard let selectedCollectionID else { return nil }
         return collectionsStore.collection(id: selectedCollectionID)
+    }
+    private var activeTransferGames: [StoreGame] {
+        games.lazy
+            .filter { installingIDs.contains($0.id) }
+            .map(enrichedGame)
+    }
+    private var activeTransfers: [LibraryTransferItem] {
+        LibraryTransferSnapshot.items(
+            games: activeTransferGames,
+            activeIDs: installingIDs,
+            progressFor: progressFor,
+            percentFor: percentFor
+        )
     }
     /// Columnas adaptativas según la densidad elegida (tamaño de carátula).
     private var columns: [GridItem] {
@@ -588,7 +602,7 @@ struct StoreLibraryView: View {
         }
         if showFavoritesOnly { list = list.filter { isFav($0.id) } }
         if !search.isEmpty {
-            list = list.filter { $0.title.localizedCaseInsensitiveContains(search) }
+            list = list.filter { LibraryTitleSearch.matches(title: $0.title, query: search) }
         }
         list.sort { a, b in
             if a.installed != b.installed { return a.installed }   // instalados primero (como Steam)
@@ -649,6 +663,24 @@ struct StoreLibraryView: View {
                 .transition(.opacity.combined(with: .move(edge: .leading)))
             }
         }
+        .overlay(alignment: .bottomTrailing) {
+            if !activeTransfers.isEmpty {
+                LibraryTransferCenterButton(
+                    items: activeTransfers,
+                    games: activeTransferGames,
+                    tint: tint,
+                    isPresented: $transferCenterPresented,
+                    onOpen: { game in
+                        transferCenterPresented = false
+                        openGame(game)
+                    }
+                )
+                .padding(.trailing, 18)
+                .padding(.bottom, 16)
+                .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                .zIndex(200)
+            }
+        }
         .focusedSceneValue(\.libraryActions, libraryFocusedActions)
         .vesselBackground(tint: tint)
     }
@@ -694,6 +726,9 @@ struct StoreLibraryView: View {
             persistSelectedGame()
         }
         .onChange(of: dockProgressSnapshot) { _, _ in updateDockProgress() }
+        .onChange(of: installingIDs) { _, activeIDs in
+            if activeIDs.isEmpty { transferCenterPresented = false }
+        }
         // Pre-descarga TODAS las carátulas de la tienda a disco en 2º plano (cuando la lista carga),
         // para que ninguna cargue de red al hacer scroll: instantáneas siempre. Idempotente.
         // `id: games` (no `games.count`): al instalar/actualizar un juego el TOTAL no cambia, pero
@@ -1276,7 +1311,7 @@ struct StoreLibraryView: View {
         .padding(8)
         .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
         .vesselHelp("Buscar en \(store.displayName)",
-                    detail: "Filtra la biblioteca por el título del juego.", shortcut: "⌘F")
+                    detail: "Busca por título, fragmentos o abreviaturas; ignora tildes y signos.", shortcut: "⌘F")
         .padding(.horizontal, 12).padding(.bottom, 8)
     }
 
@@ -1355,7 +1390,7 @@ struct StoreLibraryView: View {
         .padding(.horizontal, 10).padding(.vertical, 7)
         .liquidGlass(in: Capsule())
         .vesselHelp("Buscar en \(store.displayName)",
-                    detail: "Filtra la biblioteca por el título del juego.", shortcut: "⌘F")
+                    detail: "Busca por título, fragmentos o abreviaturas; ignora tildes y signos.", shortcut: "⌘F")
     }
 
     /// Filtro + favoritos en cristal, para la cabecera del grid al colapsar.
@@ -1732,6 +1767,200 @@ private struct LibraryCollectionScopeMenu: View {
         } isTargeted: { targeted in
             withAnimation(.smooth(duration: 0.18)) { dropTargeted = targeted }
         }
+    }
+}
+
+// MARK: - Centro de descargas
+
+/// Acceso efímero a las operaciones activas. Replica la utilidad de la barra inferior de Steam,
+/// pero desaparece por completo cuando no hay trabajo para conservar la biblioteca despejada.
+private struct LibraryTransferCenterButton: View {
+    let items: [LibraryTransferItem]
+    let games: [StoreGame]
+    let tint: Color
+    @Binding var isPresented: Bool
+    let onOpen: (StoreGame) -> Void
+
+    private var overallProgress: Double? {
+        LibraryTransferSnapshot.overallProgress(for: items)
+    }
+
+    var body: some View {
+        Button { isPresented.toggle() } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(tint)
+                Text("Descargas")
+                    .font(.caption.weight(.semibold))
+                Text(items.count, format: .number)
+                    .font(.caption2.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.secondary)
+                progressIndicator
+            }
+            .padding(.horizontal, 4)
+        }
+        .vesselButton(false, tint: tint)
+        .accessibilityLabel("Descargas activas")
+        .accessibilityValue(accessibilityValue)
+        .vesselHelp(
+            "Ver descargas activas",
+            detail: "Muestra instalaciones, actualizaciones y verificaciones en curso."
+        )
+        .popover(isPresented: $isPresented, arrowEdge: .bottom) {
+            LibraryTransferCenterPopover(items: items, games: games, tint: tint, onOpen: onOpen)
+        }
+    }
+
+    @ViewBuilder private var progressIndicator: some View {
+        if let overallProgress {
+            ProgressView(value: overallProgress)
+                .progressViewStyle(.linear)
+                .tint(tint)
+                .frame(width: 58)
+                .accessibilityHidden(true)
+        } else {
+            ProgressView()
+                .controlSize(.mini)
+                .tint(tint)
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var accessibilityValue: String {
+        let count = "\(items.count) operación\(items.count == 1 ? "" : "es")"
+        guard let overallProgress else { return "\(count), progreso indeterminado" }
+        return "\(count), \(overallProgress.formatted(.percent.precision(.fractionLength(0)))) completado"
+    }
+}
+
+private struct LibraryTransferCenterPopover: View {
+    let items: [LibraryTransferItem]
+    let games: [StoreGame]
+    let tint: Color
+    let onOpen: (StoreGame) -> Void
+
+    private var gamesByID: [String: StoreGame] {
+        Dictionary(games.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(tint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Descargas activas")
+                        .font(.headline)
+                    Text("\(items.count) operación\(items.count == 1 ? "" : "es") en curso")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(16)
+
+            Divider().opacity(0.14)
+
+            ScrollView {
+                LazyVStack(spacing: 4) {
+                    ForEach(items) { item in
+                        if let game = gamesByID[item.id] {
+                            LibraryTransferRow(item: item, game: game, tint: tint) {
+                                onOpen(game)
+                            }
+                        }
+                    }
+                }
+                .padding(8)
+            }
+            .frame(maxHeight: 330)
+
+            Divider().opacity(0.14)
+            Label("El progreso se actualiza en tiempo real", systemImage: "bolt.horizontal.circle")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 11)
+        }
+        .frame(width: 400)
+        .vesselBackground(tint: tint)
+        .accessibilityElement(children: .contain)
+    }
+
+}
+
+private struct LibraryTransferRow: View {
+    let item: LibraryTransferItem
+    let game: StoreGame
+    let tint: Color
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+        Button(action: action) {
+            HStack(spacing: 12) {
+                GameCoverImage(cacheKey: "transfer-\(game.id)", candidates: game.coverCandidates) {
+                    ZStack {
+                        game.placeholderColor
+                        Text(game.initials)
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.white)
+                    }
+                }
+                .frame(width: 38, height: 52)
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(game.title)
+                            .font(.callout.weight(.semibold))
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        if let fraction = item.fractionCompleted {
+                            Text(fraction, format: .percent.precision(.fractionLength(0)))
+                                .font(.caption2.monospacedDigit().weight(.semibold))
+                                .foregroundStyle(tint)
+                        }
+                    }
+
+                    Text(item.message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    if let fraction = item.fractionCompleted {
+                        ProgressView(value: fraction)
+                            .progressViewStyle(.linear)
+                            .tint(tint)
+                    } else {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .tint(tint)
+                    }
+                }
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
+            .background {
+                if hovering { shape.fill(.white.opacity(0.055)) }
+            }
+            .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .accessibilityLabel(game.title)
+        .accessibilityValue(accessibilityValue)
+        .accessibilityHint("Abre los detalles del juego")
+        .vesselHelp("Abrir detalles de \(game.title)")
+    }
+
+    private var accessibilityValue: String {
+        guard let fraction = item.fractionCompleted else { return item.message }
+        return "\(item.message), \(fraction.formatted(.percent.precision(.fractionLength(0)))) completado"
     }
 }
 

@@ -146,7 +146,7 @@ struct LibraryQuickOpenView: View {
 enum LibraryQuickOpenSearch {
     static func results(in games: [StoreGame], matching query: String,
                         favorites: Set<String>, limit: Int = 14) -> [StoreGame] {
-        let normalizedQuery = normalize(query).trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let sorted: [StoreGame]
 
         if normalizedQuery.isEmpty {
@@ -164,15 +164,10 @@ enum LibraryQuickOpenSearch {
                 return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
             }
         } else {
-            let terms = normalizedQuery.split(whereSeparator: \.isWhitespace).map(String.init)
             sorted = games.compactMap { game -> (StoreGame, Int)? in
-                let title = normalize(game.title)
-                guard terms.allSatisfy(title.contains) else { return nil }
-                let score: Int
-                if title == normalizedQuery { score = 0 }
-                else if title.hasPrefix(normalizedQuery) { score = 1 }
-                else if title.split(separator: " ").contains(where: { $0.hasPrefix(normalizedQuery) }) { score = 2 }
-                else { score = 3 }
+                guard let score = LibraryTitleSearch.score(title: game.title, query: normalizedQuery) else {
+                    return nil
+                }
                 return (game, score)
             }
             .sorted { lhs, rhs in
@@ -184,10 +179,6 @@ enum LibraryQuickOpenSearch {
         }
 
         return Array(sorted.prefix(max(0, limit)))
-    }
-
-    private static func normalize(_ value: String) -> String {
-        value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
     }
 }
 
