@@ -1516,16 +1516,22 @@ final class WineManager {
         try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
         try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: wine)
         await resyncGamePrefix(gameWine: wine, prefix: bottle.prefixPath)
+        // esync OFF: UE4 arranca con `msync` pero se muere al instante con `esync` activado
+        // (aislado con ASTRONEER: mismo comando, esync=1 no abre, esync=0/ausente sí). El arranque de
+        // UE4 bajo Wine además tiene una condición de carrera que lo hace intermitente; el reintento
+        // de la auto-reparación lo cubre.
         var env = ["WINEPREFIX": bottle.prefixPath, "WINEDEBUG": "-all",
-                   "WINEDLLOVERRIDES": "winemenubuilder.exe=d", "WINEMSYNC": "1", "WINEESYNC": "1"]
+                   "WINEDLLOVERRIDES": "winemenubuilder.exe=d", "WINEMSYNC": "1", "WINEESYNC": "0"]
         if let appId = steamAppId, !appId.isEmpty { env["SteamAppId"] = appId; env["SteamGameId"] = appId }
+        var eff = effective
+        eff.esync = false; eff.msync = true
         return try await launchWineProcess(
             winePath: wine,
             prefix: bottle.prefixPath,
             arguments: [rawExecutable] + arguments,
             environment: env,
             workingDirectory: gameWorkingDirectory(forExecutable: rawExecutable),
-            effective: effective
+            effective: eff
         )
     }
 
