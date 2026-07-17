@@ -56,16 +56,21 @@ enum WineEngineLocator {
     /// instalada (steamapps del prefijo). Si no está, `openSteamClient` cae al unificado normal.
     static let steamEngineName = "wine-steam"
 
-    /// Motor Wine **COMPLETO** de Vessel (`wine-full`): un único Wine moderno con la capa gráfica
-    /// DXMT madura (D3D11→Metal, con `nvapi64`/`atidxx64` reales para la detección de GPU que muchos
-    /// juegos exigen o abortan con `InitializeEngineGraphics failed`) + D3DMetal de Apple (D3D12→Metal)
-    /// + `winemac` completo (fullscreen, ventanas y CEF nativo de fábrica). Corre a la vez el **cliente
-    /// Steam** (CEF nativo multiproceso, SIN wrapper, SIN steam.cfg) y **TODOS los juegos** (D3D11 y
-    /// D3D12), compartiendo wineserver para el DRM real de Steam. Es **autónomo** (empaquetado en Vessel,
-    /// no depende de nada del sistema). ⚠️ A diferencia del resto de motores, se lanza vía
-    /// `bin/wineloader` + `lib/wine/x86_64-windows/winewrapper.exe --run --` (ver
-    /// `WineManager.launchWineProcess`), NO con `bin/wine`. Si está instalado, es el motor preferido para
-    /// el modo Steam (cliente + tienda + juegos). Ver `isFullEngine` / `fullWineLoader` / `fullEngineDir`.
+    /// Motor Wine **COMPLETO** de Vessel (`wine-full`): un único Wine moderno "tipo CrossOver"
+    /// (wine-11.0 + CW HACKs: msync, winemac, wined3d) para las rutas que lo necesitan
+    /// (UE4, FNA/XNA con .NET real, Source, Godot+Vulkan, D3D9/Unity de 32-bit, DirectDraw).
+    ///
+    /// Desde la 0.0.4 (tarea #47) hay DOS procedencias posibles, indistinguibles por la ruta:
+    ///  - **Build propia redistribuible** (la normal): compilada por Vessel de las fuentes FOSS de
+    ///    CrossOver 26.2.0 y descargada de `SwonDev/Vessel-Engines` (`engine-full-v1`) bajo demanda
+    ///    (`DependencyManager.ensureFullEngine`, perezoso desde las rutas). Es la única vía para
+    ///    usuarios sin CrossOver. Su `bin/wine` es el loader Mach-O estándar de Wine 11.
+    ///  - **CrossOver REAL** (opcional, dev): copia del SharedSupport de un CrossOver.app instalado.
+    ///    Manda si existe (es la referencia y el único que corre el CEF del cliente Steam). Se
+    ///    detecta por `winewrapper.exe` (propietario, ausente en la build propia) — ver
+    ///    `isRealCrossOverFullEngine`. NUNCA se sube a ningún sitio (licencia).
+    /// ⚠️ El CrossOver real se lanza vía shim `bin/wine` → `wineloader` + `winewrapper.exe --run --`
+    /// (ver `DependencyManager.repairFullEngineShim`, no-op en la build propia).
     static let fullEngineName = "wine-full"
 
     /// True si la ruta pertenece al motor Wine COMPLETO (`wine-full`), que se lanza vía `wineloader`.
@@ -90,6 +95,31 @@ enum WineEngineLocator {
     /// True si el motor COMPLETO está instalado (tiene el shim `bin/wine`).
     static func isFullEngineInstalled(enginesDirectory: String = VesselPaths.enginesDirectory) -> Bool {
         fullWineBinary(enginesDirectory: enginesDirectory) != nil
+    }
+
+    /// True si el `wine-full` instalado es el **CrossOver REAL** (copiado de una instalación
+    /// local de CrossOver.app), NO la build propia redistribuible que Vessel descarga (fuentes
+    /// FOSS de CrossOver 26.2.0, wine-11.0 + CW HACKs, LGPL — tarea #47). El marcador es
+    /// `winewrapper.exe`: el lanzador propietario de CodeWeavers, que NO está en las fuentes
+    /// públicas y por tanto no existe en la build propia.
+    ///
+    /// Solo el CrossOver real corre el **cliente de Steam** (CEF nativo multiproceso): la build
+    /// propia abre la ventana del CEF en NEGRO (verificado in-vivo). En cambio, para los JUEGOS
+    /// de las rutas wine-full (UE4, FNA/XNA, Source, Godot-Vulkan, D3D9 32-bit, DirectDraw)
+    /// la build propia es equivalente (verificado juego a juego). Por eso el Steam-cliente se
+    /// enruta al CrossOver real si existe, y si no a `wine-steam`/unificado.
+    static func isRealCrossOverFullEngine(enginesDirectory: String = VesselPaths.enginesDirectory) -> Bool {
+        let wrapper = URL(fileURLWithPath: fullEngineDir(enginesDirectory: enginesDirectory))
+            .appendingPathComponent("lib/wine/x86_64-windows/winewrapper.exe").path
+        return FileManager.default.fileExists(atPath: wrapper)
+    }
+
+    /// Binario `wine` del motor COMPLETO **apto para el cliente de Steam**: solo el CrossOver
+    /// real (ver `isRealCrossOverFullEngine`); `nil` con la build propia, para que el cliente
+    /// caiga a `wine-steam`/unificado, que sí renderizan el CEF.
+    static func fullWineBinaryForSteamClient(enginesDirectory: String = VesselPaths.enginesDirectory) -> String? {
+        guard isRealCrossOverFullEngine(enginesDirectory: enginesDirectory) else { return nil }
+        return fullWineBinary(enginesDirectory: enginesDirectory)
     }
 
     // MARK: - Roles de motor (arquitectura de doble motor)

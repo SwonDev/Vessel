@@ -503,6 +503,63 @@ final class DependencyManager {
         Task { await self.ensureWineMono() }
     }
 
+    /// Asegura el motor COMPLETO (`wine-full`) para las rutas de juegos que lo necesitan
+    /// (UE4, FNA/XNA, Source, Godot-Vulkan, D3D9 32-bit, Unity 32-bit, DirectDraw clásico).
+    ///
+    /// **Tarea #47**: desde la 0.0.4 `wine-full` es una **build propia de Vessel de las fuentes
+    /// FOSS de CrossOver 26.2.0** (wine-11.0 + CW HACKs: msync, winemac, wined3d; LGPL) publicada
+    /// en `SwonDev/Vessel-Engines` — redistribuible y autónoma. Antes era una copia manual del
+    /// CrossOver instalado localmente (licencia), que los usuarios sin CrossOver no tenían y por
+    /// tanto esas rutas les fallaban. **NUNCA pisa un wine-full existente**: si el usuario tiene
+    /// el CrossOver real copiado a mano, manda ese (es la referencia; además es el único que
+    /// corre el CEF del cliente Steam — ver `WineEngineLocator.isRealCrossOverFullEngine`).
+    /// Idempotente: si ya hay motor, retorna al instante.
+    func ensureFullEngine(progress: @escaping @Sendable (String, Double) -> Void = { _, _ in }) async throws {
+        guard !WineEngineLocator.isFullEngineInstalled(enginesDirectory: enginesDirectory) else { return }
+        try await installWineFull(progress: progress)
+    }
+
+    /// Descarga la build propia de `wine-full` (fuentes CrossOver 26.2.0) de Vessel-Engines.
+    private func installWineFull(progress: @escaping @Sendable (String, Double) -> Void) async throws {
+        progress("Descargando motor completo (wine-full, fuentes CrossOver 26.2.0)…", 0.05)
+        let downloadURL = URL(string: "https://github.com/SwonDev/Vessel-Engines/releases/download/engine-full-v1/wine-full.tar.zst")!
+        let (tempURL, response) = try await URLSession.shared.download(from: downloadURL)
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw NSError(domain: "Vessel", code: http.statusCode,
+                          userInfo: [NSLocalizedDescriptionKey: "Descarga del motor completo falló: HTTP \(http.statusCode)"])
+        }
+
+        progress("Extrayendo motor completo…", 0.55)
+        let finalEngineDir = "\(enginesDirectory)/\(WineEngineLocator.fullEngineName)"
+        let stagingDir = "\(enginesDirectory)/wine-full-installing-\(UUID().uuidString)"
+        try? FileManager.default.removeItem(atPath: stagingDir)
+        try FileManager.default.createDirectory(atPath: stagingDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(atPath: stagingDir)
+            try? FileManager.default.removeItem(at: tempURL)
+        }
+
+        try await extractTar(at: tempURL, to: URL(fileURLWithPath: stagingDir))
+
+        // El tarball contiene la carpeta `wine-full/` en la raíz → normalizar a finalEngineDir.
+        let extractedRoot = "\(stagingDir)/\(WineEngineLocator.fullEngineName)"
+        let sourceDir = FileManager.default.isExecutableFile(atPath: "\(extractedRoot)/bin/wine")
+            ? extractedRoot : stagingDir
+        // Por si una instalación previa dejó algo a medias (el guard de arriba ya cubre el caso sano).
+        try? FileManager.default.removeItem(atPath: finalEngineDir)
+        try FileManager.default.moveItem(atPath: sourceDir, toPath: finalEngineDir)
+
+        await stripQuarantineRecursive(at: finalEngineDir)
+        progress("Firmando el motor completo…", 0.90)
+        await adhocSignBinaries(in: finalEngineDir)
+
+        guard FileManager.default.isExecutableFile(atPath: "\(finalEngineDir)/bin/wine") else {
+            throw NSError(domain: "Vessel", code: 7,
+                          userInfo: [NSLocalizedDescriptionKey: "Motor completo instalado pero bin/wine no es ejecutable"])
+        }
+        progress("✓ Motor completo (wine-full) listo", 1.0)
+    }
+
     /// Instala **wine-mono** (el runtime de .NET Framework de Wine) en el motor unificado si falta, para
     /// que los juegos .NET Framework arranquen: Wine lo auto-instala en el prefijo desde
     /// `share/wine/mono/`. wine-mono es INDEPENDIENTE de la arquitectura del motor (son ensamblados

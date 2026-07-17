@@ -1030,15 +1030,15 @@ final class WineManager {
         // **DirectDraw de la era VGA (256 colores)**: escritorio virtual + Wine de CrossOver. Va
         // aquí, antes de la detección de API, porque estos juegos no son "D3D9" ni nada moderno:
         // piden modos de pantalla paletizados que macOS ya no tiene. Verificado con War Wind (1996).
-        let fullEngineWine = "\(WineEngineLocator.fullEngineDir())/bin/wine"
-        if isLegacyDirectDrawGame(executable), FileManager.default.isExecutableFile(atPath: fullEngineWine) {
+        // `fullEngineWineEnsured()` es perezoso: solo descarga el motor si el juego entra en la ruta.
+        if isLegacyDirectDrawGame(executable), let fullEngineWine = await fullEngineWineEnsured() {
             return try await launchLegacyDirectDrawGame(executable: executable, in: bottle,
                                                         arguments: allArgs, effective: eff,
                                                         wine: fullEngineWine)
         }
         // **Source (Valve)**: hay que decirle qué mod cargar y sacarlo de MoltenVK.
         if let mod = sourceModDirectory(forExecutable: executable),
-           FileManager.default.isExecutableFile(atPath: fullEngineWine) {
+           let fullEngineWine = await fullEngineWineEnsured() {
             log.log("Juego de Source: cargando «\(mod)» con OpenGL (MoltenVK no compila sus shaders).", level: .info)
             let exeName = (executable as NSString).lastPathComponent
             // `renderer=gl` SOLO para este `.exe` (AppDefaults), no para todo el prefijo: con Vulkan,
@@ -1076,7 +1076,7 @@ final class WineManager {
         // Sin esto acaba clasificado por descarte (su PE no declara `vulkan-1.dll`, la carga en
         // runtime), arranca —su log escribe "Godot Engine v4.3"— y NO abre ventana jamás.
         // Verificado con Halls of Torment; Cassette Beasts (Godot solo-OpenGL) no entra aquí.
-        if isGodotVulkanGame(executable), FileManager.default.isExecutableFile(atPath: fullEngineWine) {
+        if isGodotVulkanGame(executable), let fullEngineWine = await fullEngineWineEnsured() {
             log.log("Juego Godot: render por Vulkan (MoltenVK→Metal) con el Wine completo.", level: .info)
             cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
             try? await terminateWineProcesses(winePath: fullEngineWine, prefix: bottle.prefixPath)
@@ -1096,7 +1096,7 @@ final class WineManager {
         // **FNA/XNA**: lo que les falla no es la capa gráfica sino el RUNTIME — quieren el .NET
         // Framework de verdad, no wine-mono. Por eso va antes de detectar la API: con mono se
         // quedan en negro por muchas capas que se prueben. Verificado con FEZ.
-        if isFNAOrXNAGame(executable), FileManager.default.isExecutableFile(atPath: fullEngineWine) {
+        if isFNAOrXNAGame(executable), let fullEngineWine = await fullEngineWineEnsured() {
             return try await launchFNAGameWithCrossOver(executable: executable, in: bottle,
                                                         arguments: allArgs, effective: eff,
                                                         wine: fullEngineWine)
@@ -1106,7 +1106,7 @@ final class WineManager {
         // gráfica sino el motor. Solo cuando el usuario no ha forzado una capa a mano. Verificado
         // con ASTRONEER. (UE5 con d3d12 —Palworld— NO entra aquí: sigue por GPTK/D3DMetal.)
         if go == .auto, isUnrealEngine4Game(executable),
-           FileManager.default.isExecutableFile(atPath: fullEngineWine) {
+           let fullEngineWine = await fullEngineWineEnsured() {
             return try await launchUnreal4WithCrossOver(executable: executable, in: bottle,
                                                         arguments: allArgs, steamAppId: steamAppId,
                                                         effective: eff, wine: fullEngineWine)
@@ -1306,8 +1306,7 @@ final class WineManager {
         // justo el 32-bit sobre Rosetta. Verificado en vivo: 20XX (32-bit, D3D9 + d3dx9_43)
         // renderiza su pantalla de inicio con wine-full y falla con Gcenx en todas las variantes.
         // Los D3D9 de 64-bit se quedan en Gcenx, que es donde están validados.
-        let fullWine = "\(WineEngineLocator.fullEngineDir())/bin/wine"
-        if isExecutable32Bit(executable), FileManager.default.isExecutableFile(atPath: fullWine) {
+        if isExecutable32Bit(executable), let fullWine = await fullEngineWineEnsured() {
             return try await launchD3D9GameWithCrossOver(executable: executable, in: bottle,
                                                          arguments: arguments, effective: effective,
                                                          wine: fullWine)
@@ -1409,6 +1408,25 @@ final class WineManager {
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: effective
         )
+    }
+
+    /// Motor completo (`wine-full`) para las rutas que lo necesitan, DESCARGÁNDOLO si falta.
+    /// Tarea #47: desde la 0.0.4 `wine-full` es la build propia redistribuible de Vessel (fuentes
+    /// FOSS de CrossOver 26.2.0, wine-11.0 + CW HACKs, LGPL), que se descarga de Vessel-Engines.
+    /// Antes era una copia manual del CrossOver local, así que en máquinas sin CrossOver estas
+    /// rutas (UE4, FNA/XNA, Source, Godot-Vulkan, D3D9 32-bit…) simplemente no iban. Devuelve
+    /// `nil` si no está y no se pudo descargar → la ruta cae al enrutado normal, como antes.
+    private func fullEngineWineEnsured() async -> String? {
+        let path = "\(WineEngineLocator.fullEngineDir())/bin/wine"
+        if FileManager.default.isExecutableFile(atPath: path) { return path }
+        do {
+            try await dependencyManager.ensureFullEngine { msg, pct in
+                Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
+            }
+        } catch {
+            log.log("No se pudo descargar el motor completo (wine-full): \(error.localizedDescription)", level: .warn)
+        }
+        return FileManager.default.isExecutableFile(atPath: path) ? path : nil
     }
 
     /// Lanza un juego **FNA/XNA** con el .NET Framework de verdad.
@@ -1723,8 +1741,7 @@ final class WineManager {
         // anuncia en un MessageBox y Wine se mata dibujando ese texto (bug de Uniscribe: en
         // `ScriptString_pSize` lee `glyphs[0].sc->tm.tmHeight` sin comprobar que `sc` exista).
         // `wine-full` sí le da contexto y el juego renderiza. Verificado en vivo: A Short Hike.
-        let fullWine = "\(WineEngineLocator.fullEngineDir())/bin/wine"
-        if isUnityGame(rawExecutable), FileManager.default.isExecutableFile(atPath: fullWine) {
+        if isUnityGame(rawExecutable), let fullWine = await fullEngineWineEnsured() {
             return try await launchUnity32BitWithCrossOver(executable: rawExecutable, in: bottle,
                                                            arguments: arguments, effective: effective,
                                                            wine: fullWine)
@@ -2485,7 +2502,7 @@ final class WineManager {
     /// SIEMPRE la red de seguridad. Se llama antes de jugar (baja lo último) y al salir (sube la sesión).
     func syncSteamCloud(appId: String, in bottle: Bottle) async {
         guard !appId.isEmpty else { return }
-        let clientWine = WineEngineLocator.fullWineBinary()
+        let clientWine = WineEngineLocator.fullWineBinaryForSteamClient()
             ?? WineEngineLocator.steamDedicatedWineBinary()
             ?? resolveClientWine(for: bottle)
         let ok = await ensureSteamConnected(in: bottle, clientWine: clientWine, timeoutSeconds: 90, background: true)
@@ -2519,7 +2536,10 @@ final class WineManager {
         // redistribuibles): si está instalado, NO hace falta instalar/verificar el unificado ni el motor
         // dedicado del cliente → se salta (arranque MUCHO más rápido). Solo se preparan esos motores
         // cuando wine-full NO está (fallback).
-        if WineEngineLocator.fullWineBinary() == nil {
+        // ⚠️ Solo el CrossOver REAL (`fullWineBinaryForSteamClient`) corre el CEF; la build propia
+        // redistribuible (tarea #47) lo abre en negro → con ella el cliente sigue en
+        // `wine-steam`/unificado, que sí lo renderizan.
+        if WineEngineLocator.fullWineBinaryForSteamClient() == nil {
             do {
                 try await dependencyManager.ensureUnifiedEngine { msg, pct in
                     Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
@@ -2533,11 +2553,12 @@ final class WineManager {
                 Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
             }
         }
-        // Motor COMPLETO de Vessel (wine-full) si está instalado: UN solo motor corre el cliente Steam
-        // (CEF nativo, sin wrapper), la tienda y TODOS los juegos (D3D11 y D3D12), compartiendo
-        // wineserver para el DRM. Si no está, el motor dedicado del cliente (clon del unificado con el
-        // fix de la tienda), o el unificado/Gcenx.
-        let wine = WineEngineLocator.fullWineBinary()
+        // Motor COMPLETO de Vessel (wine-full) si está instalado Y es el CrossOver real: UN solo
+        // motor corre el cliente Steam (CEF nativo, sin wrapper), la tienda y TODOS los juegos
+        // (D3D11 y D3D12), compartiendo wineserver para el DRM. Si no (o si es la build propia
+        // redistribuible, que no renderiza el CEF), el motor dedicado del cliente (clon del
+        // unificado con el fix de la tienda), o el unificado/Gcenx.
+        let wine = WineEngineLocator.fullWineBinaryForSteamClient()
             ?? WineEngineLocator.steamDedicatedWineBinary()
             ?? resolveClientWine(for: bottle)
         if WineEngineLocator.isFullEngine(wine) {
