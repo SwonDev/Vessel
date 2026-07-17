@@ -156,12 +156,15 @@ struct GameSettingsView: View {
 
                     section("Sincronización (rendimiento)") {
                         Toggle("Esync", isOn: $config.esync).tint(tint).foregroundStyle(.white)
+                            .vesselHelp("Esync", detail: "Reduce la sobrecarga de sincronización de Wine mediante descriptores de archivo.")
                         Toggle("Fsync", isOn: $config.fsync).tint(tint).foregroundStyle(.white)
+                            .vesselHelp("Fsync", detail: "Usa sincronización rápida cuando el motor y el juego son compatibles.")
                     }
 
                     section("Rendimiento en pantalla") {
                         Toggle("Mostrar HUD de Metal", isOn: $config.metalHUD)
                             .tint(tint).foregroundStyle(.white)
+                            .vesselHelp("HUD de rendimiento", detail: "Muestra FPS y tiempos de frame sobre el juego.")
                         Text("Superpone FPS y tiempos de frame en el juego (HUD nativo de Metal). Útil para medir rendimiento; desactívalo para jugar.")
                             .font(.caption2).foregroundStyle(.white.opacity(0.45))
                             .fixedSize(horizontal: false, vertical: true)
@@ -187,6 +190,7 @@ struct GameSettingsView: View {
                                     }
                                 } label: { Label("Hacer copia ahora", systemImage: "arrow.down.doc").frame(maxWidth: .infinity) }
                                 .vesselButton(false)
+                                .vesselHelp("Crear una copia de la partida ahora")
 
                                 Button {
                                     if let f = SaveBackupManager.shared.backupsFolder(store: sbStore, id: sbId) {
@@ -195,6 +199,7 @@ struct GameSettingsView: View {
                                 } label: { Label("Ver copias", systemImage: "folder").frame(maxWidth: .infinity) }
                                 .vesselButton(false)
                                 .disabled(saveBackupDate == nil)
+                                .vesselHelp("Mostrar las copias de partida en Finder")
                             }
                         }
                     }
@@ -205,6 +210,7 @@ struct GameSettingsView: View {
                                 .font(.caption).foregroundStyle(.white.opacity(0.5)).fixedSize(horizontal: false, vertical: true)
                             Toggle("Modo Steam real (nube de Steam, actualizaciones, DLC y logros)", isOn: $config.useRealSteam)
                                 .tint(tint).foregroundStyle(.white)
+                                .vesselHelp("Modo Steam real", detail: "Lanza con el cliente de Steam para usar sus servicios nativos.")
                             Text(config.useRealSteam
                                  ? "Activo: el juego corre con el cliente de Steam (motor unificado) y Steam sincroniza tus partidas en la nube. El render puede diferir del modo Vessel óptimo."
                                  : "Modo Vessel: motor gráfico óptimo por juego + tu copia de partida local (arriba). La nube de Steam es opcional (abajo).")
@@ -213,6 +219,7 @@ struct GameSettingsView: View {
                                 Divider().overlay(.white.opacity(0.06)).padding(.vertical, 2)
                                 Toggle("Sincronizar con Steam Cloud (experimental)", isOn: $config.steamCloudSync)
                                     .tint(tint).foregroundStyle(.white)
+                                    .vesselHelp("Steam Cloud experimental", detail: "Sincroniza antes y después de jugar manteniendo el motor óptimo de Vessel.")
                                 Text("Mantiene el motor gráfico óptimo (Modo Vessel) Y sincroniza tu partida con la nube de Steam: Vessel abre el cliente en 2º plano antes de jugar (baja lo último) y al salir (sube los cambios). Tu copia local sigue como red de seguridad.")
                                     .font(.caption2).foregroundStyle(.white.opacity(0.45)).fixedSize(horizontal: false, vertical: true)
                             }
@@ -226,6 +233,7 @@ struct GameSettingsView: View {
                             Label("Abrir carpeta del juego", systemImage: "folder").frame(maxWidth: .infinity)
                         }
                         .vesselButton(false)
+                        .vesselHelp("Mostrar la carpeta instalada en Finder")
                     }
 
                     HStack(spacing: 10) {
@@ -240,6 +248,7 @@ struct GameSettingsView: View {
                                 .frame(maxWidth: .infinity)
                         }
                         .vesselButton(false)
+                        .vesselHelp("Preparar un reporte anónimo de compatibilidad en GitHub")
 
                         Button {
                             let store = game.steamAppId != nil ? "steam" : "otra"
@@ -254,6 +263,7 @@ struct GameSettingsView: View {
                                 .frame(maxWidth: .infinity)
                         }
                         .vesselButton(false)
+                        .vesselHelp("Copiar un reporte anónimo al portapapeles")
                     }
                     Label("Reporte anónimo: solo el juego, tu sistema (macOS/chip) y tus notas. No se envía ningún dato personal ni se sube nada automáticamente.",
                           systemImage: "lock.shield")

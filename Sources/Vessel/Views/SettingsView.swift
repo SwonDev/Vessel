@@ -54,6 +54,7 @@ struct SettingsView: View {
                 Button("Cerrar") { dismiss() }
                     .vesselButton(false)
                     .keyboardShortcut(.cancelAction)
+                    .vesselHelp("Cerrar ajustes", shortcut: "Esc")
                 Spacer()
             }
             .padding(16)
@@ -121,9 +122,11 @@ struct SettingsView: View {
                                 }
                             }
                             .vesselButton()
+                            .vesselHelp("Descargar Wine", detail: "Instala el motor portable dentro de Vessel; no modifica macOS.")
                         } else if !result.installed, result.dependency == .rosetta {
                             Button("Instalar") { Task { await installRosetta() } }
                                 .vesselButton(false)
+                                .vesselHelp("Instalar Rosetta 2", detail: "Necesario para algunos componentes Intel de juegos antiguos.")
                         }
                     }
                     .padding(.vertical, 8)
@@ -151,6 +154,7 @@ struct SettingsView: View {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
                 }
                 .vesselButton(false)
+                .vesselHelp("Abrir los datos de Vessel en Finder")
                 .padding(.top, 6)
             }
             .vesselCard(padding: 12)
@@ -217,6 +221,7 @@ struct SettingsView: View {
                 Divider().overlay(.white.opacity(0.08)).padding(.vertical, 4)
                 Toggle("Modo Steam real para todos los juegos de Steam", isOn: $steamRealGlobal)
                     .font(.callout)
+                    .vesselHelp("Usar Steam real por defecto", detail: "Activa Steam Cloud, actualizaciones, DLC y logros nativos; se puede anular por juego.")
                 Text("Con esto activado, tus juegos de Steam se lanzan con el cliente de Steam conectado: **nube de Steam (Steam Cloud), actualizaciones, DLC y logros nativos**, igual que CrossOver. Puedes anularlo por juego en sus Ajustes. Nota: usa el motor unificado del cliente Steam; algunos juegos (p. ej. Palworld) rinden mejor en modo Vessel (motor gráfico óptimo + copia de partida local).")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -238,6 +243,7 @@ struct SettingsView: View {
                     }
                 }
                 .tint(Theme.accent)
+                .vesselHelp("Actualización comunitaria de compatibilidad", detail: "Descarga perfiles anónimos una vez al día; desactívalo para uso totalmente local.")
                 if !fixesStore.fixes.isEmpty {
                     Divider().opacity(0.3)
                     HStack {
@@ -270,6 +276,7 @@ struct SettingsView: View {
                             .buttonStyle(.plain).font(.caption.weight(.medium))
                             .foregroundStyle(fix.shared ? Color.secondary : Theme.accent)
                             .disabled(fix.shared)
+                            .vesselHelp(fix.shared ? "Este arreglo ya está compartido" : "Compartir arreglo anónimo en GitHub")
                         }
                     }
                 }
@@ -290,7 +297,7 @@ struct SettingsView: View {
                 HStack {
                     Text("Versión").font(.callout)
                     Spacer()
-                    Text("0.1.0").foregroundStyle(.secondary)
+                    Text(VesselAppInfo.displayVersion).foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 6)
                 HStack {
@@ -305,10 +312,12 @@ struct SettingsView: View {
                         dismiss()
                     }
                     .vesselButton(false)
+                    .vesselHelp("Abrir los registros en vivo")
                     Button("Diagnosticar sistema") {
                         Task { checkResults = await dependencyManager.checkAll() }
                     }
                     .vesselButton(false)
+                    .vesselHelp("Volver a comprobar motores y dependencias")
                 }
                 .padding(.top, 6)
             }

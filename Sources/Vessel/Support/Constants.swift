@@ -1,5 +1,25 @@
 import Foundation
 
+enum VesselAppInfo {
+    /// La versión visible siempre procede del bundle instalado. Evita que Ajustes y Acerca de
+    /// queden desfasados respecto a la Release realmente ejecutada.
+    static var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+            ?? "Desarrollo"
+    }
+
+    static var build: String? {
+        guard let value = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
+              !value.isEmpty,
+              value != version else { return nil }
+        return value
+    }
+
+    static var displayVersion: String {
+        build.map { "\(version) (\($0))" } ?? version
+    }
+}
+
 enum VesselPaths {
     static let appSupport: String = {
         let home = NSHomeDirectory()

@@ -24,12 +24,14 @@ struct LogsView: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(maxWidth: 320)
+                .vesselHelp("Filtrar los registros por nivel")
                 Button {
                     logStore.clear()
                 } label: {
                     Label("Limpiar", systemImage: "trash")
                 }
                 .vesselButton(false)
+                .vesselHelp("Borrar todos los registros de esta sesión")
                 Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(
@@ -42,6 +44,7 @@ struct LogsView: View {
                     Label("Copiar", systemImage: "doc.on.doc")
                 }
                 .vesselButton(false)
+                .vesselHelp("Copiar todos los registros al portapapeles")
             }
             .padding(20)
 
@@ -85,6 +88,7 @@ struct LogsView: View {
                 Button("Cerrar") { dismiss() }
                     .vesselButton(false)
                     .keyboardShortcut(.cancelAction)
+                    .vesselHelp("Cerrar registros", shortcut: "Esc")
             }
             .padding(16)
         }

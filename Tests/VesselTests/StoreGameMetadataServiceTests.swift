@@ -76,6 +76,17 @@ struct StoreGameMetadataServiceTests {
         #expect(StoreGameMetadataService.normalizedTitle("Vampire Crawlers II") != "vampirecrawlers")
     }
 
+    @Test("Los enlaces externos solo se crean con un identificador de Steam válido")
+    func validatesExternalStoreLinks() {
+        let valid = StoreGame(id: "steam-570", title: "Dota 2", steamAppId: "570")
+        #expect(valid.steamStoreURL?.absoluteString == "https://store.steampowered.com/app/570")
+        #expect(valid.protonDBURL?.absoluteString == "https://www.protondb.com/app/570")
+
+        let invalid = StoreGame(id: "epic-offer", title: "Juego", steamAppId: "offer/../../bad")
+        #expect(invalid.steamStoreURL == nil)
+        #expect(invalid.protonDBURL == nil)
+    }
+
     @MainActor
     @Test("El panel Liquid Glass se renderiza con su tamaño contractual")
     func rendersHoverPreviewPanel() throws {

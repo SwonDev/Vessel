@@ -25,6 +25,13 @@ invisible) y la estética premium (DESIGN.md). Basado en auditoría de huecos fr
   **sidebar colapsable animada** + divisor arrastrable; **selector de tamaño de carátulas**
   (Compacta/Normal/Grande, estilo Steam); **buscador/filtro/orden en la cabecera** del grid al
   colapsar; fix del arrastre de ventana (solo desde el header).
+- **Organización estilo Steam**: colecciones manuales persistentes por tienda, asignación desde el
+  menú contextual, filtro discreto en la scope bar, navegación atrás/adelante y deshacer al ocultar.
+- **Logros interactivos**: progreso real, desbloqueados/bloqueados, rareza e iconos cuando la sesión
+  o la Web API de Steam lo permiten; degradación honesta si el perfil es privado.
+- Ficha de compatibilidad con acceso directo a ProtonDB y enlace a la página del juego en Steam.
+- **Acceso rápido y notas**: buscador de apertura con `⌘K` para bibliotecas grandes y notas privadas
+  por juego, con guardado automático local y acceso desde la ficha, menús contextuales y menú Juego.
 
 ## 🔜 Pendiente (orden por impacto en catálogo/UX)
 
@@ -46,9 +53,7 @@ invisible) y la estética premium (DESIGN.md). Basado en auditoría de huecos fr
 
 ### UI premium (DESIGN.md)
 8. Paridad visual Epic/GOG con Steam (Liquid Glass en las tarjetas).
-9. Visor de logros interactivo (desbloqueados vs bloqueados, progreso) — hoy es decorativo.
-10. Ficha de compatibilidad: link a ProtonDB + recomendación de capa/ajustes.
-11. Filtros avanzados (género, rating de compat, tamaño) + microinteracciones.
+9. Filtros avanzados (género, rating de compat, tamaño) + microinteracciones.
 
 ## Excluido por filosofía (solo bajo toggle "Avanzado")
 winecfg · regedit · ejecutar .exe arbitrario · selector de motor en UI — el bottle es invisible.

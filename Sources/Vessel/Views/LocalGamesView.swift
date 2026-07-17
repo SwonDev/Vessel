@@ -183,7 +183,8 @@ struct LocalGamesView: View {
                 .frame(width: 28, height: 28).contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-        .help("Añadir juegos DRM‑free (Steam, itch.io, Humble, .exe)")
+        .accessibilityLabel("Añadir juegos DRM-free")
+        .vesselHelp("Añadir juegos DRM-free", detail: "Importa desde Steam, itch.io, Humble, un .exe o un disco físico.")
     }
 
     @ViewBuilder private var bannerView: some View {
@@ -202,7 +203,7 @@ struct LocalGamesView: View {
                 }
             }
             .padding(.horizontal, 18).padding(.vertical, 13)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .liquidGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.white.opacity(0.14), lineWidth: 1))
             .shadow(color: .black.opacity(0.35), radius: 16, y: 6)
             .padding(.bottom, 26)
@@ -211,7 +212,7 @@ struct LocalGamesView: View {
             Label(banner.0, systemImage: banner.1 ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                 .font(.callout.weight(.medium)).foregroundStyle(.white)
                 .padding(.horizontal, 16).padding(.vertical, 11)
-                .background(.ultraThinMaterial, in: Capsule())
+                .liquidGlass(in: Capsule())
                 .overlay(Capsule().strokeBorder((banner.1 ? Color.orange : .green).opacity(0.5), lineWidth: 1))
                 .shadow(color: .black.opacity(0.3), radius: 12, y: 5)
                 .padding(.bottom, 26)
