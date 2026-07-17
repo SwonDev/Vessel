@@ -13,7 +13,7 @@ struct AboutView: View {
                 Text("Vessel")
                     .font(.largeTitle)
                     .fontWeight(.bold)
-                Text("v0.1.0")
+                Text("v\(VesselAppInfo.displayVersion)")
                     .foregroundStyle(.secondary)
             }
 
@@ -35,12 +35,14 @@ struct AboutView: View {
                     }
                 }
                 .vesselButton()
+                .vesselHelp("Abrir el repositorio de Vessel en GitHub")
                 Button("Reportar bug") {
                     if let url = URL(string: "https://github.com/SwonDev/Vessel/issues") {
                         NSWorkspace.shared.open(url)
                     }
                 }
                 .vesselButton(false)
+                .vesselHelp("Abrir un nuevo reporte de error en GitHub")
             }
 
             Spacer()
@@ -54,6 +56,7 @@ struct AboutView: View {
             Button("Cerrar") { dismiss() }
                 .vesselButton(false)
                 .keyboardShortcut(.cancelAction)
+                .vesselHelp("Cerrar Acerca de Vessel", shortcut: "Esc")
                 .padding(.top, 8)
         }
         .padding(40)

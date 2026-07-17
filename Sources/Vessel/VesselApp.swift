@@ -41,6 +41,7 @@ struct VesselApp: App {
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified(showsTitle: true))
         .commands {
+            LibraryGameCommands()
             CommandMenu("Biblioteca") {
                 Button("Buscar en la biblioteca") {
                     NotificationCenter.default.post(name: .libraryFind, object: nil)
@@ -99,6 +100,12 @@ struct VesselApp: App {
                     UpdaterManager.shared.checkForUpdates()
                 }
             }
+            CommandGroup(after: .help) {
+                Button("Atajos de teclado…") {
+                    NotificationCenter.default.post(name: .openShortcutReference, object: nil)
+                }
+                .keyboardShortcut("/", modifiers: [.command, .shift])
+            }
         }
     }
 
@@ -108,6 +115,7 @@ extension Notification.Name {
     static let openSettings = Notification.Name("vessel.openSettings")
     static let openLogs = Notification.Name("vessel.openLogs")
     static let openAbout = Notification.Name("vessel.openAbout")
+    static let openShortcutReference = Notification.Name("vessel.openShortcutReference")
     static let libraryFind = Notification.Name("vessel.libraryFind")
     static let libraryToggleSidebar = Notification.Name("vessel.libraryToggleSidebar")
     static let libraryShowAll = Notification.Name("vessel.libraryShowAll")

@@ -10,6 +10,7 @@ struct ContentView: View {
     @State private var showingSettings = false
     @State private var showingLogs = false
     @State private var showingAbout = false
+    @State private var showingShortcutReference = false
     /// Alto de la zona del header (área segura superior), medido en runtime.
     @State private var headerHeight: CGFloat = 52
     /// Aviso de lanzamiento (p. ej. "el juego necesita Steam"): alerta in-app SIEMPRE visible
@@ -53,6 +54,7 @@ struct ContentView: View {
                             Divider()
                             Button("Ajustes…") { showingSettings = true }
                             Button("Ver logs…") { showingLogs = true }
+                            Button("Atajos de teclado…") { showingShortcutReference = true }
                             Divider()
                             Button("Acerca de Vessel") { showingAbout = true }
                         } label: {
@@ -89,9 +91,13 @@ struct ContentView: View {
         .sheet(isPresented: $showingSettings) { SettingsView() }
         .sheet(isPresented: $showingLogs) { LogsView() }
         .sheet(isPresented: $showingAbout) { AboutView() }
+        .sheet(isPresented: $showingShortcutReference) { ShortcutReferenceView() }
         .onReceive(NotificationCenter.default.publisher(for: .openSettings)) { _ in showingSettings = true }
         .onReceive(NotificationCenter.default.publisher(for: .openLogs)) { _ in showingLogs = true }
         .onReceive(NotificationCenter.default.publisher(for: .openAbout)) { _ in showingAbout = true }
+        .onReceive(NotificationCenter.default.publisher(for: .openShortcutReference)) { _ in
+            showingShortcutReference = true
+        }
         .onReceive(NotificationCenter.default.publisher(for: .selectStore)) { note in
             guard let store = note.object as? StoreKind else { return }
             withAnimation(.smooth(duration: 0.28)) { selectedStore = store }
@@ -223,7 +229,7 @@ private struct LaunchStatusBanner: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
         .frame(maxWidth: 460)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .liquidGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(.white.opacity(0.12), lineWidth: 1)

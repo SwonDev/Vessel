@@ -20,24 +20,29 @@ struct ItchLinkSheet: View {
             }
             Text("Pega tu **API key** de itch.io. La generas en itch.io › Ajustes › API keys. Con ella Vessel puede listar y descargar tus juegos.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Button("Abrir la página de API keys") {
-                NSWorkspace.shared.open(URL(string: "https://itch.io/user/settings/api-keys")!)
-            }.buttonStyle(.link)
+            Link("Abrir la página de API keys",
+                 destination: URL(string: "https://itch.io/user/settings/api-keys")!)
+                .font(.callout.weight(.medium))
 
             SecureField("API key", text: $key)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.plain)
+                .padding(10)
+                .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
                 .onSubmit(validate)
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
 
             HStack {
                 Spacer()
                 Button("Cancelar") { dismiss() }
+                    .vesselButton(false, tint: StoreKind.local.tint)
                 Button(validating ? "Validando…" : "Vincular") { validate() }
+                    .vesselButton(tint: StoreKind.local.tint)
                     .keyboardShortcut(.defaultAction)
                     .disabled(key.trimmingCharacters(in: .whitespaces).isEmpty || validating)
             }
         }
         .padding(24).frame(width: 460)
+        .vesselBackground(tint: StoreKind.local.tint)
     }
 
     private func validate() {
@@ -196,7 +201,7 @@ struct SteamDRMImportSheet: View {
         Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 14).padding(.vertical, 8)
-            .background(.ultraThinMaterial)
+            .liquidGlass(in: Rectangle())
     }
 
     private var searchField: some View {
@@ -205,7 +210,8 @@ struct SteamDRMImportSheet: View {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.caption)
                 TextField("Buscar en tu biblioteca de Steam…", text: $search).textFieldStyle(.plain).font(.callout)
             }
-            .padding(8).background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+            .padding(8)
+            .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
 
             // Cuántos de TUS juegos son DRM‑free según PCGamingWiki: el dato que nadie te da.
             if !drmFreeAppIds.isEmpty {
@@ -255,7 +261,9 @@ struct SteamDRMImportSheet: View {
         } else if let prog = progress[c.appId] {
             progressView(prog)
         } else if c.status.isGenerable {
-            Button("Generar") { generate(c) }.buttonStyle(.borderedProminent).controlSize(.small)
+            Button("Generar") { generate(c) }
+                .vesselButton(tint: StoreKind.local.tint)
+                .controlSize(.small)
         } else {
             Text("No sin Steam").font(.caption).foregroundStyle(.secondary)
                 .help("Usa el DRM de Steam (CEG): el ejecutable está cifrado y no corre sin el cliente.")
@@ -266,9 +274,14 @@ struct SteamDRMImportSheet: View {
         if let prog = progress[g.appId] {
             progressView(prog)
         } else if let err = failed[g.appId] {
-            Button("Reintentar") { installAndGenerate(g) }.buttonStyle(.bordered).controlSize(.small).help(err)
+            Button("Reintentar") { installAndGenerate(g) }
+                .vesselButton(false, tint: StoreKind.local.tint)
+                .controlSize(.small)
+                .vesselHelp("Reintentar la generación", detail: err)
         } else {
-            Button("Instalar y generar") { installAndGenerate(g) }.buttonStyle(.bordered).controlSize(.small)
+            Button("Instalar y generar") { installAndGenerate(g) }
+                .vesselButton(false, tint: StoreKind.local.tint)
+                .controlSize(.small)
         }
     }
 

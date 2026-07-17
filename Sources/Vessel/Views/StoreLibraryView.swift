@@ -228,6 +228,11 @@ struct StoreLibraryView: View {
         if selectedGame?.id == id { selectedGame = nil }
     }
 
+    private func copyGameTitle(_ game: StoreGame) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(game.title, forType: .string)
+    }
+
     private var activeQuickScope: LibraryQuickScope? {
         if showFavoritesOnly && filter == .todos { return .favoritos }
         guard !showFavoritesOnly else { return nil }
@@ -307,6 +312,48 @@ struct StoreLibraryView: View {
     }
 
     private var enriched: [StoreGame] { games.map(enrichedGame) }
+
+    /// Resuelve la versión más reciente del seleccionado, porque instalar/actualizar puede cambiar
+    /// el modelo mientras su ficha sigue abierta.
+    private var currentSelectedGame: StoreGame? {
+        guard let selectedGame else { return nil }
+        return enrichedGame(games.first(where: { $0.id == selectedGame.id }) ?? selectedGame)
+    }
+
+    /// Menú Juego y atajos nativos. No añade controles visibles: ofrece las acciones de Steam a
+    /// usuarios de teclado y mantiene los comandos desactivados cuando no existe una selección.
+    private var libraryFocusedActions: LibraryFocusedActions {
+        guard let game = currentSelectedGame else { return LibraryFocusedActions() }
+
+        let launchState = GameLaunchTracker.shared.state(game.id)
+        let primary: (String?, (() -> Void)?)
+        if installingIDs.contains(game.id) || launchState == .launching {
+            primary = (nil, nil)
+        } else if launchState == .running {
+            primary = ("Detener \(game.title)", { GameLaunchTracker.shared.stop(game.id) })
+        } else if game.installed {
+            primary = ("Jugar a \(game.title)", { onPlay(game) })
+        } else {
+            primary = ("Instalar \(game.title)", { onInstall(game) })
+        }
+
+        let reveal: (() -> Void)? = game.installPath.flatMap { path in
+            guard !path.isEmpty else { return nil }
+            return { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
+        }
+
+        return LibraryFocusedActions(
+            primaryTitle: primary.0,
+            performPrimary: primary.1,
+            favoriteTitle: isFav(game.id) ? "Quitar \(game.title) de favoritos" : "Añadir \(game.title) a favoritos",
+            toggleFavorite: { toggleFav(game.id) },
+            hiddenTitle: isHidden(game.id) ? "Mostrar \(game.title) en la biblioteca" : "Ocultar \(game.title) de la biblioteca",
+            toggleHidden: { toggleHidden(game.id) },
+            revealInFinder: reveal,
+            copyTitle: { copyGameTitle(game) },
+            backToLibrary: { selectedGame = nil }
+        )
+    }
 
     /// Lista mostrada (filtrada + ordenada) MEMOIZADA: se recalcula solo cuando cambian las
     /// entradas (juegos/búsqueda/filtro/orden/favoritos), NO en cada render — así con miles de
@@ -389,6 +436,7 @@ struct StoreLibraryView: View {
                 .transition(.opacity.combined(with: .move(edge: .leading)))
             }
         }
+        .focusedSceneValue(\.libraryActions, libraryFocusedActions)
         .vesselBackground(tint: tint)
         // Esc: volver de la ficha; si no, limpiar la búsqueda; si no, soltar el foco.
         .onExitCommand {
@@ -476,7 +524,17 @@ struct StoreLibraryView: View {
                     sidebarDragStart = nil
                 }
         )
-        .accessibilityHidden(true)
+        .accessibilityElement()
+        .accessibilityLabel("Ancho de la lista de juegos")
+        .accessibilityValue("\(Int(sidebarWidth)) puntos")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: sidebarWidthRaw = min(360, sidebarWidthRaw + 20)
+            case .decrement: sidebarWidthRaw = max(200, sidebarWidthRaw - 20)
+            @unknown default: break
+            }
+        }
+        .vesselHelp("Redimensionar la lista", detail: "Arrastra a izquierda o derecha para cambiar su anchura.")
     }
 
     /// Progreso AGREGADO (0–1) de las instalaciones/actualizaciones en curso, para el icono del
@@ -962,6 +1020,7 @@ struct StoreLibraryView: View {
     }
 
     @ViewBuilder private func rowContextMenu(_ game: StoreGame) -> some View {
+        Button { selectedGame = game } label: { Label("Ver detalles", systemImage: "info.circle") }
         if game.installed {
             Button { onPlay(game) } label: { Label("Jugar", systemImage: "play.fill") }
             if !installingIDs.contains(game.id) {
@@ -971,11 +1030,22 @@ struct StoreLibraryView: View {
                 }
                 Button { onVerify(game) } label: { Label("Verificar / reparar", systemImage: "checkmark.shield") }
             }
+            if let path = game.installPath, !path.isEmpty {
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                } label: { Label("Mostrar en Finder", systemImage: "folder") }
+            }
+            if let onExport {
+                Button { onExport(game) } label: {
+                    Label("Exportar juego…", systemImage: "externaldrive.badge.plus")
+                }
+            }
             Button(role: .destructive) { onUninstall(game) } label: { Label("Desinstalar", systemImage: "trash") }
         } else if !installingIDs.contains(game.id) {
             Button { onInstall(game) } label: { Label("Instalar", systemImage: "arrow.down.circle") }
         }
         Divider()
+        Button { copyGameTitle(game) } label: { Label("Copiar nombre", systemImage: "doc.on.doc") }
         Button { toggleFav(game.id) } label: {
             Label(isFav(game.id) ? "Quitar de favoritos" : "Añadir a favoritos",
                   systemImage: isFav(game.id) ? "star.slash" : "star")
@@ -1204,6 +1274,10 @@ struct StoreGameCard: View {
                     Button { onOpen() } label: { Label("Ver detalles", systemImage: "info.circle") }
                 }
                 Divider()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(game.title, forType: .string)
+                } label: { Label("Copiar nombre", systemImage: "doc.on.doc") }
                 Button { onToggleFavorite() } label: {
                     Label(isFavorite ? "Quitar de favoritos" : "Añadir a favoritos",
                           systemImage: isFavorite ? "star.slash" : "star")
@@ -1437,6 +1511,7 @@ struct RecentlyPlayedCard: View {
         .accessibilityLabel(game.title)
         .accessibilityValue(playtimeText ?? "Jugado recientemente")
         .accessibilityHint("Abre los detalles del juego")
+        .vesselHelp("Abrir detalles de \(game.title)")
     }
 }
 
@@ -1696,12 +1771,14 @@ struct GameDetailView: View {
                         .font(.title2.weight(.bold)).frame(minWidth: 170).frame(height: 28)
                 }
                 .vesselButton(tint: steamGreen)
+                .vesselHelp("Jugar a \(game.title)", shortcut: "⌘↩")
             } else {
                 Button(action: onInstall) {
                     Label("Instalar", systemImage: "arrow.down.circle.fill")
                         .font(.title2.weight(.bold)).frame(minWidth: 170).frame(height: 28)
                 }
                 .vesselButton(tint: tint)
+                .vesselHelp("Instalar \(game.title)", shortcut: "⌘↩")
             }
         }
     }
