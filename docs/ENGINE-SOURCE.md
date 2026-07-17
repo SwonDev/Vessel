@@ -35,6 +35,7 @@ parches) está disponible bajo la oferta escrita de la §4.
 | `win32u` `EnableMouseInPointer` | Fix del ratón en juegos Unity (6.x y anteriores). | `docs/unity6-mouse-fix/EnableMouseInPointer-9.x.patch`, `Resources/mousefix{,-gptk}/win32u.so` |
 | OpenGL *forward-compat* (motor `wine-unified-opengl`) | Aísla el fix OpenGL de *Hero of the Kingdom II* para no tocar el motor base. | `Resources/opengl-engine/winemac.so` |
 | Fix **W^X / JIT** para Rosetta | Permite el JIT de Wine bajo el modelo W^X de Apple Silicon/Rosetta. | integrado en la build del motor |
+| `ddraw` `SetDisplayMode` no pierde superficies | Los juegos de DirectDraw de los 90 que cambian de modo de pantalla y nunca llaman a `Restore()` dejaban de dibujar para siempre (todo `Flip` → `DDERR_SURFACELOST`). Verificado con *War Wind* (1996). | `docs/wine-patches/0002-ddraw-no-perder-superficies-en-SetDisplayMode-propio.patch`, `Resources/engine-ddrawfix/{i386,x86_64}-windows/ddraw.dll` |
 
 > Los `*.so` publicados en `Resources/` son los **binarios objeto** de estos parches (para
 > aplicarlos en caliente sin re-descargar el motor). El **código fuente** correspondiente es

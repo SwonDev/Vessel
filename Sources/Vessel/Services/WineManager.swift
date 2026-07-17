@@ -593,6 +593,15 @@ final class WineManager {
             .deletingPathExtension.lowercased() == "scummvm"
     }
 
+    /// `true` si es un **juego de DirectDraw de la era VGA** (importa `ddraw.dll` y NINGÚN Direct3D
+    /// moderno). Son juegos de 1995-1999 que piden modos de pantalla de **256 colores**, que macOS
+    /// ya no ofrece: necesitan el escritorio virtual de Wine, que sí los emula. Verificado con
+    /// War Wind (1996).
+    func isLegacyDirectDrawGame(_ executable: String) -> Bool {
+        exeImports(executable, anyOf: ["ddraw.dll"])
+            && !exeImports(executable, anyOf: ["d3d9.dll", "d3d11.dll", "dxgi.dll", "d3d12.dll"])
+    }
+
     /// Raíz del juego a partir del exe del emulador: GOG lo mete en una subcarpeta (`…/DOSBOX/`),
     /// así que la raíz es su padre — que es donde están los `.conf` y el juego en sí. Se confirma
     /// buscando el `goggame-<id>.info`; si no aparece, se asume el padre igualmente.
@@ -857,6 +866,15 @@ final class WineManager {
             return try await launchRetroWrapper(executable: executable, in: bottle,
                                                 arguments: allArgs, effective: eff)
         }
+        // **DirectDraw de la era VGA (256 colores)**: escritorio virtual + Wine de CrossOver. Va
+        // aquí, antes de la detección de API, porque estos juegos no son "D3D9" ni nada moderno:
+        // piden modos de pantalla paletizados que macOS ya no tiene. Verificado con War Wind (1996).
+        let fullEngineWine = "\(WineEngineLocator.fullEngineDir())/bin/wine"
+        if isLegacyDirectDrawGame(executable), FileManager.default.isExecutableFile(atPath: fullEngineWine) {
+            return try await launchLegacyDirectDrawGame(executable: executable, in: bottle,
+                                                        arguments: allArgs, effective: eff,
+                                                        wine: fullEngineWine)
+        }
         // Capa gráfica: override por juego (Ajustes/perfil) o auto-detección por API.
         // D3D12 (AAA, FF Tactics) → GPTK/D3DMetal (Metal nativo, ignora el Agility
         // SDK), con el cliente Steam en el mismo wineserver para el DRM.
@@ -1092,6 +1110,46 @@ final class WineManager {
         )
     }
 
+    /// Lanza un **juego de DirectDraw de la era VGA** (1995-1999) en el **escritorio virtual** de
+    /// Wine, con el Wine de CrossOver.
+    ///
+    /// Dos cosas imprescindibles, ambas verificadas con War Wind (1996):
+    /// 1. **Escritorio virtual**: el juego pide un modo de pantalla de **256 colores** (`640x480x8`).
+    ///    macOS ya no tiene modos paletizados, así que sin el escritorio virtual el juego aborta con
+    ///    "Unable to get screen mode 640x480x8". El escritorio virtual de Wine sí los emula.
+    /// 2. **El `ddraw` PARCHEADO del motor** (ver `docs/wine-patches/0002-…`): Wine perdía las
+    ///    superficies en el propio `SetDisplayMode` del juego y estos títulos no llaman a
+    ///    `Restore()` → todos los `Flip` fallaban → pantalla negra.
+    private func launchLegacyDirectDrawGame(executable: String, in bottle: Bottle, arguments: [String],
+                                            effective: EffectiveLaunchConfig, wine: String) async throws -> Process {
+        log.log("Juego DirectDraw clásico (256 colores): escritorio virtual + Wine de CrossOver.", level: .info)
+        // Auto-reparación: la `ddraw` parcheada (sin la cual estos juegos se quedan en negro para
+        // siempre). Con marcador de versión, así que solo hace algo la primera vez.
+        await dependencyManager.applyDDrawFix()
+        cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
+        try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+        await resyncGamePrefix(gameWine: wine, prefix: bottle.prefixPath)
+        // Estos juegos son de la era de Windows 95: la comprobación de "Windows NT no soportado"
+        // los para en seco. Se les dice que corren en un Windows de su época (solo a este exe).
+        let exeName = (executable as NSString).lastPathComponent
+        _ = try? await runWine(winePath: wine,
+                               arguments: ["reg", "add", #"HKCU\Software\Wine\AppDefaults\"# + exeName,
+                                           "/v", "Version", "/t", "REG_SZ", "/d", "win98", "/f"],
+                               prefix: bottle.prefixPath, allowNonZeroExit: true)
+        return try await launchWineProcess(
+            winePath: wine,
+            prefix: bottle.prefixPath,
+            // `explorer /desktop=…` crea el escritorio virtual que emula los modos paletizados.
+            arguments: ["explorer", "/desktop=Vessel,640x480", executable] + arguments,
+            environment: ["WINEPREFIX": bottle.prefixPath, "WINEDEBUG": "-all",
+                          "WINEDLLOVERRIDES": "winemenubuilder.exe=d"],
+            workingDirectory: gameWorkingDirectory(forExecutable: executable),
+            effective: effective,
+            forceCleanEnv: true
+        )
+    }
+
     /// Lanza un **D3D9 de 32-bit con el Wine de CrossOver** (`wine-full`).
     ///
     /// Es el único que crea el dispositivo D3D9 de un binario de 32-bit en Apple Silicon: el
@@ -1112,6 +1170,37 @@ final class WineManager {
             arguments: [executable] + arguments,
             environment: ["WINEPREFIX": bottle.prefixPath, "WINEDEBUG": "-all",
                           "WINEDLLOVERRIDES": "winemenubuilder.exe=d"],
+            workingDirectory: gameWorkingDirectory(forExecutable: executable),
+            effective: effective
+        )
+    }
+
+    /// Lanza un **Unity de 32-bit** con el Wine COMPLETO de CrossOver (`wine-full`).
+    ///
+    /// Es el mismo motor que ya resuelve los D3D9 de 32-bit (ver `launchD3D9GameWithCrossOver`), y por
+    /// el mismo motivo: es el único que le da a un proceso de 32-bit un contexto gráfico de verdad.
+    ///
+    /// Nada de `-force-glcore`: con él Unity se salta Direct3D y pide OpenGL directo, que es justo lo
+    /// que falla. Sin él, Unity usa su ruta normal y renderiza. Sí se conserva `-force-gfx-direct`
+    /// (render monohilo): el multihilo bajo Wine corrompe memoria. Verificado con A Short Hike.
+    private func launchUnity32BitWithCrossOver(executable: String, in bottle: Bottle, arguments: [String],
+                                               effective: EffectiveLaunchConfig, wine: String) async throws -> Process {
+        log.log("Capa gráfica: Wine completo de CrossOver (Unity de 32-bit) — el único que le da contexto gráfico", level: .info)
+        // DLLs de traducción de OTROS motores junto al `.exe`: pisan el builtin y se llevan el
+        // arranque por delante (una `d3d10_1` de DXMT arrastra `winemetal` a un motor que no lo es).
+        cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
+        cleanGameFolderGraphicsDLLs(forExecutable: executable)
+        try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+        await resyncGamePrefix(gameWine: wine, prefix: bottle.prefixPath)
+        return try await launchWineProcess(
+            winePath: wine,
+            prefix: bottle.prefixPath,
+            arguments: [executable] + arguments
+                + ["-force-gfx-direct", "-screen-fullscreen", "1", "-window-mode", "borderless"],
+            environment: ["WINEPREFIX": bottle.prefixPath, "WINEDEBUG": "-all",
+                          "WINEDLLOVERRIDES": "winemenubuilder.exe=d",
+                          "WINEMSYNC": "1", "WINEESYNC": "1"],
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: effective
         )
@@ -1268,6 +1357,18 @@ final class WineManager {
     }
 
     private func launch32BitGame(executable rawExecutable: String, in bottle: Bottle, arguments: [String], steamAppId: String?, effective: EffectiveLaunchConfig = EffectiveLaunchConfig()) async throws -> Process {
+        // **Unity de 32-bit → Wine COMPLETO de CrossOver (`wine-full`)**, no gptk-mythic.
+        // Bajo gptk, Unity no consigue contexto gráfico por NINGUNA vía: ni D3D11 ni OpenGL
+        // (`OPENGL ERROR: failed to choose pixel format`). Ese error ni se veía, porque Unity lo
+        // anuncia en un MessageBox y Wine se mata dibujando ese texto (bug de Uniscribe: en
+        // `ScriptString_pSize` lee `glyphs[0].sc->tm.tmHeight` sin comprobar que `sc` exista).
+        // `wine-full` sí le da contexto y el juego renderiza. Verificado en vivo: A Short Hike.
+        let fullWine = "\(WineEngineLocator.fullEngineDir())/bin/wine"
+        if isUnityGame(rawExecutable), FileManager.default.isExecutableFile(atPath: fullWine) {
+            return try await launchUnity32BitWithCrossOver(executable: rawExecutable, in: bottle,
+                                                           arguments: arguments, effective: effective,
+                                                           wine: fullWine)
+        }
         try await gptkManager.ensureInstalled { msg, pct in
             Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
         }
@@ -2502,8 +2603,13 @@ final class WineManager {
         let bakDir = "\(gameDir)/_vessel_graphics_bak"
         for name in names {
             let path = "\(gameDir)/\(name).dll"
-            // Solo apartar DLLs "reales" (>100 KB): las DXMT/wined3d pesan MB; nunca una fake de Wine.
-            guard let size = try? fm.attributesOfItem(atPath: path)[.size] as? UInt64, size > 100_000 else { continue }
+            // Se aparta CUALQUIER DLL con estos nombres, pese su tamaño lo que pese. No vale filtrar
+            // por tamaño: la `d3d10_1` de DXMT ocupa 86 KB y `winemetal` 73 KB (son forwarders finos),
+            // así que un umbral de 100 KB las dejaba pasar — y con `d3d10_1=n,b` Wine cargaba ESA en vez
+            // del builtin del motor, arrastrando `winemetal` a un motor que no lo es. Resultado: page
+            // fault en `gdi32` y ni una ventana. Verificado con A Short Hike (Unity 32-bit sobre gptk).
+            // Al lado del `.exe`, cualquier DLL gráfica pisa el builtin: el criterio es el nombre.
+            guard fm.fileExists(atPath: path) else { continue }
             try? fm.createDirectory(atPath: bakDir, withIntermediateDirectories: true)
             let dst = "\(bakDir)/\(name).dll"
             try? fm.removeItem(atPath: dst)
@@ -2975,12 +3081,39 @@ final class WineManager {
     /// al lanzar luego un juego con wine-dxmt (wine 9.9), DXMT no carga y el juego
     /// falla con "InitializeEngineGraphics failed". `wineboot -u` restaura el estado
     /// que DXMT necesita. Mono/Gecko silenciados para no mostrar su instalador.
+    /// Desactiva el **depurador automático** de Wine en el prefijo (idempotente).
+    ///
+    /// Por defecto, ante una excepción no controlada Wine lanza `winedbg --auto`. En Apple Silicon
+    /// ese `winedbg` **crashea él mismo** (división por cero), lo que dispara otro `winedbg`… y así
+    /// sin fin: una **bomba fork**. Medido en vivo: **982 `winedbg` + 982 `conhost`** de un solo
+    /// crash. El daño no se queda en ese juego — cada proceso abre clientes de IOSurface, el kernel
+    /// corta en ~1020 (`_iosConnectInitalize ... e00002c7`) y a partir de ahí **NINGÚN** juego puede
+    /// crear ventana hasta reiniciar. Un crash cualquiera dejaba el Mac inservible para jugar.
+    ///
+    /// Sin depurador automático, un crash es solo un crash: el resto del sistema sigue sano. No se
+    /// pierde diagnóstico — el error real de Wine sigue yendo al log del juego.
+    ///
+    /// Se escribe en las DOS ramas del registro: los procesos de 32-bit leen `Wow6432Node`, así que
+    /// poner solo la nativa NO evita la bomba (comprobado: seguían saliendo 78 `winedbg`).
+    private func disableAutoDebugger(prefix: String, wine: String) async {
+        for key in [#"HKLM\Software\Microsoft\Windows NT\CurrentVersion\AeDebug"#,
+                    #"HKLM\Software\Wow6432Node\Microsoft\Windows NT\CurrentVersion\AeDebug"#] {
+            _ = try? await runWine(winePath: wine, arguments: ["reg", "add", key, "/v", "Debugger",
+                                                               "/t", "REG_SZ", "/d", "", "/f"],
+                                   prefix: prefix, allowNonZeroExit: true)
+            _ = try? await runWine(winePath: wine, arguments: ["reg", "add", key, "/v", "Auto",
+                                                               "/t", "REG_SZ", "/d", "0", "/f"],
+                                   prefix: prefix, allowNonZeroExit: true)
+        }
+    }
+
     private func resyncGamePrefix(gameWine: String, prefix: String) async {
         // SEGURIDAD: matar wineservers zombis del prefix ANTES de `wineboot`. Si queda uno de
         // OTRO motor/versión (p. ej. tras un crash del intento anterior en el fallback), el
         // `wineboot -u` choca con él y se queda COLGADO esperando —dejando el árbol de
         // servicios a medias y disparando el clásico cuelgue/fork-bomba—. Limpiarlo antes lo evita.
         await killPrefixWineservers(prefix: prefix)
+        await disableAutoDebugger(prefix: prefix, wine: gameWine)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: gameWine)
         process.arguments = ["wineboot", "-u"]

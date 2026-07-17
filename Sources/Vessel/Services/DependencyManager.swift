@@ -592,6 +592,52 @@ final class DependencyManager {
     ///   **añade** junto a la vieja 3.9 del motor, sin pisarla (coexisten por soname).
     /// - **freetype 2.14.3**: render de fuentes del cliente CEF y de las apps Windows. ABI estable
     ///   (soname 6), misma feature set que la 2.13.3 previa (zlib+bz2+png+brotli, sin harfbuzz).
+    /// **Fix de DirectDraw** — instala en `wine-full` una `ddraw.dll` parcheada que no le quita sus
+    /// superficies a un juego que manda en la pantalla. Drop-in de ~6 MB con marcador de versión,
+    /// igual que `applyCryptoFix`: llega a las instalaciones existentes sin re-subir el motor.
+    ///
+    /// El bug (WineHQ 11.10, `dlls/ddraw/ddraw.c`): `SetDisplayMode` marcaba el device como
+    /// `NOT_RESTORED` **siempre**, incluso cuando el cambio de modo salía bien y aunque la app
+    /// tuviera nivel de cooperación EXCLUSIVO. El siguiente `CreateSurface` daba entonces por
+    /// perdidas las superficies YA creadas, y todo `Flip` devolvía `DDERR_SURFACELOST`. Un juego que
+    /// nunca llama a `Restore()` —normal en los 90, porque en Windows nadie le quitaba nada— se
+    /// queda en **negro para siempre**. Reproducido con War Wind (1996): crea sus superficies a
+    /// 640×480 y cambia a 320×240 para su intro. Parcheado, su menú aparece y responde.
+    ///
+    /// El parche (`docs/wine-patches/0002-*`) solo conserva el comportamiento antiguo **fuera** de
+    /// modo exclusivo, que es donde tiene sentido: ahí manda el escritorio, no la app.
+    func applyDDrawFix() async {
+        let fm = FileManager.default
+        let engineDir = "\(enginesDirectory)/\(WineEngineLocator.fullEngineName)"
+        guard fm.fileExists(atPath: "\(engineDir)/lib/wine/i386-windows/ddraw.dll") else { return }
+        guard let resDir = Bundle.main.resourceURL?.appendingPathComponent("engine-ddrawfix").path,
+              fm.fileExists(atPath: "\(resDir)/i386-windows/ddraw.dll") else { return }
+
+        let marker = "\(engineDir)/.vessel-ddraw-fix"
+        let fixVersion = "v1-setdisplaymode-no-pierde-superficies"
+        let current = (try? String(contentsOfFile: marker, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if current == fixVersion { return }
+
+        var applied = false
+        for arch in ["i386-windows", "x86_64-windows"] {
+            let src = "\(resDir)/\(arch)/ddraw.dll"
+            let dst = "\(engineDir)/lib/wine/\(arch)/ddraw.dll"
+            guard fm.fileExists(atPath: src), fm.fileExists(atPath: dst) else { continue }
+            // El original se guarda una sola vez: si algo saliera mal, el motor es recuperable
+            // sin volver a descargarlo.
+            let backup = "\(dst).vessel-orig"
+            if !fm.fileExists(atPath: backup) { try? fm.copyItem(atPath: dst, toPath: backup) }
+            try? fm.removeItem(atPath: dst)
+            if (try? fm.copyItem(atPath: src, toPath: dst)) != nil { applied = true }
+        }
+        if applied {
+            await stripQuarantineRecursive(at: engineDir)
+            try? fixVersion.write(toFile: marker, atomically: true, encoding: .utf8)
+            LogStore.shared.log("DirectDraw: instalada la ddraw parcheada (los juegos de los 90 ya no se quedan en negro).", level: .info)
+        }
+    }
+
     func applyCryptoFix() async {
         let fm = FileManager.default
         let engineDir = "\(enginesDirectory)/\(WineEngineLocator.unifiedEngineName)"

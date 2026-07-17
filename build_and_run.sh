@@ -70,6 +70,12 @@ fi
 # las copia en caliente al lib/ del motor unificado (applyCryptoFix, gated por marcador) sin re-descargar 2 GB
 [ -d "Resources/engine-cryptofix" ] && cp -R "Resources/engine-cryptofix" "$APP_BUNDLE/Contents/Resources/engine-cryptofix"
 
+# ddraw.dll parcheado (WineHQ 11.10 + docs/wine-patches/0002-*): SetDisplayMode ya no invalida las
+# superficies de un juego en modo exclusivo. Sin esto, los juegos de DirectDraw de los 90 que cambian
+# de modo y nunca llaman a Restore() se quedan en negro para siempre (War Wind). Drop-in por marcador
+# de versión, igual que la cadena crypto: no obliga a re-subir el motor entero.
+[ -d "Resources/engine-ddrawfix" ] && cp -R "Resources/engine-ddrawfix" "$APP_BUNDLE/Contents/Resources/engine-ddrawfix"
+
 cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

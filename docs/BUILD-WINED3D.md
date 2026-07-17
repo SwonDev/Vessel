@@ -91,10 +91,29 @@ Canal de traza en Wine 11: **`+d3d`** (no `+wined3d`).
 
 ---
 
-## Caso War Wind (tarea #58) — qué se probó con este build
+## Caso War Wind (tarea #58) — RESUELTO
 
-Todo lo de abajo está **medido con instrumentación propia** (`ERR(...)` en el código de Wine),
-no supuesto. Sirve para no repetir el camino.
+**La causa era `ddraw`, no `wined3d`.** `ddraw7_SetDisplayMode` marcaba el device como
+`NOT_RESTORED` **siempre** — la línea estaba fuera del `if` de éxito, así que corría aunque el
+cambio de modo hubiera ido bien y aunque la app tuviera nivel de cooperación EXCLUSIVO. El
+siguiente `CreateSurface` llamaba a `ddraw_update_lost_surfaces()`, que daba por perdidas las
+superficies **ya creadas** (primary + backbuffer). A partir de ahí, cada `Flip` devolvía
+`DDERR_SURFACELOST`.
+
+Un juego que nunca llama a `Restore()` —lo normal en los 90, porque en Windows nadie le quitaba
+sus superficies a la app que mandaba en la pantalla— se queda en **negro para siempre**. War Wind
+(1996) crea sus superficies a 640×480 y cambia a 320×240 para su intro: justo el caso.
+
+Fix: `docs/wine-patches/0002-ddraw-no-perder-superficies-en-SetDisplayMode-propio.patch`. Solo
+conserva el comportamiento antiguo **fuera** de modo exclusivo (ahí manda el escritorio, no la app).
+Se distribuye como drop-in con marcador de versión (`DependencyManager.applyDDrawFix`).
+Verificado: menú completo renderizado y respondiendo al ratón, 0 `Flip` abortados; y los otros 6
+juegos de la regresión siguen igual.
+
+### Lo que se descartó por el camino (medido, no supuesto)
+
+Todo lo de abajo está **medido con instrumentación propia** (`ERR(...)` en el código de Wine).
+Sirve para no repetir el camino: la ruta P8/paleta de Wine estaba **sana** desde el principio.
 
 | Hipótesis | Cómo se comprobó | Resultado |
 |---|---|---|
@@ -106,9 +125,12 @@ no supuesto. Sirve para no repetir el camino.
 
 **Conclusión: la ruta P8/paleta de Wine FUNCIONA.** El blit del juego es
 `op=0 (COLOR_BLIT) src=P8_UINT dst=P8_UINT src_loc=TEXTURE_RGB dst_loc=DRAWABLE`, lo acepta el
-blitter GLSL, con la paleta real, y el draw llega a la ventana. Lo que falla es que **el juego
-apenas dibuja** (396 píxeles + un cursor de 27×26) y esos píxeles tampoco aparecen: se sube a una
-textura y se presenta otra cosa. Ese es el hilo pendiente.
+blitter GLSL, con la paleta real, y el draw llega a la ventana. Que el juego "apenas dibujara"
+(396 píxeles) era **consecuencia**, no causa: con todas sus superficies marcadas como perdidas,
+el juego no tenía dónde pintar. Arreglado `SetDisplayMode`, dibuja entero.
+
+**Lección**: perseguir el síntoma (nada se ve → mirar el rasterizador) costó una tarde. La causa
+estaba una capa más arriba, en la gestión de estado del device.
 
 Lo que **sí** salió de aquí y es reutilizable:
 `docs/wine-patches/0001-ddraw-WaitForVerticalBlank-real.patch` — `WaitForVerticalBlank` era un
