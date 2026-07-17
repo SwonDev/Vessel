@@ -1219,10 +1219,6 @@ final class WineManager {
         try? await terminateWineProcesses(winePath: wine, prefix: prefix)
         try? await killOrphanWineProcesses(prefix: prefix)
         await resyncGamePrefix(gameWine: wine, prefix: prefix)
-        // Modo Retina: el prefijo base lo tiene, pero un prefijo AISLADO nace sin él y el juego
-        // renderiza a 1× — en una pantalla Retina eso es un cuadradito en la esquina (visto con
-        // FEZ). Respeta el flag del perfil (por defecto ON).
-        await setMacDriverRetinaMode(prefix: prefix, wine: wine, enabled: effective.retina)
         // Idempotente: la primera vez tarda (descarga el redistribuible de Microsoft), luego no.
         await applyWinetricksVerbs(["dotnet48"], prefix: prefix, wine: wine)
         cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
@@ -1230,7 +1226,15 @@ final class WineManager {
         return try await launchWineProcess(
             winePath: wine,
             prefix: prefix,
-            arguments: [executable] + arguments,
+            // Escritorio virtual, igual que en los DirectDraw clásicos, pero por otro motivo: **el
+            // factor Retina se les aplica DOS VECES**. FEZ pide una pantalla de 1512×982 y acaba con
+            // un backbuffer de 6048×3928 (4×) — dibuja en una superficie el doble de grande que la
+            // ventana, así que solo se ve una cuarta parte, en la esquina inferior izquierda (el
+            // origen de OpenGL). No lo arregla `RetinaMode`: se probó en HKCU, HKLM y AppDefaults, y
+            // el backbuffer no se mueve de 6048×3928. Con escritorio virtual, Wine le da al juego una
+            // pantalla propia de tamaño fijo, deja de preguntarle a macOS y el doble factor
+            // desaparece. Verificado con FEZ: renderiza nítido y centrado.
+            arguments: ["explorer", "/desktop=Vessel,1280x720", executable] + arguments,
             environment: ["WINEPREFIX": prefix, "WINEDEBUG": "-all",
                           "WINEDLLOVERRIDES": "winemenubuilder.exe=d",
                           "WINEMSYNC": "1", "WINEESYNC": "1"],
