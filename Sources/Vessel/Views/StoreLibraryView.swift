@@ -1439,10 +1439,6 @@ struct StoreLibraryView: View {
                         .accessibilityHint(game.installed
                             ? "Abre los detalles; haz doble clic para jugar"
                             : "Abre los detalles; haz doble clic para instalar")
-                        .vesselHelp("Abrir detalles de \(game.title)",
-                                    detail: game.installed
-                                        ? "Doble clic para jugar. Arrastra a Colecciones para organizarlo."
-                                        : "Doble clic para instalar. Arrastra a Colecciones para organizarlo.")
                         .simultaneousGesture(TapGesture(count: 2).onEnded {
                             performDoubleClickAction(for: game)
                         })
@@ -1955,7 +1951,6 @@ private struct LibraryTransferRow: View {
         .accessibilityLabel(game.title)
         .accessibilityValue(accessibilityValue)
         .accessibilityHint("Abre los detalles del juego")
-        .vesselHelp("Abrir detalles de \(game.title)")
     }
 
     private var accessibilityValue: String {
@@ -2033,8 +2028,6 @@ struct StoreGameCard: View {
             .accessibilityLabel(game.title)
             .accessibilityValue(accessibilityStatus)
             .accessibilityHint("Abre los detalles del juego")
-            .vesselHelp("Abrir detalles de \(game.title)",
-                        detail: "Haz clic derecho para ver más acciones o arrástralo a Colecciones.")
 
             Button(action: onToggleFavorite) {
                 Image(systemName: isFavorite ? "star.fill" : "star")
@@ -2338,7 +2331,6 @@ struct RecentlyPlayedCard: View {
         .accessibilityLabel(game.title)
         .accessibilityValue(playtimeText ?? "Jugado recientemente")
         .accessibilityHint("Abre los detalles del juego")
-        .vesselHelp("Abrir detalles de \(game.title)")
     }
 }
 

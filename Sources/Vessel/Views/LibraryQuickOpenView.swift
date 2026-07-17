@@ -254,6 +254,5 @@ private struct LibraryQuickOpenRow: View {
         .accessibilityLabel(game.title)
         .accessibilityValue(game.installed ? "Instalado" : "Sin instalar")
         .accessibilityHint("Abre los detalles del juego")
-        .vesselHelp("Abrir detalles de \(game.title)")
     }
 }
