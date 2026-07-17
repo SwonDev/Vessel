@@ -266,7 +266,7 @@ struct SteamDRMImportSheet: View {
                 .controlSize(.small)
         } else {
             Text("No sin Steam").font(.caption).foregroundStyle(.secondary)
-                .help("Usa el DRM de Steam (CEG): el ejecutable está cifrado y no corre sin el cliente.")
+                .vesselHelp("Usa el DRM de Steam (CEG): el ejecutable está cifrado y no corre sin el cliente.")
         }
     }
 
