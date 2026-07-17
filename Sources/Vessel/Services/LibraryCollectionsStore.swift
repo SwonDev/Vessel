@@ -91,6 +91,16 @@ final class LibraryCollectionsStore {
         collection(id: collectionID)?.gameIDs.contains(gameID) == true
     }
 
+    /// Añade un juego sin alternar su estado. Es idempotente para que soltar dos veces la misma
+    /// carátula nunca la retire accidentalmente de la colección.
+    @discardableResult
+    func add(gameID: String, to collectionID: UUID) -> Bool {
+        guard let index = collections.firstIndex(where: { $0.id == collectionID }) else { return false }
+        let inserted = collections[index].gameIDs.insert(gameID).inserted
+        if inserted { save() }
+        return inserted
+    }
+
     func toggle(gameID: String, in collectionID: UUID) {
         guard let index = collections.firstIndex(where: { $0.id == collectionID }) else { return }
         if collections[index].gameIDs.contains(gameID) {

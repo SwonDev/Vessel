@@ -230,6 +230,7 @@ struct StoreLibraryView: View {
     @State private var collectionPendingDeletion: LibraryCollectionsStore.Collection?
     @State private var quickOpenPresented = false
     @State private var notesEditorGame: StoreGame?
+    @State private var transferCenterPresented = false
     /// Historial de navegación estilo Steam/navegador. Se limita para no retener una sesión
     /// indefinidamente y solo guarda identificadores, nunca modelos ni datos remotos.
     @State private var backHistory: [LibraryDestination] = []
@@ -251,12 +252,26 @@ struct StoreLibraryView: View {
     private var favKey: String { "favorites.\(store.rawValue)" }
     private var hiddenKey: String { "hiddenGames.\(store.rawValue)" }
     private var preferencePrefix: String { "vessel.library.\(store.rawValue)" }
+    private var selectionKey: String { "\(preferencePrefix).selectedGame" }
     private var storeCollections: [LibraryCollectionsStore.Collection] {
         collectionsStore.collections(for: store.rawValue)
     }
     private var selectedCollection: LibraryCollectionsStore.Collection? {
         guard let selectedCollectionID else { return nil }
         return collectionsStore.collection(id: selectedCollectionID)
+    }
+    private var activeTransferGames: [StoreGame] {
+        games.lazy
+            .filter { installingIDs.contains($0.id) }
+            .map(enrichedGame)
+    }
+    private var activeTransfers: [LibraryTransferItem] {
+        LibraryTransferSnapshot.items(
+            games: activeTransferGames,
+            activeIDs: installingIDs,
+            progressFor: progressFor,
+            percentFor: percentFor
+        )
     }
     /// Columnas adaptativas según la densidad elegida (tamaño de carátula).
     private var columns: [GridItem] {
@@ -313,6 +328,28 @@ struct StoreLibraryView: View {
     private func copyGameTitle(_ game: StoreGame) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(game.title, forType: .string)
+    }
+
+    /// Doble clic en la lista, como Steam: ejecuta la acción primaria sin añadir ningún control.
+    /// Un juego que ya está arrancando o ejecutándose se ignora para evitar cierres accidentales.
+    private func performDoubleClickAction(for game: StoreGame) {
+        guard !installingIDs.contains(game.id),
+              GameLaunchTracker.shared.state(game.id) == .idle else { return }
+        if game.installed { onPlay(game) } else { onInstall(game) }
+    }
+
+    /// Soltar sobre "Colecciones" crea una nueva; si ya se está viendo una colección, añade el
+    /// juego a ella. La carga incluye la tienda para impedir cruces accidentales entre catálogos.
+    private func handleCollectionDrop(_ payload: LibraryGameDragPayload) -> Bool {
+        guard payload.storeID == store.rawValue,
+              let game = games.first(where: { $0.id == payload.gameID }) else { return false }
+        dismissHoverPreview(immediately: true)
+        if let selectedCollectionID {
+            _ = collectionsStore.add(gameID: game.id, to: selectedCollectionID)
+        } else {
+            requestNewCollection(including: enrichedGame(game))
+        }
+        return true
     }
 
     private var currentDestination: LibraryDestination {
@@ -434,6 +471,13 @@ struct StoreLibraryView: View {
            let id = UUID(uuidString: raw), collectionsStore.collection(id: id) != nil {
             selectedCollectionID = id
         }
+        if let gameID = defaults.string(forKey: selectionKey),
+           let game = games.first(where: { $0.id == gameID }),
+           !isHidden(gameID) {
+            selectedGame = enrichedGame(game)
+        } else {
+            defaults.removeObject(forKey: selectionKey)
+        }
     }
 
     private func persistLibraryPreferences() {
@@ -445,6 +489,14 @@ struct StoreLibraryView: View {
             defaults.set(selectedCollectionID.uuidString, forKey: "\(preferencePrefix).collection")
         } else {
             defaults.removeObject(forKey: "\(preferencePrefix).collection")
+        }
+    }
+
+    private func persistSelectedGame() {
+        if let selectedGame {
+            UserDefaults.standard.set(selectedGame.id, forKey: selectionKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: selectionKey)
         }
     }
 
@@ -550,7 +602,7 @@ struct StoreLibraryView: View {
         }
         if showFavoritesOnly { list = list.filter { isFav($0.id) } }
         if !search.isEmpty {
-            list = list.filter { $0.title.localizedCaseInsensitiveContains(search) }
+            list = list.filter { LibraryTitleSearch.matches(title: $0.title, query: search) }
         }
         list.sort { a, b in
             if a.installed != b.installed { return a.installed }   // instalados primero (como Steam)
@@ -611,6 +663,24 @@ struct StoreLibraryView: View {
                 .transition(.opacity.combined(with: .move(edge: .leading)))
             }
         }
+        .overlay(alignment: .bottomTrailing) {
+            if !activeTransfers.isEmpty {
+                LibraryTransferCenterButton(
+                    items: activeTransfers,
+                    games: activeTransferGames,
+                    tint: tint,
+                    isPresented: $transferCenterPresented,
+                    onOpen: { game in
+                        transferCenterPresented = false
+                        openGame(game)
+                    }
+                )
+                .padding(.trailing, 18)
+                .padding(.bottom, 16)
+                .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                .zIndex(200)
+            }
+        }
         .focusedSceneValue(\.libraryActions, libraryFocusedActions)
         .vesselBackground(tint: tint)
     }
@@ -653,8 +723,12 @@ struct StoreLibraryView: View {
         }
         .onChange(of: selectedGame) { _, selected in
             if selected != nil { dismissHoverPreview(immediately: true) }
+            persistSelectedGame()
         }
         .onChange(of: dockProgressSnapshot) { _, _ in updateDockProgress() }
+        .onChange(of: installingIDs) { _, activeIDs in
+            if activeIDs.isEmpty { transferCenterPresented = false }
+        }
         // Pre-descarga TODAS las carátulas de la tienda a disco en 2º plano (cuando la lista carga),
         // para que ninguna cargue de red al hacer scroll: instantáneas siempre. Idempotente.
         // `id: games` (no `games.count`): al instalar/actualizar un juego el TOTAL no cambia, pero
@@ -1028,6 +1102,7 @@ struct StoreLibraryView: View {
                 HStack(spacing: 14) {
                     ForEach(recentlyPlayed) { game in
                         RecentlyPlayedCard(game: game, tint: tint) { openGame(game) }
+                            .draggable(LibraryGameDragPayload(storeID: store.rawValue, gameID: game.id))
                     }
                 }
                 .padding(.vertical, 4).padding(.horizontal, 2)
@@ -1061,29 +1136,28 @@ struct StoreLibraryView: View {
                     }
                 }
 
-                if !storeCollections.isEmpty {
-                    LibraryCollectionScopeMenu(
-                        collections: storeCollections,
-                        selectedID: selectedCollectionID,
-                        tint: tint,
-                        onSelect: { id in
-                            search = ""
-                            filter = .todos
-                            showFavoritesOnly = false
-                            selectedCollectionID = id
-                            navigateHome()
-                        },
-                        onClear: {
-                            resetQuery()
-                            navigateHome()
-                        },
-                        onCreate: { requestNewCollection() },
-                        onRenameSelected: requestRenameSelectedCollection,
-                        onDeleteSelected: {
-                            collectionPendingDeletion = selectedCollection
-                        }
-                    )
-                }
+                LibraryCollectionScopeMenu(
+                    collections: storeCollections,
+                    selectedID: selectedCollectionID,
+                    tint: tint,
+                    onSelect: { id in
+                        search = ""
+                        filter = .todos
+                        showFavoritesOnly = false
+                        selectedCollectionID = id
+                        navigateHome()
+                    },
+                    onClear: {
+                        resetQuery()
+                        navigateHome()
+                    },
+                    onCreate: { requestNewCollection() },
+                    onRenameSelected: requestRenameSelectedCollection,
+                    onDeleteSelected: {
+                        collectionPendingDeletion = selectedCollection
+                    },
+                    onDropGame: handleCollectionDrop
+                )
 
                 if activeQuickScope == nil && selectedCollectionID == nil {
                     LibraryScopeChip(
@@ -1236,6 +1310,8 @@ struct StoreLibraryView: View {
         }
         .padding(8)
         .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .vesselHelp("Buscar en \(store.displayName)",
+                    detail: "Busca por título, fragmentos o abreviaturas; ignora tildes y signos.", shortcut: "⌘F")
         .padding(.horizontal, 12).padding(.bottom, 8)
     }
 
@@ -1313,6 +1389,8 @@ struct StoreLibraryView: View {
         }
         .padding(.horizontal, 10).padding(.vertical, 7)
         .liquidGlass(in: Capsule())
+        .vesselHelp("Buscar en \(store.displayName)",
+                    detail: "Busca por título, fragmentos o abreviaturas; ignora tildes y signos.", shortcut: "⌘F")
     }
 
     /// Filtro + favoritos en cristal, para la cabecera del grid al colapsar.
@@ -1358,7 +1436,13 @@ struct StoreLibraryView: View {
                         .listRowBackground(Color.clear)
                         .accessibilityLabel(game.title)
                         .accessibilityValue(game.installed ? "Instalado" : "Sin instalar")
-                        .accessibilityHint("Abre los detalles del juego")
+                        .accessibilityHint(game.installed
+                            ? "Abre los detalles; haz doble clic para jugar"
+                            : "Abre los detalles; haz doble clic para instalar")
+                        .simultaneousGesture(TapGesture(count: 2).onEnded {
+                            performDoubleClickAction(for: game)
+                        })
+                        .draggable(LibraryGameDragPayload(storeID: store.rawValue, gameID: game.id))
                         .contextMenu { rowContextMenu(game) }
                 }
             }
@@ -1507,6 +1591,7 @@ struct StoreLibraryView: View {
                         onHoverChanged: { handleGridHover($0, game: game) },
                         onExport: onExport.map { cb in { cb(game) } }
                     )
+                    .draggable(LibraryGameDragPayload(storeID: store.rawValue, gameID: game.id))
                     .anchorPreference(key: GameCardBoundsPreferenceKey.self, value: .bounds) {
                         [game.id: $0]
                     }
@@ -1580,8 +1665,8 @@ private struct LibraryScopeChip: View {
     }
 }
 
-/// Menú de colecciones integrado en la scope bar. Solo aparece cuando existe al menos una,
-/// evitando ocupar espacio en bibliotecas que no usan esta función.
+/// Menú de colecciones integrado en la scope bar. También es un destino de arrastre: al soltar
+/// sobre una colección activa añade el juego; sobre el estado general inicia una colección nueva.
 private struct LibraryCollectionScopeMenu: View {
     let collections: [LibraryCollectionsStore.Collection]
     let selectedID: UUID?
@@ -1591,6 +1676,8 @@ private struct LibraryCollectionScopeMenu: View {
     let onCreate: () -> Void
     let onRenameSelected: () -> Void
     let onDeleteSelected: () -> Void
+    let onDropGame: (LibraryGameDragPayload) -> Bool
+    @State private var dropTargeted = false
 
     private var selected: LibraryCollectionsStore.Collection? {
         collections.first { $0.id == selectedID }
@@ -1649,18 +1736,226 @@ private struct LibraryCollectionScopeMenu: View {
             .background {
                 ZStack {
                     Color.clear.liquidGlass(in: shape, interactive: true)
-                    if selected != nil { shape.fill(tint.opacity(0.12)) }
+                    if selected != nil || dropTargeted {
+                        shape.fill(tint.opacity(dropTargeted ? 0.20 : 0.12))
+                    }
                 }
             }
             .overlay {
-                shape.strokeBorder(tint.opacity(selected == nil ? 0.10 : 0.45), lineWidth: 0.8)
+                shape.strokeBorder(
+                    tint.opacity(dropTargeted ? 0.72 : (selected == nil ? 0.10 : 0.45)),
+                    lineWidth: dropTargeted ? 1.2 : 0.8
+                )
             }
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
         .accessibilityLabel(selected.map { "Colección \($0.name), \($0.gameIDs.count) juegos" } ?? "Colecciones")
-        .vesselHelp(selected == nil ? "Mostrar colecciones" : "Colección: \(selected?.name ?? "")")
+        .vesselHelp(
+            selected == nil ? "Mostrar colecciones" : "Colección: \(selected?.name ?? "")",
+            detail: selected == nil
+                ? "Crea o gestiona colecciones. Suelta aquí un juego para crear una nueva."
+                : "Suelta aquí un juego para añadirlo a esta colección."
+        )
+        .dropDestination(for: LibraryGameDragPayload.self) { payloads, _ in
+            payloads.contains(where: onDropGame)
+        } isTargeted: { targeted in
+            withAnimation(.smooth(duration: 0.18)) { dropTargeted = targeted }
+        }
+    }
+}
+
+// MARK: - Centro de descargas
+
+/// Acceso efímero a las operaciones activas. Replica la utilidad de la barra inferior de Steam,
+/// pero desaparece por completo cuando no hay trabajo para conservar la biblioteca despejada.
+private struct LibraryTransferCenterButton: View {
+    let items: [LibraryTransferItem]
+    let games: [StoreGame]
+    let tint: Color
+    @Binding var isPresented: Bool
+    let onOpen: (StoreGame) -> Void
+
+    private var overallProgress: Double? {
+        LibraryTransferSnapshot.overallProgress(for: items)
+    }
+
+    var body: some View {
+        Button { isPresented.toggle() } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(tint)
+                Text("Descargas")
+                    .font(.caption.weight(.semibold))
+                Text(items.count, format: .number)
+                    .font(.caption2.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.secondary)
+                progressIndicator
+            }
+            .padding(.horizontal, 4)
+        }
+        .vesselButton(false, tint: tint)
+        .accessibilityLabel("Descargas activas")
+        .accessibilityValue(accessibilityValue)
+        .vesselHelp(
+            "Ver descargas activas",
+            detail: "Muestra instalaciones, actualizaciones y verificaciones en curso."
+        )
+        .popover(isPresented: $isPresented, arrowEdge: .bottom) {
+            LibraryTransferCenterPopover(items: items, games: games, tint: tint, onOpen: onOpen)
+        }
+    }
+
+    @ViewBuilder private var progressIndicator: some View {
+        if let overallProgress {
+            ProgressView(value: overallProgress)
+                .progressViewStyle(.linear)
+                .tint(tint)
+                .frame(width: 58)
+                .accessibilityHidden(true)
+        } else {
+            ProgressView()
+                .controlSize(.mini)
+                .tint(tint)
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var accessibilityValue: String {
+        let count = "\(items.count) operación\(items.count == 1 ? "" : "es")"
+        guard let overallProgress else { return "\(count), progreso indeterminado" }
+        return "\(count), \(overallProgress.formatted(.percent.precision(.fractionLength(0)))) completado"
+    }
+}
+
+private struct LibraryTransferCenterPopover: View {
+    let items: [LibraryTransferItem]
+    let games: [StoreGame]
+    let tint: Color
+    let onOpen: (StoreGame) -> Void
+
+    private var gamesByID: [String: StoreGame] {
+        Dictionary(games.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(tint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Descargas activas")
+                        .font(.headline)
+                    Text("\(items.count) operación\(items.count == 1 ? "" : "es") en curso")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(16)
+
+            Divider().opacity(0.14)
+
+            ScrollView {
+                LazyVStack(spacing: 4) {
+                    ForEach(items) { item in
+                        if let game = gamesByID[item.id] {
+                            LibraryTransferRow(item: item, game: game, tint: tint) {
+                                onOpen(game)
+                            }
+                        }
+                    }
+                }
+                .padding(8)
+            }
+            .frame(maxHeight: 330)
+
+            Divider().opacity(0.14)
+            Label("El progreso se actualiza en tiempo real", systemImage: "bolt.horizontal.circle")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 11)
+        }
+        .frame(width: 400)
+        .vesselBackground(tint: tint)
+        .accessibilityElement(children: .contain)
+    }
+
+}
+
+private struct LibraryTransferRow: View {
+    let item: LibraryTransferItem
+    let game: StoreGame
+    let tint: Color
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+        Button(action: action) {
+            HStack(spacing: 12) {
+                GameCoverImage(cacheKey: "transfer-\(game.id)", candidates: game.coverCandidates) {
+                    ZStack {
+                        game.placeholderColor
+                        Text(game.initials)
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.white)
+                    }
+                }
+                .frame(width: 38, height: 52)
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(game.title)
+                            .font(.callout.weight(.semibold))
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        if let fraction = item.fractionCompleted {
+                            Text(fraction, format: .percent.precision(.fractionLength(0)))
+                                .font(.caption2.monospacedDigit().weight(.semibold))
+                                .foregroundStyle(tint)
+                        }
+                    }
+
+                    Text(item.message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    if let fraction = item.fractionCompleted {
+                        ProgressView(value: fraction)
+                            .progressViewStyle(.linear)
+                            .tint(tint)
+                    } else {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .tint(tint)
+                    }
+                }
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
+            .background {
+                if hovering { shape.fill(.white.opacity(0.055)) }
+            }
+            .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .accessibilityLabel(game.title)
+        .accessibilityValue(accessibilityValue)
+        .accessibilityHint("Abre los detalles del juego")
+    }
+
+    private var accessibilityValue: String {
+        guard let fraction = item.fractionCompleted else { return item.message }
+        return "\(item.message), \(fraction.formatted(.percent.precision(.fractionLength(0)))) completado"
     }
 }
 
@@ -2036,7 +2331,6 @@ struct RecentlyPlayedCard: View {
         .accessibilityLabel(game.title)
         .accessibilityValue(playtimeText ?? "Jugado recientemente")
         .accessibilityHint("Abre los detalles del juego")
-        .vesselHelp("Abrir detalles de \(game.title)")
     }
 }
 

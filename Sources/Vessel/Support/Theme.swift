@@ -228,14 +228,41 @@ extension View {
 
 // MARK: - Ayuda contextual nativa
 
+enum VesselHelpPreference {
+    static let defaultsKey = "vessel.tooltipsEnabled"
+    static let defaultValue = true
+}
+
+private struct VesselHelpModifier: ViewModifier {
+    let helpText: Text
+    let accessibilityText: Text
+    @AppStorage(VesselHelpPreference.defaultsKey) private var tooltipsEnabled =
+        VesselHelpPreference.defaultValue
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if tooltipsEnabled {
+            content
+                .help(helpText)
+                .accessibilityHint(accessibilityText)
+        } else {
+            // La preferencia solo controla el elemento visual. VoiceOver debe conservar
+            // siempre la explicación de la acción, aunque el usuario oculte los tooltips.
+            content.accessibilityHint(accessibilityText)
+        }
+    }
+}
+
 extension View {
     /// Tooltip nativo de macOS con microcopy consistente y una pista accesible equivalente.
-    /// La ayuda aparece solo tras mantener el cursor: mejora la descubribilidad sin añadir ruido.
+    /// La ayuda aparece solo tras mantener el cursor y puede desactivarse globalmente en Ajustes.
+    /// La pista de VoiceOver permanece activa con independencia de esa preferencia visual.
     func vesselHelp(_ title: String, detail: String? = nil, shortcut: String? = nil) -> some View {
         let parts = [title, detail, shortcut.map { "Atajo: \($0)" }].compactMap { $0 }
-        return self
-            .help(Text(parts.joined(separator: "\n")))
-            .accessibilityHint(Text(detail ?? title))
+        return modifier(VesselHelpModifier(
+            helpText: Text(parts.joined(separator: "\n")),
+            accessibilityText: Text(detail ?? title)
+        ))
     }
 }
 

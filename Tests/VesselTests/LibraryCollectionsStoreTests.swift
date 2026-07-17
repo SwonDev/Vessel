@@ -41,4 +41,22 @@ struct LibraryCollectionsStoreTests {
         #expect(store.create(name: "RPG", storeID: "gog") != nil)
     }
 
+    @Test("Soltar un juego en una colección es idempotente y persiste")
+    func addsDroppedGameOnlyOnce() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-collection-drop-\(UUID().uuidString)", isDirectory: true)
+        let file = folder.appendingPathComponent("collections.json")
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let store = LibraryCollectionsStore(fileURL: file)
+        let id = try #require(store.create(name: "Para jugar", storeID: "steam"))
+
+        #expect(store.add(gameID: "219990", to: id))
+        #expect(!store.add(gameID: "219990", to: id))
+        #expect(store.collection(id: id)?.gameIDs == ["219990"])
+
+        let reloaded = LibraryCollectionsStore(fileURL: file)
+        #expect(reloaded.collection(id: id)?.gameIDs == ["219990"])
+    }
+
 }

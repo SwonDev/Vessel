@@ -9,6 +9,9 @@ struct SettingsView: View {
     @State private var wineDownloading = false
     @State private var wineStatusText = ""
     @AppStorage(CompatService.autoUpdateKey) private var compatAutoUpdate = true
+    /// Ayudas emergentes visuales en botones y controles. La accesibilidad permanece disponible.
+    @AppStorage(VesselHelpPreference.defaultsKey) private var tooltipsEnabled =
+        VesselHelpPreference.defaultValue
     /// Modo Steam real GLOBAL: todos los juegos de Steam se lanzan con el cliente de Steam conectado
     /// (nube de Steam/updates/DLC/logros nativos, como CrossOver). Anulable por juego en sus Ajustes.
     @AppStorage("vessel.steamRealGlobal") private var steamRealGlobal = false
@@ -41,6 +44,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: Theme.Space.section) {
                     dependenciesSection
                     enginesSection
+                    interfaceSection
                     steamAccountSection
                     privacySection
                     aboutSection
@@ -157,6 +161,28 @@ struct SettingsView: View {
                 .vesselHelp("Abrir los datos de Vessel en Finder")
                 .padding(.top, 6)
             }
+            .vesselCard(padding: 12)
+        }
+    }
+
+    private var interfaceSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("Interfaz")
+            Toggle(isOn: $tooltipsEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Mostrar ayudas al mantener el cursor")
+                        .font(.callout)
+                    Text("Enseña explicaciones breves en botones y controles. Puedes ocultarlas sin afectar a VoiceOver.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .tint(Theme.accent)
+            .vesselHelp(
+                tooltipsEnabled ? "Desactivar ayudas emergentes" : "Activar ayudas emergentes",
+                detail: "Controla los tooltips visuales de toda la aplicación."
+            )
             .vesselCard(padding: 12)
         }
     }
