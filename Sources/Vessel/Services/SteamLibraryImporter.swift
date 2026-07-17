@@ -186,6 +186,19 @@ final class SteamLibraryImporter {
             let serverLike = comps.dropLast().contains { $0.contains("server") || $0.contains("dedicated") }
                 || base.contains("server") || base.contains("dedicated")
             if serverLike { s -= 1000 }
+            // **Herramientas del JRE/JDK embebido** (juegos Java: Wurm, etc.). El juego trae un Java
+            // portable en `runtime/bin`, `jre/bin` o `jdk*/bin`, lleno de `.exe` que NO son el juego
+            // (`java`, `javaw`, `java-rmi`, `rmiregistry`, `keytool`, `jarsigner`, `policytool`…). Sin
+            // esto ganaban al launcher real (que se llama `*Launcher.exe` y está penalizado), y Vessel
+            // lanzaba `java-rmi.exe` en vez del juego. Se hunden por carpeta y por nombre. El launcher
+            // Java de verdad (`<Juego>Launcher.exe`, junto a un `client.jar`) queda muy por encima.
+            let dirComps = comps.dropLast()
+            let inJreDir = dirComps.contains { $0 == "bin" }
+                && dirComps.contains { $0 == "runtime" || $0 == "jre" || $0.hasPrefix("jdk") || $0.hasPrefix("jre") }
+            let jreTool = ["java", "javaw", "java-rmi", "rmiregistry", "keytool", "jarsigner", "policytool",
+                           "kinit", "ktab", "klist", "pack200", "unpack200", "javacpl", "jabswitch",
+                           "jjs", "orbd", "servertool", "tnameserv", "jp2launcher"].contains(baseNoExt)
+            if inJreDir || jreTool { s -= 900 }
             // Launchers de terceros: penalizar (pero por encima de un servidor).
             if rel.contains("launcher") { s -= 200 }
             // **Unreal Engine**: el juego REAL vive en `<Proyecto>/Binaries/Win64/…-Shipping.exe`;
