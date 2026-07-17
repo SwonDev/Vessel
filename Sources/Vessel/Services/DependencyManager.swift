@@ -580,6 +580,86 @@ final class DependencyManager {
         }
     }
 
+    /// **Repara el lanzador (`bin/wine`) del motor completo** para que winetricks pueda usarlo.
+    ///
+    /// El `bin/wine` de `wine-full` es un shim: traduce `wine <args>` →
+    /// `wineloader winewrapper.exe --run -- <args>`. Le faltaban dos cosas que winetricks da por
+    /// hechas, y sin ellas **no instalaba NADA** en este motor — que es justo el de los juegos de
+    /// 32-bit, D3D9, DirectDraw y Unity. O sea: la auto-reparación de runtimes (VC++/.NET) estaba
+    /// muerta ahí, en silencio.
+    ///
+    ///  1. **`wine --version`**: el shim se lo pasaba al winewrapper, que no es quien responde eso.
+    ///     winetricks no obtenía versión ("Your version of wine  is no longer supported") y se
+    ///     rendía. Ahora se responde con el formato real (`wine-11.0`), vía el wineserver del motor.
+    ///  2. **Rutas relativas**: el winewrapper NO resuelve un `.exe` relativo contra el directorio
+    ///     actual (`cannot execute`). winetricks hace `cd` a su caché y llama al instalador por su
+    ///     nombre, así que fallaba siempre. Con la ruta absoluta, el MISMO instalador arranca.
+    ///  3. **`bin/wine64`**: en un prefijo de 64 bits winetricks usa `<dir>/wine64`, que no existía
+    ///     → comando vacío → abortaba. En el WoW64 moderno `wine` y `wine64` son el mismo loader,
+    ///     así que basta un enlace.
+    ///
+    /// Verificado end-to-end: con esto `winetricks dotnet48` instala el .NET Framework 4.8 REAL
+    /// (mscorlib de 5,4 MB, no los 752 KB de wine-mono) y FEZ renderiza.
+    func repairFullEngineShim() async {
+        let fm = FileManager.default
+        let engineDir = "\(enginesDirectory)/\(WineEngineLocator.fullEngineName)"
+        let shim = "\(engineDir)/bin/wine"
+        guard fm.fileExists(atPath: "\(engineDir)/bin/wineloader"), fm.fileExists(atPath: shim) else { return }
+
+        let marker = "\(engineDir)/.vessel-shim-version"
+        let version = "v2-version-y-rutas-relativas"
+        if (try? String(contentsOfFile: marker, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) == version { return }
+
+        let script = """
+        #!/bin/sh
+        # Lanzador del motor Wine COMPLETO de Vessel. Traduce `wine <args>` →
+        # `wineloader winewrapper.exe --run -- <args>` y fija el entorno del motor. La raíz se deriva
+        # de $0 con expansión de parámetros (builtin), SIN `dirname`: cuando Vessel lanza con `env -i`
+        # no hay PATH y `dirname` no se encontraría.
+        SELF="$0"
+        BIN_DIR="${SELF%/*}"
+        HERE="${BIN_DIR%/*}"
+        export WINELOADER="$HERE/bin/wineloader"
+        export WINESERVER="$HERE/bin/wineserver"
+        export WINEDLLPATH="$HERE/lib/wine/x86_64-windows:$HERE/lib/wine/i386-windows:$HERE/lib/wine"
+
+        # `--version` es una pregunta al motor, no un programa: no puede ir al winewrapper. winetricks
+        # arranca preguntándola y, sin respuesta, se rinde sin instalar nada.
+        case "$1" in
+            --version|-v)
+                v=$("$HERE/bin/wineserver" --version 2>/dev/null | sed 's/^Wine /wine-/')
+                echo "${v:-wine-11.0}"
+                exit 0
+                ;;
+        esac
+
+        # El winewrapper no resuelve rutas relativas contra el directorio actual (`cannot execute`).
+        # Solo se toca el primer argumento, y solo si de verdad es un archivo de este directorio:
+        # `wine cmd.exe /c …` y `wine C:\\ruta\\x.exe` siguen intactos (los resuelve el wrapper).
+        prog="$1"
+        case "$prog" in
+            -*|"") ;;
+            /*)    ;;
+            *)     if [ -f "$PWD/$prog" ]; then shift; set -- "$PWD/$prog" "$@"; fi ;;
+        esac
+
+        exec "$HERE/bin/wineloader" "$HERE/lib/wine/x86_64-windows/winewrapper.exe" --run -- "$@"
+        """
+        // El original se guarda una vez, por si hubiera que volver atrás sin re-descargar el motor.
+        let backup = "\(shim).vessel-orig"
+        if !fm.fileExists(atPath: backup) { try? fm.copyItem(atPath: shim, toPath: backup) }
+        guard (try? script.write(toFile: shim, atomically: true, encoding: .utf8)) != nil else { return }
+        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: shim)
+        // `wine64`: mismo loader (WoW64 moderno). winetricks lo exige en prefijos de 64 bits.
+        let wine64 = "\(engineDir)/bin/wine64"
+        if !fm.fileExists(atPath: wine64) {
+            try? fm.createSymbolicLink(atPath: wine64, withDestinationPath: "wine")
+        }
+        try? version.write(toFile: marker, atomically: true, encoding: .utf8)
+        LogStore.shared.log("Motor completo: lanzador reparado (winetricks ya puede instalar runtimes en él).", level: .info)
+    }
+
     /// **Motor v3** — actualiza en caliente la cadena crypto + fuentes del motor unificado a la
     /// última versión, SIN re-descargar el motor entero (~2 GB). Igual que `applySteamRenderFix`,
     /// copia unas librerías bundleadas (`Resources/engine-cryptofix/`, ~8 MB) al `lib/` del motor,

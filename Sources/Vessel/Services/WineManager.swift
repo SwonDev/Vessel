@@ -602,6 +602,21 @@ final class WineManager {
             && !exeImports(executable, anyOf: ["d3d9.dll", "d3d11.dll", "dxgi.dll", "d3d12.dll"])
     }
 
+    /// `true` si el juego corre sobre **FNA o XNA** (el framework de juegos .NET de Microsoft y su
+    /// reimplementación libre). Se reconoce por sus DLLs junto al `.exe`: nunca están en el sistema,
+    /// el juego siempre las lleva consigo.
+    ///
+    /// Importa porque estos juegos necesitan el **.NET Framework de verdad**: con wine-mono arrancan
+    /// a medias y se quedan en negro. Verificado con FEZ, que solo renderiza con `dotnet48` real.
+    func isFNAOrXNAGame(_ executable: String) -> Bool {
+        let dir = (executable as NSString).deletingLastPathComponent
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return false }
+        return files.contains { f in
+            f.caseInsensitiveCompare("FNA.dll") == .orderedSame
+                || f.lowercased().hasPrefix("microsoft.xna.framework")
+        }
+    }
+
     /// Raíz del juego a partir del exe del emulador: GOG lo mete en una subcarpeta (`…/DOSBOX/`),
     /// así que la raíz es su padre — que es donde están los `.conf` y el juego en sí. Se confirma
     /// buscando el `goggame-<id>.info`; si no aparece, se asume el padre igualmente.
@@ -872,6 +887,14 @@ final class WineManager {
         let fullEngineWine = "\(WineEngineLocator.fullEngineDir())/bin/wine"
         if isLegacyDirectDrawGame(executable), FileManager.default.isExecutableFile(atPath: fullEngineWine) {
             return try await launchLegacyDirectDrawGame(executable: executable, in: bottle,
+                                                        arguments: allArgs, effective: eff,
+                                                        wine: fullEngineWine)
+        }
+        // **FNA/XNA**: lo que les falla no es la capa gráfica sino el RUNTIME — quieren el .NET
+        // Framework de verdad, no wine-mono. Por eso va antes de detectar la API: con mono se
+        // quedan en negro por muchas capas que se prueben. Verificado con FEZ.
+        if isFNAOrXNAGame(executable), FileManager.default.isExecutableFile(atPath: fullEngineWine) {
+            return try await launchFNAGameWithCrossOver(executable: executable, in: bottle,
                                                         arguments: allArgs, effective: eff,
                                                         wine: fullEngineWine)
         }
@@ -1170,6 +1193,47 @@ final class WineManager {
             arguments: [executable] + arguments,
             environment: ["WINEPREFIX": bottle.prefixPath, "WINEDEBUG": "-all",
                           "WINEDLLOVERRIDES": "winemenubuilder.exe=d"],
+            workingDirectory: gameWorkingDirectory(forExecutable: executable),
+            effective: effective
+        )
+    }
+
+    /// Lanza un juego **FNA/XNA** con el .NET Framework de verdad.
+    ///
+    /// Con wine-mono estos juegos arrancan a medias: crean ventana y se quedan en NEGRO para
+    /// siempre (FEZ), o el runtime revienta con un crash nativo. Con el `dotnet48` real renderizan.
+    ///
+    /// Va en un **prefijo aislado** (`__net48`) a propósito: instalar .NET Framework **desinstala
+    /// wine-mono** (lo hace el propio winetricks), así que hacerlo en el prefijo compartido le
+    /// cambiaría el runtime por debajo a todos los demás juegos. Misma regla que el resto de
+    /// motores/fixes: reparar una cosa no puede romper las otras.
+    private func launchFNAGameWithCrossOver(executable rawExecutable: String, in bottle: Bottle,
+                                            arguments: [String], effective: EffectiveLaunchConfig,
+                                            wine: String) async throws -> Process {
+        log.log("Juego FNA/XNA: necesita el .NET Framework real (wine-mono no le vale).", level: .info)
+        // El lanzador del motor tiene que estar sano o winetricks no instalará nada (ver
+        // `repairFullEngineShim`). Idempotente y con marcador: solo hace algo la primera vez.
+        await dependencyManager.repairFullEngineShim()
+        let prefix = await engineScopedPrefix(base: bottle.prefixPath, engineTag: "net48", engineWine: wine)
+        let executable = scopedPath(rawExecutable, base: bottle.prefixPath, scoped: prefix)
+        try? await terminateWineProcesses(winePath: wine, prefix: prefix)
+        try? await killOrphanWineProcesses(prefix: prefix)
+        await resyncGamePrefix(gameWine: wine, prefix: prefix)
+        // Modo Retina: el prefijo base lo tiene, pero un prefijo AISLADO nace sin él y el juego
+        // renderiza a 1× — en una pantalla Retina eso es un cuadradito en la esquina (visto con
+        // FEZ). Respeta el flag del perfil (por defecto ON).
+        await setMacDriverRetinaMode(prefix: prefix, wine: wine, enabled: effective.retina)
+        // Idempotente: la primera vez tarda (descarga el redistribuible de Microsoft), luego no.
+        await applyWinetricksVerbs(["dotnet48"], prefix: prefix, wine: wine)
+        cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
+        cleanGameFolderGraphicsDLLs(forExecutable: executable)
+        return try await launchWineProcess(
+            winePath: wine,
+            prefix: prefix,
+            arguments: [executable] + arguments,
+            environment: ["WINEPREFIX": prefix, "WINEDEBUG": "-all",
+                          "WINEDLLOVERRIDES": "winemenubuilder.exe=d",
+                          "WINEMSYNC": "1", "WINEESYNC": "1"],
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: effective
         )
