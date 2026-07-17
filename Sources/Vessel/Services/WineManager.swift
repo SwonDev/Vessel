@@ -1,6 +1,7 @@
 import Foundation
 import CoreGraphics
 import CryptoKit
+import AppKit
 
 @MainActor
 @Observable
@@ -617,6 +618,59 @@ final class WineManager {
         }
     }
 
+    /// Le da un **toque de foco** a la ventana del juego en cuanto aparece: activa Vessel y devuelve
+    /// el foco al juego.
+    ///
+    /// Parece un truco tonto y no lo es. Wine crea la ventana ANTES de saber a qué escala dibuja la
+    /// pantalla, así que el juego se queda con un lienzo a mitad de tamaño: se ve en un cuadradito
+    /// arriba a la izquierda con el resto vacío. El usuario lo descubrió sin querer — *"cuando cambio
+    /// de pantalla y vuelvo al juego se pone en pantalla completa"*: al recuperar el foco, el driver
+    /// recalcula la escala y todo encaja. Esto hace ese viaje de ida y vuelta por él.
+    ///
+    /// No se le fuerza nada al juego, así que a uno que ya dibuje bien no le cambia nada. Espera a
+    /// que la ventana exista de verdad (Unity y Source tardan lo suyo) y se rinde en 90 s.
+    private func nudgeGameWindowFocus(exeName: String) {
+        Task { @MainActor in
+            let deadline = Date().addingTimeInterval(90)
+            while Date() < deadline {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                let apps = NSWorkspace.shared.runningApplications
+                guard let juego = apps.first(where: { $0.localizedName == exeName }),
+                      !juego.isTerminated else { continue }
+                // Solo si el juego YA tiene una ventana en pantalla: si no, no hay nada que recalcular.
+                let ventanas = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                                           kCGNullWindowID) as? [[String: Any]]) ?? []
+                let tieneVentana = ventanas.contains { info in
+                    (info[kCGWindowOwnerName as String] as? String) == exeName
+                        && ((info[kCGWindowBounds as String] as? [String: Any])?["Width"] as? Double ?? 0) > 200
+                }
+                guard tieneVentana else { continue }
+                NSApp.activate(ignoringOtherApps: true)
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                juego.activate(options: [.activateAllWindows])
+                log.log("Ventana del juego reactivada para que ajuste su escala (bug de timing de Wine).", level: .debug)
+                return
+            }
+        }
+    }
+
+    /// Carpeta del **mod de Source** que hay que arrancar (la que tiene el `gameinfo.txt`), o `nil`
+    /// si no es un juego de este motor.
+    ///
+    /// Un juego de Source no se lanza solo: `hl2.exe` es un motor vacío al que hay que decirle QUÉ
+    /// cargar con `-game <carpeta>`. Sin eso busca `hl2` y se planta: *"Setup file 'gameinfo.txt'
+    /// doesn't exist in subdirectory 'hl2'"*. Steam se lo pasa por debajo; aquí hay que averiguarlo,
+    /// y está a la vista: es la única subcarpeta con un `gameinfo.txt`. Sirve para todos (Portal →
+    /// `portal`, Half-Life 2 → `hl2`, TF2 → `tf`…). Verificado con Portal.
+    func sourceModDirectory(forExecutable executable: String) -> String? {
+        let dir = (executable as NSString).deletingLastPathComponent
+        guard (executable as NSString).lastPathComponent.lowercased().hasPrefix("hl2"),
+              let items = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return nil }
+        return items.sorted().first {
+            FileManager.default.fileExists(atPath: "\(dir)/\($0)/gameinfo.txt")
+        }
+    }
+
     /// `true` si el `.exe` contiene alguna de estas cadenas. Se mapea el fichero en memoria en vez
     /// de leerlo entero: los ejecutables de Godot pesan más de 100 MB.
     private func exeContains(_ executable: String, anyOf needles: [String]) -> Bool {
@@ -927,6 +981,42 @@ final class WineManager {
             return try await launchLegacyDirectDrawGame(executable: executable, in: bottle,
                                                         arguments: allArgs, effective: eff,
                                                         wine: fullEngineWine)
+        }
+        // **Source (Valve)**: hay que decirle qué mod cargar y sacarlo de MoltenVK.
+        if let mod = sourceModDirectory(forExecutable: executable),
+           FileManager.default.isExecutableFile(atPath: fullEngineWine) {
+            log.log("Juego de Source: cargando «\(mod)» con OpenGL (MoltenVK no compila sus shaders).", level: .info)
+            let exeName = (executable as NSString).lastPathComponent
+            // `renderer=gl` SOLO para este `.exe` (AppDefaults), no para todo el prefijo: con Vulkan,
+            // MoltenVK se atraganta con uno de sus shaders internos (`no template named
+            // 'textureunsupported'`) y la ventana se queda NEGRA. Los demás juegos del prefijo siguen
+            // con Vulkan, que es lo que les va bien. Verificado con Portal.
+            await setWined3dRenderer(prefix: bottle.prefixPath, wine: fullEngineWine,
+                                     renderer: "gl", forExecutable: exeName)
+            cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
+            try? await terminateWineProcesses(winePath: fullEngineWine, prefix: bottle.prefixPath)
+            try? await killOrphanWineProcesses(prefix: bottle.prefixPath)
+            await resyncGamePrefix(gameWine: fullEngineWine, prefix: bottle.prefixPath)
+            var env = ["WINEPREFIX": bottle.prefixPath, "WINEDEBUG": "-all",
+                       "WINEDLLOVERRIDES": "winemenubuilder.exe=d",
+                       "WINEMSYNC": "1", "WINEESYNC": "1"]
+            if let appId = steamAppId, !appId.isEmpty { env["SteamAppId"] = appId; env["SteamGameId"] = appId }
+            // `-fullscreen` + resolución de la pantalla, explícitos. Source se GUARDA en su `cfg`
+            // cómo se jugó la última vez, así que sin esto vuelve a abrirse en la ventanita de 640×400
+            // que dejó una sesión anterior, por mucho que la pantalla sea otra.
+            // En PÍXELES, no en puntos: Wine le da al juego una pantalla medida en píxeles Retina, así
+            // que pedirle los puntos (1512×982) le sale una ventana a mitad de tamaño (756×491).
+            let modo = CGDisplayCopyDisplayMode(CGMainDisplayID())
+            let ancho = modo?.pixelWidth ?? 3024, alto = modo?.pixelHeight ?? 1964
+            return try await launchWineProcess(
+                winePath: fullEngineWine,
+                prefix: bottle.prefixPath,
+                arguments: [executable, "-game", mod, "-fullscreen",
+                            "-w", "\(ancho)", "-h", "\(alto)"] + allArgs,
+                environment: env,
+                workingDirectory: gameWorkingDirectory(forExecutable: executable),
+                effective: eff
+            )
         }
         // **Godot con Vulkan**: se le dice explícitamente que use Vulkan y va por el Wine completo.
         // Sin esto acaba clasificado por descarte (su PE no declara `vulkan-1.dll`, la carga en
@@ -1636,6 +1726,21 @@ final class WineManager {
             winePath: wine,
             arguments: ["reg", "add", #"HKCU\Software\Wine\Direct3D"#, "/v", "renderer",
                         "/t", "REG_SZ", "/d", renderer, "/f"],
+            prefix: prefix,
+            environment: ["WINEPREFIX": prefix, "WINEDEBUG": "-all", "WINEDLLOVERRIDES": "winedbg.exe=d"],
+            allowNonZeroExit: true
+        )
+    }
+
+    /// Igual, pero **solo para un `.exe`** (`AppDefaults`): el resto del prefijo conserva su
+    /// renderer. Necesario cuando un juego concreto necesita otro backend y comparte prefijo con
+    /// juegos que ya funcionan (Portal quiere `gl`; Grim Dawn y compañía siguen con `vulkan`).
+    private func setWined3dRenderer(prefix: String, wine: String, renderer: String,
+                                    forExecutable exeName: String) async {
+        _ = try? await runWine(
+            winePath: wine,
+            arguments: ["reg", "add", #"HKCU\Software\Wine\AppDefaults\"# + exeName + #"\Direct3D"#,
+                        "/v", "renderer", "/t", "REG_SZ", "/d", renderer, "/f"],
             prefix: prefix,
             environment: ["WINEPREFIX": prefix, "WINEDEBUG": "-all", "WINEDLLOVERRIDES": "winedbg.exe=d"],
             allowNonZeroExit: true
@@ -3169,14 +3274,42 @@ final class WineManager {
         await killPrefixWineClients(prefix: prefix)
     }
 
+    /// `true` si Steam tiene **descargas a medias** en este prefijo.
+    ///
+    /// Se mira la carpeta `steamapps/downloading`, donde Steam deja los trozos del juego que está
+    /// bajando: si hay una subcarpeta con un appID, esa descarga está en curso o pausada a medias.
+    /// Es el dato que hay en disco — no hace falta preguntarle a Steam.
+    private func steamHasActiveDownloads(prefix: String) -> Bool {
+        for base in ["Program Files (x86)", "Program Files"] {
+            let dir = "\(prefix)/drive_c/\(base)/Steam/steamapps/downloading"
+            guard let items = try? FileManager.default.contentsOfDirectory(atPath: dir) else { continue }
+            if items.contains(where: { Int($0) != nil }) { return true }
+        }
+        return false
+    }
+
     /// Mata por SIGKILL los procesos Wine CLIENTE (argv de Windows, con `.exe`) que
     /// tengan abierto algo bajo `prefix`. No toca CrossOver ni otros prefijos (su
     /// `lsof` no apunta a este prefix) ni procesos nativos de macOS (no casan `.exe`).
+    ///
+    /// **Excepción: Steam mientras descarga.** Matarlo aquí le cortaba al usuario la descarga en
+    /// curso sin decirle nada — y encima Steam ya está donde tiene que estar: mismo prefijo y mismo
+    /// motor que el juego, así que no hay choque de versiones de wineserver que justifique echarlo
+    /// (de hecho los juegos con DRM COMPARTEN wineserver con el cliente a propósito). Si no hay
+    /// descargas, se mantiene el comportamiento de siempre: fuera, para que el juego arranque limpio.
     private func killPrefixWineClients(prefix: String) async {
+        let preservarSteam = steamHasActiveDownloads(prefix: prefix)
+        if preservarSteam {
+            log.log("Steam está descargando: se deja abierto para no cortar la descarga.", level: .info)
+        }
+        // `grep -v` de los ejecutables del cliente: solo cuando hay una descarga que proteger.
+        let filtroSteam = preservarSteam
+            ? "| /usr/bin/grep -viE 'steam\\.exe|steamwebhelper|steamservice|steamerrorreporter'"
+            : ""
         let shell = Process()
         shell.executableURL = URL(fileURLWithPath: "/bin/sh")
         let script = """
-        for pid in $(/bin/ps -axo pid=,command= | /usr/bin/grep -F '.exe' | /usr/bin/grep -v grep | /usr/bin/awk '{print $1}'); do
+        for pid in $(/bin/ps -axo pid=,command= | /usr/bin/grep -F '.exe' | /usr/bin/grep -v grep \(filtroSteam) | /usr/bin/awk '{print $1}'); do
           if /usr/sbin/lsof -p "$pid" 2>/dev/null | /usr/bin/grep -qF '\(prefix)'; then
             /bin/kill -9 "$pid" 2>/dev/null
           fi
@@ -3197,6 +3330,11 @@ final class WineManager {
     /// (versión) que lo arrancó. Evita el "version mismatch" que deja colgado al juego
     /// tras un cambio de motor. Silencioso e idempotente.
     private func killPrefixWineservers(prefix: String) async {
+        // El wineserver es la raíz del prefijo: matarlo se lleva por delante TODO lo que corre
+        // dentro, incluido el Steam que esté descargando. Si hay una descarga a medias se respeta;
+        // el cliente usa el mismo motor que el juego, así que no hay mismatch de versión que temer
+        // (que es para lo que existe esta limpieza).
+        if steamHasActiveDownloads(prefix: prefix) { return }
         let shell = Process()
         shell.executableURL = URL(fileURLWithPath: "/bin/sh")
         // Para cada wineserver vivo, si tiene ABIERTO algo bajo el prefix → SIGKILL.
@@ -3953,6 +4091,11 @@ final class WineManager {
         do {
             try process.run()
             log.log("Proceso Wine lanzado (pid=\(process.processIdentifier))", level: .info)
+            // El juego es el primer argumento que acaba en `.exe` (los demás son opciones, o
+            // `explorer` cuando va en escritorio virtual).
+            if let exe = arguments.first(where: { $0.lowercased().hasSuffix(".exe") }) {
+                nudgeGameWindowFocus(exeName: (exe as NSString).lastPathComponent)
+            }
             return process
         } catch {
             try? await terminateWineProcesses(winePath: winePath, prefix: prefix)
