@@ -26,6 +26,9 @@ struct LocalGamesView: View {
     @State private var banner: (String, Bool)?   // (mensaje, esError)
     /// Juego pendiente de elegir formato de exportación (Mac app vs carpeta Windows).
     @State private var exportChoice: LocalGamesStore.Game?
+    /// Fuente externa pendiente de desvincular (itch.io / Humble): la confirmación evita
+    /// perder la credencial y todos los juegos importados de golpe con un solo clic.
+    @State private var unlinkSourcePending: String?
     /// Progreso de una exportación larga (nombre, fracción, mensaje) — banner persistente.
     @State private var exportProgress: (name: String, frac: Double, msg: String)?
 
@@ -121,6 +124,25 @@ struct LocalGamesView: View {
         } message: {
             Text(exportChoice.map(exportExplanation) ?? "")
         }
+        .confirmationDialog("¿Desvincular \(unlinkSourcePending ?? "")?",
+                            isPresented: Binding(get: { unlinkSourcePending != nil }, set: { if !$0 { unlinkSourcePending = nil } }),
+                            titleVisibility: .visible) {
+            Button("Desvincular", role: .destructive) {
+                switch unlinkSourcePending {
+                case "itch.io":
+                    ItchService.shared.setAPIKey(nil); games.removeAll(source: .itch)
+                    flash("itch.io desvinculado.", false)
+                case "Humble Bundle":
+                    HumbleService.shared.setSession(nil); games.removeAll(source: .humble)
+                    flash("Humble desvinculado.", false)
+                default: break
+                }
+                unlinkSourcePending = nil
+            }
+            Button("Cancelar", role: .cancel) { unlinkSourcePending = nil }
+        } message: {
+            Text("Se eliminará la credencial guardada y todos los juegos importados de esta fuente. Los archivos descargados no se tocan.")
+        }
         .sheet(isPresented: $showingItchLink) { ItchLinkSheet { user in
             flash("itch.io vinculado como \(user).", false); syncItch()
         } }
@@ -166,7 +188,7 @@ struct LocalGamesView: View {
             if ItchService.shared.isLinked {
                 Menu("itch.io") {
                     Button { syncItch() } label: { Label("Sincronizar biblioteca", systemImage: "arrow.clockwise") }
-                    Button(role: .destructive) { ItchService.shared.setAPIKey(nil); games.removeAll(source: .itch); flash("itch.io desvinculado.", false) } label: { Label("Desvincular", systemImage: "xmark.circle") }
+                    Button(role: .destructive) { unlinkSourcePending = "itch.io" } label: { Label("Desvincular", systemImage: "xmark.circle") }
                 }
             } else {
                 Button { showingItchLink = true } label: { Label("Vincular itch.io…", systemImage: "link") }
@@ -174,7 +196,7 @@ struct LocalGamesView: View {
             if HumbleService.shared.isLinked {
                 Menu("Humble Bundle") {
                     Button { syncHumble() } label: { Label("Sincronizar biblioteca", systemImage: "arrow.clockwise") }
-                    Button(role: .destructive) { HumbleService.shared.setSession(nil); games.removeAll(source: .humble); flash("Humble desvinculado.", false) } label: { Label("Desvincular", systemImage: "xmark.circle") }
+                    Button(role: .destructive) { unlinkSourcePending = "Humble Bundle" } label: { Label("Desvincular", systemImage: "xmark.circle") }
                 }
             } else {
                 Button { showingHumbleLink = true } label: { Label("Vincular Humble Bundle…", systemImage: "link") }

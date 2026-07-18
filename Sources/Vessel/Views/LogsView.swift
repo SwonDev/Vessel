@@ -8,18 +8,28 @@ struct LogsView: View {
     /// 2-3× por render — ForEach + contador — filtrando hasta 1000 entradas cada vez).
     @State private var filteredEntries: [LogStore.Entry] = []
 
+    /// Nivel de registro en español para la UI (los rawValue internos siguen en inglés).
+    static func displayName(for level: LogStore.Level) -> String {
+        switch level {
+        case .info: return "Info"
+        case .warn: return "Avisos"
+        case .error: return "Errores"
+        case .debug: return "Depuración"
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Barra de herramientas
             HStack(spacing: 12) {
-                Text("Logs de Vessel")
+                Text("Registros de Vessel")
                     .font(.title2)
                     .fontWeight(.semibold)
                 Spacer()
                 Picker("Nivel", selection: $filter) {
                     Text("Todos").tag(LogStore.Level?.none)
                     ForEach([LogStore.Level.info, .warn, .error, .debug], id: \.self) { level in
-                        Text(level.rawValue).tag(LogStore.Level?.some(level))
+                        Text(Self.displayName(for: level)).tag(LogStore.Level?.some(level))
                     }
                 }
                 .pickerStyle(.segmented)

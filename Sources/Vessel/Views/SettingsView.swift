@@ -150,9 +150,9 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 8) {
             sectionHeader("Almacenamiento")
             VStack(alignment: .leading, spacing: 0) {
-                storageRow(label: "Engines", path: "~/Library/Application Support/Vessel/Engines/")
-                storageRow(label: "Bottles", path: "~/Library/Application Support/Vessel/Bottles/")
-                storageRow(label: "Logs",    path: "~/Library/Application Support/Vessel/Logs/")
+                storageRow(label: "Motores", path: "~/Library/Application Support/Vessel/Engines/")
+                storageRow(label: "Botellas", path: "~/Library/Application Support/Vessel/Bottles/")
+                storageRow(label: "Registros", path: "~/Library/Application Support/Vessel/Logs/")
                 Button("Abrir carpeta de datos") {
                     let path = "\(NSHomeDirectory())/Library/Application Support/Vessel"
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])

@@ -11,6 +11,7 @@ struct BottleDetailView: View {
     @State private var accountService = SteamAccountService()
     @State private var ownedGames: [SteamAccountService.OwnedGame] = []
     @State private var loadingLibrary = false
+    @State private var libraryError: String?
     @State private var steamCMD = SteamCMDManager()
     @State private var operations: LibraryOperationQueue
     @State private var updatesAvailable: Set<String> = []
@@ -99,7 +100,10 @@ struct BottleDetailView: View {
             // "Abrir Steam": arranca el cliente Steam completo conectado en el MOTOR
             // UNIFICADO (CEF + DXMT/Metal en un solo wineserver) para jugar DESDE Steam
             // con DRM real —el modelo que hace funcionar juegos como Grim Dawn—.
-            onOpenSteam: { Task { await wineManager.openSteamClient(in: localBottle) } }
+            onOpenSteam: { Task { await wineManager.openSteamClient(in: localBottle) } },
+            externalLibraryLoading: loadingLibrary,
+            externalLibraryError: libraryError,
+            onRetryLibraryLoad: { Task { await loadSteamLibrary() } }
         )
         .sheet(isPresented: $showingInstaller) {
             SteamInstallerView(bottle: localBottle, wineManager: wineManager) {
@@ -259,14 +263,19 @@ struct BottleDetailView: View {
         }
         // Solo mostrar el indicador si no hay nada que enseñar todavía.
         loadingLibrary = ownedGames.isEmpty
+        libraryError = nil
         defer { loadingLibrary = false }
         // Refresco real en 2º plano (la UI ya muestra la caché mientras tanto).
         let owned = await accountService.fetchOwnedGames(steamID64: account.steamID64)
         if !owned.isEmpty {
             ownedGames = owned
+            libraryError = nil
             LibraryCache.save("steam-\(account.steamID64)", owned)
             log.log("Biblioteca de Steam cargada: \(owned.count) juego(s) de \(account.personaName)", level: .info)
         } else if ownedGames.isEmpty {
+            // Sin caché y sin respuesta: era un falso estado vacío ("No hay juegos") — ahora
+            // es un error honesto con reintento (puede ser red, perfil privado o falta de clave API).
+            libraryError = "No se pudo cargar tu biblioteca de Steam.\nComprueba la conexión, que el perfil sea público y que la clave API de Ajustes sea válida."
             log.log("Biblioteca de \(account.personaName) vacía (perfil privado o sin clave API)", level: .warn)
         }
     }

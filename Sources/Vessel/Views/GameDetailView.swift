@@ -87,8 +87,11 @@ struct GameDetailView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showingSettings = false
+    /// Detener un juego en ejecución puede perder progreso no guardado: pide confirmación.
+    @State private var stopConfirmationPresented = false
     @State private var details: SteamGameDetails?
     @State private var loadingDetails = false
+    @State private var detailsLoadFailed = false
     /// Índice de la captura abierta en el visor ampliado (nil = cerrado).
     @State private var lightboxIndex: Int?
     /// Captura alineada en el carrusel; permite snapping, flechas y teclado con una sola fuente.
@@ -179,6 +182,12 @@ struct GameDetailView: View {
                 showingSettings = false
             }
         }
+        .confirmationDialog("¿Detener «\(game.title)»?", isPresented: $stopConfirmationPresented) {
+            Button("Detener el juego", role: .destructive) { GameLaunchTracker.shared.stop(game.id) }
+            Button("Seguir jugando", role: .cancel) { }
+        } message: {
+            Text("Se forzará el cierre del juego. Podrías perder el progreso no guardado.")
+        }
         .task(id: game.id) { await loadDetails() }
         .task(id: game.steamAppId) { await loadDRMVerdict() }
         .onChange(of: steamApiKeyObserver) { _, _ in
@@ -199,11 +208,7 @@ struct GameDetailView: View {
             ZStack {
                 Rectangle().fill(.black.opacity(0.88)).ignoresSafeArea()
                     .onTapGesture { lightboxIndex = nil }
-                AsyncImage(url: url) { phase in
-                    if let img = phase.image { img.resizable().scaledToFit() }
-                    else if phase.error != nil { Image(systemName: "photo").font(.largeTitle).foregroundStyle(.white.opacity(0.4)) }
-                    else { ProgressView().tint(.white) }
-                }
+                LightboxImage(cacheKey: "shotfull-\(game.id)-\(idx)", url: url)
                 .padding(.horizontal, 64).padding(.vertical, 48)
                 .shadow(color: .black.opacity(0.6), radius: 24, y: 8)
                 HStack {
@@ -259,9 +264,10 @@ struct GameDetailView: View {
             ZStack(alignment: .bottomLeading) {
                 Group {
                     if let url = heroURL {
-                        AsyncImage(url: url) { phase in
-                            if let image = phase.image { image.resizable().scaledToFill() }
-                            else { LinearGradient(colors: [tint.opacity(0.35), Theme.navyDeep], startPoint: .top, endPoint: .bottom) }
+                        // Con caché (memoria+disco): sin ella, `AsyncImage` re-descargaba el hero en
+                        // CADA visita a la ficha — parpadeo y continuidad carátula→hero rota.
+                        GameCoverImage(cacheKey: "hero-\(game.id)", candidates: [url]) {
+                            LinearGradient(colors: [tint.opacity(0.35), Theme.navyDeep], startPoint: .top, endPoint: .bottom)
                         }
                     } else {
                         LinearGradient(colors: [tint.opacity(0.35), Theme.navyDeep], startPoint: .top, endPoint: .bottom)
@@ -352,7 +358,7 @@ struct GameDetailView: View {
             .liquidGlass(in: Capsule())
             .accessibilityLabel("Iniciando \(game.title)")
         case .running:
-            Button { GameLaunchTracker.shared.stop(game.id) } label: {
+            Button { stopConfirmationPresented = true } label: {
                 Label("Detener", systemImage: "stop.fill")
                     .font(.callout.weight(.bold))
                     .padding(.horizontal, 5)
@@ -525,7 +531,7 @@ struct GameDetailView: View {
             .vesselButton(tint: steamGreen).disabled(true)
             .vesselHelp("Preparando el juego y arrancando…")
         case .running:
-            Button { GameLaunchTracker.shared.stop(game.id) } label: {
+            Button { stopConfirmationPresented = true } label: {
                 Label("Ejecutándose", systemImage: "stop.fill")
                     .font(.title3.weight(.bold)).frame(minWidth: 170).frame(height: 28)
             }
@@ -606,9 +612,27 @@ struct GameDetailView: View {
                 .accessibilityLabel("Cargando descripción")
             }
         } else if profile == nil {
-            cardSection("Acerca de") {
-                Text("Sin descripción disponible para este juego.")
-                    .font(.callout).foregroundStyle(.white.opacity(0.5))
+            if store == .steam, detailsLoadFailed {
+                cardSection("Acerca de") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label("No se pudieron cargar los detalles del juego.", systemImage: "exclamationmark.icloud")
+                            .font(.callout.weight(.semibold)).foregroundStyle(.white.opacity(0.8))
+                        Text("Comprueba tu conexión a internet y vuelve a intentarlo.")
+                            .font(.caption).foregroundStyle(.white.opacity(0.5))
+                        Button {
+                            Task { await loadDetails() }
+                        } label: {
+                            Label("Reintentar", systemImage: "arrow.clockwise").font(.callout.weight(.semibold))
+                        }
+                        .vesselButton(false, tint: tint)
+                        .accessibilityLabel("Reintentar la carga de detalles")
+                    }
+                }
+            } else {
+                cardSection("Acerca de") {
+                    Text("Sin descripción disponible para este juego.")
+                        .font(.callout).foregroundStyle(.white.opacity(0.5))
+                }
             }
         }
     }
@@ -667,9 +691,10 @@ struct GameDetailView: View {
                     LazyHStack(spacing: 12) {
                         ForEach(Array(shots.enumerated()), id: \.element) { idx, url in
                             Button { lightboxIndex = idx } label: {
-                                AsyncImage(url: url) { phase in
-                                    if let img = phase.image { img.resizable().scaledToFill() }
-                                    else { Theme.surface }
+                                // Con caché (memoria+disco): las capturas no se re-descargan al
+                                // volver a la ficha ni al reciclar celdas del carrusel.
+                                GameCoverImage(cacheKey: "shot-\(game.id)-\(idx)", candidates: [url]) {
+                                    Theme.surface
                                 }
                                 .frame(width: 300, height: 169)
                                 .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous))
@@ -832,8 +857,8 @@ struct GameDetailView: View {
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 8) {
                                 ForEach(icons, id: \.self) { url in
-                                    AsyncImage(url: url) { phase in
-                                        if let img = phase.image { img.resizable().scaledToFill() } else { Theme.surface }
+                                    GameCoverImage(cacheKey: "ach-\(game.id)-\(url.lastPathComponent)", candidates: [url]) {
+                                        Theme.surface
                                     }
                                     .frame(width: 44, height: 44)
                                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -949,8 +974,8 @@ struct GameDetailView: View {
         let url = showColor ? (ach.iconUnlocked ?? ach.iconLocked) : (ach.iconLocked ?? ach.iconUnlocked)
         Group {
             if let url {
-                AsyncImage(url: url) { phase in
-                    if let img = phase.image { img.resizable().scaledToFill() } else { Color.white.opacity(0.06) }
+                GameCoverImage(cacheKey: "achst-\(url.lastPathComponent)", candidates: [url]) {
+                    Color.white.opacity(0.06)
                 }
             } else {
                 ZStack {
@@ -987,8 +1012,8 @@ struct GameDetailView: View {
                 VStack(spacing: 9) {
                     ForEach(dlcs) { dlc in
                         HStack(spacing: 10) {
-                            AsyncImage(url: dlc.coverURL) { phase in
-                                if let img = phase.image { img.resizable().scaledToFill() } else { Theme.surface }
+                            GameCoverImage(cacheKey: "dlc-\(game.id)-\(dlc.id)", candidates: dlc.coverURL.map { [$0] } ?? []) {
+                                Theme.surface
                             }
                             .frame(width: 66, height: 25)
                             .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
@@ -1169,7 +1194,7 @@ struct GameDetailView: View {
     }
 
     @MainActor private func loadDetails() async {
-        details = nil; dlcs = []; achievements = nil
+        details = nil; dlcs = []; achievements = nil; detailsLoadFailed = false
         if let appId = game.steamAppId, !appId.isEmpty {
             await loadSteamDetails(appId)
             await loadAchievements(appId)
@@ -1260,7 +1285,12 @@ struct GameDetailView: View {
     @MainActor private func loadSteamDetails(_ appId: String) async {
         loadingDetails = true
         defer { loadingDetails = false }
-        guard let det = await Self.fetchSteamDetails(appId: appId) else { return }
+        guard let det = await Self.fetchSteamDetails(appId: appId) else {
+            // Fallo de red/petición: antes quedaba indistinguible de "sin datos" y sin reintento.
+            detailsLoadFailed = true
+            return
+        }
+        detailsLoadFailed = false
         details = det
         await loadDLCs(det.dlcIds)
     }
@@ -1373,5 +1403,29 @@ struct GameDetailView: View {
         .buttonStyle(.plain)
         .accessibilityLabel(label)
         .vesselHelp(label)
+    }
+}
+
+/// Imagen del lightbox de capturas a resolución completa CON caché (memoria+disco) y
+/// `scaledToFit`: `GameCoverImage` recorta (`scaledToFill`), inaceptable para ver una
+/// captura entera. Misma caché compartida → navegar entre capturas es instantáneo.
+private struct LightboxImage: View {
+    let cacheKey: String
+    let url: URL?
+    @State private var image: NSImage?
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(nsImage: image).resizable().scaledToFit()
+            } else {
+                ProgressView().tint(.white)
+            }
+        }
+        .task(id: cacheKey) {
+            guard let url else { return }
+            if let hit = CoverCache.shared.cached(cacheKey) { image = hit; return }
+            image = await CoverCache.shared.load(cacheKey, candidates: [url])
+        }
     }
 }

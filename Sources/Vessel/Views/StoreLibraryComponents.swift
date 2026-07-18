@@ -502,6 +502,8 @@ struct LibraryTransferRow: View {
     let onPrioritize: () -> Void
     let onRetry: () -> Void
     @State private var hovering = false
+    /// Cancelar una descarga pierde lo ya bajado: pide confirmación antes de llamar a `onCancel`.
+    @State private var cancelConfirmationPresented = false
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
@@ -613,7 +615,7 @@ struct LibraryTransferRow: View {
                     }
                 }
                 if item.canCancel {
-                    Button(role: .destructive, action: onCancel) {
+                    Button(role: .destructive) { cancelConfirmationPresented = true } label: {
                         Label("Cancelar", systemImage: "xmark")
                     }
                 }
@@ -629,6 +631,13 @@ struct LibraryTransferRow: View {
         .buttonStyle(.plain)
         .font(.caption.weight(.semibold))
         .foregroundStyle(.secondary)
+        .confirmationDialog("¿Cancelar la descarga de «\(game.title)»?",
+                            isPresented: $cancelConfirmationPresented) {
+            Button("Cancelar descarga", role: .destructive, action: onCancel)
+            Button("Seguir descargando", role: .cancel) { }
+        } message: {
+            Text("Se perderá el progreso no escrito a disco. Podrás reanudarla más tarde desde el principio del tramo pendiente.")
+        }
     }
 
     private var accessibilityValue: String {

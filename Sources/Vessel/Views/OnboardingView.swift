@@ -2,6 +2,7 @@ import SwiftUI
 
 struct OnboardingView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var dependencyManager = DependencyManager()
     @State private var checkResults: [DependencyManager.CheckResult] = []
     @State private var isWorking = true
@@ -30,7 +31,7 @@ struct OnboardingView: View {
                     .frame(width: 190, height: 190)
                     .blur(radius: 14)
                 VesselIconView(size: 110)
-                    .symbolEffect(.pulse, options: .repeating, isActive: isWorking)
+                    .symbolEffect(.pulse, options: .repeating, isActive: isWorking && !reduceMotion)
             }
 
             Text("Vessel")
@@ -81,6 +82,26 @@ struct OnboardingView: View {
                 .vesselButton()
                 .keyboardShortcut(.defaultAction)
                 .padding(.horizontal, 32)
+
+                // Si la instalación automática falla, que el usuario no quede atrapado en un
+                // bucle de reintento: puede ver los registros (qué falló) o salir y seguir.
+                if !setupSucceeded {
+                    HStack(spacing: 12) {
+                        Button {
+                            NotificationCenter.default.post(name: .openLogs, object: nil)
+                        } label: {
+                            Label("Ver registros", systemImage: "doc.text.magnifyingglass")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .vesselButton(false, tint: Theme.accent)
+                        .accessibilityHint("Abre los registros de Vessel para diagnosticar el fallo")
+                        Button(role: .cancel) { dismiss() } label: {
+                            Text("Cerrar").frame(maxWidth: .infinity)
+                        }
+                        .vesselButton(false, tint: Theme.accent)
+                    }
+                    .padding(.horizontal, 32)
+                }
             }
         }
         .frame(width: 560, height: 520)

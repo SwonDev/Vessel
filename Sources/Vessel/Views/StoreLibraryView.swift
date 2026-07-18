@@ -287,6 +287,12 @@ struct StoreLibraryView: View {
     /// usa la sección DRM‑free: los juegos generados son portables y "tuyos". Si se provee, aparece
     /// "Exportar juego…" en el menú contextual de la carátula. `nil` en el resto de tiendas.
     var onExport: ((StoreGame) -> Void)? = nil
+    /// Estado de carga EXTERNO de la biblioteca, aportado por la tienda dueña (Steam). Mientras
+    /// carga por primera vez se muestra un indicador real en vez del falso vacío; si falla,
+    /// un error con reintento. Por defecto inactivo (Epic/GOG/DRM-free no cambian nada).
+    var externalLibraryLoading = false
+    var externalLibraryError: String? = nil
+    var onRetryLibraryLoad: () -> Void = { }
 
     @State private var search = ""
     /// Foco del buscador (para el atajo ⌘F). Se aplica a ambos buscadores (sidebar y cabecera);
@@ -316,6 +322,8 @@ struct StoreLibraryView: View {
     @State private var selectedCollectionID: UUID?
     @State private var collectionEditorRequest: CollectionEditorRequest?
     @State private var collectionPendingDeletion: LibraryCollectionsStore.Collection?
+    @State private var gamePendingUninstall: StoreGame?
+    @State private var logoutConfirmationPresented = false
     @State private var quickOpenPresented = false
     @State private var notesEditorGame: StoreGame?
     @State private var transferCenterPresented = false
@@ -993,8 +1001,40 @@ struct StoreLibraryView: View {
         } message: {
             Text("Los juegos y sus archivos no se eliminarán.")
         }
+        .confirmationDialog(
+            "¿Desinstalar «\(gamePendingUninstall?.title ?? "")»?",
+            isPresented: Binding(
+                get: { gamePendingUninstall != nil },
+                set: { if !$0 { gamePendingUninstall = nil } }
+            )
+        ) {
+            Button("Desinstalar", role: .destructive) {
+                if let g = gamePendingUninstall { onUninstall(g) }
+                gamePendingUninstall = nil
+            }
+            Button("Cancelar", role: .cancel) { gamePendingUninstall = nil }
+        } message: {
+            Text("Se eliminarán sus archivos del disco. Podrás volver a instalarlo cuando quieras.")
+        }
+        .confirmationDialog(
+            "¿Cerrar sesión en \(store.displayName)?",
+            isPresented: $logoutConfirmationPresented
+        ) {
+            Button("Cerrar sesión", role: .destructive) { onLogout() }
+            Button("Cancelar", role: .cancel) { }
+        } message: {
+            Text("Se eliminarán las credenciales guardadas y la biblioteca dejará de estar disponible hasta que vuelvas a iniciar sesión.")
+        }
         .overlay(alignment: .bottom) { undoHiddenOverlay }
         .animation(reduceMotion ? nil : .smooth(duration: 0.24), value: undoHiddenGame?.id)
+    }
+
+    /// Desinstalar pasa SIEMPRE por confirmación. Steam ya la tiene en su propio flujo
+    /// (`BottleDetailView.gameToUninstall` → alert), así que ahí se delega directo; Epic,
+    /// GOG y DRM-free borraban al instante desde el menú contextual — para ellas la
+    /// confirmación vive aquí (acción destructiva e irreversible a un clic, ahora cubierta).
+    private func requestUninstall(_ game: StoreGame) {
+        if store == .steam { onUninstall(game) } else { gamePendingUninstall = game }
     }
 
     private func cancelTransientTasks() {
@@ -1139,7 +1179,7 @@ struct StoreLibraryView: View {
                 isHidden: isHidden(game.id),
                 onInstall: { onInstall(game) },
                 onPlay: { onPlay(game) },
-                onUninstall: { onUninstall(game) },
+                onUninstall: { requestUninstall(game) },
                 onVerify: { onVerify(game) },
                 onUpdate: { onUpdate(game) },
                 loadStoreDLCs: { await dlcsFor(game) },
@@ -1559,7 +1599,7 @@ struct StoreLibraryView: View {
                     Button { onOpenSteam() } label: { Label("Abrir Steam (jugar desde Steam)", systemImage: "arrowshape.turn.up.forward") }
                 }
                 Divider()
-                Button(role: .destructive) { onLogout() } label: {
+                Button(role: .destructive) { logoutConfirmationPresented = true } label: {
                     Label("Cerrar sesión", systemImage: "rectangle.portrait.and.arrow.right")
                 }
             } label: {
@@ -1766,22 +1806,25 @@ struct StoreLibraryView: View {
             // Glass tintado (premium), no el azul sólido del sistema. Ver DESIGN.md §7.
             List {
                 ForEach(displayed) { game in
-                    Button { openGame(game) } label: {
-                        StoreGameRow(game: game, tint: tint,
-                                     isFavorite: isFav(game.id),
-                                     isSelected: selectedGame?.id == game.id)
-                    }
-                        .buttonStyle(.plain)
+                    StoreGameRow(game: game, tint: tint,
+                                 isFavorite: isFav(game.id),
+                                 isSelected: selectedGame?.id == game.id)
+                        // Doble clic = acción primaria (jugar/instalar), SIN disparar también la
+                        // apertura de la ficha. Con `Button` + `simultaneousGesture` el primer
+                        // clic abría la ficha Y el doble lanzaba el juego (comportamiento erróneo;
+                        // Steam no navega al hacer doble clic). SwiftUI resuelve el count:2 antes
+                        // que el count:1, retrasando un ápice la selección simple — lo esperado.
+                        .contentShape(Rectangle())
+                        .onTapGesture(count: 2) { performDoubleClickAction(for: game) }
+                        .onTapGesture(count: 1) { openGame(game) }
                         .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
                         .listRowBackground(Color.clear)
+                        .accessibilityAddTraits(.isButton)
                         .accessibilityLabel(game.title)
                         .accessibilityValue(game.installed ? "Instalado" : "Sin instalar")
                         .accessibilityHint(game.installed
                             ? "Abre los detalles; haz doble clic para jugar"
                             : "Abre los detalles; haz doble clic para instalar")
-                        .simultaneousGesture(TapGesture(count: 2).onEnded {
-                            performDoubleClickAction(for: game)
-                        })
                         .draggable(LibraryGameDragPayload(storeID: store.rawValue, gameID: game.id))
                         .contextMenu { rowContextMenu(game) }
                 }
@@ -1814,7 +1857,7 @@ struct StoreLibraryView: View {
                     Label("Exportar juego…", systemImage: "externaldrive.badge.plus")
                 }
             }
-            Button(role: .destructive) { onUninstall(game) } label: { Label("Desinstalar", systemImage: "trash") }
+            Button(role: .destructive) { requestUninstall(game) } label: { Label("Desinstalar", systemImage: "trash") }
         } else if !installingIDs.contains(game.id) {
             Button { onInstall(game) } label: { Label("Instalar", systemImage: "arrow.down.circle") }
         }
@@ -1888,7 +1931,31 @@ struct StoreLibraryView: View {
     }
 
     @ViewBuilder private var grid: some View {
-        if displayed.isEmpty {
+        if displayed.isEmpty, externalLibraryLoading {
+            VStack(spacing: 16) {
+                ProgressView().controlSize(.large)
+                Text("Cargando la biblioteca de \(store.displayName)…")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 60)
+            .accessibilityElement(children: .combine)
+        } else if displayed.isEmpty, let libraryError = externalLibraryError {
+            VStack(spacing: 16) {
+                Image(systemName: "exclamationmark.icloud")
+                    .font(.system(size: 44))
+                    .foregroundStyle(.white.opacity(0.30))
+                Text(libraryError)
+                    .font(.callout).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center).frame(maxWidth: 420)
+                Button(action: onRetryLibraryLoad) {
+                    Label("Reintentar", systemImage: "arrow.clockwise")
+                }
+                .vesselButton(false, tint: tint)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 60)
+        } else if displayed.isEmpty {
             VStack(spacing: 16) {
                 Image(systemName: filter == .ocultos ? "eye.slash" : (showFavoritesOnly ? "star.slash" : "magnifyingglass"))
                     .font(.system(size: 44))
@@ -1922,7 +1989,7 @@ struct StoreLibraryView: View {
                         onPlay: { onPlay(game) },
                         onToggleFavorite: { toggleFav(game.id) },
                         onToggleHidden: { toggleHidden(game.id) },
-                        onUninstall: { onUninstall(game) },
+                        onUninstall: { requestUninstall(game) },
                         onOpen: { openGame(game) },
                         collections: storeCollections,
                         collectionIDs: Set(storeCollections.filter { $0.gameIDs.contains(game.id) }.map(\.id)),
