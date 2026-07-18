@@ -70,6 +70,8 @@ final class GogStore {
             restoreOperations(for: installed)
             await refreshUpdates(for: installed)
             await refreshInstallSizes(for: installed)
+        } catch is CancellationError {
+            phase = .disconnected
         } catch {
             log.log("Error al conectar GOG: \(error.localizedDescription)", level: .error)
             phase = .error(error.localizedDescription)
@@ -378,6 +380,8 @@ final class GogStore {
 /// conecta y biblioteca cuando ya está autenticado.
 struct GogStoreView: View {
     @State private var gog = GogStore()
+    /// Task del flujo de conexión (para poder cancelarlo durante la espera).
+    @State private var connectTask: Task<Void, Never>?
 
     var body: some View {
         Group {
@@ -425,13 +429,18 @@ struct GogStoreView: View {
                     onLogout:  { gog.disconnect() }
                 )
             case .working(let msg):
-                ConnectGogView(working: msg, errorMessage: nil, authURL: gog.authURL, onConnect: { _ in })
+                ConnectGogView(working: msg, errorMessage: nil, authURL: gog.authURL, onConnect: { _ in },
+                               onCancel: {
+                                   connectTask?.cancel()
+                                   connectTask = nil
+                                   gog.phase = .disconnected
+                               })
             case .error(let msg):
                 ConnectGogView(working: nil, errorMessage: msg, authURL: gog.authURL,
-                               onConnect:  { code in Task { await gog.connect(code: code) } })
+                               onConnect:  { code in connectTask = Task { await gog.connect(code: code) } })
             case .disconnected:
                 ConnectGogView(working: nil, errorMessage: nil, authURL: gog.authURL,
-                               onConnect:  { code in Task { await gog.connect(code: code) } })
+                               onConnect:  { code in connectTask = Task { await gog.connect(code: code) } })
             }
         }
         .task { gog.refresh() }
@@ -451,6 +460,8 @@ struct ConnectGogView: View {
     let errorMessage: String?
     let authURL: URL
     let onConnect: (String) -> Void
+    /// Cancelación del flujo en curso (antes: spinner sin salida, igual que Steam y Epic).
+    var onCancel: (() -> Void)? = nil
 
     private let tint = StoreKind.gog.tint
     @State private var showingLogin = false
@@ -484,6 +495,12 @@ struct ConnectGogView: View {
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
                         .liquidGlass(in: Capsule())
+                    if let onCancel {
+                        Button("Cancelar", action: onCancel)
+                            .vesselButton(false, tint: tint)
+                            .controlSize(.small)
+                            .accessibilityHint("Detiene la conexión y vuelve al inicio")
+                    }
                 }
                 .padding(.top, 4)
             } else {

@@ -64,6 +64,8 @@ final class EpicStore {
             let games = try await legendary.ownedGames()
             phase = .connected(games)
             restoreOperations(for: games)
+        } catch is CancellationError {
+            phase = .disconnected
         } catch {
             log.log("Error al conectar Epic Games: \(error.localizedDescription)", level: .error)
             phase = .error(error.localizedDescription)
@@ -304,6 +306,8 @@ final class EpicStore {
 /// conecta y biblioteca cuando ya está autenticado.
 struct EpicStoreView: View {
     @State private var epic = EpicStore()
+    /// Task del flujo de conexión (para poder cancelarlo durante la espera).
+    @State private var connectTask: Task<Void, Never>?
 
     var body: some View {
         Group {
@@ -345,13 +349,17 @@ struct EpicStoreView: View {
                 )
             case .working(let msg):
                 ConnectEpicView(working: msg, errorMessage: nil,
-                                onConnect: { _ in })
+                                onConnect: { _ in }, onCancel: {
+                                    connectTask?.cancel()
+                                    connectTask = nil
+                                    epic.phase = .disconnected
+                                })
             case .error(let msg):
                 ConnectEpicView(working: nil, errorMessage: msg,
-                                onConnect: { code in Task { await epic.connect(code: code) } })
+                                onConnect: { code in connectTask = Task { await epic.connect(code: code) } })
             case .disconnected:
                 ConnectEpicView(working: nil, errorMessage: nil,
-                                onConnect: { code in Task { await epic.connect(code: code) } })
+                                onConnect: { code in connectTask = Task { await epic.connect(code: code) } })
             }
         }
         .task { epic.refresh() }
@@ -370,6 +378,8 @@ struct ConnectEpicView: View {
     let working: String?
     let errorMessage: String?
     let onConnect: (String) -> Void
+    /// Cancelación del flujo en curso (antes: spinner sin salida, igual que Steam).
+    var onCancel: (() -> Void)? = nil
 
     private let tint = StoreKind.epic.tint
     @State private var showingLogin = false
@@ -403,6 +413,12 @@ struct ConnectEpicView: View {
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
                         .liquidGlass(in: Capsule())
+                    if let onCancel {
+                        Button("Cancelar", action: onCancel)
+                            .vesselButton(false, tint: tint)
+                            .controlSize(.small)
+                            .accessibilityHint("Detiene la conexión y vuelve al inicio")
+                    }
                 }
                 .padding(.top, 4)
             } else {

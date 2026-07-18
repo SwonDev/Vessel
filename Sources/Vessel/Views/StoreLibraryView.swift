@@ -349,6 +349,10 @@ struct StoreLibraryView: View {
     @State private var showSteamHint = false
     /// Task cancelable del auto-ocultado del hint de Steam (reemplaza al asyncAfter sin cancelación).
     @State private var steamHintTask: Task<Void, Never>?
+    /// Carátula a la que volver al salir de una ficha (restauración del scroll del home).
+    @State private var gridScrollID: String?
+    /// Último juego cuya ficha se abrió; al volver al home se usa como ancla de scroll.
+    @State private var lastDetailGameID: String?
     @State private var steamHintDisplayed = false
     /// Geometría compartida entre la carátula de la portada y el hero de la ficha. Al vivir en el
     /// coordinador común, la continuidad funciona igual en Steam, Epic, GOG y DRM-free.
@@ -974,6 +978,12 @@ struct StoreLibraryView: View {
         }
         .onChange(of: selectedGame) { _, selected in
             if selected != nil { dismissHoverPreview(immediately: true) }
+            if let selected {
+                lastDetailGameID = selected.id
+            } else if let anchor = lastDetailGameID {
+                // Vuelta al home: restaura el scroll junto a la carátula del juego que se visitó.
+                gridScrollID = anchor
+            }
             persistSelectedGame()
         }
         .onChange(of: dockProgressSnapshot) { _, _ in updateDockProgress() }
@@ -1326,7 +1336,12 @@ struct StoreLibraryView: View {
                 grid
             }
             .padding(Theme.Space.page)
+            .scrollTargetLayout()
         }
+        // Al volver de una ficha, restaura el scroll junto a su carátula (como Steam: no pierdes
+        // tu sitio en una biblioteca de miles de juegos). Si el juego no está en la consulta
+        // actual, scrollPosition ignora el id (sin efecto, seguro).
+        .scrollPosition(id: $gridScrollID, anchor: .center)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .vesselBackground(tint: tint)
         .overlayPreferenceValue(GameCardBoundsPreferenceKey.self) { anchors in
