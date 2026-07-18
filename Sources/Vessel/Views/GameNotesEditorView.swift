@@ -9,9 +9,13 @@ struct GameNotesEditorView: View {
     @State private var saved = true
     @State private var saveTask: Task<Void, Never>?
     @State private var confirmingDeletion = false
+    /// El texto alcanzó el máximo y se truncó: muestra un aviso persistente en el editor
+    /// (antes el truncado era silencioso).
+    @State private var truncationNoticeShown = false
     @State private var deletionCommitted = false
     @State private var lastSavedAt: Date?
     @FocusState private var editorFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let game: StoreGame
     let store: StoreKind
@@ -46,7 +50,10 @@ struct GameNotesEditorView: View {
         .onAppear { editorFocused = true }
         .onChange(of: text) { _, newValue in
             if newValue.count > GameNotesStore.maximumLength {
+                // Aviso VISIBLE del truncado: antes el texto se cortaba en silencio y el usuario
+                // perdía el final sin enterarse (solo el contador lo delataba).
                 text = GameNotesStore.normalizedText(newValue)
+                truncationNoticeShown = true
             }
             scheduleSave()
         }
@@ -86,14 +93,25 @@ struct GameNotesEditorView: View {
     }
 
     private var editor: some View {
-        TextEditor(text: $text)
-            .font(.body)
-            .scrollContentBackground(.hidden)
-            .padding(12)
-            .focused($editorFocused)
-            .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-            .accessibilityLabel("Nota de \(game.title)")
-            .accessibilityHint("Se guarda automáticamente en Vessel")
+        VStack(alignment: .leading, spacing: 8) {
+            TextEditor(text: $text)
+                .font(.body)
+                .scrollContentBackground(.hidden)
+                .padding(12)
+                .focused($editorFocused)
+                .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+                .accessibilityLabel("Nota de \(game.title)")
+                .accessibilityHint("Se guarda automáticamente en Vessel")
+            if truncationNoticeShown {
+                Label("Has llegado al máximo de \(GameNotesStore.maximumLength.formatted()) caracteres: el texto sobrante se ha cortado.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.yellow)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.22), value: truncationNoticeShown)
     }
 
     private var footer: some View {

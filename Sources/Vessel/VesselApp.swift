@@ -59,7 +59,11 @@ final class VesselAppDelegate: NSObject, NSApplicationDelegate, ObservableObject
 
     @objc private func abrirAjustes() {
         NSApp.activate(ignoringOtherApps: true)
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        // Desde el Dock no hay cadena de respuesta fiable: se intentan ambos selectores
+        // (macOS 14+ usa showSettingsWindow:; versiones previas, showPreferencesWindow:).
+        if !NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
+            NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+        }
     }
 }
 

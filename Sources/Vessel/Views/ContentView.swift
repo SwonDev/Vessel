@@ -7,6 +7,8 @@ import AppKit
 struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    /// Acción oficial para abrir la ventana de Ajustes nativa (escena `Settings` de VesselApp).
+    @Environment(\.openSettings) private var openSettings
     @State private var selectedStore: StoreKind = .steam
     @State private var profileStore = PlatformProfileStore.shared
     @State private var showingLogs = false
@@ -55,10 +57,10 @@ struct ContentView: View {
                                 Label("Actualizar biblioteca", systemImage: "arrow.clockwise")
                             }
                             Divider()
-                            // Ajustes = ventana NATIVA (escena Settings); antes abría una sheet modal.
-                            Button("Ajustes…") {
-                                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-                            }
+                            // Ajustes = ventana NATIVA (escena Settings); se abre con la acción
+                            // oficial `openSettings` del entorno (el sendAction anterior con el
+                            // selector showSettingsWindow: no llegaba desde el menú de la toolbar).
+                            Button("Ajustes…") { openSettings() }
                             Button("Ver logs…") { showingLogs = true }
                             Button("Atajos de teclado…") { showingShortcutReference = true }
                             Divider()

@@ -333,6 +333,9 @@ private struct LibraryActivityCard: View {
     private var relativeDate: String {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .full
+        // Locale fijo es_ES como el resto de la app (antes usaba el locale del sistema:
+        // las fechas salían en inglés si el sistema no estaba en español, inconsistencia visible).
+        formatter.locale = Locale(identifier: "es_ES")
         return formatter.localizedString(for: event.occurredAt, relativeTo: .now)
     }
 

@@ -347,6 +347,8 @@ struct StoreLibraryView: View {
     @State private var recentlyPlayedScrollID: String?
     /// Tooltip de "Abrir Steam" sobre el logo: se muestra una vez y se auto-oculta.
     @State private var showSteamHint = false
+    /// Task cancelable del auto-ocultado del hint de Steam (reemplaza al asyncAfter sin cancelación).
+    @State private var steamHintTask: Task<Void, Never>?
     @State private var steamHintDisplayed = false
     /// Geometría compartida entre la carátula de la portada y el hero de la ficha. Al vivir en el
     /// coordinador común, la continuidad funciona igual en Steam, Epic, GOG y DRM-free.
@@ -1082,6 +1084,8 @@ struct StoreLibraryView: View {
         hoverPresentationTask = nil
         undoHiddenTask?.cancel()
         undoHiddenTask = nil
+        steamHintTask?.cancel()
+        steamHintTask = nil
         metadataIndexTask?.cancel()
         metadataIndexTask = nil
         metadataIndexProgress = nil
@@ -1711,8 +1715,17 @@ struct StoreLibraryView: View {
         guard onOpenSteam != nil, !steamHintDisplayed else { return }
         steamHintDisplayed = true
         // Retardo breve para que el logo esté montado antes de anclar el popover; se auto-oculta.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { showSteamHint = true }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5.5) { showSteamHint = false }
+        // Con Task (cancelable en `cancelTransientTasks`): el `asyncAfter` anterior podía mostrar
+        // el popover FUERA DE TIEMPO si la vista se desmontaba antes de los 0,7 s / 5,5 s.
+        steamHintTask?.cancel()
+        steamHintTask = Task { @MainActor in
+            do { try await Task.sleep(for: .milliseconds(700)) } catch { return }
+            guard !Task.isCancelled else { return }
+            showSteamHint = true
+            do { try await Task.sleep(for: .milliseconds(4800)) } catch { return }
+            guard !Task.isCancelled else { return }
+            showSteamHint = false
+        }
     }
 
     /// Cabecera compacta de la sidebar: logo (clickable en Steam → abre Steam) + nombre + contador + menú.

@@ -117,6 +117,13 @@ struct LibraryQuickOpenView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 11)
+        // VoiceOver se entera al instante de cuántos resultados hay al teclear (antes el cambio
+        // de la lista era silencioso para el lector de pantalla). API macOS: notificación
+        // accesible, no el modificador de iOS.
+        .onChange(of: results.count) { _, newCount in
+            let texto = query.isEmpty ? "Jugados recientemente y favoritos" : "\(newCount) resultados"
+            AccessibilityNotification.Announcement(texto).post()
+        }
     }
 
     private func openSelected() {

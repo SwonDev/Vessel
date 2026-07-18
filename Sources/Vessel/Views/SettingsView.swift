@@ -23,6 +23,10 @@ struct SettingsView: View {
     @AppStorage(SteamGridDBClient.apiKeyDefaultsKey) private var steamGridDBKey = ""
     /// Arreglos que Vessel ha aprendido solo (loop local→comunidad); se pueden compartir.
     private var fixesStore = DiscoveredFixesStore.shared
+    /// Resultado de la validación de las claves API (antes se guardaban a ciegas, sin comprobar).
+    enum KeyValidationState: Equatable { case idle, checking, valid, invalid }
+    @State private var steamKeyValidation: KeyValidationState = .idle
+    @State private var sgdbKeyValidation: KeyValidationState = .idle
 
     var body: some View {
         // Ventana de Ajustes NATIVA (escena `Settings`): pestañas estilo Ajustes del Sistema,
@@ -227,6 +231,7 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Link("Obtener mi clave Web API", destination: URL(string: "https://steamcommunity.com/dev/apikey")!)
                     .font(.caption.weight(.medium))
+                keyValidationRow(state: steamKeyValidation, action: validateSteamKey)
 
                 sectionDivider().padding(.vertical, 4)
                 Text("Clave de SteamGridDB (opcional)").font(.callout)
@@ -251,6 +256,7 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Link("Obtener mi clave de SteamGridDB", destination: URL(string: "https://www.steamgriddb.com/profile/preferences/api")!)
                     .font(.caption.weight(.medium))
+                keyValidationRow(state: sgdbKeyValidation, action: validateSgdbKey)
 
                 sectionDivider().padding(.vertical, 4)
                 Toggle("Modo Steam real para todos los juegos de Steam", isOn: $steamRealGlobal)
@@ -384,6 +390,76 @@ struct SettingsView: View {
             checkResults = await dependencyManager.checkAll()
         } catch {
             wineStatusText = "Error: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Validación de claves API
+
+    /// Fila «Validar clave» con su estado (antes las claves se guardaban a ciegas y un typo
+    /// dejaba logros/carátulas rotos sin que el usuario supiera por qué — igual que itch.io,
+    /// que sí valida contra el servidor antes de guardar).
+    @ViewBuilder
+    private func keyValidationRow(state: KeyValidationState, action: @escaping () async -> Void) -> some View {
+        HStack(spacing: 10) {
+            Button {
+                Task { await action() }
+            } label: {
+                if state == .checking {
+                    HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Validando…") }
+                } else {
+                    Text("Validar clave")
+                }
+            }
+            .vesselButton(false)
+            .controlSize(.small)
+            .disabled(state == .checking)
+            switch state {
+            case .idle: EmptyView()
+            case .checking: EmptyView()
+            case .valid:
+                Label("Clave válida", systemImage: "checkmark.circle.fill")
+                    .font(.caption.weight(.semibold)).foregroundStyle(Theme.play)
+            case .invalid:
+                Label("No válida o sin conexión", systemImage: "xmark.octagon.fill")
+                    .font(.caption.weight(.semibold)).foregroundStyle(Theme.destructive)
+            }
+            Spacer()
+        }
+    }
+
+    /// Prueba la clave Web API de Steam contra `ResolveVanityURL` (200 = válida, 403 = no).
+    private func validateSteamKey() async {
+        let key = steamApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { steamKeyValidation = .idle; return }
+        steamKeyValidation = .checking
+        guard let url = URL(string: "https://api.steampowered.com/ISteamUser/ResolveVanityURL/v1/?key=\(key)&vanityurl=vessel") else {
+            steamKeyValidation = .invalid; return
+        }
+        do {
+            let (_, resp) = try await URLSession.shared.data(from: url)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            steamKeyValidation = (200...299).contains(code) ? .valid : .invalid
+        } catch {
+            steamKeyValidation = .invalid
+        }
+    }
+
+    /// Prueba la clave de SteamGridDB contra su endpoint de búsqueda (200 = válida, 401 = no).
+    private func validateSgdbKey() async {
+        let key = steamGridDBKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { sgdbKeyValidation = .idle; return }
+        sgdbKeyValidation = .checking
+        guard let url = URL(string: "https://www.steamgriddb.com/api/v2/search/autocomplete/vessel") else {
+            sgdbKeyValidation = .invalid; return
+        }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        do {
+            let (_, resp) = try await URLSession.shared.data(for: request)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            sgdbKeyValidation = (200...299).contains(code) ? .valid : .invalid
+        } catch {
+            sgdbKeyValidation = .invalid
         }
     }
 }
