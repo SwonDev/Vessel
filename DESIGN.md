@@ -62,7 +62,8 @@ spacing:
   card-gap: 18px
   section: 24px
   page: 32px
-  hero-title-inset: 44px
+  hero-action-overlap: 32px
+  hero-title-inset: 76px
 components:
   app-background:
     backgroundColor: "{colors.background-deep}"
@@ -242,7 +243,8 @@ su geometría de marca cuando sea necesaria para reconocer la plataforma.
 - `StoreGameCard` usa carátula 2:3, estado legible y acciones progresivas.
 - `GameDetailView` integra hero, Jugar/Instalar, última sesión, tiempo, logros, DLC, capturas,
   compatibilidad y ajustes. Su hero tiene profundidad parallax y continuidad desde la carátula; la
-  acción primaria domina, persiste al bajar y las secundarias no compiten con ella.
+  acción primaria domina, se solapa 32 px sobre el borde inferior del hero, persiste al bajar y las
+  secundarias no compiten con ella. El título conserva 44 px de aire visual sobre esa franja flotante.
 - El centro de descargas solo aparece durante operaciones activas y conserva el progreso al navegar.
 
 ### Estados y accesibilidad

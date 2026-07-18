@@ -294,22 +294,15 @@ struct BottleDetailView: View {
         var result: [String: String] = [:]
         for game in localBottle.games {
             guard let appID = game.steamAppId, !appID.isEmpty else { continue }
-            let manifest = "\(localBottle.steamDirectory)/steamapps/appmanifest_\(appID).acf"
-            guard let content = try? String(contentsOfFile: manifest, encoding: .utf8),
-                  let buildID = buildID(in: content), (Int(buildID) ?? 0) > 0 else { continue }
+            guard let buildID = SteamCMDManager.installedBuildID(
+                appID: appID,
+                installPath: game.installPath,
+                steamDirectory: localBottle.steamDirectory,
+                contentsAtPath: { try? String(contentsOfFile: $0, encoding: .utf8) }
+            ) else { continue }
             result[appID] = buildID
         }
         return result
-    }
-
-    private func buildID(in manifest: String) -> String? {
-        for line in manifest.split(separator: "\n") where line.lowercased().contains("\"buildid\"") {
-            let fields = line.split(separator: "\"").map(String.init)
-            if let value = fields.last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty && $0 != "buildid" }) {
-                return value.trimmingCharacters(in: .whitespaces)
-            }
-        }
-        return nil
     }
 
     private func steamInstallSize(_ appID: String) -> Int64? {

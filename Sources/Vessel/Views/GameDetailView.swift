@@ -140,8 +140,10 @@ struct GameDetailView: View {
             VStack(alignment: .leading, spacing: 0) {
                 hero
                 actionBar
+                    .padding(.top, -Theme.Space.heroActionOverlap)
+                    .zIndex(1)
                 if details?.genres.isEmpty == false {
-                    genreChips.padding(.horizontal, 32).padding(.bottom, 6)
+                    genreChips.padding(.horizontal, Theme.Space.page).padding(.bottom, 6)
                 }
                 if details?.screenshots.isEmpty == false || loadingDetails { mediaSection }
                 content
@@ -277,7 +279,8 @@ struct GameDetailView: View {
                 Text(game.title)
                     .font(.system(size: 36, weight: .heavy)).foregroundStyle(.white)
                     .shadow(color: .black.opacity(0.7), radius: 8, y: 3)
-                    .padding(.horizontal, 32).padding(.bottom, Theme.Space.heroTitleInset)
+                    .padding(.horizontal, Theme.Space.page)
+                    .padding(.bottom, Theme.Space.heroTitleInset)
             }
             .clipped()
         }
@@ -290,7 +293,7 @@ struct GameDetailView: View {
             compactActionBar
         }
         .vesselGlassContainer(spacing: 12)
-        .padding(.horizontal, 32).padding(.vertical, 18)
+        .padding(.horizontal, Theme.Space.page).padding(.vertical, 18)
         .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: launchState)
         .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: installing)
     }
