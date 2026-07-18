@@ -23,10 +23,7 @@ final class EpicStore {
     private var epicBottle: Bottle?
 
     /// Estado de instalación en curso por juego (para los botones de las tarjetas).
-    var installingAppNames: Set<String> = []
-    var installProgress: [String: String] = [:]
-    /// Progreso 0.0–1.0 si se conoce (parseado de legendary) → barra determinada estilo Steam.
-    var installPercents: [String: Double] = [:]
+    let operations = LibraryOperationQueue(storageKey: "epic")
 
     /// Re-evalúa el estado (al abrir la vista o al volver la app a primer plano).
     /// No interrumpe una operación en curso.
@@ -37,6 +34,7 @@ final class EpicStore {
             // Carga INSTANTÁNEA desde caché; el refresco real va en 2º plano.
             if let cached = LibraryCache.load("epic", as: [LegendaryManager.EpicGame].self) {
                 phase = .connected(cached)
+                restoreOperations(for: cached)
             } else {
                 phase = .working("Cargando biblioteca Epic…")
             }
@@ -65,6 +63,7 @@ final class EpicStore {
             phase = .working("Cargando tu biblioteca de Epic Games…")
             let games = try await legendary.ownedGames()
             phase = .connected(games)
+            restoreOperations(for: games)
         } catch {
             log.log("Error al conectar Epic Games: \(error.localizedDescription)", level: .error)
             phase = .error(error.localizedDescription)
@@ -94,6 +93,7 @@ final class EpicStore {
         do {
             let games = try await legendary.ownedGames()
             phase = .connected(games)
+            restoreOperations(for: games)
             // Detección de actualizaciones (orientativa, no bloquea la biblioteca).
             Task { self.updatesAvailable = await legendary.gamesWithUpdates() }
         } catch {
@@ -108,10 +108,6 @@ final class EpicStore {
 
     /// `appName`s con actualización disponible (detección por `legendary --check-updates`).
     var updatesAvailable: Set<String> = []
-
-    func isInstalling(_ appName: String) -> Bool { installingAppNames.contains(appName) }
-    func progress(_ appName: String) -> String? { installProgress[appName] }
-    func percent(_ appName: String) -> Double? { installPercents[appName] }
 
     /// Obtiene (o crea) el bottle dedicado de Epic, con el motor Wine portable instalado.
     private func ensureBottle() async throws -> Bottle {
@@ -128,114 +124,120 @@ final class EpicStore {
         return nb
     }
 
-    /// Instala un juego de Epic dentro del bottle de Vessel (con progreso en vivo).
-    func install(_ game: LegendaryManager.EpicGame) async {
-        installingAppNames.insert(game.appName)
-        installProgress[game.appName] = "Preparando…"
-        defer {
-            installingAppNames.remove(game.appName)
-            installProgress[game.appName] = nil
-            installPercents[game.appName] = nil
-        }
-        do {
-            let bottle = try await ensureBottle()
-            let dir = "\(bottle.prefixPath)/drive_c/Games"
-            try await legendary.installGame(appName: game.appName, basePath: dir) { line in
-                // Parsea el % de las líneas de legendary → barra determinada estilo Steam.
-                if let pct = LegendaryManager.progressPercent(in: line) {
-                    Task { @MainActor in
-                        self.installPercents[game.appName] = max(0, min(1, pct / 100))
-                        self.installProgress[game.appName] = "Descargando… \(Int(pct))%"
-                    }
-                }
-            }
-            NotificationService.shared.notify(title: "Instalación completada", body: game.title)
-            await reloadLibrary()
-        } catch {
-            log.log("Error instalando \(game.title): \(error.localizedDescription)", level: .error)
-            installProgress[game.appName] = "Error en la instalación"
+    func install(_ game: LegendaryManager.EpicGame) { enqueue(game, kind: .install) }
+    func verify(_ game: LegendaryManager.EpicGame) { enqueue(game, kind: .verify) }
+    func update(_ game: LegendaryManager.EpicGame) { enqueue(game, kind: .update) }
+    func uninstall(_ game: LegendaryManager.EpicGame) { enqueue(game, kind: .uninstall) }
+
+    func updateAll(_ games: [LegendaryManager.EpicGame]) {
+        for game in games where game.installed { enqueue(game, kind: .update) }
+    }
+
+    func dlcs(for appName: String) async -> [StoreDLC] {
+        await legendary.ownedDLCs(appName: appName).map {
+            StoreDLC(id: $0.id, title: $0.title, coverURL: nil,
+                     installID: $0.appName, owned: true,
+                     installed: $0.isInstallable ? $0.installed : nil)
         }
     }
 
-    /// Verifica y repara un juego de Epic ya instalado (reusa el feedback visual de instalación).
-    func verify(_ game: LegendaryManager.EpicGame) async {
-        installingAppNames.insert(game.appName)
-        installProgress[game.appName] = "Verificando…"
-        defer {
-            installingAppNames.remove(game.appName)
-            installProgress[game.appName] = nil
-            installPercents[game.appName] = nil
-        }
-        do {
-            let bottle = try await ensureBottle()
-            let dir = "\(bottle.prefixPath)/drive_c/Games"
-            try await legendary.repairGame(appName: game.appName, basePath: dir) { line in
-                if let pct = LegendaryManager.progressPercent(in: line) {
-                    Task { @MainActor in
-                        self.installPercents[game.appName] = max(0, min(1, pct / 100))
-                        self.installProgress[game.appName] = "Verificando… \(Int(pct))%"
-                    }
-                }
-            }
-            await reloadLibrary()
-        } catch {
-            log.log("Error verificando \(game.title): \(error.localizedDescription)", level: .error)
-            installProgress[game.appName] = "Error en la verificación"
+    func installDLC(_ dlc: StoreDLC, for game: LegendaryManager.EpicGame) {
+        guard game.installed, dlc.installed == false,
+              let appName = dlc.installID, !appName.isEmpty else { return }
+        operations.enqueue(
+            gameID: game.appName,
+            title: "\(game.title) · \(dlc.title)",
+            kind: .dlc,
+            targetID: appName,
+            executor: executor(for: game)
+        )
+    }
+
+    private func enqueue(_ game: LegendaryManager.EpicGame, kind: LibraryOperationKind) {
+        operations.enqueue(gameID: game.appName, title: game.title, kind: kind,
+                           executor: executor(for: game))
+    }
+
+    private func restoreOperations(for games: [LegendaryManager.EpicGame]) {
+        let byID = Dictionary(games.map { ($0.appName, $0) }, uniquingKeysWith: { first, _ in first })
+        for item in operations.items {
+            guard let game = byID[item.id] else { continue }
+            operations.attach(gameID: item.id, executor: executor(for: game))
         }
     }
 
-    /// Aplica la actualización de un juego de Epic (reusa el feedback visual de instalación).
-    func update(_ game: LegendaryManager.EpicGame) async {
-        installingAppNames.insert(game.appName)
-        installProgress[game.appName] = "Actualizando…"
-        defer {
-            installingAppNames.remove(game.appName)
-            installProgress[game.appName] = nil
-            installPercents[game.appName] = nil
-        }
-        do {
-            let bottle = try await ensureBottle()
-            let dir = "\(bottle.prefixPath)/drive_c/Games"
-            try await legendary.updateGame(appName: game.appName, basePath: dir) { line in
-                if let pct = LegendaryManager.progressPercent(in: line) {
-                    Task { @MainActor in
-                        self.installPercents[game.appName] = max(0, min(1, pct / 100))
-                        self.installProgress[game.appName] = "Actualizando… \(Int(pct))%"
-                    }
-                }
-            }
-            updatesAvailable.remove(game.appName)
-            await reloadLibrary()
-        } catch {
-            log.log("Error actualizando \(game.title): \(error.localizedDescription)", level: .error)
-            installProgress[game.appName] = "Error en la actualización"
+    private func executor(for game: LegendaryManager.EpicGame) -> LibraryOperationQueue.Executor {
+        { [weak self] operation in
+            guard let self else { throw CancellationError() }
+            try await self.perform(operation, game: game)
         }
     }
 
-    /// Desinstala un juego de Epic (borra los archivos vía legendary) y refresca la biblioteca.
-    func uninstall(_ game: LegendaryManager.EpicGame) async {
-        installingAppNames.insert(game.appName)
-        installProgress[game.appName] = "Desinstalando…"
-        defer {
-            installingAppNames.remove(game.appName)
-            installProgress[game.appName] = nil
-            installPercents[game.appName] = nil
-        }
+    private func perform(_ operation: LibraryOperationQueue.Operation,
+                         game: LegendaryManager.EpicGame) async throws {
         do {
-            try await legendary.uninstallGame(appName: game.appName)
-            NotificationService.shared.notify(title: "Juego desinstalado", body: game.title)
+            let bottle = try await ensureBottle()
+            let basePath = "\(bottle.prefixPath)/drive_c/Games"
+            let operationID = "epic:\(operation.id)"
+            let progress: @Sendable (String) -> Void = { [weak self] line in
+                guard let pct = LegendaryManager.progressPercent(in: line) else { return }
+                Task { @MainActor [weak self] in
+                    let verb = operation.kind == .verify ? "Verificando" :
+                               (operation.kind == .update ? "Actualizando" : "Descargando")
+                    self?.operations.report(gameID: operation.id,
+                                            message: "\(verb)… \(Int(pct))%",
+                                            fraction: pct / 100)
+                }
+            }
+
+            switch operation.kind {
+            case .install:
+                try await legendary.installGame(appName: game.appName, basePath: basePath,
+                                                 operationID: operationID, onProgress: progress)
+                NotificationService.shared.notify(title: "Instalación completada", body: game.title)
+            case .verify:
+                try await legendary.repairGame(appName: game.appName, basePath: basePath,
+                                                operationID: operationID, onProgress: progress)
+            case .update:
+                try await legendary.updateGame(appName: game.appName, basePath: basePath,
+                                                operationID: operationID, onProgress: progress)
+                updatesAvailable.remove(game.appName)
+                NotificationService.shared.notify(title: "Actualización completada", body: game.title)
+            case .uninstall:
+                try await legendary.uninstallGame(appName: game.appName, operationID: operationID)
+                NotificationService.shared.notify(title: "Juego desinstalado", body: game.title)
+            case .dlc:
+                guard let dlcAppName = operation.targetID else {
+                    throw NSError(domain: "Vessel", code: 114,
+                                  userInfo: [NSLocalizedDescriptionKey: "No se pudo identificar el contenido adicional."])
+                }
+                try await legendary.installDLC(appName: dlcAppName, basePath: basePath,
+                                                operationID: operationID, onProgress: progress)
+                NotificationService.shared.notify(title: "Contenido instalado", body: operation.title)
+            }
             await reloadLibrary()
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
-            log.log("Error desinstalando \(game.title): \(error.localizedDescription)", level: .error)
-            installProgress[game.appName] = "Error al desinstalar"
+            log.log("Epic · \(game.title): \(error.localizedDescription)", level: .error)
+            throw error
         }
     }
 
     /// Lanza un juego de Epic ya instalado con el motor de juegos (wine-dxmt), igual que Steam.
     /// `forcedLayer`/`attempt` los usa el fallback automático de motor (relanzar con otra capa).
     func play(_ game: LegendaryManager.EpicGame, forcedLayer: GameConfig.GraphicsLayer? = nil, attempt: Int = 0) async {
-        guard let exe = game.executablePath, !exe.isEmpty else {
-            log.log("Epic: \(game.title) sin ejecutable conocido (¿reinstalar?)", level: .warn)
+        let cfg = GameConfigStore.load(game.appName)
+        let detectedExecutable = game.executablePath ?? ""
+        let installRoot = game.installPath
+            ?? (detectedExecutable.isEmpty ? nil : (detectedExecutable as NSString).deletingLastPathComponent)
+        let exe = GameExecutableOverride.resolve(
+            configuredPath: cfg.executableOverride,
+            installRoot: installRoot,
+            fallback: detectedExecutable
+        )
+        guard !exe.isEmpty else {
+            log.log("Epic: \(game.title) sin ejecutable conocido. Elige uno en Ajustes → Avanzado o reinstala el juego.", level: .warn)
             return
         }
         // Resolvemos el bottle antes de track para tener la ruta del prefijo (aviso de compat).
@@ -246,10 +248,9 @@ final class EpicStore {
             return
         }
         let prefix = bottle.prefixPath
-        let gameDir = (exe as NSString).deletingLastPathComponent
+        let gameDir = installRoot ?? (exe as NSString).deletingLastPathComponent
         // Config efectiva (perfil comunidad + overrides usuario) resuelta ANTES de track para saber
         // la capa gráfica usada y poder reintentar con otra si falla el arranque.
-        let cfg = GameConfigStore.load(game.appName)
         let profile = CompatService.shared.profile(epic: game.appName, title: game.title)
         var eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
         if let forcedLayer { eff.graphicsOverride = forcedLayer }
@@ -294,7 +295,6 @@ final class EpicStore {
         ) { [weak self] next in await self?.play(game, forcedLayer: next, attempt: attempt + 1) }
     }
 }
-
 // MARK: - Vista raíz
 
 /// Vista de la tienda Epic Games: pantalla de conexión sin sesión, progreso mientras
@@ -308,15 +308,35 @@ struct EpicStoreView: View {
             case .connected(let games):
                 StoreLibraryView(
                     store: .epic,
-                    games: games.map { StoreGame(id: $0.appName, title: $0.title, coverURL: $0.coverURL, installed: $0.installed, updateAvailable: epic.updatesAvailable.contains($0.appName), installPath: $0.installPath) },
-                    installingIDs: epic.installingAppNames,
-                    progressFor: { epic.progress($0) },
-                    percentFor: { epic.percent($0) },
-                    onInstall: { sg in if let g = games.first(where: { $0.appName == sg.id }) { Task { await epic.install(g) } } },
+                    games: games.map { StoreGame(id: $0.appName, title: $0.title, coverURL: $0.coverURL, installed: $0.installed, updateAvailable: epic.updatesAvailable.contains($0.appName), installPath: $0.installPath, executablePath: $0.executablePath, installSizeBytes: $0.installSizeBytes) },
+                    installingIDs: epic.operations.itemIDs,
+                    progressFor: { epic.operations.message(for: $0) },
+                    percentFor: { epic.operations.fraction(for: $0) },
+                    transferTitleFor: { epic.operations.title(for: $0) },
+                    transferPhaseFor: { epic.operations.transferPhase(for: $0) },
+                    transferPositionFor: { epic.operations.position(of: $0) },
+                    canPauseTransfer: { epic.operations.canPause($0) },
+                    canCancelTransfer: { epic.operations.canCancel($0) },
+                    canPrioritizeTransfer: { epic.operations.canPrioritize($0) },
+                    canRetryTransfer: { epic.operations.canRetry($0) },
+                    onPauseTransfer: { epic.operations.pause($0.id) },
+                    onResumeTransfer: { epic.operations.resume($0.id) },
+                    onCancelTransfer: { epic.operations.cancel($0.id) },
+                    onPrioritizeTransfer: { epic.operations.prioritize($0.id) },
+                    onRetryTransfer: { epic.operations.resume($0.id) },
+                    onInstall: { sg in if let g = games.first(where: { $0.appName == sg.id }) { epic.install(g) } },
                     onPlay:    { sg in if let g = games.first(where: { $0.appName == sg.id }) { Task { await epic.play(g) } } },
-                    onUninstall: { sg in if let g = games.first(where: { $0.appName == sg.id }) { Task { await epic.uninstall(g) } } },
-                    onVerify:  { sg in if let g = games.first(where: { $0.appName == sg.id }) { Task { await epic.verify(g) } } },
-                    onUpdate:  { sg in if let g = games.first(where: { $0.appName == sg.id }) { Task { await epic.update(g) } } },
+                    onUninstall: { sg in if let g = games.first(where: { $0.appName == sg.id }) { epic.uninstall(g) } },
+                    onVerify:  { sg in if let g = games.first(where: { $0.appName == sg.id }) { epic.verify(g) } },
+                    onUpdate:  { sg in if let g = games.first(where: { $0.appName == sg.id }) { epic.update(g) } },
+                    onUpdateAll: { storeGames in
+                        epic.updateAll(storeGames.compactMap { sg in games.first { $0.appName == sg.id } })
+                    },
+                    dlcsFor: { await epic.dlcs(for: $0.id) },
+                    onInstallDLC: { storeGame, dlc in
+                        guard let game = games.first(where: { $0.appName == storeGame.id }) else { return }
+                        epic.installDLC(dlc, for: game)
+                    },
                     onReload:  { Task { await epic.reloadLibrary() } },
                     onLogout:  { epic.disconnect() }
                 )
@@ -351,13 +371,14 @@ struct ConnectEpicView: View {
     private let tint = StoreKind.epic.tint
     @State private var showingLogin = false
     @State private var pulse = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 22) {
             StoreLogoTile(store: .epic)
-                .scaleEffect(pulse ? 1.08 : 1.0)
+                .scaleEffect(pulse && !reduceMotion ? 1.08 : 1.0)
                 .animation(
-                    .easeInOut(duration: 1.4).repeatForever(autoreverses: true),
+                    reduceMotion ? nil : .easeInOut(duration: 1.4).repeatForever(autoreverses: true),
                     value: pulse
                 )
 
@@ -394,7 +415,7 @@ struct ConnectEpicView: View {
                     if let errorMessage {
                         Text(errorMessage)
                             .font(.callout)
-                            .foregroundStyle(.red.opacity(0.9))
+                            .foregroundStyle(Theme.destructive.opacity(0.92))
                             .multilineTextAlignment(.center)
                             .frame(maxWidth: 440)
                             .padding(.horizontal, 16)
@@ -441,6 +462,7 @@ struct ConnectEpicView: View {
 struct EpicWebLoginSheet: View {
     let onCodeCaptured: (String) -> Void
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var isLoading     = true
     @State private var webError: String?
@@ -487,7 +509,9 @@ struct EpicWebLoginSheet: View {
                     },
                     onLoadingChanged: { loading in
                         if loading { webError = nil }
-                        withAnimation(.easeOut(duration: 0.3)) { isLoading = loading }
+                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) {
+                            isLoading = loading
+                        }
                     }
                 )
 
@@ -532,230 +556,9 @@ struct EpicWebLoginSheet: View {
                     .transition(.opacity)
                 }
             }
-            .animation(.easeOut(duration: 0.25), value: webError)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: webError)
         }
         .frame(width: 820, height: 640)
         .background(Theme.navyDeep)
-    }
-}
-
-// MARK: - Biblioteca de Epic Games (connected)
-
-/// Grid de juegos de la cuenta Epic con búsqueda integrada.
-struct EpicLibraryView: View {
-    @Bindable var store: EpicStore
-    let games: [LegendaryManager.EpicGame]
-    let onDisconnect: () -> Void
-    let onReload: () -> Void
-
-    @State private var searchText = ""
-    private let tint = StoreKind.epic.tint
-    private let columns = [GridItem(.adaptive(minimum: 158, maximum: 200), spacing: Theme.Space.gameGrid)]
-
-    private var filtered: [LegendaryManager.EpicGame] {
-        guard !searchText.isEmpty else { return games }
-        return games.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
-    }
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Theme.Space.section) {
-
-                // Cabecera
-                HStack(spacing: 14) {
-                    StoreLogoTile(store: .epic, size: 52)
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Epic Games")
-                            .font(.title.bold())
-                            .foregroundStyle(.white)
-                        Text("\(games.count) juego\(games.count == 1 ? "" : "s") en tu biblioteca")
-                            .font(.subheadline)
-                            .foregroundStyle(.white.opacity(0.50))
-                    }
-
-                    Spacer()
-
-                    Button(action: onReload) {
-                        Label("Actualizar", systemImage: "arrow.clockwise")
-                    }
-                    .vesselButton(false)
-
-                    Button(role: .destructive, action: onDisconnect) {
-                        Label("Cerrar sesión", systemImage: "rectangle.portrait.and.arrow.right")
-                    }
-                    .vesselButton(false)
-                }
-
-                // Barra de búsqueda (solo si hay suficientes juegos)
-                if games.count > 6 {
-                    HStack(spacing: 8) {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundStyle(.white.opacity(0.40))
-                        TextField("Buscar en tu biblioteca de Epic…", text: $searchText)
-                            .textFieldStyle(.plain)
-                            .foregroundStyle(.white)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(
-                        .white.opacity(0.08),
-                        in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-                            .strokeBorder(.white.opacity(0.12), lineWidth: 0.5)
-                    )
-                }
-
-                // Grid de juegos
-                if filtered.isEmpty {
-                    Text(
-                        searchText.isEmpty
-                        ? "No se encontraron juegos en tu cuenta de Epic Games."
-                        : "Sin resultados para «\(searchText)»."
-                    )
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.top, 40)
-                } else {
-                    LazyVGrid(columns: columns, spacing: Theme.Space.gameGrid) {
-                        ForEach(filtered) { game in
-                            EpicGameCard(
-                                game: game,
-                                installing: store.isInstalling(game.appName),
-                                progress: store.progress(game.appName),
-                                onInstall: { Task { await store.install(game) } },
-                                onPlay: { Task { await store.play(game) } }
-                            )
-                        }
-                    }
-                }
-            }
-            .padding(Theme.Space.page)
-        }
-        .vesselBackground(tint: tint)
-    }
-}
-
-// MARK: - Tarjeta de juego Epic
-
-/// Tarjeta de juego de Epic Games con portada generada a partir del título
-/// (degradado + iniciales) hasta que se integre la API de imágenes de Epic.
-struct EpicGameCard: View {
-    let game: LegendaryManager.EpicGame
-    var installing: Bool = false
-    var progress: String? = nil
-    var onInstall: () -> Void = {}
-    var onPlay: () -> Void = {}
-
-    private var placeholderColor: Color {
-        var h = 5381
-        for c in game.appName.unicodeScalars { h = ((h << 5) &+ h) &+ Int(c.value) }
-        return Color(hue: Double(abs(h) % 360) / 360.0, saturation: 0.48, brightness: 0.42)
-    }
-
-    private var initials: String {
-        game.title
-            .split(separator: " ")
-            .prefix(2)
-            .compactMap { $0.first.map(String.init) }
-            .joined()
-            .uppercased()
-    }
-
-    var body: some View {
-        VStack(spacing: 8) {
-            coverArt
-            actionButton
-        }
-        .hoverLift()
-    }
-
-    private var coverArt: some View {
-        cover
-            .aspectRatio(2.0/3.0, contentMode: .fit)
-            .overlay(alignment: .bottom) {
-                LinearGradient(colors: [.clear, .black.opacity(0.55), .black.opacity(0.9)],
-                               startPoint: .center, endPoint: .bottom)
-            }
-            .overlay(alignment: .bottomLeading) {
-                Text(game.title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-                    .shadow(color: .black.opacity(0.6), radius: 3, y: 1)
-                    .padding(10)
-            }
-            .overlay(alignment: .topTrailing) {
-                if game.installed {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.callout)
-                        .foregroundStyle(Color(red: 0.30, green: 0.85, blue: 0.55))
-                        .padding(6)
-                        .liquidGlass(in: Circle())
-                        .padding(7)
-                }
-            }
-            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous)
-                    .strokeBorder(.white.opacity(0.10), lineWidth: 0.5)
-            }
-            .shadow(color: .black.opacity(0.32), radius: 9, y: 5)
-    }
-
-    @ViewBuilder private var actionButton: some View {
-        if installing {
-            VStack(spacing: 4) {
-                ProgressView().controlSize(.small).tint(.white)
-                Text(progress ?? "Instalando…")
-                    .font(.caption2).foregroundStyle(.white.opacity(0.7))
-                    .lineLimit(1).truncationMode(.middle)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-        } else if game.installed {
-            Button(action: onPlay) {
-                Label("Jugar", systemImage: "play.fill").frame(maxWidth: .infinity)
-            }
-            .vesselButton(tint: StoreKind.epic.tint)
-        } else {
-            Button(action: onInstall) {
-                Label("Instalar", systemImage: "arrow.down.circle.fill").frame(maxWidth: .infinity)
-            }
-            .vesselButton(false)
-        }
-    }
-
-    /// Portada: placeholder de fondo (degradado + iniciales) y, encima, la carátula real
-    /// de Epic (`keyImages`) cuando carga. Mismo patrón editorial que las tarjetas de Steam.
-    @ViewBuilder private var cover: some View {
-        placeholder
-            .overlay {
-                if let urlStr = game.coverURL, let url = URL(string: urlStr) {
-                    AsyncImage(url: url) { phase in
-                        if let image = phase.image {
-                            image.resizable().scaledToFill()
-                        } else {
-                            Color.clear
-                        }
-                    }
-                }
-            }
-            .clipped()
-    }
-
-    private var placeholder: some View {
-        ZStack {
-            LinearGradient(
-                colors: [placeholderColor, placeholderColor.opacity(0.50)],
-                startPoint: .topLeading, endPoint: .bottomTrailing
-            )
-            Text(initials)
-                .font(.system(size: 40, weight: .bold, design: .rounded))
-                .foregroundStyle(.white.opacity(0.85))
-                .shadow(color: .black.opacity(0.30), radius: 4, y: 2)
-        }
     }
 }

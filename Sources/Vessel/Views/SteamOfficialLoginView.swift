@@ -84,7 +84,7 @@ struct SteamOfficialLoginView: View {
             .padding(.vertical, 4)
 
             if let errorText {
-                Text(errorText).font(.caption).foregroundStyle(Color(red: 1, green: 0.4, blue: 0.4))
+                Text(errorText).font(.caption).foregroundStyle(Theme.destructive)
             }
 
             Button {

@@ -124,12 +124,16 @@ struct ConnectSteamView: View {
 
     private let tint = StoreKind.steam.tint
     @State private var pulse = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 22) {
             StoreLogoTile(store: .steam)
-                .scaleEffect(pulse ? 1.08 : 1.0)
-                .animation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true), value: pulse)
+                .scaleEffect(pulse && !reduceMotion ? 1.08 : 1.0)
+                .animation(
+                    reduceMotion ? nil : .easeInOut(duration: 1.4).repeatForever(autoreverses: true),
+                    value: pulse
+                )
 
             Text("Steam").font(.largeTitle.bold()).foregroundStyle(.white)
 

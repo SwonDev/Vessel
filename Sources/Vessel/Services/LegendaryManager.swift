@@ -21,7 +21,17 @@ final class LegendaryManager {
         var coverURL: String?
         var installPath: String?     // carpeta de instalación (si está instalado)
         var executablePath: String?  // .exe principal en macOS (ruta del prefijo)
+        var installSizeBytes: Int64? = nil
         var id: String { appName }
+    }
+
+    struct EpicDLC: Identifiable, Hashable, Sendable {
+        let id: String
+        let appName: String?
+        let title: String
+        let installed: Bool
+
+        var isInstallable: Bool { appName?.isEmpty == false }
     }
 
     // MARK: - Rutas (estáticas, no aisladas al actor)
@@ -35,6 +45,7 @@ final class LegendaryManager {
     // MARK: - Estado
 
     private let log = LogStore.shared
+    nonisolated private let processRegistry = ManagedProcessRegistry()
 
     /// Versión de Legendary fijada (la MISMA que usa Heroic). Nota clave: `derrod/legendary`
     /// NO publica binario de macOS — Heroic mantiene un fork con binarios **nativos arm64**.
@@ -169,14 +180,16 @@ final class LegendaryManager {
 
         // Juegos instalados localmente (con su ruta de instalación y ejecutable).
         let installedResult = try await runBackground(bin, args: ["list-installed", "--json"])
-        var installed: [String: (installPath: String, executable: String)] = [:]
+        var installed: [String: (installPath: String, executable: String, installSizeBytes: Int64?)] = [:]
         if installedResult.exitCode == 0,
            let data = installedResult.stdout.data(using: .utf8),
            let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
             for obj in arr {
                 guard let name = obj["app_name"] as? String else { continue }
+                let rawSize = (obj["install_size"] as? NSNumber)?.int64Value
+                    ?? (obj["install_size"] as? Int64)
                 installed[name] = ((obj["install_path"] as? String) ?? "",
-                                   (obj["executable"] as? String) ?? "")
+                                   (obj["executable"] as? String) ?? "", rawSize)
             }
         }
 
@@ -200,15 +213,17 @@ final class LegendaryManager {
         return games
     }
 
-    // MARK: - Instalación y lanzamiento (TODO)
+    // MARK: - Instalación
 
     /// Instala un juego de Epic en `basePath` (dentro del bottle de Vessel), reportando el
     /// progreso por las líneas de salida de legendary. Operación larga (sin timeout corto).
-    func installGame(appName: String, basePath: String, onProgress: @escaping @Sendable (String) -> Void) async throws {
+    func installGame(appName: String, basePath: String, operationID: String? = nil,
+                     onProgress: @escaping @Sendable (String) -> Void) async throws {
         try FileManager.default.createDirectory(atPath: basePath, withIntermediateDirectories: true)
         let code = try await runStreaming(
             Self.binaryPath,
             args: ["install", appName, "--base-path", basePath, "--platform", "Windows", "--yes"],
+            operationID: operationID,
             onLine: onProgress
         )
         guard code == 0 else {
@@ -220,10 +235,12 @@ final class LegendaryManager {
 
     /// Verifica y REPARA los archivos de un juego de Epic ya instalado. `repair` es un alias de
     /// `install` en legendary: re-descarga SOLO los trozos dañados o ausentes. Mismo progreso.
-    func repairGame(appName: String, basePath: String, onProgress: @escaping @Sendable (String) -> Void) async throws {
+    func repairGame(appName: String, basePath: String, operationID: String? = nil,
+                    onProgress: @escaping @Sendable (String) -> Void) async throws {
         let code = try await runStreaming(
             Self.binaryPath,
             args: ["repair", appName, "--base-path", basePath, "--platform", "Windows", "--yes"],
+            operationID: operationID,
             onLine: onProgress
         )
         guard code == 0 else {
@@ -234,10 +251,12 @@ final class LegendaryManager {
     }
 
     /// Aplica la actualización de un juego de Epic (`legendary update`, alias de install).
-    func updateGame(appName: String, basePath: String, onProgress: @escaping @Sendable (String) -> Void) async throws {
+    func updateGame(appName: String, basePath: String, operationID: String? = nil,
+                    onProgress: @escaping @Sendable (String) -> Void) async throws {
         let code = try await runStreaming(
             Self.binaryPath,
             args: ["update", appName, "--base-path", basePath, "--platform", "Windows", "--yes"],
+            operationID: operationID,
             onLine: onProgress
         )
         guard code == 0 else {
@@ -250,10 +269,11 @@ final class LegendaryManager {
     /// Desinstala un juego de Epic (`legendary uninstall`): borra los archivos del disco y
     /// actualiza el estado de legendary (`installed.json`). legendary sabe qué carpeta creó al
     /// instalar, así que el borrado es limpio y seguro (no adivina rutas). `-y` evita el prompt.
-    func uninstallGame(appName: String) async throws {
+    func uninstallGame(appName: String, operationID: String? = nil) async throws {
         let code = try await runStreaming(
             Self.binaryPath,
             args: ["-y", "uninstall", appName],
+            operationID: operationID,
             onLine: { _ in }
         )
         guard code == 0 else {
@@ -298,35 +318,99 @@ final class LegendaryManager {
         return updates
     }
 
+    /// DLC de Epic que pertenecen a la cuenta. Legendary combina entitlements y assets; los que
+    /// no llevan `app_name` son licencias integradas en el juego y no requieren descarga aparte.
+    func ownedDLCs(appName: String) async -> [EpicDLC] {
+        guard let result = try? await runBackground(
+            Self.binaryPath,
+            args: ["info", appName, "--json", "--platform", "Windows"]
+        ), result.exitCode == 0 else { return [] }
+        return Self.parseDLCInfo(result.stdout)
+    }
+
+    nonisolated static func parseDLCInfo(_ output: String) -> [EpicDLC] {
+        guard let data = output.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let game = root["game"] as? [String: Any],
+              let owned = game["owned_dlc"] as? [[String: Any]] else { return [] }
+        let install = root["install"] as? [String: Any]
+        let installed = Set((install?["installed_dlc"] as? [[String: Any]] ?? []).compactMap {
+            $0["app_name"] as? String
+        })
+        return owned.compactMap { raw -> EpicDLC? in
+            guard let title = raw["title"] as? String, !title.isEmpty else { return nil }
+            let catalogID = (raw["id"] as? String) ?? title
+            let releaseAppName = (raw["installable"] as? [[String: Any]])?.first?["appId"] as? String
+            let appName = (raw["app_name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                ?? releaseAppName.flatMap { $0.isEmpty ? nil : $0 }
+            return EpicDLC(id: catalogID, appName: appName, title: title,
+                           installed: appName.map(installed.contains) ?? false)
+        }
+        .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    func installDLC(appName: String, basePath: String, operationID: String? = nil,
+                    onProgress: @escaping @Sendable (String) -> Void) async throws {
+        let code = try await runStreaming(
+            Self.binaryPath,
+            args: ["install", appName, "--base-path", basePath,
+                   "--platform", "Windows", "--yes", "--skip-dlcs"],
+            operationID: operationID,
+            onLine: onProgress
+        )
+        guard code == 0 else {
+            throw NSError(domain: "Vessel", code: 114, userInfo: [NSLocalizedDescriptionKey:
+                "No se pudo instalar el contenido de Epic (código \(code)). Revisa los logs."])
+        }
+        log.log("✓ Epic: DLC \(appName) instalado", level: .info)
+    }
+
     /// Ejecuta legendary para una operación LARGA (instalación), drenando la salida en vivo
     /// y reportando cada línea de progreso. Sin timeout: las descargas pueden durar mucho.
-    private func runStreaming(_ binary: String, args: [String], onLine: @escaping @Sendable (String) -> Void) async throws -> Int32 {
+    private func runStreaming(_ binary: String, args: [String], operationID: String? = nil,
+                              onLine: @escaping @Sendable (String) -> Void) async throws -> Int32 {
         let configDir = Self.configDir
         let shellEnv  = WineManager.userShellEnvironment
-        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Int32, Error>) in
-            DispatchQueue.global(qos: .userInitiated).async {
-                var env = shellEnv
-                env["LEGENDARY_CONFIG_PATH"] = configDir
-                let task = Process()
-                task.executableURL = URL(fileURLWithPath: binary)
-                task.arguments = args
-                task.environment = env
-                let pipe = Pipe()
-                task.standardOutput = pipe
-                task.standardError  = pipe
-                pipe.fileHandleForReading.readabilityHandler = { fh in
-                    let d = fh.availableData
-                    guard !d.isEmpty, let s = String(data: d, encoding: .utf8) else { return }
-                    for line in s.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) where !line.isEmpty {
-                        onLine(String(line))
+        let executionID = operationID ?? "legendary-\(UUID().uuidString)"
+        let processRegistry = self.processRegistry
+        processRegistry.prepare(executionID)
+        return try await withTaskCancellationHandler {
+            let code = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Int32, Error>) in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    var env = shellEnv
+                    env["LEGENDARY_CONFIG_PATH"] = configDir
+                    let task = Process()
+                    task.executableURL = URL(fileURLWithPath: binary)
+                    task.arguments = args
+                    task.environment = env
+                    task.standardInput = FileHandle.nullDevice
+                    let pipe = Pipe()
+                    task.standardOutput = pipe
+                    task.standardError  = pipe
+                    pipe.fileHandleForReading.readabilityHandler = { fh in
+                        let d = fh.availableData
+                        guard !d.isEmpty, let s = String(data: d, encoding: .utf8) else { return }
+                        for line in s.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) where !line.isEmpty {
+                            onLine(String(line))
+                        }
                     }
+                    do { try task.run() } catch { processRegistry.finish(executionID); cont.resume(throwing: error); return }
+                    processRegistry.register(task, for: executionID)
+                    task.waitUntilExit()
+                    pipe.fileHandleForReading.readabilityHandler = nil
+                    processRegistry.finish(executionID)
+                    cont.resume(returning: task.terminationStatus)
                 }
-                do { try task.run() } catch { cont.resume(throwing: error); return }
-                task.waitUntilExit()
-                pipe.fileHandleForReading.readabilityHandler = nil
-                cont.resume(returning: task.terminationStatus)
             }
+            try Task.checkCancellation()
+            return code
+        } onCancel: {
+            processRegistry.cancel(executionID)
         }
+    }
+
+    nonisolated func cancel(operationID: String) {
+        processRegistry.cancel(operationID)
     }
 
     /// Extrae el porcentaje de descarga (0–100) de una línea de salida de legendary.
@@ -336,14 +420,6 @@ final class LegendaryManager {
         let tail = line[r.upperBound...].trimmingCharacters(in: .whitespaces)
         let num = tail.prefix { $0.isNumber || $0 == "." }
         return Double(num)
-    }
-
-    /// TODO: Lanzar un juego con `legendary launch <appName>` usando el motor wine-dxmt.
-    func launchGame(appName: String) async throws {
-        throw NSError(
-            domain: "Vessel", code: 200,
-            userInfo: [NSLocalizedDescriptionKey: "Lanzamiento de juegos de Epic Games: próximamente."]
-        )
     }
 
     // MARK: - Ejecución de subprocesos
@@ -497,7 +573,8 @@ final class LegendaryManager {
 
     /// Parsea el array JSON de `legendary list --json`.
     /// Admite tanto `title` como `app_title` por compatibilidad entre versiones de Legendary.
-    private func parseGames(from data: Data, installed: [String: (installPath: String, executable: String)]) -> [EpicGame] {
+    private func parseGames(from data: Data,
+                            installed: [String: (installPath: String, executable: String, installSizeBytes: Int64?)]) -> [EpicGame] {
         guard let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             return []
         }
@@ -517,7 +594,8 @@ final class LegendaryManager {
                             installed: info != nil,
                             coverURL: Self.coverURL(from: obj),
                             installPath: info?.installPath,
-                            executablePath: exePath)
+                            executablePath: exePath,
+                            installSizeBytes: info?.installSizeBytes)
         }
         .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
     }

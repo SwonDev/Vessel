@@ -102,7 +102,7 @@ struct GameNotesEditorView: View {
                 Button(role: .destructive) { confirmingDeletion = true } label: {
                     Label("Borrar nota…", systemImage: "trash")
                 }
-                .vesselButton(false, tint: .red)
+                .vesselButton(false, tint: Theme.destructive)
                 .vesselHelp("Borrar la nota local")
             }
 

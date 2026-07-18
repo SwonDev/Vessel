@@ -10,14 +10,15 @@ struct BottleDetailView: View {
     @State private var gameToUninstall: GameInstall?
     @State private var accountService = SteamAccountService()
     @State private var ownedGames: [SteamAccountService.OwnedGame] = []
-    @State private var installingAppIds: Set<String> = []
     @State private var loadingLibrary = false
     @State private var steamCMD = SteamCMDManager()
+    @State private var operations: LibraryOperationQueue
+    @State private var updatesAvailable: Set<String> = []
     @State private var showSteamCMDLogin = false
     @State private var showOfficialLogin = false
     @State private var pendingInstallAppId: String?
-    @State private var installMessages: [String: String] = [:]
-    @State private var installPercents: [String: Double] = [:]
+    @State private var pendingOperationKind: LibraryOperationKind = .install
+    @State private var steamCMDSessionConfirmed = false
     @AppStorage("steamcmd.user") private var steamCMDUser = ""
     @State private var localBottle: Bottle
     @State private var dxvkInstalled: Bool = false
@@ -28,6 +29,9 @@ struct BottleDetailView: View {
     init(bottle: Bottle) {
         self.bottle = bottle
         self._localBottle = State(initialValue: bottle)
+        self._operations = State(initialValue: LibraryOperationQueue(
+            storageKey: "steam-\(bottle.id.uuidString)"
+        ))
     }
 
     /// Mapeo de los juegos de Steam (instalados + biblioteca owned) al modelo genérico
@@ -35,8 +39,14 @@ struct BottleDetailView: View {
     private var steamGames: [StoreGame] {
         let installed = localBottle.games.map { g in
             StoreGame(id: g.steamAppId ?? g.id.uuidString, title: g.name,
-                      steamAppId: g.steamAppId, installed: true, lastPlayed: g.lastPlayedAt,
-                      installPath: (g.executablePath as NSString).deletingLastPathComponent)
+                      steamAppId: g.steamAppId, installed: true,
+                      updateAvailable: g.steamAppId.map(updatesAvailable.contains) ?? false,
+                      lastPlayed: g.lastPlayedAt,
+                      installPath: g.installPath.isEmpty
+                        ? (g.executablePath as NSString).deletingLastPathComponent
+                        : g.installPath,
+                      executablePath: g.executablePath,
+                      installSizeBytes: g.steamAppId.flatMap(steamInstallSize))
         }
         let installedIds = Set(localBottle.games.compactMap { $0.steamAppId })
         let notInstalled = ownedGames
@@ -49,10 +59,22 @@ struct BottleDetailView: View {
         StoreLibraryView(
             store: .steam,
             games: steamGames,
-            installingIDs: installingAppIds,
-            progressFor: { installMessages[$0] },
-            percentFor: { installPercents[$0] },
-            onInstall: { sg in if sg.steamAppId != nil { Task { await installGame(sg.id) } } },
+            installingIDs: operations.itemIDs,
+            progressFor: { operations.message(for: $0) },
+            percentFor: { operations.fraction(for: $0) },
+            transferTitleFor: { operations.title(for: $0) },
+            transferPhaseFor: { operations.transferPhase(for: $0) },
+            transferPositionFor: { operations.position(of: $0) },
+            canPauseTransfer: { operations.canPause($0) },
+            canCancelTransfer: { operations.canCancel($0) },
+            canPrioritizeTransfer: { operations.canPrioritize($0) },
+            canRetryTransfer: { operations.canRetry($0) },
+            onPauseTransfer: { operations.pause($0.id) },
+            onResumeTransfer: { operations.resume($0.id) },
+            onCancelTransfer: cancelSteamOperation,
+            onPrioritizeTransfer: { operations.prioritize($0.id) },
+            onRetryTransfer: { operations.resume($0.id) },
+            onInstall: { sg in if sg.steamAppId != nil { Task { await enqueueSteamOperation(sg.id, kind: .install) } } },
             onPlay: { sg in
                 if let g = localBottle.games.first(where: { ($0.steamAppId ?? $0.id.uuidString) == sg.id }) {
                     Task { await launchGame(g) }
@@ -63,10 +85,15 @@ struct BottleDetailView: View {
             },
             // Verificar/reparar en Steam = re-ejecutar SteamCMD `app_update <id> validate` (el
             // mismo flujo de instalación, que YA valida la integridad y re-descarga lo dañado).
-            onVerify: { sg in if sg.steamAppId != nil { Task { await installGame(sg.id) } } },
+            onVerify: { sg in if sg.steamAppId != nil { Task { await enqueueSteamOperation(sg.id, kind: .verify) } } },
             // Actualizar en Steam = `app_update <id>` (sin validate forzado, va a la última build).
-            onUpdate: { sg in if sg.steamAppId != nil { Task { await installGame(sg.id, validate: false) } } },
-            onReload: { Task { await loadSteamLibrary() } },
+            onUpdate: { sg in if sg.steamAppId != nil { Task { await enqueueSteamOperation(sg.id, kind: .update) } } },
+            onUpdateAll: { storeGames in
+                Task {
+                    for game in storeGames { await enqueueSteamOperation(game.id, kind: .update) }
+                }
+            },
+            onReload: { Task { await loadSteamLibrary(); await refreshSteamUpdates() } },
             onLogout: { NotificationCenter.default.post(name: .steamLogout, object: nil) },
             onLogin: { NotificationCenter.default.post(name: .steamLogin, object: nil) },
             // "Abrir Steam": arranca el cliente Steam completo conectado en el MOTOR
@@ -85,6 +112,8 @@ struct BottleDetailView: View {
             await autoImportGames()
             startWatchingGames()
             await loadSteamLibrary()
+            await refreshSteamUpdates()
+            await restoreSteamOperations()
             resumeInterruptedDownloads()
         }
         .onDisappear { gamesWatcher.stop() }
@@ -94,6 +123,7 @@ struct BottleDetailView: View {
             Task {
                 await autoImportGames()
                 startWatchingGames()
+                await refreshSteamUpdates()
             }
         }
         .alert("¿Desinstalar el juego?", isPresented: Binding(
@@ -113,7 +143,8 @@ struct BottleDetailView: View {
                 steamCMDUser = user
                 if let appId = pendingInstallAppId {
                     pendingInstallAppId = nil
-                    Task { await installGame(appId) }
+                    let kind = pendingOperationKind
+                    Task { await enqueueSteamOperation(appId, kind: kind) }
                 }
             }
         }
@@ -240,10 +271,57 @@ struct BottleDetailView: View {
         }
     }
 
-    /// Pide a Steam que instale el juego (desde Vessel). El watcher en tiempo real lo
-    /// moverá a "Juegos instalados" cuando termine la descarga.
-    private func installGame(_ appId: String, validate: Bool = true) async {
-        let name = ownedGames.first(where: { $0.appId == appId })?.name ?? "App \(appId)"
+    private func restoreSteamOperations() async {
+        guard operations.hasItems else { return }
+        do { try await steamCMD.ensureInstalled() } catch { return }
+        var user = steamCMDUser
+        if user.isEmpty { user = accountService.detectAccount(bottle: localBottle)?.accountName ?? "" }
+        guard !user.isEmpty, await steamCMD.hasSession(user: user) else { return }
+        steamCMDUser = user
+        steamCMDSessionConfirmed = true
+        for item in operations.items {
+            operations.attach(gameID: item.id, executor: steamExecutor(appId: item.id, user: user))
+        }
+    }
+
+    private func refreshSteamUpdates() async {
+        let localBuildIDs = steamLocalBuildIDs()
+        guard !localBuildIDs.isEmpty else { updatesAvailable = []; return }
+        updatesAvailable = await steamCMD.gamesWithUpdates(localBuildIDs: localBuildIDs)
+    }
+
+    private func steamLocalBuildIDs() -> [String: String] {
+        var result: [String: String] = [:]
+        for game in localBottle.games {
+            guard let appID = game.steamAppId, !appID.isEmpty else { continue }
+            let manifest = "\(localBottle.steamDirectory)/steamapps/appmanifest_\(appID).acf"
+            guard let content = try? String(contentsOfFile: manifest, encoding: .utf8),
+                  let buildID = buildID(in: content), (Int(buildID) ?? 0) > 0 else { continue }
+            result[appID] = buildID
+        }
+        return result
+    }
+
+    private func buildID(in manifest: String) -> String? {
+        for line in manifest.split(separator: "\n") where line.lowercased().contains("\"buildid\"") {
+            let fields = line.split(separator: "\"").map(String.init)
+            if let value = fields.last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty && $0 != "buildid" }) {
+                return value.trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return nil
+    }
+
+    private func steamInstallSize(_ appID: String) -> Int64? {
+        let manifest = "\(localBottle.steamDirectory)/steamapps/appmanifest_\(appID).acf"
+        guard let content = try? String(contentsOfFile: manifest, encoding: .utf8) else { return nil }
+        return SteamCMDManager.sizeOnDisk(in: content)
+    }
+
+    private func enqueueSteamOperation(_ appId: String, kind: LibraryOperationKind) async {
+        let name = localBottle.games.first(where: { $0.steamAppId == appId })?.name
+            ?? ownedGames.first(where: { $0.appId == appId })?.name
+            ?? "App \(appId)"
         do { try await steamCMD.ensureInstalled() } catch {
             statusMessage = "No se pudo preparar SteamCMD."
             return
@@ -256,31 +334,86 @@ struct BottleDetailView: View {
         // tengamos el nombre guardado, así que la comprobamos antes de pedir login otra vez.
         var user = steamCMDUser
         if user.isEmpty { user = accountService.detectAccount(bottle: localBottle)?.accountName ?? "" }
-        guard !user.isEmpty, await steamCMD.hasSession(user: user) else {
+        var hasSteamCMDSession = steamCMDSessionConfirmed
+        if !hasSteamCMDSession, !user.isEmpty {
+            hasSteamCMDSession = await steamCMD.hasSession(user: user)
+        }
+        guard !user.isEmpty, hasSteamCMDSession else {
             pendingInstallAppId = appId
+            pendingOperationKind = kind
             showSteamCMDLogin = true
             return
         }
-        steamCMDUser = user   // recordarlo para la próxima
-        installingAppIds.insert(appId)
+        steamCMDSessionConfirmed = true
+        steamCMDUser = user
+        clearCancelledSteamMarker(appId)
+        operations.enqueue(gameID: appId, title: name, kind: kind,
+                           executor: steamExecutor(appId: appId, user: user))
+    }
+
+    private func steamExecutor(appId: String, user: String) -> LibraryOperationQueue.Executor {
+        { operation in
+            try await performSteamOperation(operation, appId: appId, user: user)
+        }
+    }
+
+    private func performSteamOperation(_ operation: LibraryOperationQueue.Operation,
+                                       appId: String, user: String) async throws {
+        let installedGame = localBottle.games.first { $0.steamAppId == appId }
+        let name = installedGame?.name
+            ?? ownedGames.first(where: { $0.appId == appId })?.name
+            ?? operation.title
+        let safeName = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "")
+        let installDir: String
+        if let existing = installedGame, !existing.installPath.isEmpty {
+            installDir = existing.installPath
+        } else {
+            installDir = "\(localBottle.steamDirectory)/steamapps/common/\(safeName)"
+        }
+
         // Marca de "descarga en vuelo" persistida: si la app muere a mitad (o el steamcmd se
         // interrumpe), `resumeInterruptedDownloads` la reanuda al volver (steamcmd continúa
         // desde su staging con el mismo force_install_dir). Se borra al completar.
-        let safeName = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "")
-        let installDir = "\(localBottle.steamDirectory)/steamapps/common/\(safeName)"
-        var inflight = UserDefaults.standard.dictionary(forKey: "steamcmd.inflight") as? [String: String] ?? [:]
-        inflight[appId] = installDir
-        UserDefaults.standard.set(inflight, forKey: "steamcmd.inflight")
-        defer {
-            installingAppIds.remove(appId); installMessages[appId] = nil; installPercents[appId] = nil
+        if operation.kind == .install, installedGame == nil {
+            var inflight = UserDefaults.standard.dictionary(forKey: "steamcmd.inflight") as? [String: String] ?? [:]
+            inflight[appId] = installDir
+            UserDefaults.standard.set(inflight, forKey: "steamcmd.inflight")
         }
-        installMessages[appId] = "Iniciando descarga…"
-        let ok = await steamCMD.installGame(appId: appId, user: user, installDir: installDir, validate: validate) { pct, msg in
-            installMessages[appId] = msg
-            // Solo barra determinada cuando hay descarga real con %; verificación → indeterminado.
-            installPercents[appId] = msg.contains("Descargando") ? max(0, min(1, pct / 100)) : nil
+
+        let operationID = "steam:\(appId)"
+        let validate = operation.kind != .update
+        let ok = await steamCMD.installGame(
+            appId: appId,
+            user: user,
+            installDir: installDir,
+            validate: validate,
+            operationID: operationID
+        ) { pct, message in
+            let presented: String
+            if message.contains("Descargando") {
+                switch operation.kind {
+                case .update: presented = "Actualizando… \(Int(pct))%"
+                case .verify: presented = "Verificando y reparando… \(Int(pct))%"
+                default: presented = message
+                }
+            } else if operation.kind == .verify {
+                presented = "Verificando archivos…"
+            } else {
+                presented = message
+            }
+            operations.report(
+                gameID: appId,
+                message: presented,
+                fraction: message.contains("Descargando") ? pct / 100 : nil
+            )
         }
-        if ok, let exe = mainExecutable(in: installDir) {
+        try Task.checkCancellation()
+        guard ok else {
+            throw NSError(domain: "Vessel", code: 41,
+                          userInfo: [NSLocalizedDescriptionKey: "SteamCMD no pudo completar la operación."])
+        }
+
+        if operation.kind == .install, installedGame == nil, let exe = mainExecutable(in: installDir) {
             let game = GameInstall(
                 name: name, executablePath: exe, steamAppId: appId, installPath: installDir,
                 coverImageURL: "https://cdn.akamai.steamstatic.com/steam/apps/\(appId)/library_600x900_2x.jpg"
@@ -289,12 +422,34 @@ struct BottleDetailView: View {
             if let updated = store.bottles.first(where: { $0.id == localBottle.id }) { localBottle = updated }
             ownedGames.removeAll { $0.appId == appId }
             NotificationService.shared.notify(title: "Instalación completada", body: name)
-            var done = UserDefaults.standard.dictionary(forKey: "steamcmd.inflight") as? [String: String] ?? [:]
-            done.removeValue(forKey: appId)
-            UserDefaults.standard.set(done, forKey: "steamcmd.inflight")
-        } else if !ok {
-            statusMessage = "La instalación de \(name) no se completó. Se reanudará al volver a abrir la biblioteca."
+        } else if operation.kind == .update {
+            updatesAvailable.remove(appId)
+            NotificationService.shared.notify(title: "Actualización completada", body: name)
+        } else if operation.kind == .verify {
+            NotificationService.shared.notify(title: "Verificación completada", body: name)
         }
+
+        var done = UserDefaults.standard.dictionary(forKey: "steamcmd.inflight") as? [String: String] ?? [:]
+        done.removeValue(forKey: appId)
+        UserDefaults.standard.set(done, forKey: "steamcmd.inflight")
+        await autoImportGames()
+        await refreshSteamUpdates()
+    }
+
+    private func cancelSteamOperation(_ game: StoreGame) {
+        var cancelled = Set(UserDefaults.standard.stringArray(forKey: "steamcmd.cancelled") ?? [])
+        cancelled.insert(game.id)
+        UserDefaults.standard.set(Array(cancelled), forKey: "steamcmd.cancelled")
+        var inflight = UserDefaults.standard.dictionary(forKey: "steamcmd.inflight") as? [String: String] ?? [:]
+        inflight.removeValue(forKey: game.id)
+        UserDefaults.standard.set(inflight, forKey: "steamcmd.inflight")
+        operations.cancel(game.id)
+    }
+
+    private func clearCancelledSteamMarker(_ appId: String) {
+        var cancelled = Set(UserDefaults.standard.stringArray(forKey: "steamcmd.cancelled") ?? [])
+        guard cancelled.remove(appId) != nil else { return }
+        UserDefaults.standard.set(Array(cancelled), forKey: "steamcmd.cancelled")
     }
 
     /// Reanuda las descargas de SteamCMD que quedaron a medias (app cerrada o steamcmd
@@ -303,6 +458,8 @@ struct BottleDetailView: View {
     private func resumeInterruptedDownloads() {
         // (a) Marcas persistidas por esta versión de la app.
         var pending = UserDefaults.standard.dictionary(forKey: "steamcmd.inflight") as? [String: String] ?? [:]
+        let intentionallyCancelled = Set(UserDefaults.standard.stringArray(forKey: "steamcmd.cancelled") ?? [])
+        pending = pending.filter { !intentionallyCancelled.contains($0.key) }
         // (b) Descubrimiento por disco: carpetas de staging huérfanas (`common/<Juego>/steamapps/
         // downloading/<appid>`) de interrupciones anteriores a esta versión. Solo si el appId
         // sigue siendo de nuestra propiedad y el juego NO está ya instalado.
@@ -313,6 +470,7 @@ struct BottleDetailView: View {
                 let downloading = "\(steamapps)/common/\(dirName)/steamapps/downloading"
                 guard let appIds = try? fm.contentsOfDirectory(atPath: downloading) else { continue }
                 for appId in appIds where pending[appId] == nil {
+                    guard !intentionallyCancelled.contains(appId), !operations.itemIDs.contains(appId) else { continue }
                     let alreadyOwned = localBottle.games.contains { $0.steamAppId == appId }
                     if !alreadyOwned, ownedGames.contains(where: { $0.appId == appId }) {
                         pending[appId] = "\(steamapps)/common/\(dirName)"
@@ -322,6 +480,7 @@ struct BottleDetailView: View {
         }
         guard !pending.isEmpty else { return }
         for (appId, dir) in pending {
+            if operations.itemIDs.contains(appId) { continue }
             // Si ya está completo (su downloading/ ya no existe y el juego está en el store), limpiar la marca.
             let staged = "\(dir)/steamapps/downloading/\(appId)"
             let alreadyOwned = localBottle.games.contains { $0.steamAppId == appId }
@@ -332,7 +491,7 @@ struct BottleDetailView: View {
                 continue
             }
             log.log("Reanudando descarga interrumpida de \(ownedGames.first(where: { $0.appId == appId })?.name ?? "App \(appId)")…", level: .info)
-            Task { await installGame(appId) }
+            Task { await enqueueSteamOperation(appId, kind: .install) }
         }
     }
 
@@ -403,6 +562,14 @@ struct BottleDetailView: View {
         }
         // Config efectiva resuelta ANTES de track para saber la capa gráfica usada y reintentar.
         let cfg = GameConfigStore.load(trackId)
+        let installRoot = game.installPath.isEmpty
+            ? (game.executablePath as NSString).deletingLastPathComponent
+            : game.installPath
+        exePath = GameExecutableOverride.resolve(
+            configuredPath: cfg.executableOverride,
+            installRoot: installRoot,
+            fallback: exePath
+        )
         let profile = CompatService.shared.profile(steam: game.steamAppId, title: game.name)
         var eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
         if let forcedLayer { eff.graphicsOverride = forcedLayer }

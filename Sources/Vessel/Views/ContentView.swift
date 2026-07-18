@@ -5,6 +5,8 @@ import AppKit
 /// el header** (`StoreSwitcher` con los logos de Steam/Epic/GOG) y cada tienda muestra su
 /// biblioteca en dos paneles (lista de juegos + ficha). Sin sidebar de tiendas.
 struct ContentView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var selectedStore: StoreKind = .steam
     @State private var profileStore = PlatformProfileStore.shared
     @State private var showingSettings = false
@@ -28,7 +30,9 @@ struct ContentView: View {
                 .navigationTitle("Vessel")
                 .toolbar {
                     ToolbarItem(placement: .principal) {
-                        StoreSwitcher(selection: $selectedStore.animation(.smooth(duration: 0.28)))
+                        StoreSwitcher(selection: $selectedStore.animation(
+                            reduceMotion ? nil : .smooth(duration: 0.28)
+                        ))
                     }
                     ToolbarItemGroup(placement: .primaryAction) {
                         if let profile = profileStore.profile(for: selectedStore) {
@@ -100,7 +104,7 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .selectStore)) { note in
             guard let store = note.object as? StoreKind else { return }
-            withAnimation(.smooth(duration: 0.28)) { selectedStore = store }
+            withAnimation(reduceMotion ? nil : .smooth(duration: 0.28)) { selectedStore = store }
         }
         .onReceive(NotificationCenter.default.publisher(for: .accountProfileDidChange)) { note in
             guard let store = note.object as? StoreKind else { return }
@@ -116,7 +120,7 @@ struct ContentView: View {
             launchStatus = nil   // un aviso terminal oculta el banner de progreso
         }
         .onReceive(NotificationCenter.default.publisher(for: .launchStatus)) { note in
-            withAnimation(.smooth(duration: 0.25)) {
+            withAnimation(reduceMotion ? nil : .smooth(duration: 0.25)) {
                 launchStatus = note.userInfo?["message"] as? String
             }
         }
@@ -131,7 +135,7 @@ struct ContentView: View {
             if let launchStatus {
                 LaunchStatusBanner(message: launchStatus)
                     .padding(.bottom, 28)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
             }
         }
         .task(id: selectedStore) {
@@ -144,7 +148,9 @@ struct ContentView: View {
     /// translúcido (blur). No intercepta clics (el contenido y el toolbar siguen siendo usables).
     @ViewBuilder private var glassHeader: some View {
         Group {
-            if #available(macOS 26.0, *) {
+            if reduceTransparency {
+                Theme.navyTop.opacity(0.98)
+            } else if #available(macOS 26.0, *) {
                 Color.clear.glassEffect(.regular, in: Rectangle())
             } else {
                 Rectangle().fill(.ultraThinMaterial)

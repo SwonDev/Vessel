@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 /// Configuración POR JUEGO (se aplica al lanzar). Persistida por id de juego en UserDefaults.
 struct GameConfig: Codable, Equatable {
@@ -40,10 +41,16 @@ struct GameConfig: Codable, Equatable {
     /// juegos); al salir, lo sincroniza (sube los cambios). Validado: arrancar el cliente dispara el
     /// AutoCloud real (cloud_log lo confirma). El backup local sigue activo SIEMPRE como red de seguridad.
     var steamCloudSync: Bool = false
+    /// Ejecutable alternativo dentro de la propia carpeta del juego. Sirve para títulos cuyo
+    /// launcher es de 32 bits pero el cliente real vive en `x64/`, `Binaries/Win64`, etc.
+    var executableOverride: String? = nil
 
     init() {}
 
-    enum CodingKeys: String, CodingKey { case graphicsLayer, launchArguments, esync, fsync, metalHUD, useRealSteam, steamCloudSync }
+    enum CodingKeys: String, CodingKey {
+        case graphicsLayer, launchArguments, esync, fsync, metalHUD, useRealSteam, steamCloudSync
+        case executableOverride
+    }
 
     /// Decodificación TOLERANTE: los campos ausentes usan su valor por defecto. El decoder
     /// sintetizado de Swift NO lo hace y RESETEABA todos los ajustes guardados al añadir un campo
@@ -57,6 +64,7 @@ struct GameConfig: Codable, Equatable {
         metalHUD = try c.decodeIfPresent(Bool.self, forKey: .metalHUD) ?? false
         useRealSteam = try c.decodeIfPresent(Bool.self, forKey: .useRealSteam) ?? false
         steamCloudSync = try c.decodeIfPresent(Bool.self, forKey: .steamCloudSync) ?? false
+        executableOverride = try c.decodeIfPresent(String.self, forKey: .executableOverride)
     }
 }
 
@@ -88,6 +96,8 @@ struct GameSettingsView: View {
     @State private var profile: CompatProfile?
     @State private var copied = false
     @State private var saveBackupDate: Date?
+    @State private var executableError: String?
+    @State private var showExecutableOptions = false
 
     // Carga la config guardada EN EL INIT (no en `onAppear`): así el sheet abre ya con el valor
     // real (antes pintaba un frame con los defaults — "Automático" y toggles por defecto — y saltaba
@@ -227,6 +237,56 @@ struct GameSettingsView: View {
                     }
 
                     if let path = installPath, !path.isEmpty {
+                        if supportsExecutableOverride {
+                            section("Avanzado") {
+                                DisclosureGroup(isExpanded: $showExecutableOptions) {
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        Text("Vessel elige automáticamente el cliente correcto. Si un juego abre un launcher incompatible, puedes señalar aquí su .exe principal de 64 bits.")
+                                            .font(.caption).foregroundStyle(.white.opacity(0.5))
+                                            .fixedSize(horizontal: false, vertical: true)
+                                        HStack(spacing: 10) {
+                                            Image(systemName: "terminal")
+                                                .foregroundStyle(tint)
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(selectedExecutableName)
+                                                    .font(.caption.weight(.semibold)).foregroundStyle(.white)
+                                                    .lineLimit(1).truncationMode(.middle)
+                                                Text(config.executableOverride == nil ? "Detectado automáticamente" : "Selección manual")
+                                                    .font(.caption2).foregroundStyle(.white.opacity(0.45))
+                                            }
+                                            Spacer()
+                                        }
+                                        .padding(10)
+                                        .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+
+                                        HStack(spacing: 10) {
+                                            Button("Elegir otro…", action: chooseExecutableOverride)
+                                                .vesselButton(false)
+                                            if config.executableOverride != nil {
+                                                Button("Restaurar automático") {
+                                                    config.executableOverride = nil
+                                                    executableError = nil
+                                                }
+                                                .buttonStyle(.plain)
+                                                .foregroundStyle(tint)
+                                            }
+                                        }
+                                        if let executableError {
+                                            Label(executableError, systemImage: "exclamationmark.triangle.fill")
+                                                .font(.caption2).foregroundStyle(.orange)
+                                        }
+                                        Text("Por seguridad solo se admiten archivos .exe situados dentro de la carpeta instalada.")
+                                            .font(.caption2).foregroundStyle(.white.opacity(0.42))
+                                    }
+                                    .padding(.top, 8)
+                                } label: {
+                                    Label("Ejecutable alternativo", systemImage: "terminal")
+                                        .font(.callout.weight(.semibold)).foregroundStyle(.white)
+                                }
+                                .tint(tint)
+                            }
+                        }
+
                         Button {
                             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
                         } label: {
@@ -281,6 +341,41 @@ struct GameSettingsView: View {
             saveBackupDate = SaveBackupManager.shared.lastBackupDate(store: sbStore, id: sbId)
         }
         .onChange(of: config) { _, new in GameConfigStore.save(game.id, new) }
+    }
+
+    private var supportsExecutableOverride: Bool {
+        guard let installPath, !installPath.isEmpty else { return false }
+        if store != .local { return true }
+        guard let executable = game.executablePath, !executable.isEmpty else { return false }
+        return (executable as NSString).pathExtension.caseInsensitiveCompare("exe") == .orderedSame
+    }
+
+    private var selectedExecutableName: String {
+        ((config.executableOverride ?? game.executablePath ?? "Automático") as NSString).lastPathComponent
+    }
+
+    private func chooseExecutableOverride() {
+        guard let installPath, !installPath.isEmpty else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Elegir ejecutable del juego"
+        panel.message = "Selecciona el ejecutable principal dentro de la carpeta instalada."
+        panel.prompt = "Usar ejecutable"
+        panel.directoryURL = URL(fileURLWithPath: installPath, isDirectory: true)
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        if let executableType = UTType(filenameExtension: "exe") {
+            panel.allowedContentTypes = [executableType]
+        }
+        guard panel.runModal() == .OK, let selected = panel.url else { return }
+
+        switch GameExecutableOverride.validate(selected.path, installRoot: installPath) {
+        case .success(let executable):
+            config.executableOverride = executable
+            executableError = nil
+        case .failure(let error):
+            executableError = error.localizedDescription
+        }
     }
 
     /// Insignia de compatibilidad (rating de la comunidad) + notas del perfil.

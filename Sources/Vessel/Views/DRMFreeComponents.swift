@@ -29,7 +29,7 @@ struct ItchLinkSheet: View {
                 .padding(10)
                 .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
                 .onSubmit(validate)
-            if let error { Text(error).font(.caption).foregroundStyle(.red) }
+            if let error { Text(error).font(.caption).foregroundStyle(Theme.destructive) }
 
             HStack {
                 Spacer()
@@ -257,7 +257,7 @@ struct SteamDRMImportSheet: View {
 
     @ViewBuilder private func installedAction(_ c: SteamDRMScanner.Candidate) -> some View {
         if done.contains(c.appId) {
-            Label("Generado", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
+            Label("Generado", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(Theme.play)
         } else if let prog = progress[c.appId] {
             progressView(prog)
         } else if c.status.isGenerable {
@@ -421,7 +421,7 @@ struct HumbleLinkSheet: View {
             }
             .padding(12)
             if let error {
-                Text(error).font(.caption).foregroundStyle(.red).padding(.horizontal, 12).padding(.bottom, 8)
+                Text(error).font(.caption).foregroundStyle(Theme.destructive).padding(.horizontal, 12).padding(.bottom, 8)
             }
             HumbleLoginWebView(
                 onSessionCaptured: { value in

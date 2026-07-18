@@ -141,6 +141,7 @@ private struct StoreSwitchButton: View {
     let isSelected: Bool
     let action: () -> Void
     @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button(action: action) {
@@ -174,7 +175,7 @@ private struct StoreSwitchButton: View {
                 Circle().strokeBorder(.white.opacity(isSelected ? 0.28 : 0), lineWidth: 0.5)
             }
             .shadow(color: isSelected ? store.tint.opacity(0.55) : .clear, radius: 7, y: 2)
-            .scaleEffect(hovering && !isSelected ? 1.08 : 1)
+            .scaleEffect(hovering && !isSelected && !reduceMotion ? 1.08 : 1)
         }
         .buttonStyle(.plain)
         .vesselHelp(
@@ -184,8 +185,8 @@ private struct StoreSwitchButton: View {
         )
         .accessibilityLabel("Tienda \(store.displayName)")
         .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
-        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelected)
-        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: hovering)
+        .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.7), value: isSelected)
+        .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.7), value: hovering)
         .onHover { hovering = $0 }
     }
 }

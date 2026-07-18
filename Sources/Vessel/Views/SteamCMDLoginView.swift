@@ -39,7 +39,7 @@ struct SteamCMDLoginView: View {
             .vesselCard(padding: 10, cornerRadius: Theme.Radius.control)
 
             if let errorText {
-                Text(errorText).font(.caption).foregroundStyle(.red)
+                Text(errorText).font(.caption).foregroundStyle(Theme.destructive)
             }
 
             HStack {

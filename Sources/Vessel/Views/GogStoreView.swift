@@ -22,15 +22,8 @@ final class GogStore {
     private let store = BottleStore.shared
     private var gogBottle: Bottle?
 
-    /// Estado de instalación en curso por juego (para los botones/tarjetas).
-    var installingAppIds: Set<String> = []
-    var installProgress: [String: String] = [:]
-    /// Progreso 0.0–1.0 si se conoce (parseado de gogdl) → barra determinada estilo Steam.
-    var installPercents: [String: Double] = [:]
-
-    func isInstalling(_ id: String) -> Bool { installingAppIds.contains(id) }
-    func progress(_ id: String) -> String? { installProgress[id] }
-    func percent(_ id: String) -> Double? { installPercents[id] }
+    let operations = LibraryOperationQueue(storageKey: "gog")
+    var updatesAvailable: Set<String> = []
 
     /// Re-evalúa el estado (al abrir la vista o al volver la app a primer plano).
     /// No interrumpe una operación en curso.
@@ -40,7 +33,11 @@ final class GogStore {
         if gogdl.isAuthenticated() {
             // Carga INSTANTÁNEA desde caché; el refresco real va en 2.º plano (patrón Heroic).
             if let cached = LibraryCache.load("gog", as: [GogdlManager.GogGame].self) {
-                phase = .connected(withInstalledState(cached))
+                let restored = withInstalledState(cached)
+                phase = .connected(restored)
+                restoreOperations(for: restored)
+                Task { await self.refreshUpdates(for: restored) }
+                Task { await self.refreshInstallSizes(for: restored) }
             } else {
                 phase = .working("Cargando biblioteca GOG…")
             }
@@ -68,7 +65,11 @@ final class GogStore {
             // Paso 3: Biblioteca
             phase = .working("Cargando tu biblioteca de GOG…")
             let games = try await gogdl.ownedGames()
-            phase = .connected(withInstalledState(games))
+            let installed = withInstalledState(games)
+            phase = .connected(installed)
+            restoreOperations(for: installed)
+            await refreshUpdates(for: installed)
+            await refreshInstallSizes(for: installed)
         } catch {
             log.log("Error al conectar GOG: \(error.localizedDescription)", level: .error)
             phase = .error(error.localizedDescription)
@@ -104,7 +105,11 @@ final class GogStore {
     private func loadLibrary() async {
         do {
             let games = try await gogdl.ownedGames()
-            phase = .connected(withInstalledState(games))
+            let installed = withInstalledState(games)
+            phase = .connected(installed)
+            restoreOperations(for: installed)
+            await refreshUpdates(for: installed)
+            await refreshInstallSizes(for: installed)
         } catch {
             log.log("Error cargando biblioteca GOG: \(error.localizedDescription)", level: .error)
             // Si ya mostramos la caché, no romper la vista con un error.
@@ -145,37 +150,141 @@ final class GogStore {
         "\(bottle.prefixPath)/drive_c/Games/GOG/\(appId)"
     }
 
-    /// Instala un juego de GOG dentro del bottle de Vessel (con progreso en vivo).
-    func install(_ game: GogdlManager.GogGame) async {
-        installingAppIds.insert(game.appId)
-        installProgress[game.appId] = "Preparando…"
-        defer {
-            installingAppIds.remove(game.appId)
-            installProgress[game.appId] = nil
-            installPercents[game.appId] = nil
+    func installPath(for game: GogdlManager.GogGame) -> String? {
+        guard game.installed,
+              let bottle = gogBottle ?? store.bottles.first(where: { $0.name == "GOG" }) else { return nil }
+        return installDir(bottle, game.appId)
+    }
+
+    func executablePath(for game: GogdlManager.GogGame) -> String? {
+        guard let path = installPath(for: game) else { return nil }
+        return gogdl.primaryExecutable(appId: game.appId, installDir: path)
+    }
+
+    private func refreshUpdates(for games: [GogdlManager.GogGame]) async {
+        guard let bottle = gogBottle ?? store.bottles.first(where: { $0.name == "GOG" }) else {
+            updatesAvailable = []
+            return
         }
+        let installed = games.filter(\.installed).map {
+            (appId: $0.appId, installDir: installDir(bottle, $0.appId))
+        }
+        updatesAvailable = await gogdl.gamesWithUpdates(installedGames: installed)
+    }
+
+    private func refreshInstallSizes(for games: [GogdlManager.GogGame]) async {
+        guard let bottle = gogBottle ?? store.bottles.first(where: { $0.name == "GOG" }) else { return }
+        let paths = games.filter(\.installed).map { ($0.appId, installDir(bottle, $0.appId)) }
+        let sizes = await Task.detached(priority: .utility) {
+            Dictionary(uniqueKeysWithValues: paths.compactMap { appID, path in
+                GogdlManager.installedSizeBytes(at: path).map { (appID, $0) }
+            })
+        }.value
+        guard case .connected(let current) = phase else { return }
+        phase = .connected(current.map { game in
+            var updated = game
+            updated.installSizeBytes = sizes[game.appId]
+            return updated
+        })
+    }
+
+    func install(_ game: GogdlManager.GogGame) { enqueue(game, kind: .install) }
+    func verify(_ game: GogdlManager.GogGame) { enqueue(game, kind: .verify) }
+    func update(_ game: GogdlManager.GogGame) { enqueue(game, kind: .update) }
+    func uninstall(_ game: GogdlManager.GogGame) { enqueue(game, kind: .uninstall) }
+
+    func updateAll(_ games: [GogdlManager.GogGame]) {
+        for game in games where game.installed { enqueue(game, kind: .update) }
+    }
+
+    func dlcs(for appID: String) async -> [StoreDLC] {
+        await gogdl.ownedDLCs(appId: appID).map {
+            StoreDLC(id: $0.id, title: $0.title, coverURL: nil,
+                     installID: $0.id, owned: true, installed: $0.installed)
+        }
+    }
+
+    func installDLC(_ dlc: StoreDLC, for game: GogdlManager.GogGame) {
+        guard game.installed, dlc.owned, dlc.installed != true else { return }
+        operations.enqueue(
+            gameID: game.appId,
+            title: "\(game.title) · \(dlc.title)",
+            kind: .dlc,
+            targetID: dlc.id,
+            executor: executor(for: game)
+        )
+    }
+
+    private func enqueue(_ game: GogdlManager.GogGame, kind: LibraryOperationKind) {
+        operations.enqueue(gameID: game.appId, title: game.title, kind: kind,
+                           executor: executor(for: game))
+    }
+
+    private func restoreOperations(for games: [GogdlManager.GogGame]) {
+        let byID = Dictionary(games.map { ($0.appId, $0) }, uniquingKeysWith: { first, _ in first })
+        for item in operations.items {
+            guard let game = byID[item.id] else { continue }
+            operations.attach(gameID: item.id, executor: executor(for: game))
+        }
+    }
+
+    private func executor(for game: GogdlManager.GogGame) -> LibraryOperationQueue.Executor {
+        { [weak self] operation in
+            guard let self else { throw CancellationError() }
+            try await self.perform(operation, game: game)
+        }
+    }
+
+    private func perform(_ operation: LibraryOperationQueue.Operation,
+                         game: GogdlManager.GogGame) async throws {
         do {
             let bottle = try await ensureBottle()
             let dir = installDir(bottle, game.appId)
-            try await gogdl.installGame(appId: game.appId, installDir: dir) { line in
-                if let pct = GogdlManager.progressPercent(in: line) {
-                    Task { @MainActor in
-                        self.installPercents[game.appId] = max(0, min(1, pct / 100))
-                        self.installProgress[game.appId] = "Descargando… \(Int(pct))%"
-                    }
+            let operationID = "gog:\(operation.id)"
+            let progress: @Sendable (String) -> Void = { [weak self] line in
+                guard let pct = GogdlManager.progressPercent(in: line) else { return }
+                Task { @MainActor [weak self] in
+                    let verb = operation.kind == .verify ? "Verificando" :
+                               (operation.kind == .update ? "Actualizando" : "Descargando")
+                    self?.operations.report(gameID: operation.id,
+                                            message: "\(verb)… \(Int(pct))%",
+                                            fraction: pct / 100)
                 }
             }
-            // gogdl deja los ficheros, pero el juego NO está completo hasta ejecutar el
-            // `goggame-<id>.script` de GOG (crea los .ini/.conf, las carpetas de partidas y las
-            // claves de registro que el juego lee al arrancar). Sin esto, los clásicos se cierran
-            // al instante sin decir por qué.
-            installProgress[game.appId] = "Configurando el juego…"
-            await runPostInstall(game.appId, bottle: bottle)
-            NotificationService.shared.notify(title: "Instalación completada", body: game.title)
+
+            switch operation.kind {
+            case .install:
+                try await gogdl.installGame(appId: game.appId, installDir: dir,
+                                            operationID: operationID, onProgress: progress)
+                operations.report(gameID: operation.id, message: "Configurando el juego…", fraction: nil)
+                await runPostInstall(game.appId, bottle: bottle)
+                NotificationService.shared.notify(title: "Instalación completada", body: game.title)
+            case .verify:
+                try await gogdl.repairGame(appId: game.appId, installDir: dir,
+                                           operationID: operationID, onProgress: progress)
+            case .update:
+                try await gogdl.updateGame(appId: game.appId, installDir: dir,
+                                           operationID: operationID, onProgress: progress)
+                updatesAvailable.remove(game.appId)
+                NotificationService.shared.notify(title: "Actualización completada", body: game.title)
+            case .uninstall:
+                let root = "\(bottle.prefixPath)/drive_c/Games/GOG"
+                try gogdl.uninstallGame(installDir: dir, gamesRoot: root)
+                NotificationService.shared.notify(title: "Juego desinstalado", body: game.title)
+            case .dlc:
+                guard let dlcID = operation.targetID else {
+                    throw GogdlManager.GogdlError.notImplemented("No se pudo identificar el contenido adicional.")
+                }
+                try await gogdl.installDLC(appId: game.appId, dlcID: dlcID, installDir: dir,
+                                           operationID: operationID, onProgress: progress)
+                NotificationService.shared.notify(title: "Contenido instalado", body: operation.title)
+            }
             await reloadLibrary()
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
-            log.log("Error instalando \(game.title): \(error.localizedDescription)", level: .error)
-            installProgress[game.appId] = "Error en la instalación"
+            log.log("GOG · \(game.title): \(error.localizedDescription)", level: .error)
+            throw error
         }
     }
 
@@ -187,82 +296,6 @@ final class GogStore {
         guard let root = gogdl.gameRoot(appId: appId, installDir: dir) else { return }
         await GOGPostInstall.applyIfNeeded(appId: appId, root: root, prefix: bottle.prefixPath,
                                            winePath: wineManager.resolveGameWine(for: bottle))
-    }
-
-    /// Verifica y repara un juego de GOG ya instalado (reusa el feedback visual de instalación).
-    func verify(_ game: GogdlManager.GogGame) async {
-        installingAppIds.insert(game.appId)
-        installProgress[game.appId] = "Verificando…"
-        defer {
-            installingAppIds.remove(game.appId)
-            installProgress[game.appId] = nil
-            installPercents[game.appId] = nil
-        }
-        do {
-            let bottle = try await ensureBottle()
-            let dir = installDir(bottle, game.appId)
-            try await gogdl.repairGame(appId: game.appId, installDir: dir) { line in
-                if let pct = GogdlManager.progressPercent(in: line) {
-                    Task { @MainActor in
-                        self.installPercents[game.appId] = max(0, min(1, pct / 100))
-                        self.installProgress[game.appId] = "Verificando… \(Int(pct))%"
-                    }
-                }
-            }
-            await reloadLibrary()
-        } catch {
-            log.log("Error verificando \(game.title): \(error.localizedDescription)", level: .error)
-            installProgress[game.appId] = "Error en la verificación"
-        }
-    }
-
-    /// Aplica la actualización de un juego de GOG (reusa el feedback visual de instalación).
-    func update(_ game: GogdlManager.GogGame) async {
-        installingAppIds.insert(game.appId)
-        installProgress[game.appId] = "Actualizando…"
-        defer {
-            installingAppIds.remove(game.appId)
-            installProgress[game.appId] = nil
-            installPercents[game.appId] = nil
-        }
-        do {
-            let bottle = try await ensureBottle()
-            let dir = installDir(bottle, game.appId)
-            try await gogdl.updateGame(appId: game.appId, installDir: dir) { line in
-                if let pct = GogdlManager.progressPercent(in: line) {
-                    Task { @MainActor in
-                        self.installPercents[game.appId] = max(0, min(1, pct / 100))
-                        self.installProgress[game.appId] = "Actualizando… \(Int(pct))%"
-                    }
-                }
-            }
-            await reloadLibrary()
-        } catch {
-            log.log("Error actualizando \(game.title): \(error.localizedDescription)", level: .error)
-            installProgress[game.appId] = "Error en la actualización"
-        }
-    }
-
-    /// Desinstala un juego de GOG (borra su carpeta de forma segura) y refresca la biblioteca.
-    func uninstall(_ game: GogdlManager.GogGame) async {
-        installingAppIds.insert(game.appId)
-        installProgress[game.appId] = "Desinstalando…"
-        defer {
-            installingAppIds.remove(game.appId)
-            installProgress[game.appId] = nil
-            installPercents[game.appId] = nil
-        }
-        do {
-            let bottle = try await ensureBottle()
-            let dir = installDir(bottle, game.appId)
-            let root = "\(bottle.prefixPath)/drive_c/Games/GOG"
-            try gogdl.uninstallGame(installDir: dir, gamesRoot: root)
-            NotificationService.shared.notify(title: "Juego desinstalado", body: game.title)
-            await reloadLibrary()
-        } catch {
-            log.log("Error desinstalando \(game.title): \(error.localizedDescription)", level: .error)
-            installProgress[game.appId] = "Error al desinstalar"
-        }
     }
 
     /// Lanza un juego de GOG ya instalado con el motor de juegos (wine-dxmt), igual que Steam/Epic.
@@ -281,12 +314,22 @@ final class GogStore {
         let prefix = bottle.prefixPath
         // Config efectiva resuelta ANTES de track para saber la capa gráfica usada y reintentar.
         let cfg = GameConfigStore.load(game.appId)
+        let detectedLaunch = gogdl.primaryLaunch(appId: game.appId, installDir: dir)
+        let executable = GameExecutableOverride.resolve(
+            configuredPath: cfg.executableOverride,
+            installRoot: dir,
+            fallback: detectedLaunch?.executable ?? ""
+        )
+        guard !executable.isEmpty else {
+            log.log("GOG: no se encontró el ejecutable de \(game.title). Elige uno en Ajustes → Avanzado o reinstala el juego.", level: .warn)
+            return
+        }
+        let launchArguments = executable == detectedLaunch?.executable ? (detectedLaunch?.arguments ?? []) : []
         let profile = CompatService.shared.profile(gog: game.appId, title: game.title)
         var eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
         if let forcedLayer { eff.graphicsOverride = forcedLayer }
         // Motor REAL que se usará (no `.auto`), para que el fallback recorra los 3 motores.
-        let usedLayer = gogdl.primaryExecutable(appId: game.appId, installDir: dir)
-            .map { wineManager.resolvedGraphicsLayer(forExecutable: $0, effective: eff) } ?? eff.graphicsOverride
+        let usedLayer = wineManager.resolvedGraphicsLayer(forExecutable: executable, effective: eff)
         await GameLaunchTracker.shared.track(
             game.appId, statsKey: "gog:\(game.appId)",
             // Cloud saves automáticos: al CERRAR el juego, sube a la nube de GOG + copia local de Vessel.
@@ -297,24 +340,20 @@ final class GogStore {
         ) {
             // Ejecutable **y argumentos**: los clásicos de GOG son DOS/ScummVM envueltos y su
             // ejecutable es `DOSBOX\dosbox.exe`, que sin `-conf …` abre un prompt de DOS vacío.
-            guard let launch = self.gogdl.primaryLaunch(appId: game.appId, installDir: dir) else {
-                throw GogdlManager.GogdlError.notImplemented("No se encontró el ejecutable del juego. Reinstálalo.")
-            }
             // Auto-reparación: completa la post-instalación de GOG si falta (juegos instalados
             // antes de que Vessel supiera hacerlo). Idempotente y barato.
             await self.runPostInstall(game.appId, bottle: bottle)
             // Cloud saves: baja lo último de la nube ANTES de jugar (silencioso si no aplica).
             await self.gogdl.syncSaves(appId: game.appId, installDir: dir, prefix: prefix, direction: .download)
             await SaveBackupManager.shared.restoreIfNewer(store: .gog, id: game.appId, title: game.title, steamId: nil, prefix: prefix, installPath: dir)
-            return try await self.wineManager.launch(executable: launch.executable, in: bottle,
-                                                     arguments: launch.arguments, effective: eff)
+            return try await self.wineManager.launch(executable: executable, in: bottle,
+                                                     arguments: launchArguments, effective: eff)
         }
         // Diagnóstico + fallback automático de motor (DXMT ↔ GPTK) si falla el arranque.
         LaunchDiagnostics.monitorAndMaybeRetry(
             prefix: prefix, gameId: game.appId, gameTitle: game.title,
             currentLayer: usedLayer, attempt: attempt,
-            fallbackLayers: gogdl.primaryExecutable(appId: game.appId, installDir: dir)
-                .map { wineManager.fallbackLayers(forExecutable: $0, effective: eff) } ?? [],
+            fallbackLayers: wineManager.fallbackLayers(forExecutable: executable, effective: eff),
             isRunning: { GameLaunchTracker.shared.state(game.appId) == .running },
             persistWinningLayer: { winLayer in
                 var c = GameConfigStore.load(game.appId)
@@ -326,14 +365,13 @@ final class GogStore {
             },
             // Auto-reparación de runtime (VC++/.NET) también para GOG, igual que Steam.
             retryWithRuntimeFix: { [weak self] in
-                guard let self, let exe = self.gogdl.primaryExecutable(appId: game.appId, installDir: dir) else { return }
-                await self.wineManager.installMissingRuntimes(in: bottle, forExecutable: exe)
+                guard let self else { return }
+                await self.wineManager.installMissingRuntimes(in: bottle, forExecutable: executable)
                 await self.play(game, attempt: attempt + 1)
             }
         ) { [weak self] next in await self?.play(game, forcedLayer: next, attempt: attempt + 1) }
     }
 }
-
 // MARK: - Vista raíz
 
 /// Vista de la tienda GOG: pantalla de conexión sin sesión, progreso mientras
@@ -349,16 +387,40 @@ struct GogStoreView: View {
                     store: .gog,
                     games: games.map {
                         StoreGame(id: $0.appId, title: $0.title,
-                                  coverURL: $0.coverURL, installed: $0.installed)
+                                  coverURL: $0.coverURL, installed: $0.installed,
+                                  updateAvailable: gog.updatesAvailable.contains($0.appId),
+                                  installPath: gog.installPath(for: $0),
+                                  executablePath: gog.executablePath(for: $0),
+                                  installSizeBytes: $0.installSizeBytes)
                     },
-                    installingIDs: gog.installingAppIds,
-                    progressFor: { gog.progress($0) },
-                    percentFor: { gog.percent($0) },
-                    onInstall: { sg in if let g = games.first(where: { $0.appId == sg.id }) { Task { await gog.install(g) } } },
+                    installingIDs: gog.operations.itemIDs,
+                    progressFor: { gog.operations.message(for: $0) },
+                    percentFor: { gog.operations.fraction(for: $0) },
+                    transferTitleFor: { gog.operations.title(for: $0) },
+                    transferPhaseFor: { gog.operations.transferPhase(for: $0) },
+                    transferPositionFor: { gog.operations.position(of: $0) },
+                    canPauseTransfer: { gog.operations.canPause($0) },
+                    canCancelTransfer: { gog.operations.canCancel($0) },
+                    canPrioritizeTransfer: { gog.operations.canPrioritize($0) },
+                    canRetryTransfer: { gog.operations.canRetry($0) },
+                    onPauseTransfer: { gog.operations.pause($0.id) },
+                    onResumeTransfer: { gog.operations.resume($0.id) },
+                    onCancelTransfer: { gog.operations.cancel($0.id) },
+                    onPrioritizeTransfer: { gog.operations.prioritize($0.id) },
+                    onRetryTransfer: { gog.operations.resume($0.id) },
+                    onInstall: { sg in if let g = games.first(where: { $0.appId == sg.id }) { gog.install(g) } },
                     onPlay:    { sg in if let g = games.first(where: { $0.appId == sg.id }) { Task { await gog.play(g) } } },
-                    onUninstall: { sg in if let g = games.first(where: { $0.appId == sg.id }) { Task { await gog.uninstall(g) } } },
-                    onVerify:  { sg in if let g = games.first(where: { $0.appId == sg.id }) { Task { await gog.verify(g) } } },
-                    onUpdate:  { sg in if let g = games.first(where: { $0.appId == sg.id }) { Task { await gog.update(g) } } },
+                    onUninstall: { sg in if let g = games.first(where: { $0.appId == sg.id }) { gog.uninstall(g) } },
+                    onVerify:  { sg in if let g = games.first(where: { $0.appId == sg.id }) { gog.verify(g) } },
+                    onUpdate:  { sg in if let g = games.first(where: { $0.appId == sg.id }) { gog.update(g) } },
+                    onUpdateAll: { storeGames in
+                        gog.updateAll(storeGames.compactMap { sg in games.first { $0.appId == sg.id } })
+                    },
+                    dlcsFor: { await gog.dlcs(for: $0.id) },
+                    onInstallDLC: { storeGame, dlc in
+                        guard let game = games.first(where: { $0.appId == storeGame.id }) else { return }
+                        gog.installDLC(dlc, for: game)
+                    },
                     onReload:  { Task { await gog.reloadLibrary() } },
                     onLogout:  { gog.disconnect() }
                 )
@@ -393,13 +455,14 @@ struct ConnectGogView: View {
     private let tint = StoreKind.gog.tint
     @State private var showingLogin = false
     @State private var pulse = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 22) {
             StoreLogoTile(store: .gog)
-                .scaleEffect(pulse ? 1.08 : 1.0)
+                .scaleEffect(pulse && !reduceMotion ? 1.08 : 1.0)
                 .animation(
-                    .easeInOut(duration: 1.4).repeatForever(autoreverses: true),
+                    reduceMotion ? nil : .easeInOut(duration: 1.4).repeatForever(autoreverses: true),
                     value: pulse
                 )
 
@@ -436,7 +499,7 @@ struct ConnectGogView: View {
                     if let errorMessage {
                         Text(errorMessage)
                             .font(.callout)
-                            .foregroundStyle(.red.opacity(0.9))
+                            .foregroundStyle(Theme.destructive.opacity(0.92))
                             .multilineTextAlignment(.center)
                             .frame(maxWidth: 440)
                             .padding(.horizontal, 16)
@@ -483,6 +546,7 @@ struct GogWebLoginSheet: View {
     let authURL: URL
     let onCodeCaptured: (String) -> Void
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var isLoading = true
     @State private var webError: String?
@@ -526,7 +590,9 @@ struct GogWebLoginSheet: View {
                     },
                     onLoadingChanged: { loading in
                         if loading { webError = nil }
-                        withAnimation(.easeOut(duration: 0.3)) { isLoading = loading }
+                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) {
+                            isLoading = loading
+                        }
                     }
                 )
 
@@ -565,194 +631,9 @@ struct GogWebLoginSheet: View {
                     .transition(.opacity)
                 }
             }
-            .animation(.easeOut(duration: 0.25), value: webError)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: webError)
         }
         .frame(width: 820, height: 640)
         .background(Theme.navyDeep)
-    }
-}
-
-// MARK: - Biblioteca de GOG (connected)
-
-/// Grid de juegos de la cuenta GOG con búsqueda integrada.
-struct GogLibraryView: View {
-    let games: [GogdlManager.GogGame]
-    let onDisconnect: () -> Void
-    let onReload: () -> Void
-
-    @State private var searchText = ""
-    private let tint = StoreKind.gog.tint
-    private let columns = [GridItem(.adaptive(minimum: 158, maximum: 200), spacing: Theme.Space.gameGrid)]
-
-    private var filtered: [GogdlManager.GogGame] {
-        guard !searchText.isEmpty else { return games }
-        return games.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
-    }
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Theme.Space.section) {
-
-                // Cabecera
-                HStack(spacing: 14) {
-                    StoreLogoTile(store: .gog, size: 52)
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("GOG")
-                            .font(.title.bold())
-                            .foregroundStyle(.white)
-                        Text("\(games.count) juego\(games.count == 1 ? "" : "s") en tu biblioteca")
-                            .font(.subheadline)
-                            .foregroundStyle(.white.opacity(0.50))
-                    }
-
-                    Spacer()
-
-                    Button(action: onReload) {
-                        Label("Actualizar", systemImage: "arrow.clockwise")
-                    }
-                    .vesselButton(false)
-
-                    Button(role: .destructive, action: onDisconnect) {
-                        Label("Cerrar sesión", systemImage: "rectangle.portrait.and.arrow.right")
-                    }
-                    .vesselButton(false)
-                }
-
-                // Barra de búsqueda (solo si hay suficientes juegos)
-                if games.count > 6 {
-                    HStack(spacing: 8) {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundStyle(.white.opacity(0.40))
-                        TextField("Buscar en tu biblioteca de GOG…", text: $searchText)
-                            .textFieldStyle(.plain)
-                            .foregroundStyle(.white)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(
-                        .white.opacity(0.08),
-                        in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-                            .strokeBorder(.white.opacity(0.12), lineWidth: 0.5)
-                    )
-                }
-
-                // Grid de juegos
-                if filtered.isEmpty {
-                    Text(
-                        searchText.isEmpty
-                        ? "No se encontraron juegos en tu cuenta de GOG."
-                        : "Sin resultados para «\(searchText)»."
-                    )
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.top, 40)
-                } else {
-                    LazyVGrid(columns: columns, spacing: Theme.Space.gameGrid) {
-                        ForEach(filtered) { game in
-                            GogGameCard(game: game)
-                        }
-                    }
-                }
-            }
-            .padding(Theme.Space.page)
-        }
-        .vesselBackground(tint: tint)
-    }
-}
-
-// MARK: - Tarjeta de juego GOG
-
-/// Tarjeta de juego de GOG con portada generada a partir del título
-/// (degradado + iniciales) hasta que se integre la API de imágenes de GOG.
-/// El color de fondo se genera deterministamente por hash del `appId` para que sea
-/// consistente entre sesiones y no cambie al actualizar la biblioteca.
-struct GogGameCard: View {
-    let game: GogdlManager.GogGame
-    @State private var hovering = false
-
-    /// Color de fondo generado deterministamente por hash del appId del juego.
-    private var placeholderColor: Color {
-        var h = 5381
-        for c in game.appId.unicodeScalars { h = ((h << 5) &+ h) &+ Int(c.value) }
-        // Matiz púrpura/violeta (identidad visual de GOG) desplazado por hash
-        let baseHue = 0.76  // ~275° — morado GOG
-        let offset  = Double(abs(h) % 80) / 80.0 * 0.20 - 0.10  // ±10% de desviación
-        return Color(hue: (baseHue + offset).truncatingRemainder(dividingBy: 1.0),
-                     saturation: 0.52, brightness: 0.38)
-    }
-
-    /// Iniciales del título (máximo 2 palabras, 1 carácter cada una).
-    private var initials: String {
-        game.title
-            .split(separator: " ")
-            .prefix(2)
-            .compactMap { $0.first.map(String.init) }
-            .joined()
-            .uppercased()
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Portada placeholder: degradado morado GOG + iniciales
-            ZStack {
-                LinearGradient(
-                    colors: [placeholderColor, placeholderColor.opacity(0.50)],
-                    startPoint: .topLeading, endPoint: .bottomTrailing
-                )
-                // Patrón de estrella decorativo (identidad GOG)
-                Image(systemName: "star.fill")
-                    .font(.system(size: 60))
-                    .foregroundStyle(.white.opacity(0.06))
-                    .offset(x: 28, y: -20)
-
-                Text(initials)
-                    .font(.system(size: 40, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.85))
-                    .shadow(color: .black.opacity(0.30), radius: 4, y: 2)
-            }
-            .frame(height: 140)
-            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.cover, style: .continuous))
-
-            // Información del juego
-            VStack(alignment: .leading, spacing: 4) {
-                Text(game.title)
-                    .font(.callout.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if game.installed {
-                    Label("Instalado", systemImage: "checkmark.circle.fill")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(Color(red: 0.30, green: 0.85, blue: 0.55))
-                } else {
-                    Text("En tu biblioteca")
-                        .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.35))
-                }
-            }
-            .padding(.horizontal, 7)
-            .padding(.vertical, 9)
-        }
-        .background(
-            .white.opacity(hovering ? 0.10 : 0.05),
-            in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-                .strokeBorder(.white.opacity(hovering ? 0.20 : 0.08), lineWidth: 0.5)
-        )
-        .shadow(
-            color: placeholderColor.opacity(hovering ? 0.50 : 0.18),
-            radius: hovering ? 18 : 6,
-            y: hovering ? 9 : 3
-        )
-        .scaleEffect(hovering ? 1.03 : 1.0)
-        .animation(.spring(response: 0.28, dampingFraction: 0.72), value: hovering)
-        .onHover { hovering = $0 }
     }
 }

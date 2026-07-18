@@ -43,7 +43,7 @@ struct SteamInstallerView: View {
 
                 if let error = error {
                     Text(error)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(Theme.destructive)
                         .font(.callout)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 360)
