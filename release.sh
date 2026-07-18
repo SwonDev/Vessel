@@ -4,8 +4,8 @@
 #   ./release.sh 0.0.2 "Notas de la versión"
 #
 # Hace TODO el ciclo: sube VERSION.txt (build incremental) → compila y empaqueta el .app →
-# comprime → lo FIRMA con la clave EdDSA del llavero → crea el GitHub Release con el .zip →
-# añade el <item> al appcast.xml → commit + push. Los usuarios lo reciben solos por Sparkle.
+# comprime → lo FIRMA con la clave EdDSA del llavero → actualiza el appcast → commit + tag →
+# publica el GitHub Release con el .zip → push de main. Los usuarios lo reciben solos por Sparkle.
 #
 # Requisitos: `gh` autenticado como SwonDev y la clave privada de Sparkle en el llavero
 # (ver docs/RELEASE-SPARKLE.md).
@@ -51,12 +51,8 @@ LENGTH=$(printf '%s' "$SIGN_OUT" | sed -n 's/.*length="\([^"]*\)".*/\1/p')
 [ -n "$ED_SIG" ] || { echo "❌ No se pudo firmar. ¿Está la clave privada de Sparkle en el llavero?"; exit 1; }
 echo "==> Firmado (len=$LENGTH)"
 
-# 5) GitHub Release (si ya existe el tag, solo sube/reemplaza el asset).
-if gh release view "v$VERSION" >/dev/null 2>&1; then
-    gh release upload "v$VERSION" "$ZIP" --clobber
-else
-    gh release create "v$VERSION" "$ZIP" --title "Vessel $VERSION" --notes "$NOTES"
-fi
+# 5) URL estable del asset que se publicará después de crear el commit y su tag.
+TAG="v$VERSION"
 URL="https://github.com/SwonDev/Vessel/releases/download/v$VERSION/Vessel-$VERSION.zip"
 
 # 6) appcast.xml — añade (o reemplaza) el <item> de esta versión, más nuevo primero.
@@ -92,11 +88,30 @@ open(path, "w", encoding="utf-8").write(xml)
 print(f"==> appcast.xml actualizado con {version} (build {build})")
 PY
 
-# 7) Commit + push (el appcast del repo ES el feed que consulta la app).
+# 7) Commit de release. El tag debe apuntar a ESTE commit, que contiene VERSION.txt y appcast.
 git add VERSION.txt appcast.xml
 git commit -q -m "release: Vessel $VERSION (build $BUILD)
 
 $NOTES"
+
+# 8) Publicar primero el asset y después main. Así el feed nunca anuncia una URL inexistente.
+# Si la release ya existe, se conserva su tag y solo se reemplaza el asset.
+if gh release view "$TAG" >/dev/null 2>&1; then
+    gh release upload "$TAG" "$ZIP" --clobber
+else
+    if git rev-parse "$TAG" >/dev/null 2>&1; then
+        TAG_COMMIT=$(git rev-list -n 1 "$TAG")
+        [ "$TAG_COMMIT" = "$(git rev-parse HEAD)" ] || {
+            echo "❌ El tag $TAG ya apunta a otro commit. Usa una versión nueva."
+            exit 1
+        }
+    else
+        git tag "$TAG"
+    fi
+    git push origin "$TAG"
+    gh release create "$TAG" "$ZIP" --verify-tag --title "Vessel $VERSION" --notes "$NOTES"
+fi
+
 git push origin main
 
 echo ""

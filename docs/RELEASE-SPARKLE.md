@@ -21,9 +21,10 @@ repo una vez al día y con el menú **Vessel → Buscar actualizaciones…**.
 ```
 
 `release.sh` hace **todo el ciclo**: sube `VERSION.txt` (build entero incremental) → compila y monta el
-`.app` → lo comprime → lo **firma** con la clave EdDSA del llavero → crea el **GitHub Release** con el
-`.zip` (tag `vX.Y.Z`) → añade el `<item>` al `appcast.xml` → commit + push. Los usuarios reciben la
-actualización solos por Sparkle.
+`.app` → lo comprime → lo **firma** con la clave EdDSA del llavero → actualiza `appcast.xml` → crea el
+commit y el tag `vX.Y.Z` sobre ese mismo commit → publica el **GitHub Release** con el `.zip` → sube
+`main`. El asset existe antes de que el feed nuevo quede público y los usuarios reciben la actualización
+solos por Sparkle.
 
 - **Versionado**: `VERSION.txt` es la ÚNICA fuente de verdad (`X.Y.Z<TAB>N`). `build_and_run.sh` la lee
   para el `Info.plist`. La serie empezó en **0.0.1** y avanza 0.0.2, 0.0.3…
