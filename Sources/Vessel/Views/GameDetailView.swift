@@ -469,9 +469,9 @@ struct GameDetailView: View {
                    accent: tint,
                    badgeIcon: hasNote ? GameDetailSymbols.savedNoteBadge : nil,
                    action: onOpenNotes)
-        iconButton(isFavorite ? "heart.fill" : "heart",
+        iconButton(isFavorite ? "star.fill" : "star",
                    label: isFavorite ? "Quitar de favoritos" : "Añadir a favoritos",
-                   tinted: isFavorite, action: onToggleFavorite)
+                   tinted: isFavorite, accent: .yellow, action: onToggleFavorite)
         iconButton(isHidden ? "eye" : "eye.slash",
                    label: isHidden ? "Mostrar en la biblioteca" : "Ocultar de la biblioteca",
                    action: onToggleHidden)
@@ -503,7 +503,7 @@ struct GameDetailView: View {
             Divider()
             Button(action: onToggleFavorite) {
                 Label(isFavorite ? "Quitar de favoritos" : "Añadir a favoritos",
-                      systemImage: isFavorite ? "heart.slash" : "heart")
+                      systemImage: isFavorite ? "star.slash" : "star")
             }
             Button(action: onToggleHidden) {
                 Label(isHidden ? "Mostrar en la biblioteca" : "Ocultar en la biblioteca",
@@ -1417,9 +1417,11 @@ struct GameDetailView: View {
     }
 
     private func iconButton(_ icon: String, label: String, tinted: Bool = false,
-                            accent: Color = .pink, badgeIcon: String? = nil,
+                            accent: Color? = nil, badgeIcon: String? = nil,
                             action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        // Acento por defecto: el tinte de la tienda (el rosa anterior no está en la paleta de DESIGN.md).
+        let accent = accent ?? tint
+        return Button(action: action) {
             ZStack(alignment: .topTrailing) {
                 Image(systemName: icon)
                     .font(.body)

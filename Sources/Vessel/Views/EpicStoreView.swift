@@ -424,7 +424,7 @@ struct ConnectEpicView: View {
                             .padding(.horizontal, 16)
                             .padding(.vertical, 10)
                             .background(
-                                .red.opacity(0.12),
+                                Theme.destructive.opacity(0.12),
                                 in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
                             )
                     }

@@ -78,6 +78,11 @@ struct SettingsView: View {
             .padding(.leading, 2)
     }
 
+    /// Divisor sutil entre bloques de una misma tarjeta de ajustes.
+    private func sectionDivider() -> some View {
+        Divider().overlay(.white.opacity(0.08))
+    }
+
     private func storageRow(label: String, path: String) -> some View {
         HStack {
             Text(label).font(.callout)
@@ -196,7 +201,7 @@ struct SettingsView: View {
                     Label("Tu sesión de Steam ha caducado. Vuelve a iniciar sesión (botón de Steam, arriba) para ver logros, DLC y la nube de Steam.", systemImage: "exclamationmark.triangle.fill")
                         .font(.caption).foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
-                    Divider().overlay(.white.opacity(0.08)).padding(.vertical, 2)
+                    sectionDivider().padding(.vertical, 2)
                 }
                 Text("Clave Web API (opcional)").font(.callout)
                 HStack(spacing: 8) {
@@ -214,14 +219,16 @@ struct SettingsView: View {
                     }
                 }
                 .padding(8)
-                .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                // La tarjeta padre ya aporta el cristal: el campo solo lleva un velo sutil
+                // (nunca vidrio sobre vidrio, DESIGN.md §Elevation).
+                .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
                 Text("Con la clave (gratis) se ve la lista completa de logros con sus iconos y nombres. Para saber cuáles tienes DESBLOQUEADOS, tu perfil de Steam debe tener «Detalles del juego» en Público (Perfil › Editar perfil › Privacidad).")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Link("Obtener mi clave Web API", destination: URL(string: "https://steamcommunity.com/dev/apikey")!)
                     .font(.caption.weight(.medium))
 
-                Divider().overlay(.white.opacity(0.08)).padding(.vertical, 4)
+                sectionDivider().padding(.vertical, 4)
                 Text("Clave de SteamGridDB (opcional)").font(.callout)
                 HStack(spacing: 8) {
                     Image(systemName: "photo.fill").foregroundStyle(.secondary).font(.caption)
@@ -237,14 +244,15 @@ struct SettingsView: View {
                     }
                 }
                 .padding(8)
-                .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                // Igual que el campo de la clave Web API: velo sutil, sin vidrio sobre vidrio.
+                .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
                 Text("Con la clave (gratis) las carátulas de tus juegos se ven en alta calidad. Sin ella, la búsqueda de portadas va muy limitada.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Link("Obtener mi clave de SteamGridDB", destination: URL(string: "https://www.steamgriddb.com/profile/preferences/api")!)
                     .font(.caption.weight(.medium))
 
-                Divider().overlay(.white.opacity(0.08)).padding(.vertical, 4)
+                sectionDivider().padding(.vertical, 4)
                 Toggle("Modo Steam real para todos los juegos de Steam", isOn: $steamRealGlobal)
                     .font(.callout)
                     .vesselHelp("Usar Steam real por defecto", detail: "Activa Steam Cloud, actualizaciones, DLC y logros nativos; se puede anular por juego.")

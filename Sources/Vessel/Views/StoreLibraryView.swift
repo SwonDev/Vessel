@@ -1762,10 +1762,20 @@ struct StoreLibraryView: View {
     }
 
     private var searchBar: some View {
-        HStack(spacing: 6) {
+        searchField(compact: false)
+            .padding(.horizontal, 12).padding(.bottom, 8)
+    }
+
+    /// Campo de búsqueda de la biblioteca, compartido por la sidebar y la cabecera del grid
+    /// (antes había dos implementaciones casi idénticas). `compact` = versión en cápsula de
+    /// ancho fijo para la cabecera, visible cuando la sidebar (y su buscador) se colapsa.
+    @ViewBuilder private func searchField(compact: Bool) -> some View {
+        let field = HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.caption)
             TextField("Buscar en \(store.displayName)…", text: $search)
-                .textFieldStyle(.plain).font(.callout).focused($searchFocused)
+                .textFieldStyle(.plain).font(.callout)
+                .frame(width: compact ? 180 : nil)
+                .focused($searchFocused)
             if !search.isEmpty {
                 Button { search = "" } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
@@ -1775,11 +1785,19 @@ struct StoreLibraryView: View {
                 .vesselHelp("Borrar búsqueda")
             }
         }
-        .padding(8)
-        .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
-        .vesselHelp("Buscar en \(store.displayName)",
-                    detail: "Busca por título, fragmentos o abreviaturas; ignora tildes y signos.", shortcut: "⌘F")
-        .padding(.horizontal, 12).padding(.bottom, 8)
+        if compact {
+            field
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .liquidGlass(in: Capsule())
+                .vesselHelp("Buscar en \(store.displayName)",
+                            detail: "Busca por título, fragmentos o abreviaturas; ignora tildes y signos.", shortcut: "⌘F")
+        } else {
+            field
+                .padding(8)
+                .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                .vesselHelp("Buscar en \(store.displayName)",
+                            detail: "Busca por título, fragmentos o abreviaturas; ignora tildes y signos.", shortcut: "⌘F")
+        }
     }
 
     /// Filtro (Todos/Instalados/Por instalar), orden y favoritos — compactos para la lista.
@@ -1901,23 +1919,7 @@ struct StoreLibraryView: View {
 
     /// Buscador compacto en la cabecera del grid (cuando la sidebar, y con ella su buscador, se ocultan).
     private var headerSearchField: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.caption)
-            TextField("Buscar en \(store.displayName)…", text: $search)
-                .textFieldStyle(.plain).font(.callout).frame(width: 180).focused($searchFocused)
-            if !search.isEmpty {
-                Button { search = "" } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Borrar búsqueda")
-                .vesselHelp("Borrar búsqueda")
-            }
-        }
-        .padding(.horizontal, 10).padding(.vertical, 7)
-        .liquidGlass(in: Capsule())
-        .vesselHelp("Buscar en \(store.displayName)",
-                    detail: "Busca por título, fragmentos o abreviaturas; ignora tildes y signos.", shortcut: "⌘F")
+        searchField(compact: true)
     }
 
     /// Filtro + favoritos en cristal, para la cabecera del grid al colapsar.

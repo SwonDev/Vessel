@@ -18,9 +18,9 @@ struct AboutView: View {
             }
 
             VStack(alignment: .center, spacing: 8) {
-                Text("Hecho con ❤️ por SwonDev")
-                Text("Wrapper nativo de macOS para Wine + Game Porting Toolkit")
-                Text("GPL-3.0 · Open Source")
+                Text("Hecho por SwonDev")
+                Text("Biblioteca unificada para jugar a tus juegos de Windows en macOS, de forma nativa.")
+                Text("GPL-3.0 · Código abierto")
             }
             .font(.callout)
             .foregroundStyle(.secondary)
@@ -60,7 +60,10 @@ struct AboutView: View {
                 .padding(.top, 8)
         }
         .padding(40)
-        .frame(width: 460, height: 480)
+        // Ancho fijo, alto al CONTENIDO: con la altura fija de antes (480) el texto largo se
+        // truncaba y el botón «Cerrar» quedaba cortado por el borde inferior de la sheet.
+        .frame(width: 460)
+        .fixedSize(horizontal: false, vertical: true)
         .vesselBackground()
     }
 }

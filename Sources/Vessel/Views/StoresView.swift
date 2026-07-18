@@ -37,10 +37,10 @@ enum StoreKind: String, CaseIterable, Identifiable {
 
     var tint: Color {
         switch self {
-        case .steam: return Color(red: 0.10, green: 0.55, blue: 0.85)
-        case .epic: return Color(white: 0.55)
-        case .gog: return Color(red: 0.60, green: 0.25, blue: 0.75)
-        case .local: return Color(red: 0.80, green: 0.17, blue: 0.18)   // rojo Humble Bundle (DRM‑free)
+        case .steam: return Theme.platformSteam
+        case .epic: return Theme.platformEpic
+        case .gog: return Theme.platformGOG
+        case .local: return Theme.platformDRMFree   // rojo DRM‑free (#CC2B2E)
         }
     }
 
@@ -110,7 +110,8 @@ struct StoreLogoTile: View {
         .background(store.tint.gradient, in: RoundedRectangle(cornerRadius: size * 0.23, style: .continuous))
         .clipShape(RoundedRectangle(cornerRadius: size * 0.23, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: size * 0.23, style: .continuous).strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
-        .shadow(color: store.tint.opacity(0.5), radius: size * 0.2, y: size * 0.09)
+        // Sombra NEUTRA de profundidad (sin aura de color: DESIGN.md la prohíbe en controles).
+        .shadow(color: .black.opacity(0.35), radius: size * 0.2, y: size * 0.09)
     }
 }
 
@@ -162,7 +163,7 @@ private struct StoreSwitchButton: View {
                     Image(systemName: store.symbol).font(.title3)
                 }
             }
-            .foregroundStyle(isSelected ? .white : .white.opacity(0.55))
+            .foregroundStyle(isSelected ? .white : Theme.secondaryText)
             .frame(width: 34, height: 34)
             .background {
                 if isSelected && !store.logoFillsTile {
@@ -174,7 +175,7 @@ private struct StoreSwitchButton: View {
             .overlay {
                 Circle().strokeBorder(.white.opacity(isSelected ? 0.28 : 0), lineWidth: 0.5)
             }
-            .shadow(color: isSelected ? store.tint.opacity(0.55) : .clear, radius: 7, y: 2)
+            .shadow(color: isSelected ? .black.opacity(0.30) : .clear, radius: 7, y: 2)
             .scaleEffect(hovering && !isSelected && !reduceMotion ? 1.08 : 1)
         }
         .buttonStyle(.plain)

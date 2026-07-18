@@ -127,11 +127,11 @@ struct GameSettingsView: View {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Ajustes del juego").font(.title2.bold()).foregroundStyle(.white)
-                    Text(game.title).font(.callout).foregroundStyle(.white.opacity(0.55)).lineLimit(1)
+                    Text(game.title).font(.callout).foregroundStyle(Theme.secondaryText).lineLimit(1)
                 }
                 Spacer()
                 Button(action: onClose) {
-                    Image(systemName: "xmark").font(.body.weight(.semibold)).foregroundStyle(.white.opacity(0.6))
+                    Image(systemName: "xmark").font(.body.weight(.semibold)).foregroundStyle(Theme.secondaryText)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Cerrar ajustes")
@@ -147,21 +147,23 @@ struct GameSettingsView: View {
 
                     section("Capa gráfica") {
                         Text("Cómo se traduce el render del juego a Metal. En automático, Vessel elige la mejor según el juego.")
-                            .font(.caption).foregroundStyle(.white.opacity(0.5)).fixedSize(horizontal: false, vertical: true)
+                            .font(.caption).foregroundStyle(Theme.secondaryText).fixedSize(horizontal: false, vertical: true)
                         Picker("", selection: $config.graphicsLayer) {
                             ForEach(GameConfig.GraphicsLayer.allCases) { Text($0.label).tag($0) }
                         }
                         .pickerStyle(.radioGroup).labelsHidden()
                         Text(config.graphicsLayer.detail)
-                            .font(.caption2).foregroundStyle(.white.opacity(0.45))
+                            .font(.caption2).foregroundStyle(Theme.secondaryText)
                     }
 
                     section("Opciones de lanzamiento") {
                         TextField("p. ej. -windowed -novid", text: $config.launchArguments)
                             .textFieldStyle(.plain).foregroundStyle(.white).padding(10)
-                            .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                            // La sección ya aporta el cristal: el campo solo lleva un velo sutil
+                            // (nunca vidrio sobre vidrio, DESIGN.md §Elevation).
+                            .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
                         Text("Argumentos que se pasan al ejecutable al iniciar.")
-                            .font(.caption2).foregroundStyle(.white.opacity(0.45))
+                            .font(.caption2).foregroundStyle(Theme.secondaryText)
                     }
 
                     section("Sincronización (rendimiento)") {
@@ -176,18 +178,18 @@ struct GameSettingsView: View {
                             .tint(tint).foregroundStyle(.white)
                             .vesselHelp("HUD de rendimiento", detail: "Muestra FPS y tiempos de frame sobre el juego.")
                         Text("Superpone FPS y tiempos de frame en el juego (HUD nativo de Metal). Útil para medir rendimiento; desactívalo para jugar.")
-                            .font(.caption2).foregroundStyle(.white.opacity(0.45))
+                            .font(.caption2).foregroundStyle(Theme.secondaryText)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
                     if winePrefix != nil {
                         section("Copias de partida") {
                             Text("Vessel respalda tu partida al cerrar el juego y la restaura si la copia es más nueva. Solo copia; nunca borra.")
-                                .font(.caption).foregroundStyle(.white.opacity(0.5)).fixedSize(horizontal: false, vertical: true)
+                                .font(.caption).foregroundStyle(Theme.secondaryText).fixedSize(horizontal: false, vertical: true)
                             HStack(spacing: 8) {
-                                Image(systemName: "clock.arrow.circlepath").font(.caption).foregroundStyle(.white.opacity(0.5))
+                                Image(systemName: "clock.arrow.circlepath").font(.caption).foregroundStyle(Theme.secondaryText)
                                 Text(saveBackupDate.map { "Última copia: \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "Aún sin copias.")
-                                    .font(.caption2).foregroundStyle(.white.opacity(0.7))
+                                    .font(.caption2).foregroundStyle(Theme.secondaryText)
                             }
                             HStack(spacing: 10) {
                                 Button {
@@ -217,21 +219,21 @@ struct GameSettingsView: View {
                     if game.steamAppId != nil {
                         section("Nube de Steam y actualizaciones") {
                             Text("En **modo Steam real**, Vessel abre el cliente de Steam conectado y lanza el juego con él: obtienes la **nube de Steam (Steam Cloud)**, actualizaciones, DLC y logros NATIVOS —como en un PC, igual que CrossOver—. En **modo Vessel** (por defecto) el juego usa el motor gráfico óptimo (mejor rendimiento; p. ej. Palworld por D3DMetal) y tus partidas se respaldan con la copia local de arriba.")
-                                .font(.caption).foregroundStyle(.white.opacity(0.5)).fixedSize(horizontal: false, vertical: true)
+                                .font(.caption).foregroundStyle(Theme.secondaryText).fixedSize(horizontal: false, vertical: true)
                             Toggle("Modo Steam real (nube de Steam, actualizaciones, DLC y logros)", isOn: $config.useRealSteam)
                                 .tint(tint).foregroundStyle(.white)
                                 .vesselHelp("Modo Steam real", detail: "Lanza con el cliente de Steam para usar sus servicios nativos.")
                             Text(config.useRealSteam
                                  ? "Activo: el juego corre con el cliente de Steam (motor unificado) y Steam sincroniza tus partidas en la nube. El render puede diferir del modo Vessel óptimo."
                                  : "Modo Vessel: motor gráfico óptimo por juego + tu copia de partida local (arriba). La nube de Steam es opcional (abajo).")
-                                .font(.caption2).foregroundStyle(.white.opacity(0.45)).fixedSize(horizontal: false, vertical: true)
+                                .font(.caption2).foregroundStyle(Theme.secondaryText).fixedSize(horizontal: false, vertical: true)
                             if !config.useRealSteam {
                                 Divider().overlay(.white.opacity(0.06)).padding(.vertical, 2)
                                 Toggle("Sincronizar con Steam Cloud (experimental)", isOn: $config.steamCloudSync)
                                     .tint(tint).foregroundStyle(.white)
                                     .vesselHelp("Steam Cloud experimental", detail: "Sincroniza antes y después de jugar manteniendo el motor óptimo de Vessel.")
                                 Text("Mantiene el motor gráfico óptimo (Modo Vessel) Y sincroniza tu partida con la nube de Steam: Vessel abre el cliente en 2º plano antes de jugar (baja lo último) y al salir (sube los cambios). Tu copia local sigue como red de seguridad.")
-                                    .font(.caption2).foregroundStyle(.white.opacity(0.45)).fixedSize(horizontal: false, vertical: true)
+                                    .font(.caption2).foregroundStyle(Theme.secondaryText).fixedSize(horizontal: false, vertical: true)
                             }
                         }
                     }
@@ -242,7 +244,7 @@ struct GameSettingsView: View {
                                 DisclosureGroup(isExpanded: $showExecutableOptions) {
                                     VStack(alignment: .leading, spacing: 10) {
                                         Text("Vessel elige automáticamente el cliente correcto. Si un juego abre un launcher incompatible, puedes señalar aquí su .exe principal de 64 bits.")
-                                            .font(.caption).foregroundStyle(.white.opacity(0.5))
+                                            .font(.caption).foregroundStyle(Theme.secondaryText)
                                             .fixedSize(horizontal: false, vertical: true)
                                         HStack(spacing: 10) {
                                             Image(systemName: "terminal")
@@ -252,12 +254,13 @@ struct GameSettingsView: View {
                                                     .font(.caption.weight(.semibold)).foregroundStyle(.white)
                                                     .lineLimit(1).truncationMode(.middle)
                                                 Text(config.executableOverride == nil ? "Detectado automáticamente" : "Selección manual")
-                                                    .font(.caption2).foregroundStyle(.white.opacity(0.45))
+                                                    .font(.caption2).foregroundStyle(Theme.secondaryText)
                                             }
                                             Spacer()
                                         }
                                         .padding(10)
-                                        .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                                        // Igual que el campo de argumentos: velo sutil, sin vidrio sobre vidrio.
+                                        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
 
                                         HStack(spacing: 10) {
                                             Button("Elegir otro…", action: chooseExecutableOverride)
@@ -276,7 +279,7 @@ struct GameSettingsView: View {
                                                 .font(.caption2).foregroundStyle(.orange)
                                         }
                                         Text("Por seguridad solo se admiten archivos .exe situados dentro de la carpeta instalada.")
-                                            .font(.caption2).foregroundStyle(.white.opacity(0.42))
+                                            .font(.caption2).foregroundStyle(Theme.secondaryText)
                                     }
                                     .padding(.top, 8)
                                 } label: {
@@ -327,7 +330,7 @@ struct GameSettingsView: View {
                     }
                     Label("Reporte anónimo: solo el juego, tu sistema (macOS/chip) y tus notas. No se envía ningún dato personal ni se sube nada automáticamente.",
                           systemImage: "lock.shield")
-                        .font(.caption2).foregroundStyle(.white.opacity(0.45))
+                        .font(.caption2).foregroundStyle(Theme.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -395,19 +398,19 @@ struct GameSettingsView: View {
                         }
                     }
                     Text(p.rating.detail)
-                        .font(.caption2).foregroundStyle(.white.opacity(0.5))
+                        .font(.caption2).foregroundStyle(Theme.secondaryText)
                 }
                 Spacer()
                 if !p.verified {
-                    Text("sin verificar")
-                        .font(.caption2.weight(.semibold)).foregroundStyle(.white.opacity(0.55))
+                    Text("Sin verificar")
+                        .font(.caption2.weight(.semibold)).foregroundStyle(Theme.secondaryText)
                         .padding(.horizontal, 8).padding(.vertical, 3)
                         .background(Capsule().fill(.white.opacity(0.08)))
                 }
             }
             if let notes = p.notes, !notes.isEmpty {
                 Text(notes)
-                    .font(.caption).foregroundStyle(.white.opacity(0.62))
+                    .font(.caption).foregroundStyle(Theme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }

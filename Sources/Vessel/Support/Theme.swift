@@ -48,6 +48,17 @@ enum Theme {
     /// Errores y acciones destructivas. Token `colors.destructive` de DESIGN.md (#D96652).
     static let destructive = Color(red: 0.851, green: 0.400, blue: 0.322)
 
+    // MARK: Colores de plataforma (tokens `steam`/`epic`/`gog`/`drm-free` de DESIGN.md)
+
+    /// Steam (#1A8CD9).
+    static let platformSteam   = Color(red: 0.102, green: 0.549, blue: 0.851)
+    /// Epic Games (#8C8C8C).
+    static let platformEpic    = Color(white: 0.549)
+    /// GOG (#9940BF).
+    static let platformGOG     = Color(red: 0.600, green: 0.251, blue: 0.749)
+    /// DRM‑free (#CC2B2E).
+    static let platformDRMFree = Color(red: 0.800, green: 0.169, blue: 0.180)
+
     /// Gradiente de marca para botones prominentes e iconos hero (azul confianza → azul profundo).
     static func gradient(_ base: Color = accent) -> LinearGradient {
         LinearGradient(colors: [base.opacity(0.98), accentDeep.opacity(0.92)],

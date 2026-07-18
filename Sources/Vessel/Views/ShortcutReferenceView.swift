@@ -99,9 +99,9 @@ private struct ShortcutReferenceRow: View {
                 .frame(minWidth: 54)
                 .padding(.horizontal, 9)
                 .padding(.vertical, 5)
-                .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
                         .strokeBorder(.white.opacity(0.12), lineWidth: 0.5)
                 }
             Text(action)

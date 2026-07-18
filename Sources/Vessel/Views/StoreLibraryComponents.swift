@@ -980,7 +980,7 @@ struct StoreGameRow: View {
     /// Fondo de la fila: **cristal Liquid Glass tintado** si está seleccionada (premium, no el
     /// azul sólido del sistema); un velo sutil en hover; nada en reposo.
     @ViewBuilder private var rowBackground: some View {
-        let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
         if isSelected {
             // Cristal NEUTRO + velo de color mínimo + borde tintado (premium), no azul sólido.
             ZStack {

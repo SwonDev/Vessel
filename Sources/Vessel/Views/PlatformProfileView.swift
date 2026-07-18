@@ -20,7 +20,7 @@ struct PlatformProfileMenu: View {
 
                 Text(profile.displayName)
                     .font(.callout.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.92))
+                    .foregroundStyle(Theme.secondaryText)
                     .lineLimit(1)
                     .frame(maxWidth: 112, alignment: .leading)
 
@@ -31,7 +31,7 @@ struct PlatformProfileMenu: View {
                 } else {
                     Image(systemName: "chevron.down")
                         .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.42))
+                        .foregroundStyle(Theme.secondaryText)
                 }
             }
             .padding(.leading, 5)
@@ -126,10 +126,10 @@ private struct PlatformAvatar: NSViewRepresentable {
 private extension StoreKind {
     var avatarBackgroundColor: NSColor {
         switch self {
-        case .steam: NSColor(calibratedRed: 0.10, green: 0.55, blue: 0.85, alpha: 0.22)
-        case .epic: NSColor(white: 0.55, alpha: 0.22)
-        case .gog: NSColor(calibratedRed: 0.60, green: 0.25, blue: 0.75, alpha: 0.22)
-        case .local: NSColor(calibratedRed: 0.80, green: 0.17, blue: 0.18, alpha: 0.22)
+        case .steam: NSColor(Theme.platformSteam).withAlphaComponent(0.22)
+        case .epic: NSColor(Theme.platformEpic).withAlphaComponent(0.22)
+        case .gog: NSColor(Theme.platformGOG).withAlphaComponent(0.22)
+        case .local: NSColor(Theme.platformDRMFree).withAlphaComponent(0.22)
         }
     }
 }

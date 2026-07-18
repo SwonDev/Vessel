@@ -69,7 +69,7 @@ struct LogsView: View {
                         }
                     }
                 }
-                .background(Color.black.opacity(0.35))
+                .background(Theme.navyDeep)
                 .onChange(of: logStore.entries.count) { _, _ in
                     filteredEntries = computeFilteredLogs()
                     // Sin `withAnimation`: con Wine emitiendo cientos de líneas/seg, animar cada
@@ -133,10 +133,10 @@ struct LogsView: View {
 
     private func color(for level: LogStore.Level) -> Color {
         switch level {
-        case .info:  return .blue
-        case .warn:  return .orange
-        case .error: return .red
-        case .debug: return Color.secondary
+        case .info:  return Theme.accent
+        case .warn:  return .yellow
+        case .error: return Theme.destructive
+        case .debug: return Theme.secondaryText
         }
     }
 }

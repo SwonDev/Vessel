@@ -231,8 +231,8 @@ struct LocalGamesView: View {
                 }
             }
             .padding(.horizontal, 18).padding(.vertical, 13)
-            .liquidGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.white.opacity(0.14), lineWidth: 1))
+            .liquidGlass(in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous).strokeBorder(.white.opacity(0.14), lineWidth: 1))
             .shadow(color: .black.opacity(0.35), radius: 16, y: 6)
             .padding(.bottom, 26)
             .transition(.move(edge: .bottom).combined(with: .opacity))

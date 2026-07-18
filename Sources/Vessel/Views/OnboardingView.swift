@@ -35,7 +35,7 @@ struct OnboardingView: View {
             }
 
             Text("Vessel")
-                .font(.system(size: 32, weight: .bold))
+                .font(.largeTitle.bold())
                 .foregroundStyle(
                     LinearGradient(
                         colors: [.white, Theme.accent.opacity(0.85)],
@@ -104,7 +104,8 @@ struct OnboardingView: View {
                 }
             }
         }
-        .frame(width: 560, height: 520)
+        .frame(width: 560)
+        .frame(minHeight: 520)
         .vesselBackground()
         .task { await runOnboarding() }
     }

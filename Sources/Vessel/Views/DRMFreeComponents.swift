@@ -237,7 +237,7 @@ struct SteamDRMImportSheet: View {
             AsyncImage(url: cover.flatMap(URL.init)) { img in
                 img.resizable().aspectRatio(contentMode: .fill)
             } placeholder: { Rectangle().fill(.gray.opacity(0.2)) }
-                .frame(width: 40, height: 56).clipShape(RoundedRectangle(cornerRadius: 5))
+                .frame(width: 40, height: 56).clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control))
             VStack(alignment: .leading, spacing: 3) {
                 Text(name).font(.callout.weight(.medium)).lineLimit(1)
                 HStack(spacing: 6) {
