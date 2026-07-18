@@ -665,13 +665,21 @@ final class WineManager {
     func sourceModDirectory(forExecutable executable: String) -> String? {
         let dir = (executable as NSString).deletingLastPathComponent
         // hl2.exe (Portal, Half-Life 2 y sus mods) o portal2.exe (Portal 2): juegos de Source cuyo
-        // mod vive en un subdirectorio con gameinfo.txt (el primero alfabético es el mod base).
+        // mod vive en un subdirectorio con gameinfo.txt.
         let exe = (executable as NSString).lastPathComponent.lowercased()
         guard exe.hasPrefix("hl2") || exe.hasPrefix("portal2"),
               let items = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return nil }
-        return items.sorted().first {
+        let candidates = items.sorted().filter {
             FileManager.default.fileExists(atPath: "\(dir)/\($0)/gameinfo.txt")
         }
+        guard !candidates.isEmpty else { return nil }
+        // Con varios candidatos (el juego trae el mod base de regalo, p. ej. Portal Stories: Mel
+        // incluye portal2 además de portal_stories), el bueno es el que se parece al nombre del
+        // juego; sin pista, el primero alfabético (Portal → portal, Portal 2 → portal2).
+        func norm(_ s: String) -> String { String(s.lowercased().filter { $0.isLetter || $0.isNumber }) }
+        let folderKey = norm((dir as NSString).lastPathComponent)
+        if let match = candidates.first(where: { folderKey.contains(norm($0)) }) { return match }
+        return candidates.first
     }
 
     /// `true` si el `.exe` contiene alguna de estas cadenas. Se mapea el fichero en memoria en vez

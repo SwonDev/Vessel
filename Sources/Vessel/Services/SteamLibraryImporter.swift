@@ -84,6 +84,7 @@ final class SteamLibraryImporter {
         var appId = ""
         var name = ""
         var installdir = ""
+        var stateFlags = 0
 
         for line in content.split(separator: "\n") {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -93,10 +94,17 @@ final class SteamLibraryImporter {
                 name = extractValue(from: trimmed) ?? ""
             } else if trimmed.contains("\"installdir\"") {
                 installdir = extractValue(from: trimmed) ?? ""
+            } else if trimmed.contains("\"StateFlags\"") {
+                stateFlags = Int(extractValue(from: trimmed) ?? "") ?? 0
             }
         }
 
         guard !appId.isEmpty, !installdir.isEmpty else { return nil }
+        // Solo juegos COMPLETAMENTE instalados (bit 4 = fully installed). El cliente Steam real
+        // escribe el appmanifest en cuanto EMPIEZA la descarga (StateFlags=2/1026 y similares),
+        // y sin este filtro la auto-importación registraba juegos a medias —con la carpeta llena
+        // de staging y sin ejecutable— como si estuvieran instalados (Portal Stories: Mel).
+        guard stateFlags & 4 != 0 else { return nil }
         let gameDir = "\(steamapps)/common/\(installdir)"
 
         if let exe = findMainExecutable(in: gameDir) {
@@ -199,6 +207,15 @@ final class SteamLibraryImporter {
                            "kinit", "ktab", "klist", "pack200", "unpack200", "javacpl", "jabswitch",
                            "jjs", "orbd", "servertool", "tnameserv", "jp2launcher"].contains(baseNoExt)
             if inJreDir || jreTool { s -= 900 }
+            // **Herramientas del Source SDK** (mapping/modelado/empaquetado): nunca son el juego.
+            // En descargas parciales (o mods cuyo depot no trae el exe del motor) son el ÚNICO
+            // `.exe` presente y ganaban por ausencia de competencia: Vessel "instalaba" vbsp.exe
+            // como si fuera el juego (Portal Stories: Mel). Mismo hundimiento que el JRE.
+            let sourceTool = ["vbsp", "vvis", "vrad", "vbspinfo", "bspzip", "vpk", "hlmv", "hammer",
+                              "hammerplusplus", "studiomdl", "glview", "vtex", "vmtedit",
+                              "captioncompiler", "dmxconvert", "dmxedit", "mksheet", "pet",
+                              "qc_eyes", "sfm", "tga2vtf", "vcdgenerator"].contains(baseNoExt)
+            if sourceTool { s -= 900 }
             // Launchers de terceros: penalizar (pero por encima de un servidor).
             if rel.contains("launcher") { s -= 200 }
             // **Unreal Engine**: el juego REAL vive en `<Proyecto>/Binaries/Win64/…-Shipping.exe`;
@@ -229,11 +246,16 @@ final class SteamLibraryImporter {
             return s
         }
 
-        return exes.max { a, b in
+        let best = exes.max { a, b in
             let sa = score(a.rel, a.full), sb = score(b.rel, b.full)
             if sa != sb { return sa < sb }
             return a.rel.count > b.rel.count   // empate → ruta más corta gana
-        }?.full
+        }
+        // Sin candidato creíble, `nil` (el juego NO se importa): si lo mejor que hay es una
+        // herramienta hundida (JRE/Source SDK/launcher — score ≤ −900), elegirla "porque es la
+        // única" convierte una descarga parcial en un juego "instalado" que no arranca.
+        guard let best, score(best.rel, best.full) > -900 else { return nil }
+        return best.full
     }
 
     private func extractValue(from line: String) -> String? {

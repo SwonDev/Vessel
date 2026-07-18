@@ -128,8 +128,14 @@ final class SteamCMDManager {
                 // tiene terminal) → el install "no hacía nada". Con stdin nulo recibe EOF y sale.
                 process.standardInput = FileHandle.nullDevice
                 let buffer = OutputBuffer()
+                // Watchdog POR INACTIVIDAD (no por duración total): una descarga grande puede
+                // tardar más de 45 min (antes se mataba el steamcmd a los 45 min pese a ir bien —
+                // así murieron varias instalaciones de >5 GB). Solo se mata si lleva 20 min SIN
+                // escribir una línea (atasco real). La actividad se marca en el readabilityHandler.
+                let activity = ActivityMarker()
                 pipe.fileHandleForReading.readabilityHandler = { fh in
                     let data = fh.availableData
+                    activity.mark()
                     guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else { return }
                     buffer.append(chunk)
                     if let onLine {
@@ -145,12 +151,14 @@ final class SteamCMDManager {
                     continuation.resume(returning: (error.localizedDescription, -1))
                     return
                 }
-                // Cinturón de seguridad extra: si algo se cuelga (descarga atascada), matar a los
-                // 45 min. Las descargas grandes caben de sobra; un login/validate es de segundos.
-                let watchdog = DispatchWorkItem { if process.isRunning { process.terminate() } }
-                DispatchQueue.global().asyncAfter(deadline: .now() + 2700, execute: watchdog)
+                let watchdog = DispatchWorkItem {
+                    while process.isRunning {
+                        if activity.secondsSinceLastMark() > 1200 { process.terminate(); break }
+                        Thread.sleep(forTimeInterval: 30)
+                    }
+                }
+                DispatchQueue.global().async(execute: watchdog)
                 process.waitUntilExit()
-                watchdog.cancel()
                 pipe.fileHandleForReading.readabilityHandler = nil
                 continuation.resume(returning: (buffer.value, process.terminationStatus))
             }
@@ -163,6 +171,16 @@ final class SteamCMDManager {
         private let lock = NSLock()
         func append(_ chunk: String) { lock.lock(); storage += chunk; lock.unlock() }
         var value: String { lock.lock(); defer { lock.unlock() }; return storage }
+    }
+
+    /// Marca de actividad thread-safe para el watchdog por inactividad.
+    private final class ActivityMarker: @unchecked Sendable {
+        private var last = Date()
+        private let lock = NSLock()
+        func mark() { lock.lock(); last = Date(); lock.unlock() }
+        func secondsSinceLastMark() -> TimeInterval {
+            lock.lock(); defer { lock.unlock() }; return Date().timeIntervalSince(last)
+        }
     }
 
     // MARK: - Helpers

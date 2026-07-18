@@ -85,6 +85,7 @@ struct BottleDetailView: View {
             await autoImportGames()
             startWatchingGames()
             await loadSteamLibrary()
+            resumeInterruptedDownloads()
         }
         .onDisappear { gamesWatcher.stop() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -262,9 +263,17 @@ struct BottleDetailView: View {
         }
         steamCMDUser = user   // recordarlo para la próxima
         installingAppIds.insert(appId)
-        defer { installingAppIds.remove(appId); installMessages[appId] = nil; installPercents[appId] = nil }
+        // Marca de "descarga en vuelo" persistida: si la app muere a mitad (o el steamcmd se
+        // interrumpe), `resumeInterruptedDownloads` la reanuda al volver (steamcmd continúa
+        // desde su staging con el mismo force_install_dir). Se borra al completar.
         let safeName = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "")
         let installDir = "\(localBottle.steamDirectory)/steamapps/common/\(safeName)"
+        var inflight = UserDefaults.standard.dictionary(forKey: "steamcmd.inflight") as? [String: String] ?? [:]
+        inflight[appId] = installDir
+        UserDefaults.standard.set(inflight, forKey: "steamcmd.inflight")
+        defer {
+            installingAppIds.remove(appId); installMessages[appId] = nil; installPercents[appId] = nil
+        }
         installMessages[appId] = "Iniciando descarga…"
         let ok = await steamCMD.installGame(appId: appId, user: user, installDir: installDir, validate: validate) { pct, msg in
             installMessages[appId] = msg
@@ -280,8 +289,50 @@ struct BottleDetailView: View {
             if let updated = store.bottles.first(where: { $0.id == localBottle.id }) { localBottle = updated }
             ownedGames.removeAll { $0.appId == appId }
             NotificationService.shared.notify(title: "Instalación completada", body: name)
+            var done = UserDefaults.standard.dictionary(forKey: "steamcmd.inflight") as? [String: String] ?? [:]
+            done.removeValue(forKey: appId)
+            UserDefaults.standard.set(done, forKey: "steamcmd.inflight")
         } else if !ok {
-            statusMessage = "La instalación de \(name) no se completó. Revisa los logs."
+            statusMessage = "La instalación de \(name) no se completó. Se reanudará al volver a abrir la biblioteca."
+        }
+    }
+
+    /// Reanuda las descargas de SteamCMD que quedaron a medias (app cerrada o steamcmd
+    /// interrumpido). SteamCMD continúa desde su propio staging con el mismo `force_install_dir`,
+    /// así que basta relanzar la instalación con el mismo directorio.
+    private func resumeInterruptedDownloads() {
+        // (a) Marcas persistidas por esta versión de la app.
+        var pending = UserDefaults.standard.dictionary(forKey: "steamcmd.inflight") as? [String: String] ?? [:]
+        // (b) Descubrimiento por disco: carpetas de staging huérfanas (`common/<Juego>/steamapps/
+        // downloading/<appid>`) de interrupciones anteriores a esta versión. Solo si el appId
+        // sigue siendo de nuestra propiedad y el juego NO está ya instalado.
+        let steamapps = "\(localBottle.steamDirectory)/steamapps"
+        let fm = FileManager.default
+        if let commons = try? fm.contentsOfDirectory(atPath: "\(steamapps)/common") {
+            for dirName in commons {
+                let downloading = "\(steamapps)/common/\(dirName)/steamapps/downloading"
+                guard let appIds = try? fm.contentsOfDirectory(atPath: downloading) else { continue }
+                for appId in appIds where pending[appId] == nil {
+                    let alreadyOwned = localBottle.games.contains { $0.steamAppId == appId }
+                    if !alreadyOwned, ownedGames.contains(where: { $0.appId == appId }) {
+                        pending[appId] = "\(steamapps)/common/\(dirName)"
+                    }
+                }
+            }
+        }
+        guard !pending.isEmpty else { return }
+        for (appId, dir) in pending {
+            // Si ya está completo (su downloading/ ya no existe y el juego está en el store), limpiar la marca.
+            let staged = "\(dir)/steamapps/downloading/\(appId)"
+            let alreadyOwned = localBottle.games.contains { $0.steamAppId == appId }
+            if alreadyOwned || !fm.fileExists(atPath: staged) {
+                var clean = UserDefaults.standard.dictionary(forKey: "steamcmd.inflight") as? [String: String] ?? [:]
+                clean.removeValue(forKey: appId)
+                UserDefaults.standard.set(clean, forKey: "steamcmd.inflight")
+                continue
+            }
+            log.log("Reanudando descarga interrumpida de \(ownedGames.first(where: { $0.appId == appId })?.name ?? "App \(appId)")…", level: .info)
+            Task { await installGame(appId) }
         }
     }
 
