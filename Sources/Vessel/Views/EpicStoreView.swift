@@ -351,13 +351,14 @@ struct ConnectEpicView: View {
     private let tint = StoreKind.epic.tint
     @State private var showingLogin = false
     @State private var pulse = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 22) {
             StoreLogoTile(store: .epic)
-                .scaleEffect(pulse ? 1.08 : 1.0)
+                .scaleEffect(pulse && !reduceMotion ? 1.08 : 1.0)
                 .animation(
-                    .easeInOut(duration: 1.4).repeatForever(autoreverses: true),
+                    reduceMotion ? nil : .easeInOut(duration: 1.4).repeatForever(autoreverses: true),
                     value: pulse
                 )
 
@@ -441,6 +442,7 @@ struct ConnectEpicView: View {
 struct EpicWebLoginSheet: View {
     let onCodeCaptured: (String) -> Void
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var isLoading     = true
     @State private var webError: String?
@@ -487,7 +489,9 @@ struct EpicWebLoginSheet: View {
                     },
                     onLoadingChanged: { loading in
                         if loading { webError = nil }
-                        withAnimation(.easeOut(duration: 0.3)) { isLoading = loading }
+                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) {
+                            isLoading = loading
+                        }
                     }
                 )
 
@@ -532,7 +536,7 @@ struct EpicWebLoginSheet: View {
                     .transition(.opacity)
                 }
             }
-            .animation(.easeOut(duration: 0.25), value: webError)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: webError)
         }
         .frame(width: 820, height: 640)
         .background(Theme.navyDeep)

@@ -50,6 +50,8 @@ enum Theme {
 private struct VesselBackground: ViewModifier {
     var tint: Color = Theme.accent
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
     func body(content: Content) -> some View {
         content.background {
             ZStack {
@@ -58,7 +60,7 @@ private struct VesselBackground: ViewModifier {
                 // Vida premium: gradiente animado con Metal (ColorfulX) MUY sutil, con el color de la
                 // tienda. Aditivo y a baja opacidad → el fondo "respira" sin distraer. Se desactiva
                 // con reduce-motion.
-                if !reduceMotion {
+                if !reduceMotion && !reduceTransparency {
                     ColorfulView(
                         color: .constant([tint.opacity(0.85), Theme.navyDeep, tint.opacity(0.35), Theme.navyTop]),
                         speed: .constant(0.28)
@@ -67,7 +69,7 @@ private struct VesselBackground: ViewModifier {
                     .blendMode(.plusLighter)
                 }
                 // Resplandor superior con el color de la sección (branding por tienda).
-                RadialGradient(colors: [tint.opacity(0.16), .clear],
+                RadialGradient(colors: [tint.opacity(reduceTransparency ? 0.08 : 0.16), .clear],
                                center: .top, startRadius: 0, endRadius: 640)
             }
             .ignoresSafeArea()
@@ -83,20 +85,44 @@ extension View {
 
 // MARK: - Liquid Glass nativo (con degradado a materiales)
 
+private struct LiquidGlassModifier<S: Shape>: ViewModifier {
+    let shape: S
+    let interactive: Bool
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if reduceTransparency {
+            content
+                .background(Theme.surface.opacity(0.98), in: shape)
+                .overlay { shape.stroke(.white.opacity(0.16), lineWidth: 0.5) }
+        } else if #available(macOS 26.0, *) {
+            content.glassEffect(interactive ? .regular.interactive() : .regular, in: shape)
+        } else {
+            content
+                .background(.ultraThinMaterial, in: shape)
+                .overlay { shape.stroke(.white.opacity(0.10), lineWidth: 0.5) }
+        }
+    }
+}
+
 extension View {
     /// **Liquid Glass nativo** de SwiftUI (`glassEffect`) en macOS 26; en macOS 15 cae a
-    /// un material translúcido con borde sutil. `tint` colorea el cristal (p. ej. el acento
-    /// de una tienda); `interactive` activa la respuesta táctil del cristal a la pulsación.
+    /// un material translúcido con borde sutil. El cristal permanece neutro por contrato;
+    /// el color de estado se añade como velo o borde en el componente. Con «Reducir transparencia»
+    /// se convierte en una superficie navy opaca y legible.
+    func liquidGlass(in shape: some Shape, interactive: Bool = false) -> some View {
+        modifier(LiquidGlassModifier(shape: shape, interactive: interactive))
+    }
+
+    /// Agrupa efectos de cristal próximos para que macOS 26 los renderice y transforme como un
+    /// conjunto coherente. El fallback conserva exactamente el mismo layout en macOS 15.
     @ViewBuilder
-    func liquidGlass(in shape: some Shape, tint: Color? = nil, interactive: Bool = false) -> some View {
+    func vesselGlassContainer(spacing: CGFloat = 8) -> some View {
         if #available(macOS 26.0, *) {
-            let base: Glass = .regular
-            let tinted = tint.map { base.tint($0) } ?? base
-            let glass = interactive ? tinted.interactive() : tinted
-            glassEffect(glass, in: shape)
+            GlassEffectContainer(spacing: spacing) { self }
         } else {
-            background(.ultraThinMaterial, in: shape)
-                .overlay { shape.stroke(.white.opacity(0.10), lineWidth: 0.5) }
+            self
         }
     }
 }
@@ -120,6 +146,7 @@ struct PremiumButtonStyle: ButtonStyle {
         let prominent: Bool
         @State private var hovering = false
         @Environment(\.isEnabled) private var isEnabled
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
         var body: some View {
             configuration.label
@@ -142,10 +169,10 @@ struct PremiumButtonStyle: ButtonStyle {
                 .shadow(color: prominent ? tint.opacity(hovering ? 0.55 : 0.32) : .clear,
                         radius: hovering ? 9 : 5, y: hovering ? 4 : 2)
                 .brightness(configuration.isPressed ? -0.06 : (hovering ? 0.06 : 0))
-                .scaleEffect(configuration.isPressed ? 0.96 : 1)
+                .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.96 : 1))
                 .opacity(isEnabled ? 1 : 0.5)
-                .animation(.spring(response: 0.25, dampingFraction: 0.7), value: hovering)
-                .animation(.spring(response: 0.2, dampingFraction: 0.65), value: configuration.isPressed)
+                .animation(reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 0.7), value: hovering)
+                .animation(reduceMotion ? nil : .spring(response: 0.2, dampingFraction: 0.65), value: configuration.isPressed)
                 .onHover { hovering = $0 }
                 .contentShape(Rectangle())
         }
@@ -178,6 +205,7 @@ struct GlassButtonStyle: ButtonStyle {
         let prominent: Bool
         @State private var hovering = false
         @Environment(\.isEnabled) private var isEnabled
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
         var body: some View {
             let shape = Capsule(style: .continuous)
@@ -201,10 +229,10 @@ struct GlassButtonStyle: ButtonStyle {
                 // El color queda solo en el velo + el borde.
                 .shadow(color: .black.opacity(hovering ? 0.28 : 0.18),
                         radius: hovering ? 10 : 6, y: hovering ? 4 : 3)
-                .scaleEffect(configuration.isPressed ? 0.97 : (hovering ? 1.02 : 1))
+                .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.97 : (hovering ? 1.02 : 1)))
                 .opacity(isEnabled ? 1 : 0.5)
-                .animation(.spring(response: 0.26, dampingFraction: 0.7), value: hovering)
-                .animation(.spring(response: 0.2, dampingFraction: 0.65), value: configuration.isPressed)
+                .animation(reduceMotion ? nil : .spring(response: 0.26, dampingFraction: 0.7), value: hovering)
+                .animation(reduceMotion ? nil : .spring(response: 0.2, dampingFraction: 0.65), value: configuration.isPressed)
                 .onHover { hovering = $0 }
                 .contentShape(shape)
         }
@@ -271,14 +299,15 @@ extension View {
 private struct HoverLift: ViewModifier {
     var scale: CGFloat = 1.03
     @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         content
-            .scaleEffect(hovering ? scale : 1)
+            .scaleEffect(hovering && !reduceMotion ? scale : 1)
             .shadow(color: .black.opacity(hovering ? 0.40 : 0.20),
                     radius: hovering ? 18 : 8,
                     y: hovering ? 10 : 4)
-            .animation(.spring(response: 0.3, dampingFraction: 0.72), value: hovering)
+            .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.72), value: hovering)
             .onHover { hovering = $0 }
             .zIndex(hovering ? 1 : 0)
     }
@@ -296,9 +325,9 @@ extension View {
 extension View {
     /// Superficie de tarjeta premium: **Liquid Glass** translúcido con esquinas continuas
     /// (o material en macOS 15). El acabado lo da `liquidGlass`.
-    func vesselCard(padding: CGFloat = 12, cornerRadius: CGFloat = Theme.Radius.card, tint: Color? = nil) -> some View {
+    func vesselCard(padding: CGFloat = 12, cornerRadius: CGFloat = Theme.Radius.card) -> some View {
         self
             .padding(padding)
-            .liquidGlass(in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous), tint: tint)
+            .liquidGlass(in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 }

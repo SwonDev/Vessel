@@ -393,13 +393,14 @@ struct ConnectGogView: View {
     private let tint = StoreKind.gog.tint
     @State private var showingLogin = false
     @State private var pulse = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 22) {
             StoreLogoTile(store: .gog)
-                .scaleEffect(pulse ? 1.08 : 1.0)
+                .scaleEffect(pulse && !reduceMotion ? 1.08 : 1.0)
                 .animation(
-                    .easeInOut(duration: 1.4).repeatForever(autoreverses: true),
+                    reduceMotion ? nil : .easeInOut(duration: 1.4).repeatForever(autoreverses: true),
                     value: pulse
                 )
 
@@ -483,6 +484,7 @@ struct GogWebLoginSheet: View {
     let authURL: URL
     let onCodeCaptured: (String) -> Void
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var isLoading = true
     @State private var webError: String?
@@ -526,7 +528,9 @@ struct GogWebLoginSheet: View {
                     },
                     onLoadingChanged: { loading in
                         if loading { webError = nil }
-                        withAnimation(.easeOut(duration: 0.3)) { isLoading = loading }
+                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) {
+                            isLoading = loading
+                        }
                     }
                 )
 
@@ -565,7 +569,7 @@ struct GogWebLoginSheet: View {
                     .transition(.opacity)
                 }
             }
-            .animation(.easeOut(duration: 0.25), value: webError)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: webError)
         }
         .frame(width: 820, height: 640)
         .background(Theme.navyDeep)
@@ -673,6 +677,7 @@ struct GogLibraryView: View {
 struct GogGameCard: View {
     let game: GogdlManager.GogGame
     @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Color de fondo generado deterministamente por hash del appId del juego.
     private var placeholderColor: Color {
@@ -751,8 +756,8 @@ struct GogGameCard: View {
             radius: hovering ? 18 : 6,
             y: hovering ? 9 : 3
         )
-        .scaleEffect(hovering ? 1.03 : 1.0)
-        .animation(.spring(response: 0.28, dampingFraction: 0.72), value: hovering)
+        .scaleEffect(hovering && !reduceMotion ? 1.03 : 1.0)
+        .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.72), value: hovering)
         .onHover { hovering = $0 }
     }
 }

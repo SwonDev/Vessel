@@ -8,6 +8,7 @@ import UniformTypeIdentifiers
 /// Steam, añadir .exe/instalador) viven en `toolbarExtra`. Agrega TODO lo sin DRM del usuario:
 /// itch.io, Humble Bundle, copias locales de Steam, GOG offline y cualquier ejecutable de Windows.
 struct LocalGamesView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var games = LocalGamesStore.shared
     private let store = BottleStore.shared
     @State private var wineManager = WineManager()
@@ -531,8 +532,15 @@ struct LocalGamesView: View {
     }
 
     private func flash(_ msg: String, _ isError: Bool) {
-        withAnimation(.smooth) { banner = (msg, isError) }
-        Task { try? await Task.sleep(for: .seconds(5)); await MainActor.run { withAnimation { if banner?.0 == msg { banner = nil } } } }
+        withAnimation(reduceMotion ? nil : .smooth) { banner = (msg, isError) }
+        Task {
+            try? await Task.sleep(for: .seconds(5))
+            await MainActor.run {
+                withAnimation(reduceMotion ? nil : .smooth) {
+                    if banner?.0 == msg { banner = nil }
+                }
+            }
+        }
     }
 
     // MARK: - Sincronizar bibliotecas vinculadas

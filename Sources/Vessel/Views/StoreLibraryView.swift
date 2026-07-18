@@ -1170,6 +1170,7 @@ struct StoreLibraryView: View {
                     )
                 }
             }
+            .vesselGlassContainer(spacing: 8)
             .padding(.vertical, 3)
             .padding(.horizontal, 2)
         }
@@ -1678,6 +1679,7 @@ private struct LibraryCollectionScopeMenu: View {
     let onDeleteSelected: () -> Void
     let onDropGame: (LibraryGameDragPayload) -> Bool
     @State private var dropTargeted = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var selected: LibraryCollectionsStore.Collection? {
         collections.first { $0.id == selectedID }
@@ -1761,7 +1763,7 @@ private struct LibraryCollectionScopeMenu: View {
         .dropDestination(for: LibraryGameDragPayload.self) { payloads, _ in
             payloads.contains(where: onDropGame)
         } isTargeted: { targeted in
-            withAnimation(.smooth(duration: 0.18)) { dropTargeted = targeted }
+            withAnimation(reduceMotion ? nil : .smooth(duration: 0.18)) { dropTargeted = targeted }
         }
     }
 }
@@ -2360,6 +2362,20 @@ struct StoreDLC: Identifiable, Hashable {
 
 /// Ficha de juego al estilo Steam: banner hero + botón Jugar/Instalar + tiempo jugado y
 /// última sesión. Genérica para todas las tiendas (cada una pasa su color y sus datos).
+enum GameDetailParallax {
+    struct Metrics: Equatable {
+        let overscan: CGFloat
+        let offset: CGFloat
+    }
+
+    static func metrics(scrollY: CGFloat, reduceMotion: Bool) -> Metrics {
+        guard !reduceMotion else { return Metrics(overscan: 0, offset: 0) }
+        let overscan: CGFloat = 60
+        let progress = min(max(-scrollY / 320, 0), 1)
+        return Metrics(overscan: overscan, offset: (-overscan / 2) + (progress * 30))
+    }
+}
+
 struct GameDetailView: View {
     let game: StoreGame
     let tint: Color
@@ -2380,6 +2396,7 @@ struct GameDetailView: View {
     var onOpenNotes: () -> Void = {}
     var onBack: () -> Void = {}
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showingSettings = false
     @State private var details: SteamGameDetails?
     @State private var loadingDetails = false
@@ -2436,7 +2453,7 @@ struct GameDetailView: View {
         .vesselBackground(tint: tint)
         .overlay(alignment: .topLeading) { backButton }
         .overlay { if let idx = lightboxIndex { screenshotLightbox(idx) } }
-        .animation(.smooth(duration: 0.22), value: lightboxIndex)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.22), value: lightboxIndex)
         .sheet(isPresented: $showingSettings) {
             GameSettingsView(game: game, tint: tint, installPath: game.installPath, store: store) {
                 showingSettings = false
@@ -2472,7 +2489,9 @@ struct GameDetailView: View {
                     lightboxArrow("chevron.left", enabled: idx > 0) { lightboxIndex = idx - 1 }
                     Spacer()
                     lightboxArrow("chevron.right", enabled: idx < count - 1) { lightboxIndex = idx + 1 }
-                }.padding(.horizontal, 18)
+                }
+                .vesselGlassContainer(spacing: 12)
+                .padding(.horizontal, 18)
                 VStack {
                     HStack {
                         Text("\(idx + 1) / \(count)").font(.callout.weight(.semibold)).foregroundStyle(.white.opacity(0.9))
@@ -2485,7 +2504,9 @@ struct GameDetailView: View {
                         .buttonStyle(.plain)
                         .accessibilityLabel("Cerrar visor")
                         .vesselHelp("Cerrar visor", shortcut: "Esc")
-                    }.padding(20)
+                    }
+                    .vesselGlassContainer(spacing: 12)
+                    .padding(20)
                     Spacer()
                 }
             }
@@ -2505,6 +2526,12 @@ struct GameDetailView: View {
 
     private var hero: some View {
         GeometryReader { geo in
+            let scrollY = geo.frame(in: .scrollView(axis: .vertical)).minY
+            // La imagen tiene sobremuestreo vertical para desplazarse más despacio que la ficha sin
+            // descubrir bordes. Título y degradado siguen el scroll normal: dos planos, como en la
+            // cabecera de Steam. El recorrido es corto para conservar nitidez y evitar mareo.
+            let parallax = GameDetailParallax.metrics(scrollY: scrollY, reduceMotion: reduceMotion)
+
             ZStack(alignment: .bottomLeading) {
                 Group {
                     if let url = heroURL {
@@ -2516,7 +2543,8 @@ struct GameDetailView: View {
                         LinearGradient(colors: [tint.opacity(0.35), Theme.navyDeep], startPoint: .top, endPoint: .bottom)
                     }
                 }
-                .frame(width: geo.size.width, height: 380)
+                .frame(width: geo.size.width, height: 380 + parallax.overscan)
+                .offset(y: parallax.offset)
                 .clipped()
                 LinearGradient(colors: [.clear, .clear, Theme.navyDeep], startPoint: .top, endPoint: .bottom)
                 Text(game.title)
@@ -2524,45 +2552,127 @@ struct GameDetailView: View {
                     .shadow(color: .black.opacity(0.7), radius: 8, y: 3)
                     .padding(.horizontal, 32).padding(.bottom, 18)
             }
+            .clipped()
         }
         .frame(height: 380)
     }
 
     private var actionBar: some View {
+        ViewThatFits(in: .horizontal) {
+            expandedActionBar
+            compactActionBar
+        }
+        .vesselGlassContainer(spacing: 12)
+        .padding(.horizontal, 32).padding(.vertical, 18)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: launchState)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: installing)
+    }
+
+    /// En ventanas amplias conserva el acceso directo estilo Steam. Si el panel se estrecha, las
+    /// acciones de gestión pasan a un menú nativo en vez de comprimirse o invadir el botón Jugar.
+    private var expandedActionBar: some View {
         HStack(spacing: 20) {
             primaryButton
-            // Los stats (última sesión / tiempo) se ocultan LIMPIAMENTE si no caben, en vez de partir
-            // el texto carácter a carácter en ventanas estrechas. Responsive premium.
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 22) {
-                    stat("clock", "Última sesión", game.lastPlayed.map { $0.formatted(date: .abbreviated, time: .omitted) } ?? "—")
-                    stat("hourglass", "Tiempo de juego", playtimeText)
-                }
+                HStack(spacing: 22) { activityStats }
                 EmptyView()
             }
             Spacer(minLength: 0)
-            if game.installed && !installing {
-                iconButton("arrow.triangle.2.circlepath", label: "Actualizar", tinted: game.updateAvailable, action: onUpdate)
-            }
-            if game.installed && !installing { iconButton("checkmark.shield", label: "Verificar o reparar", action: onVerify) }
-            if game.installed { iconButton("trash", label: "Desinstalar", action: onUninstall) }
-            iconButton("gearshape.fill", label: "Ajustes del juego") { showingSettings = true }
-            iconButton(GameDetailSymbols.note,
-                       label: hasNote ? "Editar notas del juego" : "Añadir notas del juego",
-                       tinted: hasNote,
-                       accent: tint,
-                       badgeIcon: hasNote ? GameDetailSymbols.savedNoteBadge : nil,
-                       action: onOpenNotes)
-            iconButton(isFavorite ? "heart.fill" : "heart",
-                       label: isFavorite ? "Quitar de favoritos" : "Añadir a favoritos",
-                       tinted: isFavorite, action: onToggleFavorite)
-            iconButton(isHidden ? "eye" : "eye.slash",
-                       label: isHidden ? "Mostrar en la biblioteca" : "Ocultar de la biblioteca",
-                       action: onToggleHidden)
+            HStack(spacing: 12) { directGameActions }
+                .fixedSize(horizontal: true, vertical: false)
         }
-        .padding(.horizontal, 32).padding(.vertical, 18)
-        .animation(.snappy(duration: 0.25), value: launchState)
-        .animation(.snappy(duration: 0.25), value: installing)
+    }
+
+    private var compactActionBar: some View {
+        HStack(spacing: 14) {
+            primaryButton
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 18) { activityStats }
+                EmptyView()
+            }
+            Spacer(minLength: 0)
+            gameActionsMenu
+        }
+    }
+
+    @ViewBuilder private var activityStats: some View {
+        stat("clock", "Última sesión", game.lastPlayed.map {
+            $0.formatted(date: .abbreviated, time: .omitted)
+        } ?? "—")
+        stat("hourglass", "Tiempo de juego", playtimeText)
+    }
+
+    @ViewBuilder private var directGameActions: some View {
+        if game.installed && !installing {
+            iconButton("arrow.triangle.2.circlepath", label: "Actualizar",
+                       tinted: game.updateAvailable, action: onUpdate)
+            iconButton("checkmark.shield", label: "Verificar o reparar", action: onVerify)
+        }
+        if game.installed {
+            iconButton("trash", label: "Desinstalar", action: onUninstall)
+        }
+        iconButton("gearshape.fill", label: "Ajustes del juego") { showingSettings = true }
+        iconButton(GameDetailSymbols.note,
+                   label: hasNote ? "Editar notas del juego" : "Añadir notas del juego",
+                   tinted: hasNote,
+                   accent: tint,
+                   badgeIcon: hasNote ? GameDetailSymbols.savedNoteBadge : nil,
+                   action: onOpenNotes)
+        iconButton(isFavorite ? "heart.fill" : "heart",
+                   label: isFavorite ? "Quitar de favoritos" : "Añadir a favoritos",
+                   tinted: isFavorite, action: onToggleFavorite)
+        iconButton(isHidden ? "eye" : "eye.slash",
+                   label: isHidden ? "Mostrar en la biblioteca" : "Ocultar de la biblioteca",
+                   action: onToggleHidden)
+    }
+
+    private var gameActionsMenu: some View {
+        Menu {
+            if game.installed && !installing {
+                Button(action: onUpdate) {
+                    Label(game.updateAvailable ? "Actualizar ahora" : "Buscar actualizaciones",
+                          systemImage: "arrow.triangle.2.circlepath")
+                }
+                Button(action: onVerify) {
+                    Label("Verificar o reparar", systemImage: "checkmark.shield")
+                }
+            }
+            if game.installed {
+                Button(role: .destructive, action: onUninstall) {
+                    Label("Desinstalar", systemImage: "trash")
+                }
+            }
+            Divider()
+            Button { showingSettings = true } label: {
+                Label("Ajustes del juego", systemImage: "gearshape.fill")
+            }
+            Button(action: onOpenNotes) {
+                Label(hasNote ? "Editar notas" : "Añadir notas", systemImage: GameDetailSymbols.note)
+            }
+            Divider()
+            Button(action: onToggleFavorite) {
+                Label(isFavorite ? "Quitar de favoritos" : "Añadir a favoritos",
+                      systemImage: isFavorite ? "heart.slash" : "heart")
+            }
+            Button(action: onToggleHidden) {
+                Label(isHidden ? "Mostrar en la biblioteca" : "Ocultar en la biblioteca",
+                      systemImage: isHidden ? "eye" : "eye.slash")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.78))
+                .frame(width: 38, height: 38)
+                .liquidGlass(
+                    in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous),
+                    interactive: true
+                )
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .accessibilityLabel("Más acciones del juego")
+        .vesselHelp("Más acciones del juego", detail: "Actualizar, reparar, organizar o configurar este juego.")
     }
 
     /// Botón principal con FEEDBACK de estado: Instalar / Instalando… / Jugar / Iniciando… /
@@ -2846,7 +2956,9 @@ struct GameDetailView: View {
             }
             if prog.achievements.count > 6 {
                 Button {
-                    withAnimation(.snappy(duration: 0.28)) { showAllAchievements.toggle() }
+                    withAnimation(reduceMotion ? nil : .snappy(duration: 0.28)) {
+                        showAllAchievements.toggle()
+                    }
                 } label: {
                     Text(showAllAchievements ? "Ver menos" : "Ver los \(prog.achievements.count) logros")
                         .font(.caption.weight(.semibold)).foregroundStyle(tint)

@@ -1,223 +1,266 @@
+---
+version: alpha
+name: Vessel — Steam parity, native macOS
+description: Sistema visual navy y Liquid Glass nativo para una biblioteca unificada de juegos de Windows en macOS.
+colors:
+  primary: "#298CFF"
+  primary-deep: "#1A5CDB"
+  background-top: "#0F1828"
+  background-deep: "#050A16"
+  surface: "#1A2539"
+  on-surface: "#FFFFFF"
+  on-surface-secondary: "#B3BAC7"
+  play: "#57B85C"
+  destructive: "#D96652"
+  steam: "#1A8CD9"
+  epic: "#8C8C8C"
+  gog: "#9940BF"
+  drm-free: "#CC2B2E"
+typography:
+  title-lg:
+    fontFamily: SF Pro
+    fontSize: 36px
+    fontWeight: 800
+    lineHeight: 1.1
+    letterSpacing: -0.02em
+  title-md:
+    fontFamily: SF Pro
+    fontSize: 24px
+    fontWeight: 700
+    lineHeight: 1.2
+  headline:
+    fontFamily: SF Pro
+    fontSize: 17px
+    fontWeight: 600
+    lineHeight: 1.25
+  body:
+    fontFamily: SF Pro
+    fontSize: 14px
+    fontWeight: 400
+    lineHeight: 1.45
+  label:
+    fontFamily: SF Pro
+    fontSize: 12px
+    fontWeight: 600
+    lineHeight: 1.2
+    letterSpacing: 0.02em
+  metadata:
+    fontFamily: SF Mono
+    fontSize: 11px
+    fontWeight: 500
+    lineHeight: 1.2
+rounded:
+  control: 10px
+  cover: 14px
+  card: 16px
+  panel: 20px
+  full: 9999px
+spacing:
+  xs: 4px
+  sm: 8px
+  md: 12px
+  card-gap: 18px
+  section: 24px
+  page: 32px
+components:
+  app-background:
+    backgroundColor: "{colors.background-deep}"
+  header-background:
+    backgroundColor: "{colors.background-top}"
+  accent-depth:
+    backgroundColor: "{colors.primary-deep}"
+  glass-surface:
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.on-surface}"
+    rounded: "{rounded.card}"
+    padding: "{spacing.md}"
+  button-primary:
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.on-surface}"
+    typography: "{typography.label}"
+    rounded: "{rounded.full}"
+    padding: 10px
+  game-cover:
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.on-surface}"
+    rounded: "{rounded.cover}"
+  sidebar-row:
+    backgroundColor: "{colors.background-deep}"
+    textColor: "{colors.on-surface}"
+    typography: "{typography.body}"
+    rounded: "{rounded.control}"
+    padding: "{spacing.sm}"
+  metadata-secondary:
+    textColor: "{colors.on-surface-secondary}"
+  state-playing:
+    textColor: "{colors.play}"
+  state-destructive:
+    textColor: "{colors.destructive}"
+  platform-steam:
+    backgroundColor: "{colors.steam}"
+  platform-epic:
+    backgroundColor: "{colors.epic}"
+  platform-gog:
+    backgroundColor: "{colors.gog}"
+  platform-drm-free:
+    backgroundColor: "{colors.drm-free}"
+---
+
 # DESIGN.md — Sistema de diseño de Vessel
 
-> Fuente de verdad del diseño de Vessel. **Tiene precedencia absoluta** sobre cualquier
-> recomendación externa. Antes de tocar UI: leer esto. Los tokens viven en código en
-> `Sources/Vessel/Support/Theme.swift` — este documento los explica y fija las reglas de uso.
-> Toda la UI y los textos en **español con tildes/ñ/¿¡**, en UTF-8.
+## Overview
 
----
+Vessel es una biblioteca unificada que permite instalar y ejecutar juegos de Windows en Apple
+Silicon sin exponer Wine, prefijos, motores ni capas gráficas en la experiencia principal. Debe
+sentirse como una aplicación macOS premium, rápida y confiable: navy oceánico, Liquid Glass nativo,
+tipografía del sistema y una densidad informativa controlada.
 
-## 1. Identidad
+**Steam es el patrón de referencia para la arquitectura de información, la jerarquía, los estados y
+la fluidez de una biblioteca de juegos. No es una plantilla que deba copiarse literalmente.** Cada
+patrón se adapta al propósito de Vessel y a las convenciones nativas de macOS:
 
-Vessel es un launcher de juegos de Windows para macOS (Apple Silicon). Estética **premium,
-nada simple**, inspirada en [Mythic](https://github.com/MythicApp/Mythic) y en la biblioteca
-de **Steam**: materiales/blur, gradientes, sombras, animaciones suaves, hover y microinteracciones.
+- cambio de plataforma en la cabecera;
+- lista compacta y buscable de juegos en la barra lateral;
+- portada con estanterías, filtros rápidos y carátulas;
+- ficha integrada con hero, acción primaria, actividad, logros, DLC y compatibilidad;
+- descargas visibles y estados persistentes, sin llenar la interfaz de controles técnicos.
 
-- **Concepto cromático**: azul profundo / **navy** — barco, océano, profundidad, confianza.
-- **Material protagonista**: **Liquid Glass nativo** de SwiftUI (`glassEffect`, macOS 26), con
-  degradado a `.ultraThinMaterial` en macOS 15.
-- **Minimalismo sin fricción**: el usuario **abre y juega**. Todo lo técnico (Wine, bottles,
-  capas gráficas, motores) es **invisible y automático**. Nunca se expone en la vista principal.
-  La sidebar son **juegos**, no bottles ni conceptos de Wine.
+La personalidad es minimalista pero no vacía. La complejidad aparece de forma progresiva cuando el
+usuario la necesita. La aplicación tiene tres tiendas —Steam, Epic Games y GOG— más una biblioteca
+DRM‑free de primera clase. Las cuatro comparten la misma gramática visual y funcional.
 
----
+Este documento tiene precedencia sobre recomendaciones externas. Los tokens ejecutables viven en
+`Sources/Vessel/Support/Theme.swift`. Toda la UI y el contenido se escriben en español UTF-8.
 
-## 2. Paleta (Theme)
+## Colors
 
-| Token | Valor (RGB 0–1) | Uso |
-|---|---|---|
-| `Theme.accent` | (0.16, 0.55, 1.0) | Acciones primarias, selección, iconos vivos |
-| `Theme.accentDeep` | (0.10, 0.36, 0.86) | Fondo de gradientes de acento |
-| `Theme.navyTop` | (0.058, 0.094, 0.156) | Navy superior del fondo |
-| `Theme.navyDeep` | (0.020, 0.040, 0.086) | Navy inferior (océano profundo) |
-| `Theme.surface` | (0.10, 0.145, 0.225) | Superficie de tarjeta sin glass (fallback) |
+La base es un océano navy continuo desde la barra de título hasta el borde inferior de la ventana.
+El color de la plataforma activa aporta orientación, no superficies saturadas.
 
-- **Fondo de la app**: `vesselBackground(tint:)` → degradado `navyTop → navyDeep` + resplandor
-  radial superior con el color de la **sección/tienda activa** (branding por tienda).
-- **Gradiente de marca**: `Theme.gradient(base)` → `base.opacity(0.98) → accentDeep.opacity(0.92)`.
-- **Modo oscuro siempre** (`.preferredColorScheme(.dark)`).
-- **Verde "Jugar"** (estilo Steam): `Color(red: 0.34, green: 0.72, blue: 0.36)` — SOLO el botón Jugar.
+- **Primary (#298CFF):** acciones y selección globales de Vessel.
+- **Primary Deep (#1A5CDB):** profundidad del gradiente de marca.
+- **Background Top (#0F1828) / Deep (#050A16):** lienzo de la aplicación.
+- **Surface (#1A2539):** respaldo opaco para accesibilidad y contextos sin cristal.
+- **On Surface (#FFFFFF) / Secondary (#B3BAC7):** texto principal y metadatos.
+- **Play (#57B85C):** reservado para la acción «Jugar» y estados equivalentes de ejecución.
+- **Platform accents:** Steam `#1A8CD9`, Epic `#8C8C8C`, GOG `#9940BF`, DRM‑free `#CC2B2E`.
 
-### Color por tienda (branding del resplandor y acentos)
-| Tienda | `tint` |
-|---|---|
-| Steam | (0.10, 0.55, 0.85) |
-| Epic | (0.55 gris claro) |
-| GOG | (0.60, 0.25, 0.75) |
+El cristal es siempre neutro. El color aparece como velo de baja opacidad, borde, icono o indicador.
+No se aplica un tinte fuerte a `glassEffect`, porque convierte la refracción en un relleno visualmente
+plano. El modo oscuro es la presentación canónica.
 
----
+## Typography
 
-## 3. Escalas
+Vessel usa las familias del sistema para integrarse con macOS y heredar sus métricas de accesibilidad.
+Se prefieren los estilos semánticos de SwiftUI (`largeTitle`, `title2`, `headline`, `body`, `caption`)
+frente a tamaños fijos; los tamaños del front matter documentan la jerarquía visual esperada.
 
-**Radios** (`Theme.Radius`): `cover 14` (carátulas) · `card 16` (tarjetas) · `control 10`
-(botones/campos) · `panel 20` (paneles/hero). Siempre `style: .continuous`.
+- Los títulos de juego son el foco principal y usan peso alto solo sobre hero o cabeceras.
+- El cuerpo mantiene una lectura calmada; no se emplean bloques enteros en mayúsculas.
+- Etiquetas y metadatos son compactos. Cifras de progreso y tiempos pueden usar diseño monoespaciado.
+- La jerarquía se consigue primero con tamaño, peso y espacio; el color nunca sustituye al texto.
 
-**Espaciado** (`Theme.Space`): `gameGrid 18` · `section 24` · `page 32`.
+## Layout
 
----
+La ventana se organiza siguiendo el modelo mental de la biblioteca de Steam, adaptado a macOS:
 
-## 4. Materiales y componentes (usar SIEMPRE estos, no estilos sueltos)
-
-| Necesidad | API canónica | Notas |
-|---|---|---|
-| Fondo de pantalla | `.vesselBackground(tint:)` | tint = color de la tienda |
-| Cristal (paneles, campos, chips) | `.liquidGlass(in:tint:interactive:)` | glassEffect / material |
-| Tarjeta premium | `.vesselCard(padding:cornerRadius:tint:)` | envoltura de `liquidGlass` |
-| Botón | `.vesselButton(_ prominent:tint:)` | `GlassButtonStyle` (cristal translúcido, 26) o `PremiumButtonStyle` (15) |
-| Elevación hover | `.hoverLift(scale:)` | escala + sombra con muelle |
-
-**Reglas:** nunca `.borderedProminent`/`.bordered` sueltos → `vesselButton`. Nunca hardcodear
-colores/sombras/blur en una vista → usar Theme y los modificadores. Botón Jugar = `vesselButton(tint: steamGreen)`.
-
-**★ Liquid Glass por TODAS PARTES (firma visual premium).** Es el sello de Vessel. TODO elemento
-sobre el fondo navy —botones, **chips/etiquetas** (género…), **insignias** (favorito, instalado…),
-campos, paneles de carga, icon-buttons— usa Liquid Glass: `liquidGlass(in:)` o `vesselButton`.
-Prohibido `.ultraThinMaterial`/`Capsule().fill(.white.opacity(...))` sueltos como acabado final.
-- **⚠️ El cristal SIEMPRE va neutro.** `glassEffect(.regular.tint(colorFuerte))` NO refracta:
-  renderiza un relleno SÓLIDO de ese color (el botón Jugar salía "verde cantoso", la selección
-  "azul plano"). El color **nunca** es el relleno del cristal, sino un ACENTO encima:
-  - elementos **pasivos** (chips de género, insignias favorito/instalado) → `liquidGlass(in:)` a secas,
-    sin nada más (mismo cristal limpio que el header);
-  - **acciones/CTA** (Jugar, Instalar) → `vesselButton(tint:)` = `GlassButtonStyle`: cristal **neutro**
-    `.interactive()` + velo mínimo del color (`tint.opacity(0.10→0.16)` en hover) + **borde** tintado
-    (`strokeBorder(tint.opacity(0.45))`). La **sombra es NEUTRA** (`.black.opacity`), nunca tintada:
-    el glow de color "cantaba" como un aura → prohibido. El color queda solo en velo + borde;
-  - **selección** de fila (`StoreGameRow`) → idéntico patrón: cristal neutro + `tint.opacity(0.12)` +
-    borde `tint.opacity(0.45)`. NUNCA `List(selection:)` (da el resaltado sólido del sistema): lista
-    plana + `.onTapGesture` + fondo glass por fila según `isSelected`.
-- **Cobertura TOTAL (sin excepciones):** cero `.borderedProminent`/`.bordered` en la app — TODO botón
-  (footers de sheets Crear/Importar, "Cancelar", acciones del bottle, login oficial, "Instalar ahora")
-  usa `vesselButton(_:tint:)`; los icon-buttons (estrella favorito) y pills de estado usan
-  `liquidGlass(in:)`. Si añades una vista nueva, hereda este lenguaje desde el primer commit.
-- **Nunca cristal sobre cristal:** un chip/insignia DENTRO de un panel ya `liquidGlass` (p. ej.
-  "sin verificar" dentro de una `cardSection`) NO lleva glass (se degrada) → fill sutil.
-- **Refracción:** el efecto luce de verdad cuando hay contenido detrás (carátulas tras el header);
-  sobre navy plano es un cristal frosted sutil — igualmente premium.
-
----
-
-## 5. Movimiento
-
-- Transiciones de contenido: `.smooth(duration: 0.32)`; grids: `.snappy(0.28)`; hover:
-  `.spring(response: 0.3, dampingFraction: 0.72)`.
-- **Respetar `accessibilityReduceMotion`**: si está activo, `animation(nil)` y sin transiciones.
-- Microinteracciones: hover en tarjetas (lift), iconos que escalan, cristal interactivo.
-
----
-
-## 6. Accesibilidad
-
-- Todo elemento pulsable es un `Button` con `accessibilityLabel`.
-- `@State`/`@FocusState` privados; `ForEach` con identidad estable (nunca índices).
-- Texto legible sobre imágenes: gradiente inferior + sombra.
-- Soporte Dynamic Type y reduce-motion.
-
----
-
-## 7. Arquitectura de navegación (LAYOUT — estilo Steam) ★
-
-Vessel se organiza **como la biblioteca de Steam**. Tres zonas:
-
-```
-┌───────────────────────────────────────────────────────────────────────┐
-│ TOOLBAR/HEADER:  [◉ Steam] [◉ Epic] [◉ GOG]  ················  [• Más] │  ← cambio de TIENDA
-├──────────────────────┬────────────────────────────────────────────────┤
-│ SIDEBAR (lista)      │  DETALLE (principal)                            │
-│  ┌────────────────┐  │                                                 │
-│  │ 🔍 Buscar…  ⤓ ▾ │  │   • Si hay juego seleccionado → ficha (hero +   │
-│  └────────────────┘  │     botón JUGAR + última sesión/tiempo + compat)│
-│  ▸ Juego A (instal.) │   • Si no → "home": grid de carátulas           │
-│  ▸ Juego B           │     (INSTALADOS PRIMERO, como Steam)            │
-│  ▸ Juego C           │                                                 │
-│  …lista buscable     │                                                 │
-└──────────────────────┴────────────────────────────────────────────────┘
+```text
+┌──────────────────────────────────────────────────────────────────────┐
+│ Header: [Steam] [Epic] [GOG] [DRM‑free]                 [Perfil] [Más]│
+├──────────────────────┬───────────────────────────────────────────────┤
+│ Lista de juegos      │ Ficha integrada o portada de biblioteca      │
+│ Buscar · filtrar     │ Hero · Jugar · actividad · contenido         │
+│ Colecciones          │ Estanterías · carátulas · estados            │
+└──────────────────────┴───────────────────────────────────────────────┘
 ```
 
-**Reglas del layout:**
-1. **El cambio de tienda vive en el HEADER** (no en la sidebar): iconos con el **logo oficial**
-   de cada tienda (Steam/Epic/GOG), con estado seleccionado (cristal tintado con `tint` de la tienda).
-2. **La sidebar izquierda es la LISTA DE JUEGOS** de la tienda activa, con **búsqueda** y
-   **filtro** (Todos/Instalados/Por instalar) + favoritos. Filas compactas: mini-carátula +
-   título + estado. **Instalados primero**, luego orden por nombre/recientes.
-3. **El panel principal** muestra la **ficha del juego** seleccionado (banner hero integrado,
-   botón **Jugar** grande verde, ÚLTIMA SESIÓN / TIEMPO DE JUEGO con iconos, badge de
-   compatibilidad, ajustes) o, si no hay selección, el **grid "home"** de carátulas verticales.
-4. **Solo 3 tiendas**: Steam, Epic, GOG. (Amazon y Battle.net retiradas.)
-5. La ficha NO es un `.sheet` modal flotante: es una **vista integrada** en el panel principal.
-6. **El header/barra de título es NAVY, nunca el gris nativo de macOS.** El `vesselBackground`
-   (navy oceánico + resplandor por tienda) debe **subir hasta el borde superior de la ventana**
-   sin costura (estilo Mythic), de modo que el `StoreSwitcher`, el título y el menú "Más" floten
-   sobre el navy. **Prohibido** dejar la franja gris por defecto del titlebar/toolbar.
-   - **Efecto "scroll edge" (Liquid Glass) — OBLIGATORIO y NOTORIO:** al hacer scroll, las
-     tarjetas **se meten por debajo del header y se difuminan/refractan** a través del cristal
-     (se "curvan" bajo el Liquid Glass), mientras el `StoreSwitcher` queda nítido por encima.
-     No vale un corte seco: el contenido tiene que verse pasar y deformarse bajo la barra.
-   - **Línea separadora:** un hairline sutil (degradado horizontal, más visible en el centro)
-     en el borde inferior del cristal, para diferenciar el header del contenido (estilo Steam).
+- La cabecera conserva el control de plataforma y las acciones globales; la barra lateral contiene
+  juegos, búsqueda, orden, filtros y colecciones, nunca plataformas ni conceptos de Wine.
+- El panel principal muestra la ficha integrada del juego seleccionado. Sin selección, funciona como
+  portada con «Jugados recientemente», ámbitos rápidos y un grid adaptable.
+- La ficha nunca es una sheet. Las sheets quedan para tareas breves y autocontenidas: autenticación,
+  edición, confirmación o ajustes.
+- El contenido se desplaza por debajo de la cabecera translúcida para crear el scroll edge nativo.
+- El hero de cada ficha usa parallax sutil: la ilustración se desplaza más despacio que el título y
+  el contenido. El mismo efecto se aplica a Steam, Epic, GOG y DRM‑free desde la ficha común.
+- Radios, espaciados y densidad usan los tokens. Los valores locales solo se aceptan para geometrías
+  inherentes a una carátula, logo o icono.
+- Los controles secundarios deben reagruparse en menús nativos cuando el ancho no permita mantener
+  la jerarquía, en vez de recortar etiquetas o desbordar una fila.
 
-**Header navy + scroll edge (cómo se consigue — `ContentView`):**
-- `VesselWindowStyler` (`NSViewRepresentable` como `.background`) sobre la `NSWindow`:
-  `titlebarAppearsTransparent = true` + `styleMask.insert(.fullSizeContentView)` + `backgroundColor`
-  navy (`Theme.navyDeep`, respaldo) + `isMovableByWindowBackground = true`. El **contenido a tamaño
-  completo** es clave: las tarjetas suben hasta el borde de la ventana y pasan por DETRÁS del header.
-- `glassHeader` — barra de **Liquid Glass real** (`glassEffect` en macOS 26; `.ultraThinMaterial`
-  en 15) puesta como `overlay(alignment: .top)`, con alto = `headerHeight` (el inset superior,
-  medido con un `GeometryReader` en `.background`). El contenido se refracta/difumina al pasar por
-  detrás de ella; lleva el `headerSeparator` (hairline) en su borde inferior. `allowsHitTesting(false)`.
-- `.toolbarBackgroundVisibility(.hidden, for: .windowToolbar)` — se oculta el material del toolbar
-  del sistema: **la barra de cristal la pone `glassHeader`**, no el toolbar (el efecto nativo
-  `scrollEdgeEffectStyle` no se apreciaba con el `ScrollView` anidado en el `HSplitView`).
-- Se conserva `.windowStyle(.titleBar)` + `.windowToolbarStyle(.unified(showsTitle: true))` (mantiene
-  semáforos, título "Vessel" y el `StoreSwitcher` nítidos por encima del cristal).
+## Elevation & Depth
 
-**Componentes (en `Views/StoreLibraryView.swift`, reutilizados por las 3 tiendas):**
-- `StoreGame` — modelo genérico de juego (id, title, coverURL, heroURL, steamAppId, installed,
-  lastPlayed, playtimeMinutes, installPath).
-- `StoreLibraryView` — **coordinador de dos paneles** (lista + detalle/grid). Posee búsqueda,
-  orden, filtro, favoritos y selección. Recibe `(store, games, callbacks)`; cada tienda mapea sus
-  datos a `[StoreGame]`. **Instalados primero** en `filtered`.
-- `StoreGameRow` — fila de la lista lateral (mini-carátula 2:3 + título + chip de estado).
-- `StoreGameCard` — carátula vertical 2:3 para el grid "home".
-- `GameDetailView` — ficha estilo Steam (hero + Jugar + stats + compat badge + ajustes).
-- `StoreSwitcher` — control del header con los logos de tienda (en `ContentView`).
+La profundidad procede de capas funcionales, no de acumular tarjetas:
 
-**Estado / datos:**
-- `ContentView` posee `selectedStore: StoreKind` y monta la tienda activa + el `StoreSwitcher`.
-- Cada `XxxStoreView` (`SteamStoreView`/`EpicStoreView`/`GogStoreView`) posee su servicio
-  (login + biblioteca) y renderiza `StoreLibraryView` con sus juegos y callbacks. Si no hay sesión,
-  muestra su pantalla de conexión.
-- Selección de juego: `@State selectedGame` dentro de `StoreLibraryView` (lista ↔ detalle).
-- Singletons (`BottleStore.shared`, `LogStore.shared`, `CompatService.shared`) por referencia
-  directa; servicios con ciclo de pantalla (`WineManager`, `DependencyManager`) como `@State`.
+1. fondo navy con resplandor muy sutil de la plataforma activa;
+2. contenido y carátulas;
+3. Liquid Glass para navegación, controles flotantes y superficies que realmente necesitan separar
+   contexto;
+4. popovers, sheets y overlays del sistema para tareas temporales.
 
----
+En macOS 26 se usa `glassEffect(.regular)` y `GlassEffectContainer` para grupos de cristales próximos.
+En macOS 15 se usa `.ultraThinMaterial`. Con «Reducir transparencia» se reemplazan ambos por una
+superficie navy opaca con borde legible. Las sombras son negras, suaves y contenidas; no se usan auras
+de color en controles. Nunca se coloca cristal sobre cristal.
 
-## 8. Compatibilidad (badges)
+## Shapes
 
-Rating estilo ProtonDB en la ficha (de `CompatProfile.Rating`): Platino (azul claro),
-Oro (dorado), Plata (gris), Bronce (cobre), No funciona (rojo). `verified` muestra sello;
-no verificado muestra chip "sin verificar". Ver `vessel-sistema-compatibilidad`.
+Todas las esquinas rectangulares son continuas. La escala canónica es:
 
-**Privacidad (valor de producto, no negociable):** los reportes de compatibilidad son
-**anónimos** (solo juego + sistema técnico + notas; nunca usuario/correo/equipo). En Ajustes
-del juego: botones "Reportar en GitHub" y "Copiar (anónimo)" + nota con `lock.shield`. En
-Ajustes → Privacidad: toggle para desactivar la auto-actualización y funcionar 100% local.
-Vessel no envía telemetría; nada se sube automáticamente.
+- 10 px para campos, filas y controles;
+- 14 px para carátulas;
+- 16 px para tarjetas;
+- 20 px para paneles grandes y heroes;
+- cápsula completa para scopes, botones principales y estados breves.
 
----
+No se mezclan radios arbitrarios dentro de la misma familia de componentes. Los logos pueden conservar
+su geometría de marca cuando sea necesaria para reconocer la plataforma.
 
-## 9. Logos de tienda
+## Components
 
-PNG oficiales en `Resources/StoreLogos/store-{steam,epic,gog}.png`, cacheados por `StoreLogo`.
-`StoreLogoTile` = insignia hero (logo sobre gradiente del `tint` + borde + sombra de color).
-Fallback a SF Symbol si falta el PNG.
+### Primitivas canónicas
 
----
+- `vesselBackground(tint:)`: fondo navy y orientación cromática por plataforma.
+- `liquidGlass(in:interactive:)`: cristal neutro, fallback material y modo opaco accesible.
+- `vesselGlassContainer(spacing:)`: agrupación nativa de efectos próximos en macOS 26.
+- `vesselCard(padding:cornerRadius:)`: tarjeta de cristal coherente.
+- `vesselButton(_:tint:)`: acción primaria o secundaria con cristal interactivo.
+- `hoverLift(scale:)`: elevación de puntero que respeta «Reducir movimiento».
 
-## 10. No hacer
+### Biblioteca y ficha
 
-- ❌ Exponer Wine/bottles/motores/capas en la UI principal.
-- ❌ Botones/efectos planos o `.bordered*` sueltos.
-- ❌ Hardcodear color/blur/sombra fuera de Theme.
-- ❌ Fichas como modales flotantes desbordados.
-- ❌ Romper reduce-motion. ❌ Texto sin tildes/ASCII.
+- `StoreSwitcher` cambia entre las tres tiendas y DRM‑free sin alterar la estructura de la ventana.
+- `StoreLibraryView` es el coordinador común; las plataformas solo adaptan datos y callbacks.
+- `StoreGameRow` prioriza título, instalación, actividad y selección con densidad similar a Steam.
+- `StoreGameCard` usa carátula 2:3, estado legible y acciones progresivas.
+- `GameDetailView` integra hero, Jugar/Instalar, última sesión, tiempo, logros, DLC, capturas,
+  compatibilidad y ajustes. Su hero tiene profundidad parallax; la acción primaria domina y las
+  secundarias no compiten con ella.
+- El centro de descargas solo aparece durante operaciones activas y conserva el progreso al navegar.
+
+### Estados y accesibilidad
+
+Todas las vistas incluyen loading, vacío, error, deshabilitado, hover, focus y feedback de operación
+cuando corresponda. Cada control usa `Button`, `Menu` o componente nativo con etiqueta accesible. Los
+tooltips se reservan para controles y pueden desactivarse sin eliminar la pista de VoiceOver.
+
+Las animaciones canónicas son `smooth(0.32)`, `snappy(0.28)` y spring de hover. Siempre se anulan con
+`accessibilityReduceMotion`; se conserva como máximo un cambio instantáneo de sombra o luminosidad.
+
+## Do's and Don'ts
+
+- Haz que Steam guíe la completitud, la jerarquía y los flujos de biblioteca.
+- Haz que macOS guíe los controles, menús, accesibilidad, teclado, foco y Liquid Glass.
+- Mantén una única acción primaria inequívoca por contexto.
+- Usa profundidad y movimiento para explicar capas —parallax del hero, scroll edge y previews—, no
+  como decoración permanente; todos los efectos deben tener una alternativa estática.
+- Reutiliza la biblioteca común para alcanzar paridad entre Steam, Epic, GOG y DRM‑free.
+- Conserva la interfaz limpia mediante divulgación progresiva, estados efímeros y menús adaptables.
+- Mantén contraste WCAG AA y prueba «Reducir movimiento» y «Reducir transparencia».
+- No copies literalmente la piel web de Steam ni sus densidades que no encajen en macOS.
+- No expongas Wine, prefijos, motores o capas gráficas en la biblioteca principal.
+- No uses `.bordered*`, materiales o colores hardcodeados cuando exista una primitiva de Theme.
+- No tintes el cristal con colores fuertes, no uses sombras de color y no apiles cristal sobre cristal.
+- No conviertas cada bloque en una tarjeta; el cristal debe indicar una capa funcional.
+- No recortes acciones o textos en ventanas estrechas: reordena, oculta metadatos o agrupa en un menú.
+- No introduzcas animación que ignore las preferencias de accesibilidad.
