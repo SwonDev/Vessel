@@ -664,7 +664,10 @@ final class WineManager {
     /// `portal`, Half-Life 2 → `hl2`, TF2 → `tf`…). Verificado con Portal.
     func sourceModDirectory(forExecutable executable: String) -> String? {
         let dir = (executable as NSString).deletingLastPathComponent
-        guard (executable as NSString).lastPathComponent.lowercased().hasPrefix("hl2"),
+        // hl2.exe (Portal, Half-Life 2 y sus mods) o portal2.exe (Portal 2): juegos de Source cuyo
+        // mod vive en un subdirectorio con gameinfo.txt (el primero alfabético es el mod base).
+        let exe = (executable as NSString).lastPathComponent.lowercased()
+        guard exe.hasPrefix("hl2") || exe.hasPrefix("portal2"),
               let items = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return nil }
         return items.sorted().first {
             FileManager.default.fileExists(atPath: "\(dir)/\($0)/gameinfo.txt")
@@ -734,6 +737,18 @@ final class WineManager {
     /// aquí — a ese, forzarle Vulkan lo rompería, y ya funciona por su camino.
     func isGodotVulkanGame(_ executable: String) -> Bool {
         exeContains(executable, anyOf: ["Godot Engine"]) && exeContains(executable, anyOf: ["vulkan"])
+    }
+
+    /// True si el ejecutable es un juego **Java con JVM embebida** (p. ej. Wurm Unlimited): junto
+    /// al exe hay un runtime Java (`runtime/bin/java.exe`, `jre/bin/java.exe`) o un `client.jar`.
+    /// Misma detección por estructura que usa el importador (`SteamLibraryImporter`).
+    func isJavaGame(_ executable: String) -> Bool {
+        let dir = (executable as NSString).deletingLastPathComponent
+        let fm = FileManager.default
+        for jre in ["runtime/bin/java.exe", "jre/bin/java.exe", "jdk/bin/java.exe"] {
+            if fm.fileExists(atPath: "\(dir)/\(jre)") { return true }
+        }
+        return fm.fileExists(atPath: "\(dir)/client.jar")
     }
 
     /// `true` si el juego usa el **XNA de Microsoft** y NO se lo trae consigo: entonces hay que
@@ -1111,6 +1126,32 @@ final class WineManager {
                                                         arguments: allArgs, steamAppId: steamAppId,
                                                         effective: eff, wine: fullEngineWine)
         }
+        // **Java (JVM embebida, p. ej. Wurm Unlimited)**: su render es **Vulkan vía LWJGL**, no
+        // Direct3D — su PE no importa ninguna DLL de DirectX, así que la rama `.other` lo mandaba
+        // a Gcenx, cuyo MoltenVK VIEJO (0.2.2209) lo deja colgado tras crear el VkInstance (todos
+        // los hilos de la JVM en espera, sin ventana). Con `wine-full` (winevulkan + MoltenVK
+        // nuevo) la JVM arranca y el juego abre su launcher. Verificado: Wurm Unlimited llega a
+        // su ventana de login (v1.9.1.5); con Gcenx ni ventana. Solo en AUTO, como UE4.
+        if go == .auto, isJavaGame(executable),
+           let fullEngineWine = await fullEngineWineEnsured() {
+            log.log("Juego Java (JVM embebida): render Vulkan/LWJGL con el Wine completo (MoltenVK nuevo).", level: .info)
+            cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
+            try? await terminateWineProcesses(winePath: fullEngineWine, prefix: bottle.prefixPath)
+            try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: fullEngineWine)
+            await resyncGamePrefix(gameWine: fullEngineWine, prefix: bottle.prefixPath)
+            var env = ["WINEPREFIX": bottle.prefixPath, "WINEDEBUG": "-all",
+                       "WINEDLLOVERRIDES": "winemenubuilder.exe=d",
+                       "WINEMSYNC": "1", "WINEESYNC": "1"]
+            if let appId = steamAppId, !appId.isEmpty { env["SteamAppId"] = appId; env["SteamGameId"] = appId }
+            return try await launchWineProcess(
+                winePath: fullEngineWine,
+                prefix: bottle.prefixPath,
+                arguments: [executable] + allArgs,
+                environment: env,
+                workingDirectory: gameWorkingDirectory(forExecutable: executable),
+                effective: eff
+            )
+        }
         // Capa gráfica: override por juego (Ajustes/perfil) o auto-detección por API.
         // D3D12 (AAA, FF Tactics) → GPTK/D3DMetal (Metal nativo, ignora el Agility
         // SDK), con el cliente Steam en el mismo wineserver para el DRM.
@@ -1472,9 +1513,17 @@ final class WineManager {
             winePath: wine,
             prefix: prefix,
             arguments: [executable] + arguments,
+            // SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0: SDL2 minimiza las ventanas fullscreen al
+            // perder el foco POR DEFECTO, así que al cambiar de app el juego se encogía a una
+            // ventanita oculta y su render se reiniciaba (pantalla de título / cuadro blanco) —
+            // el "congelado al cambiar de ventana". Reproducido con FEZ en AMBOS motores (el
+            // juego mismo hace SetWindowPos 800×480 + ShowWindow(SW_MINIMIZE), no es winemac).
+            // Con la hint a 0 el juego se queda borderless al fondo y vuelve intacto. Verificado
+            // in-vivo: FEZ no se esconde al activar el Finder y sigue respondiendo al volver.
             environment: ["WINEPREFIX": prefix, "WINEDEBUG": "-all",
                           "WINEDLLOVERRIDES": "winemenubuilder.exe=d",
-                          "WINEMSYNC": "1", "WINEESYNC": "1"],
+                          "WINEMSYNC": "1", "WINEESYNC": "1",
+                          "SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS": "0"],
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: effective
         )
@@ -1748,6 +1797,30 @@ final class WineManager {
             return try await launchUnity32BitWithCrossOver(executable: rawExecutable, in: bottle,
                                                            arguments: arguments, effective: effective,
                                                            wine: fullWine)
+        }
+        // **Resto de juegos de 32-bit (GameMaker y similares) → `wine-full` primero.**
+        // El gptk-mythic los deja COLGADOS en el init de display con una ventana de 3×41 píxeles
+        // (GameMaker prueba APIs y no consigue contexto; todos los hilos en espera de wineserver).
+        // Con `wine-full` el mismo juego cambia de API y RENDERIZA. Verificado: Caveblazers abre
+        // su menú con wine-full mientras gptk se queda en 3×41 (y 10 Second Ninja X, también
+        // GameMaker, va por la misma ruta D3D9-32). Si `wine-full` no está, se mantiene gptk.
+        if !isUnityGame(rawExecutable), let fullWine = await fullEngineWineEnsured() {
+            log.log("Capa gráfica: Wine completo (juego de 32-bit) — gptk cuelga su init de display.", level: .info)
+            cleanExeAdjacentDXMTDLLs(gameExecutable: rawExecutable)
+            cleanGameFolderGraphicsDLLs(forExecutable: rawExecutable)
+            try? await terminateWineProcesses(winePath: fullWine, prefix: bottle.prefixPath)
+            try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: fullWine)
+            await resyncGamePrefix(gameWine: fullWine, prefix: bottle.prefixPath)
+            return try await launchWineProcess(
+                winePath: fullWine,
+                prefix: bottle.prefixPath,
+                arguments: [rawExecutable] + arguments,
+                environment: ["WINEPREFIX": bottle.prefixPath, "WINEDEBUG": "-all",
+                              "WINEDLLOVERRIDES": "winemenubuilder.exe=d",
+                              "WINEMSYNC": "1", "WINEESYNC": "1"],
+                workingDirectory: gameWorkingDirectory(forExecutable: rawExecutable),
+                effective: effective
+            )
         }
         try await gptkManager.ensureInstalled { msg, pct in
             Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
@@ -4198,6 +4271,7 @@ final class WineManager {
                       "WINEMSYNC", "WINEESYNC", "WINEFSYNC", "MVK_CONFIG_LOG_LEVEL", "MTL_HUD_ENABLED",
                       "DOTNET_ReadyToRun", "DOTNET_TieredCompilation", "DOTNET_TieredPGO",
                       "DOTNET_EnableWriteXorExecute", "DOTNET_gcServer", "ROSETTA_ADVERTISE_AVX",
+                      "SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS",
                       "SDL_JOYSTICK_HIDAPI", "SDL_JOYSTICK_HIDAPI_PS4", "SDL_JOYSTICK_HIDAPI_PS4_RUMBLE",
                       "SDL_JOYSTICK_HIDAPI_PS5", "SDL_JOYSTICK_HIDAPI_PS5_RUMBLE", "SDL_JOYSTICK_HIDAPI_SWITCH"] {
                 if let v = fullEnv[k] { clean[k] = v }
