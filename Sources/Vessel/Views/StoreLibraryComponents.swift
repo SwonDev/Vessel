@@ -970,11 +970,12 @@ struct StoreGameRow: View {
                     .strokeBorder(.white.opacity(0.08), lineWidth: 0.5))
             VStack(alignment: .leading, spacing: 2) {
                 Text(game.title).font(.callout).foregroundStyle(.white).lineLimit(1)
-                Text(game.updateAvailable ? "Actualización disponible"
-                                          : (game.installed ? "Instalado" : "Sin instalar"))
+                // Estado con ACTIVIDAD (DESIGN.md: la fila prioriza título, instalación y
+                // actividad): si se jugó, cuándo fue la última vez (estilo lista compacta de
+                // Steam); si nunca, el estado de instalación clásico.
+                Text(statusLine)
                     .font(.caption2)
-                    .foregroundStyle(game.updateAvailable ? tint
-                                     : (game.installed ? Theme.play : .white.opacity(0.4)))
+                    .foregroundStyle(statusColor)
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
                     .layoutPriority(1)
@@ -992,6 +993,22 @@ struct StoreGameRow: View {
         .background { rowBackground }
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
+    }
+
+    /// Línea de estado de la fila: actividad reciente si existe (Steam compacto), si no, el
+    /// estado de instalación. La actualización disponible siempre manda (es accionable).
+    private var statusLine: String {
+        if game.updateAvailable { return "Actualización disponible" }
+        if let lastPlayed = game.lastPlayed {
+            return "Jugado \(lastPlayed.formatted(.relative(presentation: .named).locale(Locale(identifier: "es_ES"))))"
+        }
+        return game.installed ? "Instalado" : "Sin instalar"
+    }
+
+    private var statusColor: Color {
+        if game.updateAvailable { return tint }
+        if game.lastPlayed != nil { return .white.opacity(0.45) }
+        return game.installed ? Theme.play : .white.opacity(0.4)
     }
 
     /// Fondo de la fila: **cristal Liquid Glass tintado** si está seleccionada (premium, no el
