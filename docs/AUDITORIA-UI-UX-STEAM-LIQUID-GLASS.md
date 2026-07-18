@@ -89,8 +89,8 @@ contiene la ficha común. La separación mantiene una única experiencia sin con
 | Parallax y profundidad de ficha | Mejorado en esta rama | Hero compartido con dos planos y alternativa sin movimiento. |
 | Capturas, DLC y metadatos | Consolidado | Fuente común y enriquecimiento tolerante por plataforma. |
 | Logros | Parcial | Muy completos en Steam; la disponibilidad depende de credenciales y backend. |
-| Descargas | Parcial | Progreso y persistencia visibles; pausa/reordenación esperan soporte real de los backends. |
-| Actividad/noticias del juego | Pendiente | No existe una estantería equivalente a «Novedades» o feed por juego. |
+| Descargas | Consolidado | Cola persistente con pausa, cancelación, prioridad, reintento y recuperación en los tres backends. |
+| Actividad/noticias del juego | Consolidado local | Estantería común con operaciones reales; no se muestran noticias remotas sin una fuente fiable por tienda. |
 | Gestión adaptativa | Mejorado en esta rama | Acciones directas amplias y menú nativo cuando falta ancho. |
 | Estado de guardados | Parcial | Hay infraestructura de copias, pero no una señal global comparable a Steam Cloud. |
 | Paridad visual entre plataformas | Consolidado | Una sola biblioteca y ficha para Steam, Epic, GOG y DRM‑free; código heredado retirado. |
@@ -108,7 +108,7 @@ contiene la ficha común. La separación mantiene una única experiencia sin con
 | Barra de acciones contextual | Implementado | Toolbar flotante con título, estado, acción primaria y menú después del hero. |
 | Carrusel de capturas | Implementado | Snapping, trackpad, hover, flechas, Intro y navegación completa del lightbox. |
 | Atmósfera derivada del juego | Por evaluar | Velo de color muy tenue obtenido del hero, limitado por contraste y rendimiento. |
-| Feedback de instalación | Parcial | Evolucionar progreso a una cola manipulable con transiciones de estado compartidas. |
+| Feedback de instalación | Consolidado | Cola manipulable, estado persistente y actividad posterior compartida entre Steam/Epic/GOG. |
 
 Los tres efectos prioritarios ya comparten implementación. La atmósfera de color permanece descartada
 por ahora: el fondo ya deriva de la plataforma y añadir un segundo tinte por juego puede romper el
@@ -131,17 +131,17 @@ La separación se completó por responsabilidad, manteniendo estado y comandos e
 
 La división sigue siendo estructural y no crea implementaciones específicas por tienda.
 
-### P1 — Completar gestión de descargas
+### Resuelto — Completar gestión de descargas
 
-El centro actual informa bien, pero todavía es un observador. Para alcanzar el estándar de Steam debe
-permitir, cuando el backend lo soporte, pausar/reanudar, cancelar con confirmación, priorizar y explicar
-por qué una operación espera. Los estados deben sobrevivir a la navegación y al reinicio.
+El centro permite pausar/reanudar, cancelar, priorizar y reintentar sobre SteamCMD, Legendary y gogdl.
+Los procesos se cancelan de verdad y los estados seguros sobreviven a la navegación y al reinicio.
 
-### P2 — Añadir actividad útil, no ruido
+### Resuelto — Añadir actividad útil, no ruido
 
-La siguiente estantería con mayor valor es «Novedades»: actualizaciones instaladas, notas de versión o
-actividad local relevante. Debe ser opcional y breve; no un feed social. En la ficha, la actividad
-reciente puede complementar última sesión, logros y capturas.
+La portada incorpora «Actividad reciente» con instalaciones, actualizaciones, verificaciones,
+desinstalaciones, DLC, fallos y cancelaciones observados por Vessel. Es breve, persistente y abre la
+ficha del juego cuando sigue presente. Las notas de versión remotas se omiten deliberadamente hasta
+que las tres tiendas ofrezcan una fuente verificable y homogénea.
 
 ### P2 — Convertir estilos locales en tokens semánticos
 
@@ -193,16 +193,30 @@ manuales para preferencias globales del sistema y estados que dependen de backen
   los cristales aplicados a un `Color.clear` dentro de `GlassEffectContainer` podían elevarse sobre
   su etiqueta y difuminar scopes o botones. El cristal se aplica ahora al control completo.
 
+## Tercera mejora aplicada en esta rama
+
+- `LibraryActivityStore` conserva una ventana acotada de actividad real y separada por tienda.
+- `LibraryOperationQueue` registra resultados completados, fallidos y cancelados sin duplicar el
+  fallo cuando el usuario descarta su fila.
+- La portada común presenta la estantería en Steam, Epic y GOG con carátula, estado, fecha relativa,
+  navegación a ficha, hover estable y descripción completa para VoiceOver.
+- El escenario `VESSEL_UI_REVIEW=1` incluye éxitos y fallos deterministas para revisar esta capa sin
+  autenticar cuentas ni alterar una instalación.
+- Los colores de juego y destrucción ya consumen literalmente `colors.play` y
+  `colors.destructive` de `DESIGN.md` mediante `Theme.play` y `Theme.destructive`.
+- Se retiró el método muerto `LegendaryManager.launchGame`, que prometía «próximamente» aunque el
+  lanzamiento real de Epic ya usa desde hace tiempo `EpicStore.play` y `WineManager`.
+
 ## Secuencia recomendada
 
 1. ~~Rebasar la rama visual sobre el commit de Kimi.~~ Completado.
 2. ~~Separar coordinador, componentes y ficha.~~ Completado.
 3. ~~Retirar bibliotecas heredadas Epic/GOG.~~ Completado.
 4. ~~Completar transición portada→ficha, acción contextual y carruseles.~~ Completado.
-5. Evolucionar el centro de descargas cuando SteamCMD, Legendary y gogdl expongan controles de cola
-   fiables y cancelación segura; la UI no debe prometer operaciones que el backend no puede cumplir.
-6. Añadir actividad/novedades y estado global de guardados solo cuando exista una fuente confiable.
-7. Incorporar filtros por metadatos cuando exista un índice local que no penalice bibliotecas grandes.
+5. ~~Evolucionar el centro de descargas con controles fiables y cancelación segura.~~ Completado.
+6. ~~Añadir actividad útil cuando exista una fuente confiable.~~ Completado con hechos locales de los
+   backends; los feeds remotos siguen fuera mientras no exista paridad de fuentes.
+7. ~~Incorporar filtros por metadatos sin penalizar bibliotecas grandes.~~ Completado con índice local.
 
 ## Criterios de aceptación visual
 

@@ -39,6 +39,12 @@ enum Theme {
     static let navyDeep    = Color(red: 0.020, green: 0.040, blue: 0.086)
     /// Superficie navy para tarjetas sin glass (fallback / acentos).
     static let surface     = Color(red: 0.10, green: 0.145, blue: 0.225)
+    /// Metadatos legibles sobre navy. Token `colors.on-surface-secondary` (#B3BAC7).
+    static let secondaryText = Color(red: 0.702, green: 0.729, blue: 0.780)
+    /// Acción de juego y estados positivos. Token `colors.play` de DESIGN.md (#57B85C).
+    static let play        = Color(red: 0.341, green: 0.722, blue: 0.361)
+    /// Errores y acciones destructivas. Token `colors.destructive` de DESIGN.md (#D96652).
+    static let destructive = Color(red: 0.851, green: 0.400, blue: 0.322)
 
     /// Gradiente de marca para botones prominentes e iconos hero (azul confianza → azul profundo).
     static func gradient(_ base: Color = accent) -> LinearGradient {

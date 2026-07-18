@@ -68,14 +68,24 @@ final class LibraryOperationQueue {
     private(set) var items: [Item]
 
     private let storageKey: String
+    private let activityStore: LibraryActivityStore?
+    private let activityStoreID: String?
     private var executors: [String: Executor] = [:]
     private var workerTask: Task<Void, Never>?
     private var activeTask: Task<Void, Error>?
     private var pauseRequests: Set<String> = []
     private var cancellationRequests: Set<String> = []
 
-    init(storageKey: String) {
+    init(
+        storageKey: String,
+        activityStore: LibraryActivityStore? = .shared,
+        activityStoreID: String? = nil
+    ) {
         self.storageKey = "vessel.operationQueue.\(storageKey)"
+        let knownStoreIDs: Set<String> = ["steam", "epic", "gog"]
+        self.activityStoreID = activityStoreID
+            ?? (knownStoreIDs.contains(storageKey) ? storageKey : nil)
+        self.activityStore = activityStore
         if let data = UserDefaults.standard.data(forKey: self.storageKey),
            let stored = try? JSONDecoder().decode([Item].self, from: data) {
             self.items = stored.map { item in
@@ -207,7 +217,13 @@ final class LibraryOperationQueue {
             items[index].phase = .cancelling
             items[index].message = "Cancelando…"
             activeTask?.cancel()
-        case .queued, .paused, .failed:
+        case .queued, .paused:
+            record(items[index].operation, outcome: .cancelled)
+            executors[gameID] = nil
+            items.remove(at: index)
+        case .failed:
+            // El fallo ya quedó registrado cuando ocurrió. Aquí «Cancelar» solo descarta su fila
+            // del centro de descargas y no debe crear un segundo evento contradictorio.
             executors[gameID] = nil
             items.remove(at: index)
         case .cancelling:
@@ -255,6 +271,7 @@ final class LibraryOperationQueue {
 
             do {
                 try await task.value
+                record(operation, outcome: .completed)
                 remove(operation.id)
             } catch is CancellationError {
                 handleCancellation(of: operation.id)
@@ -270,6 +287,9 @@ final class LibraryOperationQueue {
 
     private func handleCancellation(of gameID: String) {
         if cancellationRequests.remove(gameID) != nil {
+            if let operation = item(for: gameID)?.operation {
+                record(operation, outcome: .cancelled)
+            }
             remove(gameID)
             return
         }
@@ -282,6 +302,7 @@ final class LibraryOperationQueue {
             items[index].phase = .failed
             items[index].message = "La operación se interrumpió"
             items[index].fractionCompleted = nil
+            record(items[index].operation, outcome: .failed, detail: items[index].message)
         }
         persist()
     }
@@ -292,7 +313,22 @@ final class LibraryOperationQueue {
         let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         items[index].message = message.isEmpty ? "No se pudo completar" : message
         items[index].fractionCompleted = nil
+        record(items[index].operation, outcome: .failed, detail: items[index].message)
         persist()
+    }
+
+    private func record(
+        _ operation: Operation,
+        outcome: LibraryActivityStore.Outcome,
+        detail: String? = nil
+    ) {
+        guard let activityStore, let activityStoreID else { return }
+        activityStore.record(
+            storeID: activityStoreID,
+            operation: operation,
+            outcome: outcome,
+            detail: detail
+        )
     }
 
     private func remove(_ gameID: String) {

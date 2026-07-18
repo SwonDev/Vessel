@@ -57,10 +57,24 @@ struct VesselUIReviewView: View {
         StoreGame(id: "620", title: "Portal 2", steamAppId: "620", installed: true)
     ]
 
+    private let activityEvents: [LibraryActivityStore.Event] = [
+        .init(storeID: StoreKind.steam.rawValue, gameID: "1086940", title: "Baldur's Gate 3",
+              kind: .update, outcome: .completed,
+              occurredAt: Calendar.current.date(byAdding: .minute, value: -18, to: .now) ?? .now),
+        .init(storeID: StoreKind.steam.rawValue, gameID: "1091500", title: "Cyberpunk 2077",
+              kind: .verify, outcome: .completed,
+              occurredAt: Calendar.current.date(byAdding: .hour, value: -3, to: .now) ?? .now),
+        .init(storeID: StoreKind.steam.rawValue, gameID: "1145350", title: "Hades II",
+              kind: .install, outcome: .failed,
+              occurredAt: Calendar.current.date(byAdding: .day, value: -1, to: .now) ?? .now,
+              detail: "La descarga perdió la conexión")
+    ]
+
     var body: some View {
         StoreLibraryView(
             store: .steam,
             games: games,
+            activityEventsOverride: activityEvents,
             initiallySelectedGameID: initiallySelectedGameID,
             installingIDs: ["1145350"],
             progressFor: { $0 == "1145350" ? "Descargando… 63%" : nil },

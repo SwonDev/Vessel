@@ -225,6 +225,8 @@ enum GridDensity: String, CaseIterable, Identifiable {
 struct StoreLibraryView: View {
     let store: StoreKind
     let games: [StoreGame]
+    /// Sustitución determinista solo para el escenario Debug de revisión visual.
+    var activityEventsOverride: [LibraryActivityStore.Event]? = nil
     /// Punto de entrada opcional para deep links y escenarios de revisión. La navegación normal
     /// conserva su selección persistida; cuando se proporciona, no sobrescribe esa preferencia.
     var initiallySelectedGameID: String? = nil
@@ -300,6 +302,7 @@ struct StoreLibraryView: View {
     @State private var selectedGame: StoreGame?
     @State private var collectionsStore = LibraryCollectionsStore.shared
     @State private var notesStore = GameNotesStore.shared
+    @State private var activityStore = LibraryActivityStore.shared
     @State private var selectedCollectionID: UUID?
     @State private var collectionEditorRequest: CollectionEditorRequest?
     @State private var collectionPendingDeletion: LibraryCollectionsStore.Collection?
@@ -1148,7 +1151,17 @@ struct StoreLibraryView: View {
     private var homeGrid: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.section) {
-                if showsRecentlyPlayed && !recentlyPlayed.isEmpty { recentlyPlayedSection }
+                if showsRecentlyPlayed {
+                    if !recentActivityEvents.isEmpty {
+                        LibraryActivitySection(
+                            events: recentActivityEvents,
+                            games: games,
+                            tint: tint,
+                            onOpen: openGame
+                        )
+                    }
+                    if !recentlyPlayed.isEmpty { recentlyPlayedSection }
+                }
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(alignment: .center, spacing: 12) {
                         Text(homeTitle)
@@ -1257,6 +1270,16 @@ struct StoreLibraryView: View {
         enriched.filter { $0.lastPlayed != nil && !isHidden($0.id) }
             .sorted { ($0.lastPlayed ?? .distantPast) > ($1.lastPlayed ?? .distantPast) }
             .prefix(8).map { $0 }
+    }
+
+    private var recentActivityEvents: [LibraryActivityStore.Event] {
+        if let activityEventsOverride {
+            return Array(activityEventsOverride.lazy
+                .filter { $0.storeID == store.rawValue }
+                .sorted { $0.occurredAt > $1.occurredAt }
+                .prefix(6))
+        }
+        return activityStore.recent(storeID: store.rawValue, limit: 6)
     }
 
     /// La estantería global solo pertenece a la portada sin restricciones. Al entrar en una

@@ -499,7 +499,7 @@ struct ConnectGogView: View {
                     if let errorMessage {
                         Text(errorMessage)
                             .font(.callout)
-                            .foregroundStyle(.red.opacity(0.9))
+                            .foregroundStyle(Theme.destructive.opacity(0.92))
                             .multilineTextAlignment(.center)
                             .frame(maxWidth: 440)
                             .padding(.horizontal, 16)

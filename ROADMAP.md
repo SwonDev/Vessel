@@ -45,6 +45,9 @@ invisible) y la estética premium (DESIGN.md). Basado en auditoría de huecos fr
   carruseles con snapping y teclado. Liquid Glass respeta Reducir movimiento/transparencia.
 - **Centro de descargas persistente**: cola serial visible en las tres tiendas, actualizar todo,
   pausa/reanudación, cancelación real, prioridad, reintento y recuperación tras reiniciar.
+- **Actividad reciente estilo Steam**: historial local persistente de instalaciones, actualizaciones,
+  verificaciones, desinstalaciones, DLC, fallos y cancelaciones reales de Steam/Epic/GOG. La portada
+  común lo presenta sin depender de feeds remotos desiguales ni inventar notas de parche.
 - **Filtros avanzados**: género con índice local persistente bajo petición, compatibilidad offline y
   tamaño instalado, compartidos por Steam/Epic/GOG/DRM‑free sin bloquear la biblioteca.
 
@@ -60,6 +63,15 @@ invisible) y la estética premium (DESIGN.md). Basado en auditoría de huecos fr
 8. ~~Paridad visual Epic/GOG con Steam y Liquid Glass común~~ ✅ HECHO.
 9. ~~Filtros avanzados (género, rating de compatibilidad y tamaño)~~ ✅ HECHO con caché local
    indexable y preparación explícita para evitar tráfico remoto al filtrar.
+
+## 🧪 Validación manual pendiente
+
+- Recorrer en una cuenta real un ciclo corto de instalar → pausar → reanudar → cancelar en cada
+  backend y comprobar el resultado de disco. Estas pruebas alteran descargas y bibliotecas reales,
+  por lo que no se ejecutan automáticamente ni sin un juego objetivo aprobado.
+- Confirmar con VoiceOver y los ajustes globales «Reducir movimiento», «Reducir transparencia» y
+  «Aumentar contraste» en una sesión interactiva. La implementación y los escenarios Debug están
+  preparados, pero estas preferencias pertenecen al sistema, no a una prueba unitaria.
 
 ## Excluido por filosofía (solo bajo toggle "Avanzado")
 winecfg · regedit · ejecutar .exe arbitrario · selector de motor en UI — el bottle es invisible.

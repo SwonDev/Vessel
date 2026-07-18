@@ -215,7 +215,7 @@ struct LocalGamesView: View {
                 .font(.callout.weight(.medium)).foregroundStyle(.white)
                 .padding(.horizontal, 16).padding(.vertical, 11)
                 .liquidGlass(in: Capsule())
-                .overlay(Capsule().strokeBorder((banner.1 ? Color.orange : .green).opacity(0.5), lineWidth: 1))
+                .overlay(Capsule().strokeBorder((banner.1 ? Color.orange : Theme.play).opacity(0.5), lineWidth: 1))
                 .shadow(color: .black.opacity(0.3), radius: 12, y: 5)
                 .padding(.bottom, 26)
                 .transition(.move(edge: .bottom).combined(with: .opacity))

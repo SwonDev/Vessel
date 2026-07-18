@@ -108,8 +108,8 @@ struct GameDetailView: View {
     /// Observa la Web API key: si el usuario la pega en Ajustes con la ficha abierta, recargamos los
     /// logros para mostrar también los bloqueados (schema) sin tener que reabrir el juego.
     @AppStorage("steam.webApiKey") private var steamApiKeyObserver = ""
-    private let steamGreen = Color(red: 0.34, green: 0.72, blue: 0.36)
-    private let runningRed = Color(red: 0.85, green: 0.40, blue: 0.32)
+    private let steamGreen = Theme.play
+    private let runningRed = Theme.destructive
 
     /// Perfil de compatibilidad del juego (para la sección de compatibilidad de la ficha).
     private var profile: CompatProfile? { CompatService.shared.profile(steam: game.steamAppId, title: game.title) }

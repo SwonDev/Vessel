@@ -213,7 +213,7 @@ final class LegendaryManager {
         return games
     }
 
-    // MARK: - Instalación y lanzamiento (TODO)
+    // MARK: - Instalación
 
     /// Instala un juego de Epic en `basePath` (dentro del bottle de Vessel), reportando el
     /// progreso por las líneas de salida de legendary. Operación larga (sin timeout corto).
@@ -420,14 +420,6 @@ final class LegendaryManager {
         let tail = line[r.upperBound...].trimmingCharacters(in: .whitespaces)
         let num = tail.prefix { $0.isNumber || $0 == "." }
         return Double(num)
-    }
-
-    /// TODO: Lanzar un juego con `legendary launch <appName>` usando el motor wine-dxmt.
-    func launchGame(appName: String) async throws {
-        throw NSError(
-            domain: "Vessel", code: 200,
-            userInfo: [NSLocalizedDescriptionKey: "Lanzamiento de juegos de Epic Games: próximamente."]
-        )
     }
 
     // MARK: - Ejecución de subprocesos

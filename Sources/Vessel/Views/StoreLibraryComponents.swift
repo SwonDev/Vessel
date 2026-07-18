@@ -154,6 +154,194 @@ struct LibraryCollectionScopeMenu: View {
     }
 }
 
+// MARK: - Actividad reciente
+
+/// Estantería compacta equivalente a «Novedades» de Steam, alimentada únicamente por operaciones
+/// que Vessel ha observado de verdad. No inventa notas de parche ni depende de una API desigual
+/// entre tiendas: muestra la continuidad local común a Steam, Epic y GOG.
+struct LibraryActivitySection: View {
+    let events: [LibraryActivityStore.Event]
+    let games: [StoreGame]
+    let tint: Color
+    let onOpen: (StoreGame) -> Void
+
+    private var gamesByID: [String: StoreGame] {
+        Dictionary(games.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text("Actividad reciente")
+                    .font(.title2.bold())
+                    .foregroundStyle(.white)
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(tint)
+                    .accessibilityHidden(true)
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 12) {
+                    ForEach(events) { event in
+                        LibraryActivityCard(
+                            event: event,
+                            game: gamesByID[event.gameID],
+                            tint: tint,
+                            onOpen: gamesByID[event.gameID].map { game in { onOpen(game) } }
+                        )
+                    }
+                }
+                .scrollTargetLayout()
+                .padding(.horizontal, 2)
+                .padding(.vertical, 4)
+            }
+            .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
+            .scrollClipDisabled()
+            .accessibilityLabel("Actividad reciente de la biblioteca")
+        }
+    }
+}
+
+private struct LibraryActivityCard: View {
+    let event: LibraryActivityStore.Event
+    let game: StoreGame?
+    let tint: Color
+    let onOpen: (() -> Void)?
+
+    @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Group {
+            if let onOpen {
+                Button(action: onOpen) { content }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Abre los detalles del juego")
+            } else {
+                content
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilitySummary)
+        .onHover { hovering = $0 }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: hovering)
+    }
+
+    private var content: some View {
+        let shape = RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+        return HStack(spacing: 12) {
+            cover
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(event.title)
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+
+                HStack(spacing: 6) {
+                    Image(systemName: statusIcon)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(statusColor)
+                    Text(statusText)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(event.outcome == .failed ? Color.white : statusColor)
+                        .lineLimit(1)
+                }
+
+                Text(event.outcome == .failed ? (event.detail ?? relativeDate) : relativeDate)
+                    .font(.caption2)
+                    .foregroundStyle(Theme.secondaryText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(10)
+        .frame(width: 292, height: 106, alignment: .leading)
+        .background(shape.fill(.white.opacity(hovering ? 0.085 : 0.045)))
+        .overlay { shape.strokeBorder(.white.opacity(hovering ? 0.16 : 0.08), lineWidth: 0.6) }
+        .shadow(color: .black.opacity(hovering ? 0.26 : 0.14), radius: hovering ? 10 : 5, y: 4)
+        .contentShape(shape)
+    }
+
+    @ViewBuilder private var cover: some View {
+        if let game {
+            GameCoverImage(cacheKey: "activity-\(game.id)", candidates: game.coverCandidates) {
+                activityPlaceholder(initials: game.initials, color: game.placeholderColor)
+            }
+            .frame(width: 56, height: 82)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        } else {
+            activityPlaceholder(initials: initials, color: tint.opacity(0.42))
+                .frame(width: 56, height: 82)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+    }
+
+    private func activityPlaceholder(initials: String, color: Color) -> some View {
+        ZStack {
+            color
+            Text(initials)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.white.opacity(0.88))
+        }
+    }
+
+    private var initials: String {
+        event.title.split(separator: " ").prefix(2)
+            .compactMap { $0.first.map(String.init) }.joined().uppercased()
+    }
+
+    private var statusIcon: String {
+        if event.outcome == .failed { return "exclamationmark.triangle.fill" }
+        if event.outcome == .cancelled { return "xmark.circle.fill" }
+        switch event.kind {
+        case .install: return "arrow.down.circle.fill"
+        case .update: return "arrow.triangle.2.circlepath.circle.fill"
+        case .verify: return "checkmark.shield.fill"
+        case .uninstall: return "checkmark.circle.fill"
+        case .dlc: return "puzzlepiece.extension.fill"
+        }
+    }
+
+    private var statusText: String {
+        switch event.outcome {
+        case .failed:
+            return "No se pudo completar"
+        case .cancelled:
+            return "Operación cancelada"
+        case .completed:
+            switch event.kind {
+            case .install: return "Instalación completada"
+            case .update: return "Actualización completada"
+            case .verify: return "Archivos verificados"
+            case .uninstall: return "Desinstalación completada"
+            case .dlc: return "Contenido instalado"
+            }
+        }
+    }
+
+    private var statusColor: Color {
+        switch event.outcome {
+        case .completed: Theme.play
+        case .failed: Theme.destructive
+        case .cancelled: Theme.secondaryText
+        }
+    }
+
+    private var relativeDate: String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter.localizedString(for: event.occurredAt, relativeTo: .now)
+    }
+
+    private var accessibilitySummary: String {
+        let detail = event.outcome == .failed ? event.detail : nil
+        return [event.title, statusText, detail, relativeDate].compactMap { $0 }.joined(separator: ", ")
+    }
+}
+
 // MARK: - Centro de descargas
 
 /// Acceso efímero a las operaciones activas. Replica la utilidad de la barra inferior de Steam,
@@ -348,7 +536,7 @@ struct LibraryTransferRow: View {
                             phaseIcon
                             Text(item.message)
                                 .font(.caption)
-                                .foregroundStyle(item.phase == .failed ? Color.red.opacity(0.86) : .secondary)
+                                .foregroundStyle(item.phase == .failed ? Color.primary : .secondary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                         }
@@ -392,7 +580,7 @@ struct LibraryTransferRow: View {
         case .paused:
             Image(systemName: "pause.circle.fill").foregroundStyle(.secondary)
         case .failed:
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red.opacity(0.86))
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.destructive.opacity(0.92))
         }
     }
 
@@ -402,16 +590,19 @@ struct LibraryTransferRow: View {
                 Button(action: onRetry) {
                     Image(systemName: "arrow.clockwise")
                 }
+                .accessibilityLabel("Reintentar")
                 .vesselHelp("Reintentar")
             } else if item.phase == .paused {
                 Button(action: onResume) {
                     Image(systemName: "play.fill")
                 }
+                .accessibilityLabel("Reanudar")
                 .vesselHelp("Reanudar")
             } else if item.canPause {
                 Button(action: onPause) {
                     Image(systemName: "pause.fill")
                 }
+                .accessibilityLabel("Pausar")
                 .vesselHelp("Pausar")
             }
 
@@ -432,6 +623,7 @@ struct LibraryTransferRow: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .disabled(!item.canPrioritize && !item.canCancel)
+            .accessibilityLabel("Más acciones de la descarga")
             .vesselHelp("Más acciones")
         }
         .buttonStyle(.plain)
@@ -652,7 +844,7 @@ struct StoreGameCard: View {
             VStack(spacing: 6) {
                 if let p = percent {
                     ProgressView(value: p).progressViewStyle(.linear)
-                        .tint(Color(red: 0.34, green: 0.72, blue: 0.36))
+                        .tint(Theme.play)
                         .frame(width: 96)
                 } else if spinner {
                     ProgressView().controlSize(.small).tint(.white)
@@ -756,7 +948,7 @@ struct StoreGameRow: View {
                                           : (game.installed ? "Instalado" : "Sin instalar"))
                     .font(.caption2)
                     .foregroundStyle(game.updateAvailable ? tint
-                                     : (game.installed ? Color(red: 0.30, green: 0.85, blue: 0.55) : .white.opacity(0.4)))
+                                     : (game.installed ? Theme.play : .white.opacity(0.4)))
             }
             Spacer(minLength: 0)
             if game.updateAvailable {

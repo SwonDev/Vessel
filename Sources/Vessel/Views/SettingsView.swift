@@ -286,7 +286,7 @@ struct SettingsView: View {
                     ForEach(fixesStore.fixes) { fix in
                         HStack(spacing: 8) {
                             Image(systemName: fix.shared ? "checkmark.circle.fill" : "wrench.and.screwdriver")
-                                .foregroundStyle(fix.shared ? Color.green : Theme.accent).font(.caption)
+                                .foregroundStyle(fix.shared ? Theme.play : Theme.accent).font(.caption)
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(fix.title).font(.caption.weight(.medium)).lineLimit(1)
                                 Text("\(fix.graphicsLayer)\(fix.useRealSteam ? " · Steam real" : "")")
