@@ -1445,6 +1445,9 @@ final class WineManager {
         // El lanzador del motor tiene que estar sano o winetricks no instalará nada (ver
         // `repairFullEngineShim`). Idempotente y con marcador: solo hace algo la primera vez.
         await dependencyManager.repairFullEngineShim()
+        // Drop-in: setupapi que no se cuelga registrando el mscoree de Microsoft (NGen/mscorsvw)
+        // en el wineboot -u del prefijo __net48. Idempotente y con marcador.
+        await dependencyManager.applyNet48Fix()
         let prefix = await engineScopedPrefix(base: bottle.prefixPath, engineTag: "net48", engineWine: wine)
         let executable = scopedPath(rawExecutable, base: bottle.prefixPath, scoped: prefix)
         try? await terminateWineProcesses(winePath: wine, prefix: prefix)

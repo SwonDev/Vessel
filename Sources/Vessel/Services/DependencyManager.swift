@@ -522,7 +522,7 @@ final class DependencyManager {
     /// Descarga la build propia de `wine-full` (fuentes CrossOver 26.2.0) de Vessel-Engines.
     private func installWineFull(progress: @escaping @Sendable (String, Double) -> Void) async throws {
         progress("Descargando motor completo (wine-full, fuentes CrossOver 26.2.0)…", 0.05)
-        let downloadURL = URL(string: "https://github.com/SwonDev/Vessel-Engines/releases/download/engine-full-v1/wine-full.tar.zst")!
+        let downloadURL = URL(string: "https://github.com/SwonDev/Vessel-Engines/releases/download/engine-full-v2/wine-full.tar.zst")!
         let (tempURL, response) = try await URLSession.shared.download(from: downloadURL)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             throw NSError(domain: "Vessel", code: http.statusCode,
@@ -557,6 +557,7 @@ final class DependencyManager {
             throw NSError(domain: "Vessel", code: 7,
                           userInfo: [NSLocalizedDescriptionKey: "Motor completo instalado pero bin/wine no es ejecutable"])
         }
+        await applyNet48Fix()   // drop-in: setupapi sin el cuelgue de mscoree/NGen (prefijos .NET real)
         progress("✓ Motor completo (wine-full) listo", 1.0)
     }
 
@@ -772,6 +773,51 @@ final class DependencyManager {
             await stripQuarantineRecursive(at: engineDir)
             try? fixVersion.write(toFile: marker, atomically: true, encoding: .utf8)
             LogStore.shared.log("DirectDraw: instalada la ddraw parcheada (los juegos de los 90 ya no se quedan en negro).", level: .info)
+        }
+    }
+
+    /// **Fix NGen/mscorsvw (prefijos .NET real)** — instala en `wine-full` una `setupapi.dll`
+    /// parcheada que NO llama a `DllRegisterServer` de un `mscoree.dll` NATIVO (el de Microsoft
+    /// que deja `winetricks dotnet4x`). Drop-in con marcador de versión, como `applyDDrawFix`.
+    ///
+    /// El bug (verificado en vivo, también con el CrossOver real): `wineboot -u` re-registra
+    /// las DLL del prefijo en Wow64Install; al llegar a `mscoree.dll` nativo, su
+    /// `DllRegisterServer` arranca el servicio de optimización del CLR (`mscorsvw.exe`, NGen),
+    /// que nunca queda listo bajo Wine → `wineboot -u` se BLOQUEA para siempre y cada lanzamiento
+    /// FNA/XNA tardaba el timeout (~1 min) con "prefijo en mal estado", dejaba servicios zombi
+    /// y a veces el juego (FEZ) ni abría ventana. Con la `setupapi` parcheada, `wineboot -u`
+    /// completa en ~23 s y FEZ/Terraria abren al instante. El `mscoree` BUILTIN de Wine (el de
+    /// wine-mono) sí se sigue registrando. Parche: `docs/wine-patches/0003-…`. Verificado con
+    /// FEZ y Terraria (prefijo `__net48` con dotnet48 real).
+    func applyNet48Fix() async {
+        let fm = FileManager.default
+        let engineDir = "\(enginesDirectory)/\(WineEngineLocator.fullEngineName)"
+        guard fm.fileExists(atPath: "\(engineDir)/lib/wine/i386-windows/setupapi.dll") else { return }
+        guard let resDir = Bundle.main.resourceURL?.appendingPathComponent("engine-net48fix").path,
+              fm.fileExists(atPath: "\(resDir)/i386-windows/setupapi.dll") else { return }
+
+        let marker = "\(engineDir)/.vessel-net48-fix"
+        let fixVersion = "v1-setupapi-no-registrar-mscoree-nativo"
+        let current = (try? String(contentsOfFile: marker, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if current == fixVersion { return }
+
+        var applied = false
+        for arch in ["i386-windows", "x86_64-windows"] {
+            let src = "\(resDir)/\(arch)/setupapi.dll"
+            let dst = "\(engineDir)/lib/wine/\(arch)/setupapi.dll"
+            guard fm.fileExists(atPath: src), fm.fileExists(atPath: dst) else { continue }
+            // El original se guarda una sola vez: si algo saliera mal, el motor es recuperable
+            // sin volver a descargarlo.
+            let backup = "\(dst).vessel-orig"
+            if !fm.fileExists(atPath: backup) { try? fm.copyItem(atPath: dst, toPath: backup) }
+            try? fm.removeItem(atPath: dst)
+            if (try? fm.copyItem(atPath: src, toPath: dst)) != nil { applied = true }
+        }
+        if applied {
+            await stripQuarantineRecursive(at: engineDir)
+            try? fixVersion.write(toFile: marker, atomically: true, encoding: .utf8)
+            LogStore.shared.log("Prefijos .NET real: setupapi parcheada (wineboot ya no se cuelga registrando el mscoree de Microsoft).", level: .info)
         }
     }
 

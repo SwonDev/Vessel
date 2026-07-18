@@ -76,6 +76,11 @@ fi
 # de versión, igual que la cadena crypto: no obliga a re-subir el motor entero.
 [ -d "Resources/engine-ddrawfix" ] && cp -R "Resources/engine-ddrawfix" "$APP_BUNDLE/Contents/Resources/engine-ddrawfix"
 
+# setupapi.dll parcheada (fuentes CrossOver 26.2.0 + docs/wine-patches/0003-*): no registra el mscoree
+# NATIVO de los prefijos con .NET real (dotnet4x), cuyo DllRegisterServer arranca el servicio NGen
+# (mscorsvw.exe) y cuelga wineboot -u para siempre. Sin esto, FEZ/Terraria tardan minutos o no abren.
+[ -d "Resources/engine-net48fix" ] && cp -R "Resources/engine-net48fix" "$APP_BUNDLE/Contents/Resources/engine-net48fix"
+
 cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

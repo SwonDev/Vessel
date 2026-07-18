@@ -1,0 +1,27 @@
+--- a/dlls/setupapi/install.c
++++ b/dlls/setupapi/install.c
+@@ -630,7 +630,24 @@
+     {
+         const char *entry_point = info->unregister ? "DllUnregisterServer" : "DllRegisterServer";
+         HRESULT (WINAPI *func)(void) = (void *)GetProcAddress( module, entry_point );
++        LDR_DATA_TABLE_ENTRY *ldr;
++        static const WCHAR mscoreeW[] = {'m','s','c','o','r','e','e','.','d','l','l',0};
++        const WCHAR *base = wcsrchr( path, '\\' );
+ 
++        /* VESSEL HACK: no llamar a DllRegisterServer de un mscoree.dll NATIVO
++           (el de Microsoft, instalado por winetricks dotnet4x en el prefijo):
++           su registro arranca el servicio de optimización del CLR (mscorsvw.exe,
++           NGen), que nunca queda listo bajo Wine → `wineboot -u` se bloquea para
++           siempre en Wow64Install (y los reintentos acumulan servicios zombi).
++           El mscoree BUILTIN de Wine sí se registra (inofensivo, lo usa wine-mono). */
++        base = base ? base + 1 : path;
++        if (!lstrcmpiW( base, mscoreeW )
++            && (LdrFindEntryForAddress( module, &ldr ) || !(ldr->Flags & LDR_WINE_INTERNAL)))
++        {
++            WARN( "skipping registration of native mscoree.dll (would start the NGen service and hang wineboot)\n" );
++            goto done;
++        }
++
+         if (!func)
+         {
+             status.FailureCode = SPREG_GETPROCADDR;

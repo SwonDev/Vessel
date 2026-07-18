@@ -27,7 +27,12 @@ descarga/empaqueta, y detalla los **parches** que aplicamos.
 - **Arquitectura:** `x86_64` (Rosetta 2), `--enable-archs=i386,x86_64` (wow64: corre PE de 32 y
   64 bits). Compilada con `clang -arch x86_64`, mingw-w64 PE, `--with-{opengl,vulkan,freetype,gnutls,coreaudio}`, `--disable-win16`, `--disable-tests`.
 - **Binarios publicados:** repo público [`SwonDev/Vessel-Engines`](https://github.com/SwonDev/Vessel-Engines),
-  release `engine-full-v1` (`wine-full.tar.zst`).
+  release `engine-full-v2` (`wine-full.tar.zst`). **v2** añade el parche propio de `setupapi`
+  (`docs/wine-patches/0003-setupapi-no-registrar-mscoree-nativo.patch`): no llama a
+  `DllRegisterServer` de un `mscoree.dll` NATIVO (el de Microsoft que instala `winetricks
+  dotnet4x`), porque arranca el servicio NGen (`mscorsvw.exe`) y `wineboot -u` se bloqueaba
+  para siempre en prefijos con .NET real (FEZ/Terraria colgados). El drop-in
+  `Resources/engine-net48fix/` aplica el mismo DLL a motores ya instalados.
 - **Excluido a propósito** (propietario, NO está en las fuentes públicas): `winewrapper.exe`,
   `cxcompatdb.so`/su `.dat`, `apple_gptk`/D3DMetal, las herramientas `cx*`. Sin ellas el motor
   es 100 % FOSS. Consecuencia: el **cliente de Steam** (CEF) no se enruta a esta build (va a
