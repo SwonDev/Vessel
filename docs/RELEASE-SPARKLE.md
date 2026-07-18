@@ -26,6 +26,9 @@ commit y el tag `vX.Y.Z` sobre ese mismo commit → publica el **GitHub Release*
 `main`. El asset existe antes de que el feed nuevo quede público y los usuarios reciben la actualización
 solos por Sparkle.
 
+Puede ejecutarse desde `main` o desde una rama aislada `codex/release-*`; en ambos casos publica el
+`HEAD` validado explícitamente sobre `origin/main`, evitando compilar desde un worktree concurrente.
+
 - **Versionado**: `VERSION.txt` es la ÚNICA fuente de verdad (`X.Y.Z<TAB>N`). `build_and_run.sh` la lee
   para el `Info.plist`. La serie empezó en **0.0.1** y avanza 0.0.2, 0.0.3…
 - Exige el árbol de git limpio (para que el release refleje exactamente lo commiteado).

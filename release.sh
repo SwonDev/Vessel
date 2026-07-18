@@ -27,6 +27,11 @@ SIGN_TOOL=".build/artifacts/sparkle/Sparkle/bin/sign_update"
 [ -x "$SIGN_TOOL" ] || { echo "❌ Falta $SIGN_TOOL — ejecuta 'swift build' primero."; exit 1; }
 command -v gh >/dev/null || { echo "❌ Falta el CLI 'gh'."; exit 1; }
 [ -n "$(git status --porcelain --untracked-files=no)" ] && { echo "❌ Hay cambios sin commitear. Commitéalos antes de publicar."; exit 1; }
+CURRENT_BRANCH=$(git branch --show-current)
+case "$CURRENT_BRANCH" in
+    main|codex/release-*) ;;
+    *) echo "❌ Publica solo desde main o desde una rama codex/release-* validada."; exit 1 ;;
+esac
 
 # 1) VERSION.txt — la versión visible + un build ENTERO incremental (lo que compara Sparkle).
 PREV_VER=$(cut -f1 VERSION.txt 2>/dev/null | tr -d '[:space:]')
@@ -112,7 +117,7 @@ else
     gh release create "$TAG" "$ZIP" --verify-tag --title "Vessel $VERSION" --notes "$NOTES"
 fi
 
-git push origin main
+git push origin HEAD:main
 
 echo ""
 echo "✅ Vessel $VERSION publicado."
