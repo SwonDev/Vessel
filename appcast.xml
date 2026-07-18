@@ -6,6 +6,19 @@
     <description>Actualizaciones de Vessel — la mejor app para jugar a Steam en Mac Silicon.</description>
     <language>es</language>
     <item>
+      <title>Versión 0.0.4</title>
+      <sparkle:version>4</sparkle:version>
+      <sparkle:shortVersionString>0.0.4</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[ Biblioteca renovada con paridad Steam para Steam, Epic y GOG: Liquid Glass nativo, parallax, actividad reciente, cola unificada, filtros, DLC y mejoras de accesibilidad. Descargas de Steam reanudables y más robustas. Archvale y Dwarven Realms vuelven a arrancar. ]]></description>
+      <pubDate>Sat, 18 Jul 2026 18:30:08 +0100</pubDate>
+      <enclosure
+        url="https://github.com/SwonDev/Vessel/releases/download/v0.0.4/Vessel-0.0.4.zip"
+        sparkle:edSignature="RjGcmFNp88FM0qLbhckd6WRDBCRGuiQSchagHAd7ZMftm2vHrYPaWrh/Y01yGd44dvX9JvQK4o8JATU90kcbDQ=="
+        length="22777625"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>Versión 0.0.3</title>
       <sparkle:version>3</sparkle:version>
       <sparkle:shortVersionString>0.0.3</sparkle:shortVersionString>
