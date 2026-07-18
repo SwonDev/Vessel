@@ -25,45 +25,45 @@ struct SettingsView: View {
     private var fixesStore = DiscoveredFixesStore.shared
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Cabecera
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Ajustes de Vessel")
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                Text("Todos los motores se descargan y mantienen en segundo plano. No necesitas tocar nada del sistema.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+        // Ventana de Ajustes NATIVA (escena `Settings`): pestañas estilo Ajustes del Sistema,
+        // redimensionable y coexistente con la ventana principal — antes era una sheet modal
+        // fija de 640×600 que bloqueaba la biblioteca. El cierre es ⌘W (ya no hace falta botón).
+        TabView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Theme.Space.section) {
+                    interfaceSection
+                    privacySection
+                }
+                .padding(Theme.Space.section)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(20)
-
-            Divider()
+            .tabItem { Label("General", systemImage: "gearshape") }
 
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Space.section) {
                     dependenciesSection
                     enginesSection
-                    interfaceSection
+                }
+                .padding(Theme.Space.section)
+            }
+            .tabItem { Label("Motores", systemImage: "cpu") }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: Theme.Space.section) {
                     steamAccountSection
-                    privacySection
+                }
+                .padding(Theme.Space.section)
+            }
+            .tabItem { Label("Cuenta de Steam", systemImage: "person.crop.circle") }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: Theme.Space.section) {
                     aboutSection
                 }
                 .padding(Theme.Space.section)
             }
-
-            Divider()
-
-            HStack {
-                Button("Cerrar") { dismiss() }
-                    .vesselButton(false)
-                    .keyboardShortcut(.cancelAction)
-                    .vesselHelp("Cerrar ajustes", shortcut: "Esc")
-                Spacer()
-            }
-            .padding(16)
+            .tabItem { Label("Avanzado", systemImage: "wrench.and.screwdriver") }
         }
-        .frame(width: 640, height: 600)
+        .frame(width: 660, height: 580)
         .vesselBackground()
         .task { checkResults = await dependencyManager.checkAll() }
     }

@@ -114,6 +114,10 @@ struct LocalGamesView: View {
             onExport: { sg in if let g = game(sg) { exportChoice = g } }
         )
         .task { syncStores() }
+        // Menú Archivo → «Importar un .exe de juego…» (⌘O): llega aquí vía notificación.
+        .onReceive(NotificationCenter.default.publisher(for: .localImportExe)) { _ in
+            addGame()
+        }
         .overlay(alignment: .bottom) { bannerView }
         .confirmationDialog("Exportar «\(exportChoice?.name ?? "")»",
                             isPresented: Binding(get: { exportChoice != nil }, set: { if !$0 { exportChoice = nil } }),

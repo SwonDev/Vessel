@@ -1,10 +1,75 @@
 import SwiftUI
 import DockProgress
+import CoreSpotlight
+
+/// AppDelegate para el **menú del Dock** (clic derecho sobre el icono): accesos rápidos
+/// contextuales — abrir la app, seguir jugando al último título y buscar actualizaciones.
+/// Se construye bajo demanda (cada apertura) para reflejar el estado del momento.
+final class VesselAppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
+    /// Spotlight (Core Spotlight): el usuario abre una ficha de juego directamente desde ⌘Espacio
+    /// del sistema. El identificador es "<tienda>:<id>" (el mismo que el indexador).
+    func application(_ application: NSApplication, continue userActivity: NSUserActivity,
+                     restorationHandler: @escaping ([any NSUserActivityRestoring]) -> Void) -> Bool {
+        guard userActivity.activityType == CSSearchableItemActionType,
+              let identifier = userActivity.userInfo?[CSSearchableItemActivityIdentifier] as? String
+        else { return false }
+        NSApp.activate(ignoringOtherApps: true)
+        NotificationCenter.default.post(name: .spotlightOpenGame, object: nil,
+                                        userInfo: ["identifier": identifier])
+        return true
+    }
+
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+        let abrir = NSMenuItem(title: "Abrir Vessel", action: #selector(abrirVessel), keyEquivalent: "")
+        abrir.target = self
+        menu.addItem(abrir)
+
+        // «Seguir jugando»: abre el quick open, que ya ordena los jugados recientemente arriba
+        // (la tienda dueña del lanzamiento no se acopla al Dock; el quick open es la vía neutra).
+        let resume = NSMenuItem(title: "Seguir jugando…", action: #selector(seguirJugando), keyEquivalent: "")
+        resume.target = self
+        menu.addItem(resume)
+
+        menu.addItem(.separator())
+        let updates = NSMenuItem(title: "Buscar actualizaciones…", action: #selector(buscarActualizaciones), keyEquivalent: "")
+        updates.target = self
+        menu.addItem(updates)
+        let ajustes = NSMenuItem(title: "Ajustes…", action: #selector(abrirAjustes), keyEquivalent: ",")
+        ajustes.target = self
+        menu.addItem(ajustes)
+        return menu
+    }
+
+    @objc private func abrirVessel() {
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func seguirJugando() {
+        NSApp.activate(ignoringOtherApps: true)
+        NotificationCenter.default.post(name: .libraryQuickOpen, object: nil)
+    }
+
+    @objc private func buscarActualizaciones() {
+        NSApp.activate(ignoringOtherApps: true)
+        Task { @MainActor in
+            UpdaterManager.shared.checkForUpdates()
+        }
+    }
+
+    @objc private func abrirAjustes() {
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    }
+}
 
 @main
 struct VesselApp: App {
+    @NSApplicationDelegateAdaptor(VesselAppDelegate.self) private var appDelegate
     @State private var showingOnboarding = false
     @AppStorage("vessel.onboardingCompleted") private var onboardingCompleted = false
+    /// Densidad de carátulas compartida con la biblioteca (menú Visualización ↔ toggle del grid).
+    @AppStorage("vessel.gridDensity") private var menuGridDensity: GridDensity = .normal
 
     init() {
         VesselPaths.ensureDirectories()
@@ -28,8 +93,37 @@ struct VesselApp: App {
         .windowToolbarStyle(.unified(showsTitle: true))
         .commands {
             LibraryGameCommands()
-            CommandMenu("Biblioteca") {
-                Button("Abrir juego rápidamente…") {
+            // Menú Archivo: acciones de importación de la biblioteca DRM‑free (antes solo
+            // accesibles desde el menú de su toolbar; en macOS viven en Archivo con atajo).
+            CommandGroup(replacing: .newItem) {
+                Button("Importar un .exe de juego…") {
+                    NotificationCenter.default.post(name: .localImportExe, object: nil)
+                }
+                .keyboardShortcut("o", modifiers: .command)
+            }
+            // Menú Visualización: densidad de carátulas (compartida con el toggle del grid) y
+            // juegos ocultos con atajo.
+            CommandGroup(before: .sidebar) {
+                Menu("Densidad de carátulas") {
+                    ForEach(GridDensity.allCases) { d in
+                        Button {
+                            menuGridDensity = d
+                        } label: {
+                            if menuGridDensity == d {
+                                Label(d.rawValue, systemImage: "checkmark")
+                            } else {
+                                Text(d.rawValue)
+                            }
+                        }
+                    }
+                }
+                Button("Mostrar juegos ocultos") {
+                    NotificationCenter.default.post(name: .libraryShowHidden, object: nil)
+                }
+                .keyboardShortcut("h", modifiers: [.command, .shift])
+                Divider()
+            }
+            CommandMenu("Biblioteca") {                Button("Abrir juego rápidamente…") {
                     NotificationCenter.default.post(name: .libraryQuickOpen, object: nil)
                 }
                 .keyboardShortcut("k", modifiers: .command)
@@ -74,10 +168,6 @@ struct VesselApp: App {
                 .keyboardShortcut("4", modifiers: .command)
             }
             CommandGroup(after: .appSettings) {
-                Button("Ajustes…") {
-                    NotificationCenter.default.post(name: .openSettings, object: nil)
-                }
-                .keyboardShortcut(",", modifiers: .command)
                 Button("Ver logs…") {
                     NotificationCenter.default.post(name: .openLogs, object: nil)
                 }
@@ -96,6 +186,12 @@ struct VesselApp: App {
                 }
                 .keyboardShortcut("/", modifiers: [.command, .shift])
             }
+        }
+
+        // Ventana de Ajustes NATIVA (⌘, automático, pestañas, redimensionable, coexiste con la
+        // biblioteca). Antes: sheet modal fija lanzada por notificación.
+        Settings {
+            SettingsView()
         }
     }
 
@@ -151,6 +247,10 @@ extension Notification.Name {
     static let libraryShowHidden = Notification.Name("vessel.libraryShowHidden")
     static let libraryRefresh = Notification.Name("vessel.libraryRefresh")
     static let selectStore = Notification.Name("vessel.selectStore")
+    /// Spotlight abrió un juego. userInfo: identifier ("<tienda>:<id>").
+    static let spotlightOpenGame = Notification.Name("vessel.spotlightOpenGame")
+    /// Menú Archivo → importar un .exe de juego (lo atiende la sección DRM‑free).
+    static let localImportExe = Notification.Name("vessel.localImportExe")
     static let accountProfileDidChange = Notification.Name("vessel.accountProfileDidChange")
     /// Aviso de lanzamiento visible in-app (p. ej. "el juego necesita Steam"). userInfo: title, body.
     static let launchMessage = Notification.Name("vessel.launchMessage")

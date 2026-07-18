@@ -732,6 +732,13 @@ struct StoreLibraryView: View {
         }
     }
 
+    /// Indexa la biblioteca en Spotlight (⌘Espacio del sistema). La función propia (en vez de una
+    /// expresión inline) mantiene al type-checker de SwiftUI dentro de su presupuesto.
+    private func indexLibraryForSpotlight() {
+        let items: [(String, String, String)] = games.map { ($0.id, $0.title, $0.id) }
+        SpotlightIndexService.shared.reindex(store: store, games: items)
+    }
+
     private var availableGenres: [String] {
         Set(indexedMetadata.values.flatMap(\.genres))
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -951,6 +958,7 @@ struct StoreLibraryView: View {
         .task(id: games) {
             refreshDisplayed()
             CoverCache.shared.prefetch(games.map { ($0.id, $0.coverCandidates) })
+            indexLibraryForSpotlight()
             indexedMetadata = await StoreGameMetadataService.shared.cachedDetails(for: metadataRequests)
             refreshDisplayed()
         }
@@ -973,6 +981,16 @@ struct StoreLibraryView: View {
         .onReceive(NotificationCenter.default.publisher(for: .libraryShowAll)) { _ in
             resetQuery()
             navigateHome()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .spotlightOpenGame)) { note in
+            // Spotlight (⌘Espacio del sistema): abre la ficha del juego encontrado si es de ESTA
+            // tienda y está en la biblioteca; si no, no hace nada (otra tienda lo recogerá).
+            guard let identifier = note.userInfo?["identifier"] as? String,
+                  identifier.hasPrefix("\(store.rawValue):") else { return }
+            let gameId = String(identifier.dropFirst(store.rawValue.count + 1))
+            if let game = games.first(where: { $0.id == gameId }) {
+                openGame(game)
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .libraryShowHidden)) { _ in
             search = ""
@@ -1179,10 +1197,13 @@ struct StoreLibraryView: View {
         return installingIDs.isEmpty ? -1 : 0.03
     }
 
-    /// Refleja `dockProgressSnapshot` en el icono del Dock (barra de progreso estilo Mythic).
+    /// Refleja `dockProgressSnapshot` en el icono del Dock (barra de progreso estilo Mythic) y el
+    /// badge con el Nº de descargas/actualizaciones activas (como el App Store o Steam).
     private func updateDockProgress() {
         let v = dockProgressSnapshot
         if v < 0 { DockProgress.resetProgress() } else { DockProgress.progress = min(1, max(0, v)) }
+        let activas = installingIDs.count
+        NSApp.dockTile.badgeLabel = activas > 0 ? "\(activas)" : nil
     }
 
     // MARK: - Panel principal: ficha del juego seleccionado o grid "home"

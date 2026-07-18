@@ -9,7 +9,6 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var selectedStore: StoreKind = .steam
     @State private var profileStore = PlatformProfileStore.shared
-    @State private var showingSettings = false
     @State private var showingLogs = false
     @State private var showingAbout = false
     @State private var showingShortcutReference = false
@@ -56,7 +55,10 @@ struct ContentView: View {
                                 Label("Actualizar biblioteca", systemImage: "arrow.clockwise")
                             }
                             Divider()
-                            Button("Ajustes…") { showingSettings = true }
+                            // Ajustes = ventana NATIVA (escena Settings); antes abría una sheet modal.
+                            Button("Ajustes…") {
+                                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                            }
                             Button("Ver logs…") { showingLogs = true }
                             Button("Atajos de teclado…") { showingShortcutReference = true }
                             Divider()
@@ -92,11 +94,9 @@ struct ContentView: View {
                 .ignoresSafeArea(edges: .top)
         }
         .preferredColorScheme(.dark)
-        .sheet(isPresented: $showingSettings) { SettingsView() }
         .sheet(isPresented: $showingLogs) { LogsView() }
         .sheet(isPresented: $showingAbout) { AboutView() }
         .sheet(isPresented: $showingShortcutReference) { ShortcutReferenceView() }
-        .onReceive(NotificationCenter.default.publisher(for: .openSettings)) { _ in showingSettings = true }
         .onReceive(NotificationCenter.default.publisher(for: .openLogs)) { _ in showingLogs = true }
         .onReceive(NotificationCenter.default.publisher(for: .openAbout)) { _ in showingAbout = true }
         .onReceive(NotificationCenter.default.publisher(for: .openShortcutReference)) { _ in
