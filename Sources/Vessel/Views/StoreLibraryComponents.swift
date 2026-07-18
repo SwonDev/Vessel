@@ -165,8 +165,12 @@ struct LibraryActivitySection: View {
     let tint: Color
     let onOpen: (StoreGame) -> Void
 
+    /// Índice id→juego memoizado (antes: diccionario de ~1.750 entradas reconstruido por render).
+    @State private var gamesByIDCache: [String: StoreGame] = [:]
     private var gamesByID: [String: StoreGame] {
-        Dictionary(games.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        gamesByIDCache.isEmpty && !games.isEmpty
+            ? Dictionary(games.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            : gamesByIDCache
     }
 
     var body: some View {
@@ -199,6 +203,9 @@ struct LibraryActivitySection: View {
             .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
             .scrollClipDisabled()
             .accessibilityLabel("Actividad reciente de la biblioteca")
+        }
+        .task(id: games) {
+            gamesByIDCache = Dictionary(games.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         }
     }
 }
@@ -435,8 +442,12 @@ struct LibraryTransferCenterPopover: View {
     let onPrioritize: (StoreGame) -> Void
     let onRetry: (StoreGame) -> Void
 
+    /// Índice id→juego memoizado (antes: diccionario de ~1.750 entradas reconstruido por render).
+    @State private var gamesByIDCache: [String: StoreGame] = [:]
     private var gamesByID: [String: StoreGame] {
-        Dictionary(games.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        gamesByIDCache.isEmpty && !games.isEmpty
+            ? Dictionary(games.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            : gamesByIDCache
     }
 
     var body: some View {
@@ -490,6 +501,9 @@ struct LibraryTransferCenterPopover: View {
         .frame(width: 400)
         .vesselBackground(tint: tint)
         .accessibilityElement(children: .contain)
+        .task(id: games) {
+            gamesByIDCache = Dictionary(games.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        }
     }
 
 }

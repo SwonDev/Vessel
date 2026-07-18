@@ -397,6 +397,7 @@ struct StoreLibraryView: View {
     private func toggleFav(_ id: String) {
         if favorites.contains(id) { favorites.remove(id) } else { favorites.insert(id) }
         UserDefaults.standard.set(Array(favorites), forKey: favKey)
+        recomputeDerivedCaches()
     }
 
     private func isHidden(_ id: String) -> Bool { hiddenGames.contains(id) }
@@ -413,6 +414,7 @@ struct StoreLibraryView: View {
             if selectedGame?.id == id { navigate(to: .home, recordingHistory: true) }
         }
         UserDefaults.standard.set(Array(hiddenGames), forKey: hiddenKey)
+        recomputeDerivedCaches()
     }
 
     private func presentUndoHidden(for game: StoreGame) {
@@ -656,7 +658,33 @@ struct StoreLibraryView: View {
         return e
     }
 
-    private var enriched: [StoreGame] { games.map(enrichedGame) }
+    /// Cachés derivadas de la biblioteca, memoizadas: antes `enriched` mapeaba ~1.750 juegos en
+    /// CADA acceso (varios por render), la scope bar hacía 5 recorridos O(n) por render y
+    /// "recientes" ordenaba por evaluación. Se recalculan solo cuando cambian sus entradas:
+    /// `games`, las estadísticas de juego, favoritos u ocultos. Comportamiento idéntico.
+    @State private var enrichedCache: [StoreGame] = []
+    @State private var scopeCountsCache: [LibraryQuickScope: Int] = [:]
+    @State private var recentlyPlayedCache: [StoreGame] = []
+
+    private var enriched: [StoreGame] {
+        enrichedCache.isEmpty && !games.isEmpty ? games.map(enrichedGame) : enrichedCache
+    }
+
+    private func recomputeDerivedCaches() {
+        enrichedCache = games.map(enrichedGame)
+        let visible = enrichedCache.filter { !isHidden($0.id) }
+        scopeCountsCache = [
+            .todos: visible.count,
+            .listos: visible.count(where: \.installed),
+            .actualizaciones: visible.count(where: \.updateAvailable),
+            .sinJugar: visible.count { $0.lastPlayed == nil && ($0.playtimeMinutes ?? 0) == 0 },
+            .favoritos: visible.count { favorites.contains($0.id) }
+        ]
+        recentlyPlayedCache = Array(enrichedCache
+            .filter { $0.lastPlayed != nil && !isHidden($0.id) }
+            .sorted { ($0.lastPlayed ?? .distantPast) > ($1.lastPlayed ?? .distantPast) }
+            .prefix(8))
+    }
 
     /// Resuelve la versión más reciente del seleccionado, porque instalar/actualizar puede cambiar
     /// el modelo mientras su ficha sigue abierta.
@@ -957,14 +985,26 @@ struct StoreLibraryView: View {
         // `id: games` (no `games.count`): al instalar/actualizar un juego el TOTAL no cambia, pero
         // sí su estado (installed/updateAvailable/título) — como StoreGame es Equatable, esto
         // recalcula la lista y refresca ficha/grid/sidebar (antes seguía diciendo "Sin instalar").
-        .task(id: games) {
-            refreshDisplayed()
-            CoverCache.shared.prefetch(games.map { ($0.id, $0.coverCandidates) })
-            indexLibraryForSpotlight()
-            indexedMetadata = await StoreGameMetadataService.shared.cachedDetails(for: metadataRequests)
+        .task(id: games) { await refreshLibraryData() }
+        // Las estadísticas (última sesión / tiempo jugado) alimentan `enriched`, «Recientes» y
+        // «Seguir jugando»: al cambiar (p. ej. tras jugar), recalculamos cachés y la lista.
+        .onChange(of: PlayStatsStore.shared.stats) { _, _ in
+            recomputeDerivedCaches()
             refreshDisplayed()
         }
         .onDisappear(perform: cancelTransientTasks)
+    }
+
+    /// Recalcula cachés derivadas, lista, carátulas (prefetch), índice de Spotlight y metadata
+    /// cacheada. Extraído del `.task(id: games)` para que el type-checker de SwiftUI no se
+    /// desborde con la cadena de modificadores de esta vista coordinadora.
+    private func refreshLibraryData() async {
+        recomputeDerivedCaches()
+        refreshDisplayed()
+        CoverCache.shared.prefetch(games.map { ($0.id, $0.coverCandidates) })
+        indexLibraryForSpotlight()
+        indexedMetadata = await StoreGameMetadataService.shared.cachedDetails(for: metadataRequests)
+        refreshDisplayed()
     }
 
     private var libraryCommandLayer: some View {
@@ -1384,10 +1424,14 @@ struct StoreLibraryView: View {
     }
 
     /// Juegos jugados recientemente (los que tienen `lastPlayed`), más recientes primero.
+    /// Memoizado en `recomputeDerivedCaches` (fallback inline idéntico en el primer frame).
     private var recentlyPlayed: [StoreGame] {
-        enriched.filter { $0.lastPlayed != nil && !isHidden($0.id) }
-            .sorted { ($0.lastPlayed ?? .distantPast) > ($1.lastPlayed ?? .distantPast) }
-            .prefix(8).map { $0 }
+        if recentlyPlayedCache.isEmpty && !enriched.isEmpty {
+            return enriched.filter { $0.lastPlayed != nil && !isHidden($0.id) }
+                .sorted { ($0.lastPlayed ?? .distantPast) > ($1.lastPlayed ?? .distantPast) }
+                .prefix(8).map { $0 }
+        }
+        return recentlyPlayedCache
     }
 
     /// El último juego INSTALADO que se jugó: candidato del gran acceso «Seguir jugando» del
@@ -1549,14 +1593,19 @@ struct StoreLibraryView: View {
     /// Barra de ámbitos siempre visible. Es el equivalente ligero a las colecciones dinámicas de
     /// Steam y a una scope bar de macOS: un clic aplica el criterio y el contador anticipa el resultado.
     private var quickScopeBar: some View {
-        let source = enriched.filter { !isHidden($0.id) }
-        let counts: [LibraryQuickScope: Int] = [
-            .todos: source.count,
-            .listos: source.count(where: \.installed),
-            .actualizaciones: source.count(where: \.updateAvailable),
-            .sinJugar: source.count { $0.lastPlayed == nil && ($0.playtimeMinutes ?? 0) == 0 },
-            .favoritos: source.count { favorites.contains($0.id) }
-        ]
+        // Contadores memoizados (5 recorridos O(n) → 0 por render); en el primer frame, antes de
+        // la primera recomputación, se calculan inline como antes (fallback idéntico).
+        let counts: [LibraryQuickScope: Int]
+        if scopeCountsCache.isEmpty && !enriched.isEmpty {
+            let source = enriched.filter { !isHidden($0.id) }
+            counts = [.todos: source.count,
+                      .listos: source.count(where: \.installed),
+                      .actualizaciones: source.count(where: \.updateAvailable),
+                      .sinJugar: source.count { $0.lastPlayed == nil && ($0.playtimeMinutes ?? 0) == 0 },
+                      .favoritos: source.count { favorites.contains($0.id) }]
+        } else {
+            counts = scopeCountsCache
+        }
 
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
@@ -1572,7 +1621,7 @@ struct StoreLibraryView: View {
                     }
                 }
 
-                let availableUpdates = source.filter { $0.updateAvailable && !installingIDs.contains($0.id) }
+                let availableUpdates = enriched.filter { $0.updateAvailable && !installingIDs.contains($0.id) }
                 if let onUpdateAll, !availableUpdates.isEmpty {
                     Button {
                         onUpdateAll(availableUpdates)

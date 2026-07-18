@@ -94,6 +94,8 @@ final class SteamStore {
 /// biblioteca (reutilizando `BottleDetailView`) cuando ya estás conectado.
 struct SteamStoreView: View {
     @State private var steam = SteamStore()
+    /// Task del flujo de conexión (para poder cancelarlo: la espera de login llega a 240 s).
+    @State private var connectTask: Task<Void, Never>?
 
     var body: some View {
         Group {
@@ -102,12 +104,16 @@ struct SteamStoreView: View {
                 if let bottle = steam.bottle {
                     BottleDetailView(bottle: bottle).id(bottle.id)
                 } else {
-                    ConnectSteamView(working: nil) { Task { await steam.connect() } }
+                    ConnectSteamView(working: nil) { connectTask = Task { await steam.connect() } }
                 }
             case .working(let msg):
-                ConnectSteamView(working: msg) {}
+                ConnectSteamView(working: msg, onConnect: {}, onCancel: {
+                    connectTask?.cancel()
+                    connectTask = nil
+                    steam.phase = .disconnected
+                })
             case .disconnected:
-                ConnectSteamView(working: nil) { Task { await steam.connect() } }
+                ConnectSteamView(working: nil) { connectTask = Task { await steam.connect() } }
             }
         }
         .task { steam.refresh() }
@@ -121,6 +127,9 @@ struct SteamStoreView: View {
 struct ConnectSteamView: View {
     let working: String?
     let onConnect: () -> Void
+    /// Cancelación del flujo en curso (instalación de motores + espera de login de hasta 240 s):
+    /// sin ella el usuario quedaba atrapado mirando un spinner sin salida.
+    var onCancel: (() -> Void)? = nil
 
     private let tint = StoreKind.steam.tint
     @State private var pulse = false
@@ -150,6 +159,12 @@ struct ConnectSteamView: View {
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
                         .liquidGlass(in: Capsule())
+                    if let onCancel {
+                        Button("Cancelar", action: onCancel)
+                            .vesselButton(false, tint: tint)
+                            .controlSize(.small)
+                            .accessibilityHint("Detiene la conexión y vuelve al inicio")
+                    }
                 }
                 .padding(.top, 4)
             } else {

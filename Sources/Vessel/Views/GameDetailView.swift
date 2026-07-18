@@ -17,7 +17,7 @@ enum GameDetailSymbols {
 }
 
 /// Un DLC resuelto (nombre + carátula) para mostrarlo en la ficha.
-struct StoreDLC: Identifiable, Hashable {
+struct StoreDLC: Identifiable, Hashable, Codable {
     let id: String
     let title: String
     let coverURL: URL?
@@ -1351,34 +1351,57 @@ struct GameDetailView: View {
     }
 
     /// Resuelve nombre + carátula de los primeros DLC (datos públicos de Steam, en paralelo).
+    /// Con CACHÉ EN DISCO por DLC (`dlcmeta-<id>`): nombre y carátula no cambian, así que solo
+    /// la primera visita a una ficha hace las ~12 peticiones; las siguientes son instantáneas.
+    /// La posesión (`owned`) NO se cachea: depende de la cuenta y se recalcula siempre.
     @MainActor private func loadDLCs(_ ids: [Int]) async {
         dlcs = []
         guard !ids.isEmpty else { return }
         // Qué DLC posee el usuario (juegos+DLC de rgOwnedApps vía la sesión web). Vacío = sin datos
         // → no atenuamos (no sabemos). Se hace UNA vez para todos los DLC.
         let ownedApps = await SteamWebSession.shared.ownedAppIDs()
-        let resolved = await withTaskGroup(of: StoreDLC?.self) { group -> [StoreDLC] in
-            for id in ids.prefix(12) {
-                group.addTask {
-                    guard let url = URL(string: "https://store.steampowered.com/api/appdetails?appids=\(id)&filters=basic&l=spanish"),
-                          let (data, _) = try? await URLSession.shared.data(from: url),
-                          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                          let entry = obj["\(id)"] as? [String: Any],
-                          (entry["success"] as? Bool) == true,
-                          let d = entry["data"] as? [String: Any],
-                          let name = d["name"] as? String else { return nil }
-                    // La carátula: `header_image` REAL de appdetails (muchos DLC —packs de armadura,
-                    // sombreros— NO tienen `capsule_231x87.jpg` → daba 404 y salía el hueco). Con el
-                    // header_image cargan todos. Fallback al capsule por si acaso.
-                    let cover = (d["header_image"] as? String).flatMap { URL(string: $0) }
-                        ?? URL(string: "https://cdn.cloudflare.steamstatic.com/steam/apps/\(id)/capsule_231x87.jpg")
-                    let owned = ownedApps.isEmpty || ownedApps.contains(id)
-                    return StoreDLC(id: "\(id)", title: name, coverURL: cover, owned: owned)
-                }
+        func withOwnership(_ dlc: StoreDLC, id: Int) -> StoreDLC {
+            var d = dlc
+            d.owned = ownedApps.isEmpty || ownedApps.contains(id)
+            return d
+        }
+        var resolved: [StoreDLC] = []
+        var missing: [Int] = []
+        for id in ids.prefix(12) {
+            if let cached = LibraryCache.load("dlcmeta-\(id)", as: [StoreDLC].self)?.first {
+                resolved.append(withOwnership(cached, id: id))
+            } else {
+                missing.append(id)
             }
-            var out: [StoreDLC] = []
-            for await dlc in group { if let dlc { out.append(dlc) } }
-            return out
+        }
+        if !missing.isEmpty {
+            let fetched = await withTaskGroup(of: (Int, StoreDLC?)?.self) { group -> [(Int, StoreDLC?)] in
+                for id in missing {
+                    group.addTask {
+                        guard let url = URL(string: "https://store.steampowered.com/api/appdetails?appids=\(id)&filters=basic&l=spanish"),
+                              let (data, _) = try? await URLSession.shared.data(from: url),
+                              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                              let entry = obj["\(id)"] as? [String: Any],
+                              (entry["success"] as? Bool) == true,
+                              let d = entry["data"] as? [String: Any],
+                              let name = d["name"] as? String else { return (id, nil) }
+                        // La carátula: `header_image` REAL de appdetails (muchos DLC —packs de armadura,
+                        // sombreros— NO tienen `capsule_231x87.jpg` → daba 404 y salía el hueco). Con el
+                        // header_image cargan todos. Fallback al capsule por si acaso.
+                        let cover = (d["header_image"] as? String).flatMap { URL(string: $0) }
+                            ?? URL(string: "https://cdn.cloudflare.steamstatic.com/steam/apps/\(id)/capsule_231x87.jpg")
+                        return (id, StoreDLC(id: "\(id)", title: name, coverURL: cover))
+                    }
+                }
+                var out: [(Int, StoreDLC?)] = []
+                for await pair in group { if let pair { out.append(pair) } }
+                return out
+            }
+            for (id, dlc) in fetched {
+                guard let dlc else { continue }
+                LibraryCache.save("dlcmeta-\(id)", [dlc])
+                resolved.append(withOwnership(dlc, id: id))
+            }
         }
         // Poseídos primero; dentro de cada grupo, por nombre. Los no poseídos se atenúan (abajo).
         dlcs = resolved.sorted {
