@@ -1025,6 +1025,21 @@ final class WineManager {
         // Los de Unreal llevan siempre `-nohmd`: sin él se quedan buscando un visor de VR que aquí no
         // existe y mueren sin abrir ventana (ver `unrealEngineArguments`). Vale para cualquier ruta.
         var allArgs = arguments + eff.launchArgs + unrealEngineArguments(forExecutable: executable)
+        // Estado del propio juego restaurado por nube/backup: corrige únicamente combinaciones
+        // verificadas que bajo Retina crean una ventana desbordada y desalinean el ratón. Se hace
+        // aquí, DESPUÉS de cualquier restauración previa y ANTES de decidir la ruta de motor; no
+        // cambia Wine, DXMT ni las preferencias válidas de otros juegos.
+        let displayRepair = GameDisplayStateRepair.repairBeforeLaunch(
+            appId: steamAppId,
+            executable: executable,
+            prefix: bottle.prefixPath
+        )
+        if displayRepair.didRepair {
+            log.log(
+                "Estado de pantalla autorreparado antes de jugar (\(displayRepair.repairedFiles.count) perfil(es)); copia de seguridad conservada.",
+                level: .info
+            )
+        }
         // Motor KEX (remasters de Nightdive: DOOM, Quake…): fijar la resolución a los píxeles reales,
         // o abre al doble de la pantalla (ver `fixKexResolution`). Se escribe en su cfg Y se pasa por
         // línea de comandos, para que valga también en el PRIMER arranque, cuando el cfg aún no existe.
