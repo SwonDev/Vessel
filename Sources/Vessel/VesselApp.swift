@@ -5,6 +5,7 @@ import CoreSpotlight
 /// AppDelegate para el **menú del Dock** (clic derecho sobre el icono): accesos rápidos
 /// contextuales — abrir la app, seguir jugando al último título y buscar actualizaciones.
 /// Se construye bajo demanda (cada apertura) para reflejar el estado del momento.
+@MainActor
 final class VesselAppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// Spotlight (Core Spotlight): el usuario abre una ficha de juego directamente desde ⌘Espacio
     /// del sistema. El identificador es "<tienda>:<id>" (el mismo que el indexador).
