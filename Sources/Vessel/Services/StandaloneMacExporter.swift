@@ -344,15 +344,27 @@ actor StandaloneMacExporter {
         """
     }
 
+    /// Escapa texto para incrustarlo en XML (Info.plist). Sin esto, un título con `&`, `<`, `>` o
+    /// comillas producía un plist MAL FORMADO (p. ej. juegos DOS de GOG como "Sam & Max"), y el
+    /// `.app` exportado no arrancaba/mostraba nombre. `&` debe ir primero.
+    static func xmlEscape(_ s: String) -> String {
+        s.replacingOccurrences(of: "&", with: "&amp;")
+         .replacingOccurrences(of: "<", with: "&lt;")
+         .replacingOccurrences(of: ">", with: "&gt;")
+         .replacingOccurrences(of: "\"", with: "&quot;")
+         .replacingOccurrences(of: "'", with: "&apos;")
+    }
+
     private static func infoPlist(appName: String, hasIcon: Bool) -> String {
         let iconKey = hasIcon ? "  <key>CFBundleIconFile</key><string>icon</string>\n" : ""
+        let name = xmlEscape(appName)
         return """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
         <plist version="1.0">
         <dict>
-          <key>CFBundleName</key><string>\(appName)</string>
-          <key>CFBundleDisplayName</key><string>\(appName)</string>
+          <key>CFBundleName</key><string>\(name)</string>
+          <key>CFBundleDisplayName</key><string>\(name)</string>
           <key>CFBundleIdentifier</key><string>com.swondev.vessel.export.\(Self.bundleSlug(appName))</string>
           <key>CFBundleExecutable</key><string>launch</string>
         \(iconKey)  <key>CFBundlePackageType</key><string>APPL</string>

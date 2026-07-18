@@ -32,12 +32,21 @@ actor SteamGridDBClient {
         return k.isEmpty ? nil : k
     }
 
-    func search(query: String) async throws -> [SearchResult] {
-        guard !query.isEmpty else { return [] }
-        var components = URLComponents(string: "\(baseURL)/search/autocomplete")!
-        components.queryItems = [URLQueryItem(name: "term", value: query)]
+    /// URL de búsqueda: el término va como **segmento de ruta** (`/search/autocomplete/{term}`),
+    /// NO como query param. La API v2 de SteamGridDB responde 404 a `?term=` (verificado: la forma
+    /// por path da 401 sin key = existe; `?term=` da 404), así que con `?term=` la búsqueda de
+    /// carátulas devolvía SIEMPRE vacío.
+    static func searchURL(base: String, query: String) -> URL? {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        let term = query.addingPercentEncoding(withAllowedCharacters: allowed) ?? query
+        return URL(string: "\(base)/search/autocomplete/\(term)")
+    }
 
-        var request = URLRequest(url: components.url!)
+    func search(query: String) async throws -> [SearchResult] {
+        guard !query.isEmpty, let url = Self.searchURL(base: baseURL, query: query) else { return [] }
+
+        var request = URLRequest(url: url)
         if let key = apiKey { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
 
         let (data, response) = try await URLSession.shared.data(for: request)

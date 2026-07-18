@@ -261,14 +261,24 @@ actor DRMFreeInstaller {
         return base.contains("setup") || base.contains("install") || base.hasSuffix("_inst")
     }
 
+    /// Extrae el nombre de fichero de una cabecera `Content-Disposition`. Corta en el `;` (siguiente
+    /// parámetro, p. ej. `filename*=…`) ANTES de quitar comillas — antes se trimeaban las comillas
+    /// primero y una `"` interior sobrevivía (`Game.exe"`), corrompiendo la extensión y rompiendo
+    /// la instalación de `.exe`/`.msi`. Devuelve solo la hoja (el filename nunca es una ruta).
+    static func parseContentDispositionFilename(_ cd: String) -> String? {
+        guard let range = cd.range(of: "filename=") else { return nil }
+        var name = String(cd[range.upperBound...])
+        if let semi = name.firstIndex(of: ";") { name = String(name[..<semi]) }
+        name = name.trimmingCharacters(in: CharacterSet(charactersIn: "\"; ")).trimmingCharacters(in: .whitespaces)
+        name = (name as NSString).lastPathComponent
+        return name.isEmpty ? nil : name
+    }
+
     private static func filename(from response: URLResponse, fallbackURL: URL) -> String {
         if let http = response as? HTTPURLResponse,
            let cd = http.value(forHTTPHeaderField: "Content-Disposition"),
-           let range = cd.range(of: "filename=") {
-            var name = String(cd[range.upperBound...])
-            name = name.trimmingCharacters(in: CharacterSet(charactersIn: "\"; "))
-            if let semi = name.firstIndex(of: ";") { name = String(name[..<semi]) }
-            if !name.isEmpty { return name }
+           let name = parseContentDispositionFilename(cd) {
+            return name
         }
         let last = fallbackURL.lastPathComponent
         return last.isEmpty ? "download.zip" : last
@@ -277,7 +287,8 @@ actor DRMFreeInstaller {
     static func sanitize(_ s: String) -> String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_ "))
         let cleaned = String(s.unicodeScalars.filter { allowed.contains($0) }).trimmingCharacters(in: .whitespaces)
-        return cleaned.isEmpty ? "juego-\(abs(s.hashValue))" : cleaned
+        // `.magnitude` (UInt) en vez de `abs(hashValue)`: `abs(Int.min)` desborda y hace trap.
+        return cleaned.isEmpty ? "juego-\(s.hashValue.magnitude)" : cleaned
     }
 
     /// Restaura el bit de ejecución del binario dentro de un `.app`. Los zips de itch/Humble suelen

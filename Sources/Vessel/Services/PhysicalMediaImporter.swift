@@ -74,6 +74,25 @@ actor PhysicalMediaImporter {
 
     /// Localiza el instalador del disco. Prioridad: lo que diga `autorun.inf` (es LA fuente oficial
     /// del propio disco) y, si no, la heurística habitual de nombres en la raíz.
+    /// Extrae la RUTA del ejecutable de un valor `open=`/`shellexecute=` de `autorun.inf`,
+    /// respetando comillas: una ruta ENTRE COMILLAS puede contener espacios (los argumentos van
+    /// tras la comilla de cierre); sin comillas, los argumentos empiezan en el primer espacio.
+    /// Antes se cortaba en el primer espacio ANTES de quitar comillas → truncaba `"Setup Game\x.exe"`.
+    nonisolated static func parseAutorunTarget(_ raw: String) -> String {
+        let v = raw.trimmingCharacters(in: .whitespaces)
+        var path: String
+        if v.hasPrefix("\"") {
+            let afterQuote = v.dropFirst()
+            path = String(afterQuote[..<(afterQuote.firstIndex(of: "\"") ?? afterQuote.endIndex)])
+        } else if let sp = v.firstIndex(of: " ") {
+            path = String(v[..<sp])
+        } else {
+            path = v
+        }
+        return path.replacingOccurrences(of: "\\", with: "/")
+                   .trimmingCharacters(in: CharacterSet(charactersIn: "\"/ "))
+    }
+
     nonisolated static func findInstaller(in mountPoint: String) -> String? {
         let fm = FileManager.default
         // 1) autorun.inf → `open=setup.exe` (a veces con argumentos o rutas con backslash).
@@ -83,11 +102,7 @@ actor PhysicalMediaImporter {
             for line in raw.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
                 let t = line.trimmingCharacters(in: .whitespaces)
                 guard t.lowercased().hasPrefix("open=") || t.lowercased().hasPrefix("shellexecute=") else { continue }
-                var value = String(t.drop(while: { $0 != "=" }).dropFirst()).trimmingCharacters(in: .whitespaces)
-                // Quitar argumentos y normalizar el separador de Windows.
-                if let sp = value.firstIndex(of: " ") { value = String(value[..<sp]) }
-                value = value.replacingOccurrences(of: "\\", with: "/")
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "\"/"))
+                let value = Self.parseAutorunTarget(String(t.drop(while: { $0 != "=" }).dropFirst()))
                 let candidate = "\(mountPoint)/\(value)"
                 if fm.fileExists(atPath: candidate) { return candidate }
             }
