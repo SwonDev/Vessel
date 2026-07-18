@@ -308,12 +308,7 @@ final class GogdlManager {
     /// juegos de GOG antes de `removeItem`. Nunca se borra la raíz ni nada fuera de ella.
     func uninstallGame(installDir: String, gamesRoot: String) throws {
         let fm = FileManager.default
-        let resolved = URL(fileURLWithPath: installDir).resolvingSymlinksInPath().standardizedFileURL.path
-        let base = URL(fileURLWithPath: gamesRoot).resolvingSymlinksInPath().standardizedFileURL.path
-        guard resolved.hasPrefix(base + "/"),
-              resolved != base,
-              (resolved as NSString).lastPathComponent.count > 0,
-              fm.fileExists(atPath: resolved) else {
+        guard let resolved = PathSafety.resolvedIfSafeToDelete(installDir, under: gamesRoot, fileManager: fm) else {
             throw GogdlError.installFailed("Ruta de instalación no válida para desinstalar: \(installDir)")
         }
         try fm.removeItem(atPath: resolved)

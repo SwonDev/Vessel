@@ -248,8 +248,14 @@ final class LocalGamesStore {
     /// resto (local/steam/gog) lo quita de la lista.
     func uninstall(_ id: UUID) {
         guard let i = games.firstIndex(where: { $0.id == id }) else { return }
-        if let ip = games[i].installPath, ip.hasPrefix(VesselPaths.drmFreeDirectory) {
-            try? FileManager.default.removeItem(atPath: ip)
+        // SEGURIDAD (ver PathSafety + incidente de borrado): borra SOLO si `installPath` es
+        // subcarpeta ESTRICTA canonicalizada de DRMFree — nunca la raíz ni una carpeta hermana.
+        if let ip = games[i].installPath, !ip.isEmpty {
+            if PathSafety.isStrictDescendant(ip, of: VesselPaths.drmFreeDirectory) {
+                try? FileManager.default.removeItem(atPath: PathSafety.canonical(ip))
+            } else {
+                LogStore.shared.log("Desinstalar DRM‑free: '\(ip)' fuera de la carpeta DRMFree; no se borra en disco.", level: .warn)
+            }
         }
         if games[i].source == .itch || games[i].source == .humble {
             games[i].executablePath = ""
@@ -264,9 +270,10 @@ final class LocalGamesStore {
     /// Quita el juego de la lista y, si estaba instalado por Vessel, borra su carpeta de instalación.
     func removeAndDelete(_ id: UUID) {
         guard let g = games.first(where: { $0.id == id }) else { return }
-        // Solo borra si Vessel lo instaló (installPath bajo DRMFree/), NUNCA una ruta ajena.
-        if let ip = g.installPath, ip.hasPrefix(VesselPaths.drmFreeDirectory) {
-            try? FileManager.default.removeItem(atPath: ip)
+        // Solo borra si Vessel lo instaló (installPath bajo DRMFree/), NUNCA la raíz ni una ruta
+        // ajena: subcarpeta ESTRICTA canonicalizada (ver PathSafety y el incidente de borrado).
+        if let ip = g.installPath, PathSafety.isStrictDescendant(ip, of: VesselPaths.drmFreeDirectory) {
+            try? FileManager.default.removeItem(atPath: PathSafety.canonical(ip))
         }
         remove(id)
     }

@@ -183,22 +183,16 @@ struct BottleDetailView: View {
             }
         }
 
-        // SEGURIDAD CRÍTICA: canonicalizar (resolver symlinks y `..`) y exigir que la
-        // ruta resultante siga siendo subcarpeta ESTRICTA de steamapps/common.
-        if let folder = folderToDelete {
-            let resolved = URL(fileURLWithPath: folder).resolvingSymlinksInPath().standardizedFileURL.path
-            let base = URL(fileURLWithPath: steamCommon).resolvingSymlinksInPath().standardizedFileURL.path
-            if resolved.hasPrefix(base + "/"),
-               resolved != base,
-               (resolved as NSString).lastPathComponent.count > 0,
-               fm.fileExists(atPath: resolved) {
-                try? fm.removeItem(atPath: resolved)
-                log.log("Juego desinstalado: \(game.name) (\(resolved))", level: .info)
-            } else {
-                log.log("Desinstalar \(game.name): ruta no segura tras canonicalizar; solo se quita de la lista.", level: .warn)
-            }
-        } else {
+        // SEGURIDAD CRÍTICA (centralizada en PathSafety): canonicalizar (resolver symlinks y `..`)
+        // y exigir que la ruta resultante siga siendo subcarpeta ESTRICTA de steamapps/common.
+        if let folder = folderToDelete,
+           let resolved = PathSafety.resolvedIfSafeToDelete(folder, under: steamCommon, fileManager: fm) {
+            try? fm.removeItem(atPath: resolved)
+            log.log("Juego desinstalado: \(game.name) (\(resolved))", level: .info)
+        } else if folderToDelete == nil {
             log.log("Desinstalar \(game.name): no se halló carpeta segura; solo se quita de la lista.", level: .warn)
+        } else {
+            log.log("Desinstalar \(game.name): ruta no segura tras canonicalizar; solo se quita de la lista.", level: .warn)
         }
 
         store.deleteGame(game.id, from: localBottle.id)
