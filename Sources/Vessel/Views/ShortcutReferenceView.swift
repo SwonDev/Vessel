@@ -9,7 +9,9 @@ struct ShortcutReferenceView: View {
             ("⌘F", "Buscar juegos"),
             ("⌘L", "Mostrar u ocultar la lista"),
             ("⌘R", "Actualizar la biblioteca"),
-            ("⌘0", "Mostrar todos los juegos")
+            ("⌘0", "Mostrar todos los juegos"),
+            ("⇧⌘H", "Mostrar juegos ocultos"),
+            ("⌘O", "Importar un .exe de juego (DRM-free)")
         ]),
         ("Juego seleccionado", [
             ("⌘↩", "Jugar, detener o instalar"),
