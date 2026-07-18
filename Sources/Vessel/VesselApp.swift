@@ -12,31 +12,17 @@ struct VesselApp: App {
         NSScrollView.installVesselGlassScrollers()
     }
 
+    private var uiReviewEnabled: Bool {
+#if DEBUG
+        ProcessInfo.processInfo.environment["VESSEL_UI_REVIEW"] == "1"
+#else
+        false
+#endif
+    }
+
     var body: some Scene {
-        WindowGroup("Vessel") {
-            ContentView()
-                .frame(minWidth: 1024, minHeight: 680)
-                .onAppear {
-                    if !onboardingCompleted {
-                        showingOnboarding = true
-                    }
-                }
-                .task {
-                    // El icono del Dock arranca SIEMPRE limpio (por si una instalación quedó a
-                    // medias en una sesión anterior); el progreso se repinta solo si hay descargas.
-                    DockProgress.resetProgress()
-                    // Permiso de notificaciones (descarga lista, update disponible…), una vez.
-                    NotificationService.shared.requestAuthorization()
-                    // Arranca Sparkle (comprobación automática de actualizaciones firmadas).
-                    _ = UpdaterManager.shared
-                    // Actualiza la BD de compatibilidad desde el repo comunitario (1×/día).
-                    await CompatService.shared.refreshRemoteIfNeeded()
-                }
-                .sheet(isPresented: $showingOnboarding) {
-                    OnboardingView {
-                        onboardingCompleted = true
-                    }
-                }
+        WindowGroup(uiReviewEnabled ? "Vessel — Revisión UI" : "Vessel") {
+            windowContent
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified(showsTitle: true))
@@ -113,6 +99,44 @@ struct VesselApp: App {
         }
     }
 
+    @ViewBuilder private var windowContent: some View {
+#if DEBUG
+        if uiReviewEnabled {
+            VesselUIReviewView()
+                .frame(minWidth: 1024, minHeight: 680)
+        } else {
+            productionContent
+        }
+#else
+        productionContent
+#endif
+    }
+
+    private var productionContent: some View {
+        ContentView()
+            .frame(minWidth: 1024, minHeight: 680)
+            .onAppear {
+                if !onboardingCompleted {
+                    showingOnboarding = true
+                }
+            }
+            .task {
+                // El icono del Dock arranca SIEMPRE limpio (por si una instalación quedó a
+                // medias en una sesión anterior); el progreso se repinta solo si hay descargas.
+                DockProgress.resetProgress()
+                // Permiso de notificaciones (descarga lista, update disponible…), una vez.
+                NotificationService.shared.requestAuthorization()
+                // Arranca Sparkle (comprobación automática de actualizaciones firmadas).
+                _ = UpdaterManager.shared
+                // Actualiza la BD de compatibilidad desde el repo comunitario (1×/día).
+                await CompatService.shared.refreshRemoteIfNeeded()
+            }
+            .sheet(isPresented: $showingOnboarding) {
+                OnboardingView {
+                    onboardingCompleted = true
+                }
+            }
+    }
 }
 
 extension Notification.Name {

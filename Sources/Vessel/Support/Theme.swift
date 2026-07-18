@@ -23,6 +23,8 @@ enum Theme {
         static let gameGrid: CGFloat = 18
         static let section: CGFloat = 24
         static let page: CGFloat = 32
+        /// Reserva visual entre el título del hero y la barra de acciones de la ficha.
+        static let heroTitleInset: CGFloat = 44
     }
 
     // MARK: Paleta navy (barco · océano · profundidad · confianza)
@@ -214,15 +216,15 @@ struct GlassButtonStyle: ButtonStyle {
                 .padding(.horizontal, 18)
                 .padding(.vertical, 10)
                 .background {
-                    // Cristal NEUTRO translúcido (refracta, como el header) — el color es solo
-                    // un ACENTO (velo mínimo + borde + glow), nunca un relleno sólido.
-                    ZStack {
-                        Color.clear.liquidGlass(in: shape, interactive: true)
-                        if prominent {
-                            shape.fill(tint.opacity(hovering ? 0.16 : 0.10))
-                        }
+                    // El color es solo un ACENTO (velo mínimo + borde), nunca un relleno sólido.
+                    if prominent {
+                        shape.fill(tint.opacity(hovering ? 0.16 : 0.10))
                     }
                 }
+                // En un `GlassEffectContainer`, el cristal debe pertenecer al control completo.
+                // Aplicarlo a un `Color.clear` de fondo hace que macOS 26 eleve únicamente esa capa
+                // durante la composición y puede difuminar la etiqueta situada detrás.
+                .liquidGlass(in: shape, interactive: true)
                 .overlay { shape.strokeBorder(tint.opacity(prominent ? 0.45 : 0.12), lineWidth: 0.8) }
                 .clipShape(shape)
                 // Sombra NEUTRA de profundidad (sin glow de color: el aura tintada "cantaba").

@@ -62,6 +62,7 @@ spacing:
   card-gap: 18px
   section: 24px
   page: 32px
+  hero-title-inset: 44px
 components:
   app-background:
     backgroundColor: "{colors.background-deep}"
@@ -183,6 +184,12 @@ La ventana se organiza siguiendo el modelo mental de la biblioteca de Steam, ada
 - El contenido se desplaza por debajo de la cabecera translúcida para crear el scroll edge nativo.
 - El hero de cada ficha usa parallax sutil: la ilustración se desplaza más despacio que el título y
   el contenido. El mismo efecto se aplica a Steam, Epic, GOG y DRM‑free desde la ficha común.
+- La carátula y el hero comparten geometría al entrar en una ficha para conservar continuidad
+  espacial. Al desplazar el hero y su barra inicial, una toolbar contextual mantiene el título y la
+  acción primaria disponibles sin ocupar espacio cuando no hace falta.
+- Los carruseles alinean elementos de forma predecible y permiten navegación por trackpad, ratón y
+  teclado. Nunca avanzan automáticamente salvo el preview efímero de hover, que se detiene con
+  «Reducir movimiento».
 - Radios, espaciados y densidad usan los tokens. Los valores locales solo se aceptan para geometrías
   inherentes a una carátula, logo o icono.
 - Los controles secundarios deben reagruparse en menús nativos cuando el ancho no permita mantener
@@ -234,8 +241,8 @@ su geometría de marca cuando sea necesaria para reconocer la plataforma.
 - `StoreGameRow` prioriza título, instalación, actividad y selección con densidad similar a Steam.
 - `StoreGameCard` usa carátula 2:3, estado legible y acciones progresivas.
 - `GameDetailView` integra hero, Jugar/Instalar, última sesión, tiempo, logros, DLC, capturas,
-  compatibilidad y ajustes. Su hero tiene profundidad parallax; la acción primaria domina y las
-  secundarias no compiten con ella.
+  compatibilidad y ajustes. Su hero tiene profundidad parallax y continuidad desde la carátula; la
+  acción primaria domina, persiste al bajar y las secundarias no compiten con ella.
 - El centro de descargas solo aparece durante operaciones activas y conserva el progreso al navegar.
 
 ### Estados y accesibilidad

@@ -32,6 +32,9 @@ invisible) y la estética premium (DESIGN.md). Basado en auditoría de huecos fr
 - Ficha de compatibilidad con acceso directo a ProtonDB y enlace a la página del juego en Steam.
 - **Acceso rápido y notas**: buscador de apertura con `⌘K` para bibliotecas grandes y notas privadas
   por juego, con guardado automático local y acceso desde la ficha, menús contextuales y menú Juego.
+- **Paridad visual común con Steam**: una sola biblioteca para Steam, Epic, GOG y DRM‑free; hero con
+  parallax, continuidad carátula→ficha, acciones adaptativas y persistentes, previews enriquecidos y
+  carruseles con snapping y teclado. Liquid Glass respeta Reducir movimiento/transparencia.
 
 ## 🔜 Pendiente (orden por impacto en catálogo/UX)
 
@@ -52,8 +55,10 @@ invisible) y la estética premium (DESIGN.md). Basado en auditoría de huecos fr
 7. "Actualizar todo" + cola de descargas/actualizaciones visible.
 
 ### UI premium (DESIGN.md)
-8. Paridad visual Epic/GOG con Steam (Liquid Glass en las tarjetas).
-9. Filtros avanzados (género, rating de compat, tamaño) + microinteracciones.
+8. ~~Paridad visual Epic/GOG con Steam y Liquid Glass común~~ ✅ HECHO.
+9. Filtros avanzados (género, rating de compatibilidad y tamaño). Las microinteracciones comunes ya
+   están implementadas; los filtros necesitan una fuente de metadatos local indexable para no
+   convertir cada consulta en tráfico remoto.
 
 ## Excluido por filosofía (solo bajo toggle "Avanzado")
 winecfg · regedit · ejecutar .exe arbitrario · selector de motor en UI — el bottle es invisible.

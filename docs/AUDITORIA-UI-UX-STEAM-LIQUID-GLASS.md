@@ -2,7 +2,7 @@
 
 Fecha: 18 de julio de 2026
 
-Base auditada: `3bbf566` (`main` / `origin/main`)
+Base actual: `9508b24` (`main`) + rama visual `codex/ui-liquid-glass-unification`
 
 Rama de trabajo: `codex/ui-liquid-glass-unification`
 
@@ -14,11 +14,10 @@ paneles, portada, filtros rápidos, colecciones, favoritos, ocultos, ficha integ
 notas, búsqueda rápida y navegación reversible. La dirección visual navy y Liquid Glass es coherente
 y reconocible.
 
-El mayor riesgo no es la falta de una identidad, sino su crecimiento sin una frontera clara. La vista
-principal de biblioteca concentra coordinación, estado, navegación, grid, filas, ficha y varios
-overlays en un único archivo de más de 3.300 líneas. Además, permanecen implementaciones antiguas de
-las bibliotecas de Epic y GOG que ya no participan en el flujo principal. Esa duplicación facilita que
-una plataforma reciba un arreglo visual y otra conserve un comportamiento anterior.
+El mayor riesgo no era la falta de una identidad, sino su crecimiento sin una frontera clara. Esta
+rama lo reduce: el coordinador, los componentes de portada y la ficha viven ahora en archivos
+separados; además se retiraron las bibliotecas antiguas de Epic y GOG que ya no participaban en el
+flujo. La única gramática visual ejecutable es la biblioteca común de las cuatro plataformas.
 
 La recomendación es mantener la apariencia actual y evolucionar por capas: primero primitivas nativas
 y accesibilidad, después estructura común, luego completar los patrones que Steam resuelve bien. La
@@ -29,16 +28,16 @@ paridad debe medirse por jerarquía, completitud y feedback; no por copiar la pi
 - 134 observaciones de Engram asociadas a `vessel` y `vessel-mac`, incluidas las decisiones desde el
   cambio de bottles a una biblioteca de tiendas y los pases recientes de calidad.
 - Todos los prompts históricos relevantes conservados en Engram.
-- Historial Git hasta `3bbf566`, ramas y worktrees existentes.
-- Cambios locales actuales de Kimi, sin modificarlos ni incorporarlos a esta rama.
+- Historial Git hasta `9508b24`, ramas y worktrees existentes.
+- Commit `9508b24` de Kimi, integrado mediante rebase antes de la segunda pasada visual.
 - `CLAUDE.md`, `DESIGN.md`, `ROADMAP.md`, `README.md`, `docs/AUDITORIA-BUGS.md`, `Package.swift` y
   capturas actuales de la biblioteca.
 - 28.954 líneas Swift de producto y 917 líneas de pruebas.
 - Xcode 26.6 y Swift 6.3.3 efectivos en esta máquina.
 
-## Estado paralelo de Kimi
+## Integración del trabajo de Kimi
 
-El árbol principal contiene trabajo no confirmado de Kimi en:
+El trabajo de Kimi quedó consolidado en `9508b24` e incorporado a esta rama antes de continuar:
 
 - `SteamCMDManager.swift`: watchdog por inactividad en lugar de un límite fijo de 45 minutos;
 - `SteamLibraryImporter.swift`: validación de `StateFlags`, penalización de herramientas de Source y
@@ -47,9 +46,8 @@ El árbol principal contiene trabajo no confirmado de Kimi en:
   existen varios `gameinfo.txt`;
 - `BottleDetailView.swift`: persistencia y reanudación de descargas SteamCMD interrumpidas.
 
-También existen artefactos no versionados de Playwright. Esta auditoría trabaja desde un worktree
-independiente y no toca ninguno de esos archivos. No se debe fusionar la rama de UI hasta reconciliar
-la base con el commit que finalmente produzca Kimi.
+Los artefactos no versionados de Playwright siguen limitados al worktree principal. Esta rama trabaja
+desde un worktree independiente y no los modifica.
 
 ## Arquitectura visual actual
 
@@ -73,8 +71,9 @@ ContentView
 ```
 
 `Theme.swift` es la fuente ejecutable correcta para colores, radios, fondo, botones, tarjetas,
-tooltips y movimiento. `StoreLibraryView.swift` es a la vez la principal fortaleza —la paridad entre
-plataformas nace ahí— y el principal punto de deuda por concentración de responsabilidades.
+tooltips y movimiento. `StoreLibraryView.swift` conserva coordinación y estado;
+`StoreLibraryComponents.swift` reúne portada, filas, tarjetas y descargas; `GameDetailView.swift`
+contiene la ficha común. La separación mantiene una única experiencia sin conservar el monolito.
 
 ## Matriz de paridad con Steam
 
@@ -90,11 +89,11 @@ plataformas nace ahí— y el principal punto de deuda por concentración de res
 | Parallax y profundidad de ficha | Mejorado en esta rama | Hero compartido con dos planos y alternativa sin movimiento. |
 | Capturas, DLC y metadatos | Consolidado | Fuente común y enriquecimiento tolerante por plataforma. |
 | Logros | Parcial | Muy completos en Steam; la disponibilidad depende de credenciales y backend. |
-| Descargas | Parcial | Progreso y persistencia visibles; faltan pausa, reordenación y prioridades. |
+| Descargas | Parcial | Progreso y persistencia visibles; pausa/reordenación esperan soporte real de los backends. |
 | Actividad/noticias del juego | Pendiente | No existe una estantería equivalente a «Novedades» o feed por juego. |
 | Gestión adaptativa | Mejorado en esta rama | Acciones directas amplias y menú nativo cuando falta ancho. |
 | Estado de guardados | Parcial | Hay infraestructura de copias, pero no una señal global comparable a Steam Cloud. |
-| Paridad visual entre plataformas | Parcial | El flujo común es coherente; quedan vistas antiguas duplicadas de Epic/GOG. |
+| Paridad visual entre plataformas | Consolidado | Una sola biblioteca y ficha para Steam, Epic, GOG y DRM‑free; código heredado retirado. |
 | Preferencias de accesibilidad | Mejorado en esta rama | Reduce motion y reduce transparency pasan a las primitivas centrales. |
 
 ## Mapa de efectos de Steam adaptados a Vessel
@@ -105,37 +104,32 @@ plataformas nace ahí— y el principal punto de deuda por concentración de res
 | Elevación de carátulas | Consolidado | Escala y sombra contenidas al hover, sin movimiento si el usuario lo reduce. |
 | Preview rico al mantener hover | Consolidado | Capturas/vídeo, metadatos y apertura directa sin alterar la selección. |
 | Parallax del hero | Implementado en esta rama | Ilustración y contenido en planos distintos dentro de `GameDetailView`. |
-| Transición carátula → ficha | Siguiente | Continuidad espacial sutil mediante geometría compartida; sin zoom agresivo. |
-| Barra de acciones contextual | Parcial | Acciones adaptativas ya implementadas; estudiar persistencia al bajar por la ficha. |
-| Carrusel de capturas | Parcial | Añadir snapping, navegación por teclado y respuesta de hover sin autocarrusel invasivo. |
+| Transición carátula → ficha | Implementado | Geometría compartida de carátula a hero; fallback estático con Reducir movimiento. |
+| Barra de acciones contextual | Implementado | Toolbar flotante con título, estado, acción primaria y menú después del hero. |
+| Carrusel de capturas | Implementado | Snapping, trackpad, hover, flechas, Intro y navegación completa del lightbox. |
 | Atmósfera derivada del juego | Por evaluar | Velo de color muy tenue obtenido del hero, limitado por contraste y rendimiento. |
 | Feedback de instalación | Parcial | Evolucionar progreso a una cola manipulable con transiciones de estado compartidas. |
 
-El orden recomendado es continuidad carátula→ficha, barra contextual y carrusel. La atmósfera de
-color solo debe añadirse si una prueba en ventana real confirma que no rompe el navy de Vessel ni
-reduce la legibilidad del Liquid Glass.
+Los tres efectos prioritarios ya comparten implementación. La atmósfera de color permanece descartada
+por ahora: el fondo ya deriva de la plataforma y añadir un segundo tinte por juego puede romper el
+navy, el contraste y el presupuesto de GPU sin aportar información funcional.
 
 ## Hallazgos priorizados
 
-### P1 — Mantener una única biblioteca real
+### Resuelto — Mantener una única biblioteca real
 
-`StoreLibraryView` es el camino actual, pero `EpicStoreView.swift` y `GogStoreView.swift` conservan
-grids y tarjetas de biblioteca anteriores sin invocaciones en el flujo principal. Aunque hoy sean
-código muerto, pueden confundir futuras correcciones y añaden estilos hardcodeados que contradicen
-`Theme`. Conviene retirarlos en un cambio separado, con compilación y pruebas antes y después.
+`EpicStoreView.swift` y `GogStoreView.swift` ya no conservan grids ni tarjetas antiguas. Ambos adaptan
+datos y callbacks a `StoreLibraryView`, igual que Steam y DRM‑free.
 
-### P1 — Dividir el coordinador sin dividir el diseño
+### Resuelto — Dividir el coordinador sin dividir el diseño
 
-El archivo común supera las 3.300 líneas. Debe separarse por responsabilidad, manteniendo estado y
-comandos en un único coordinador:
+La separación se completó por responsabilidad, manteniendo estado y comandos en un único coordinador:
 
-- shell y navegación de biblioteca;
-- sidebar y filtros;
-- portada, estanterías y grid;
-- transfer center, quick open y overlays;
-- ficha del juego y sus secciones.
+- `StoreLibraryView.swift`: shell, navegación, sidebar, filtros y coordinación;
+- `StoreLibraryComponents.swift`: portada, estanterías, tarjetas, filas y transfer center;
+- `GameDetailView.swift`: hero, acciones y secciones de la ficha.
 
-La división es estructural: no debe crear implementaciones específicas por tienda.
+La división sigue siendo estructural y no crea implementaciones específicas por tienda.
 
 ### P1 — Completar gestión de descargas
 
@@ -155,11 +149,12 @@ Todavía existen radios, opacidades, sombras y colores puntuales fuera de `Theme
 geometría inherente a imágenes, pero otros son deriva visual. La migración debe hacerse por componente,
 no mediante una sustitución masiva que borre jerarquía.
 
-### P2 — Validación visual reproducible
+### Mejorado — Validación visual reproducible
 
-Las pruebas lógicas son amplias, pero no existe una red de seguridad perceptual. `ImageRenderer` no
-reproduce de forma fiable Liquid Glass, listas ni ColorfulX. La comprobación válida es una ventana real
-en macOS 26, con capturas de referencia para:
+`VesselUIReviewView` ofrece ahora una biblioteca de muestra activable solo en Debug, sin autenticar
+tiendas ni ejecutar operaciones. Permite revisar una ventana real en macOS 26 porque `ImageRenderer`
+no reproduce de forma fiable Liquid Glass, listas ni ColorfulX. Siguen siendo necesarios escenarios
+manuales para preferencias globales del sistema y estados que dependen de backends reales:
 
 - biblioteca amplia y estrecha;
 - ficha con y sin instalación;
@@ -181,17 +176,33 @@ en macOS 26, con capturas de referencia para:
 - El hero compartido incorpora parallax contenido entre ilustración y contenido; llega a Steam, Epic,
   GOG y DRM‑free sin duplicar implementación y se desactiva con «Reducir movimiento».
 
+## Segunda mejora aplicada en esta rama
+
+- La rama se rebasó sobre `9508b24`, por lo que incluye las correcciones de descargas e importación
+  realizadas en paralelo por Kimi sin duplicar ni sobrescribir su trabajo.
+- La carátula y el hero comparten geometría al abrir una ficha; Reducir movimiento conserva un cambio
+  de opacidad inmediato y evita el desplazamiento espacial.
+- Tras desplazar hero y acciones aparece una toolbar contextual de Liquid Glass con título, estado,
+  Jugar/Instalar/Detener y menú de gestión.
+- El carrusel de capturas usa snapping, flechas, trackpad, foco, teclado e indicador de posición; el
+  lightbox consume Escape y las flechas con controles accesibles.
+- La estantería de jugados recientemente también alinea tarjetas y admite flechas de teclado.
+- La biblioteca se separó en coordinador, componentes y ficha sin bifurcar comportamiento por tienda.
+- Se eliminaron 405 líneas de grids y tarjetas antiguas de Epic/GOG que ya no tenían invocaciones.
+- La revisión de ventana real descubrió y corrigió una particularidad de composición de macOS 26:
+  los cristales aplicados a un `Color.clear` dentro de `GlassEffectContainer` podían elevarse sobre
+  su etiqueta y difuminar scopes o botones. El cristal se aplica ahora al control completo.
+
 ## Secuencia recomendada
 
-1. Integrar esta base visual después de que Kimi cierre sus cambios y rebasar la rama sobre ese commit.
-2. Extraer la biblioteca común por componentes sin cambiar comportamiento ni aspecto.
-3. Eliminar las bibliotecas heredadas de Epic/GOG y verificar que todos los flujos usan la común.
-4. Unificar estados de autenticación, errores, vacíos y ajustes con las mismas primitivas.
-5. Completar el lenguaje dinámico común: transición portada→ficha, previews de vídeo/capturas y
-   respuesta del hero a hover/scroll, siempre con presupuesto de rendimiento y reduce motion.
-6. Evolucionar el centro de descargas hacia una cola gestionable.
-7. Añadir actividad/novedades y estado de guardados solo cuando exista una fuente confiable.
-8. Cerrar cada fase con build Release, pruebas y revisión de ventana real en macOS 26.
+1. ~~Rebasar la rama visual sobre el commit de Kimi.~~ Completado.
+2. ~~Separar coordinador, componentes y ficha.~~ Completado.
+3. ~~Retirar bibliotecas heredadas Epic/GOG.~~ Completado.
+4. ~~Completar transición portada→ficha, acción contextual y carruseles.~~ Completado.
+5. Evolucionar el centro de descargas cuando SteamCMD, Legendary y gogdl expongan controles de cola
+   fiables y cancelación segura; la UI no debe prometer operaciones que el backend no puede cumplir.
+6. Añadir actividad/novedades y estado global de guardados solo cuando exista una fuente confiable.
+7. Incorporar filtros por metadatos cuando exista un índice local que no penalice bibliotecas grandes.
 
 ## Criterios de aceptación visual
 

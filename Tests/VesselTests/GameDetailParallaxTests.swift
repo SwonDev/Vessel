@@ -25,4 +25,24 @@ struct GameDetailParallaxTests {
 
         #expect(metrics == .init(overscan: 0, offset: 0))
     }
+
+    @Test("La barra contextual solo aparece después de abandonar hero y acciones")
+    func stickyActionBarThreshold() {
+        #expect(!GameDetailScrollBehavior.showsStickyActionBar(
+            contentOffsetY: GameDetailScrollBehavior.stickyActionThreshold - 1,
+            topInset: 0
+        ))
+        #expect(GameDetailScrollBehavior.showsStickyActionBar(
+            contentOffsetY: GameDetailScrollBehavior.stickyActionThreshold,
+            topInset: 1
+        ))
+    }
+
+    @Test("El carrusel limita la navegación al primer y último elemento")
+    func screenshotNavigationIsBounded() {
+        #expect(GameDetailScrollBehavior.screenshotIndex(current: nil, movingBy: -1, count: 4) == 0)
+        #expect(GameDetailScrollBehavior.screenshotIndex(current: 1, movingBy: 1, count: 4) == 2)
+        #expect(GameDetailScrollBehavior.screenshotIndex(current: 3, movingBy: 1, count: 4) == 3)
+        #expect(GameDetailScrollBehavior.screenshotIndex(current: 0, movingBy: 1, count: 0) == nil)
+    }
 }
