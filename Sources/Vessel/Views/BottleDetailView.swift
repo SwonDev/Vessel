@@ -188,6 +188,7 @@ struct BottleDetailView: View {
             // sigue cacheada; borrar el nombre obligaba a re-loguear en SteamCMD sin necesidad).
             UserDefaults.standard.removeObject(forKey: "steam.accessToken")
             UserDefaults.standard.removeObject(forKey: "steam.refreshToken")
+            UserDefaults.standard.removeObject(forKey: "steam.sessionNeedsReauthentication")
             ownedGames = []
             statusMessage = "Sesión cerrada. Abre el menú «…» → Iniciar sesión para volver a entrar."
             NotificationCenter.default.post(name: .accountProfileDidChange, object: StoreKind.steam)
@@ -622,14 +623,12 @@ struct BottleDetailView: View {
             },
             // Auto-reparación de Steam: el juego pide una interfaz de Steam que la emulación no provee
             // (Steam Input/Controller). Activamos el modo Steam-real PERSISTENTE y relanzamos.
-            // SOLO para juegos de 64-bit: el `steam_api` de 32-bit no conecta al cliente de 64-bit por
-            // IPC en WoW64, así que Steam-real nunca le funcionaría — su vía es Goldberg + interfaces
-            // (ver CaveBlazers). Grim Dawn NO se ve afectado: su exe lanzado (`x64/…`) ES de 64-bit.
-            // NO Steam-real para juegos de 32-bit (IPC imposible) ni OpenGL (funcionan con Goldberg
-            // sobre el motor unificado; mandarlos a Steam-real arranca un cliente Steam que ROMPE
-            // Goldberg → bucle de fallo). Su vía es Goldberg, no Steam-real.
+            // El cliente y el juego comparten ahora el MISMO motor/wineserver también en PE32 OpenGL,
+            // por lo que el IPC real de Steam funciona. Solo se activa cuando el diagnóstico demuestra
+            // que falta una interfaz Steamworks; no es un cambio indiscriminado de todos los juegos.
+            // Otros PE32 conservan su ruta probada de CrossOver/Goldberg hasta tener evidencia propia.
             retryWithRealSteam: (wineManager.isExecutable32Bit(exePath)
-                                 || wineManager.detectGraphicsAPI(forExecutable: exePath) == .opengl) ? nil : ({
+                                 && wineManager.detectGraphicsAPI(forExecutable: exePath) != .opengl) ? nil : ({
                 var c = GameConfigStore.load(trackId)
                 c.useRealSteam = true
                 GameConfigStore.save(trackId, c)

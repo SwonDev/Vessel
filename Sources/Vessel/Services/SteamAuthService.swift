@@ -123,6 +123,7 @@ final class SteamAuthService {
         UserDefaults.standard.set(access, forKey: "steam.accessToken")
         UserDefaults.standard.set(account, forKey: "steam.accountName")
         UserDefaults.standard.set(refresh, forKey: "steam.refreshToken")
+        UserDefaults.standard.set(false, forKey: "steam.sessionNeedsReauthentication")
         // SteamID64 (claim `sub` del JWT): lo necesita SteamClientSeeder para sembrar la sesión
         // del cliente (loginusers.vdf + universo de la clave ConnectCache).
         if let sid = Self.steamID64(fromJWT: refresh) {
@@ -133,32 +134,93 @@ final class SteamAuthService {
 
     /// Extrae el SteamID64 del claim `sub` del payload de un JWT (refresh/access token de Steam).
     nonisolated static func steamID64(fromJWT jwt: String) -> UInt64? {
+        guard let obj = jwtPayload(jwt), let sub = obj["sub"] as? String else { return nil }
+        return UInt64(sub)
+    }
+
+    /// Audiencias declaradas por Steam en el JWT. Es importante distinguirlas: desde abril de
+    /// 2025 un refresh de `SteamClient` ya no puede obtener un access token mediante la Web API;
+    /// Steam exige hacerlo dentro de una sesión CM autenticada. Un HTTP 200 vacío NO significa que
+    /// el refresh del cliente esté revocado.
+    nonisolated static func jwtAudiences(_ jwt: String) -> Set<String> {
+        guard let obj = jwtPayload(jwt) else { return [] }
+        if let values = obj["aud"] as? [String] { return Set(values) }
+        if let value = obj["aud"] as? String { return [value] }
+        return []
+    }
+
+    private nonisolated static func jwtPayload(_ jwt: String) -> [String: Any]? {
         let parts = jwt.split(separator: ".")
         guard parts.count >= 2 else { return nil }
         var b64 = String(parts[1]).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
         while b64.count % 4 != 0 { b64 += "=" }
         guard let data = Data(base64Encoded: b64),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let sub = obj["sub"] as? String else { return nil }
-        return UInt64(sub)
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return obj
     }
 
     // MARK: - Sesión permanente (login una vez)
 
-    /// Devuelve un **access_token válido** para autenticar como el usuario (logros, biblioteca
-    /// privada, nube), refrescándolo si hace falta. El **refresh_token** (dura ~200 días) se guarda
-    /// permanente al loguear; el access_token se mintea de él cuando caduca (~24 h). Así el login es
-    /// una sola vez. Cadena vacía si no hay sesión (nunca se ha logueado / logout explícito).
+    /// Devuelve un **access_token válido** para autenticar como el usuario (logros y biblioteca
+    /// privada). Conserva el emitido al iniciar sesión mientras esté vigente. SteamClient renueva su
+    /// sesión de juego sobre CM; la Web API ya no permite derivar otro access token de ese refresh.
+    /// Cadena vacía cuando no hay un access token web utilizable, sin invalidar por ello el cliente.
     static func currentAccessToken() async -> String {
         let access = UserDefaults.standard.string(forKey: "steam.accessToken") ?? ""
-        if !access.isEmpty, !isJWTExpired(access) { return access }
+        if !access.isEmpty, !isJWTExpired(access) {
+            UserDefaults.standard.set(false, forKey: "steam.sessionNeedsReauthentication")
+            return access
+        }
         let refresh = UserDefaults.standard.string(forKey: "steam.refreshToken") ?? ""
-        guard !refresh.isEmpty, !isJWTExpired(refresh) else { return "" }   // sin refresh usable → re-login
+        guard !refresh.isEmpty, !isJWTExpired(refresh) else {
+            if !refresh.isEmpty { UserDefaults.standard.set(true, forKey: "steam.sessionNeedsReauthentication") }
+            return ""
+        }
+        // SteamClient renueva por CM, no por este endpoint Web API. Intentarlo devuelve 200 sin
+        // cuerpo y NO demuestra revocación; tampoco debe invalidar el login que usa Steam Windows.
+        // MobileApp sí admite la renovación HTTP documentada.
+        guard jwtAudiences(refresh).contains("mobile") else { return "" }
         if let fresh = try? await SteamAuthService().generateAccessToken(refreshToken: refresh), !fresh.isEmpty {
             UserDefaults.standard.set(fresh, forKey: "steam.accessToken")
+            UserDefaults.standard.set(false, forKey: "steam.sessionNeedsReauthentication")
             return fresh
         }
-        return access   // si el mint falla, devolvemos lo que haya (mejor intentarlo que nada)
+        // Un access token caducado nunca es un fallback útil: solo provoca 401 y hace creer a la UI
+        // que la sesión sigue viva. Esta rama solo se alcanza con refresh MobileApp, cuya renovación
+        // sí está admitida por la Web API.
+        UserDefaults.standard.set(true, forKey: "steam.sessionNeedsReauthentication")
+        return ""
+    }
+
+    /// Comprueba que la sesión guardada pertenece a un cliente Steam, está vigente y corresponde a la
+    /// misma cuenta. No llama a `GenerateAccessTokenForApp`: Steam dejó de admitir refresh tokens de
+    /// SteamClient por Web API y responde 200 vacío aunque el token sea nuevo y válido. La validación
+    /// remota real la realiza el propio cliente Steam Windows al abrir su sesión CM.
+    static func validateStoredClientSession() async -> Bool {
+        let refresh = UserDefaults.standard.string(forKey: "steam.refreshToken") ?? ""
+        guard !refresh.isEmpty, !isJWTExpired(refresh) else {
+            if !refresh.isEmpty { UserDefaults.standard.set(true, forKey: "steam.sessionNeedsReauthentication") }
+            return false
+        }
+        let storedSteamID = UserDefaults.standard.string(forKey: "steam.steamID64") ?? ""
+        guard isClientRefreshTokenUsable(refresh, storedSteamID: storedSteamID),
+              let tokenSteamID = steamID64(fromJWT: refresh) else {
+            UserDefaults.standard.set(true, forKey: "steam.sessionNeedsReauthentication")
+            return false
+        }
+        if storedSteamID.isEmpty {
+            UserDefaults.standard.set(String(tokenSteamID), forKey: "steam.steamID64")
+        }
+        UserDefaults.standard.set(false, forKey: "steam.sessionNeedsReauthentication")
+        return true
+    }
+
+    /// Núcleo puro de la validación local, separado para poder cubrirlo sin tocar las credenciales
+    /// reales del usuario durante las pruebas.
+    nonisolated static func isClientRefreshTokenUsable(_ refresh: String, storedSteamID: String) -> Bool {
+        guard !refresh.isEmpty, !isJWTExpired(refresh), jwtAudiences(refresh).contains("client"),
+              let tokenSteamID = steamID64(fromJWT: refresh) else { return false }
+        return storedSteamID.isEmpty || storedSteamID == String(tokenSteamID)
     }
 
     /// Mintea un access_token nuevo a partir del refresh_token (IAuthenticationService).
@@ -196,6 +258,11 @@ final class SteamAuthService {
     nonisolated static var storedSessionExpired: Bool {
         let refresh = UserDefaults.standard.string(forKey: "steam.refreshToken") ?? ""
         return !refresh.isEmpty && isJWTExpired(refresh)
+    }
+
+    /// Incluye caducidad cronológica y cualquier incoherencia local confirmada al preparar el cliente.
+    nonisolated static var storedSessionNeedsReauthentication: Bool {
+        storedSessionExpired || UserDefaults.standard.bool(forKey: "steam.sessionNeedsReauthentication")
     }
 
     // MARK: - RSA

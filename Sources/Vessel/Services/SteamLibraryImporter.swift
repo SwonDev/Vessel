@@ -120,6 +120,18 @@ final class SteamLibraryImporter {
         return !(sig[0] == 0x50 && sig[1] == 0x45 && sig[2] == 0 && sig[3] == 0)   // 'PE\0\0'
     }
 
+    /// Confirma que una variante cuyo nombre termina en `_gl` es realmente el renderer OpenGL.
+    /// El nombre por sí solo no basta; exigimos una firma embebida del propio motor para no preferir
+    /// por accidente herramientas auxiliares. Ocho MiB cubren la tabla de strings de estos launchers
+    /// pequeños sin mapear ejecutables completos de varios GiB.
+    private static func isConfirmedOpenGLVariant(_ path: String) -> Bool {
+        guard let fh = FileHandle(forReadingAtPath: path) else { return false }
+        defer { try? fh.close() }
+        guard let data = try? fh.read(upToCount: 8 * 1024 * 1024), !data.isEmpty else { return false }
+        return ["OpenGL Error", "unable to create an OpenGL context", "Failed to init SDL"]
+            .contains { data.range(of: Data($0.utf8)) != nil }
+    }
+
     static func mainGameExecutable(in dir: String) -> String? {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(atPath: dir) else { return nil }
@@ -147,6 +159,7 @@ final class SteamLibraryImporter {
             var s = 0
             let comps = rel.split(separator: "/").map(String.init)
             let base = (rel as NSString).lastPathComponent
+            let rawStem = (base as NSString).deletingPathExtension
             let baseNoExt = normalizedName((base as NSString).deletingPathExtension)
             let depth = comps.count - 1
 
@@ -195,6 +208,21 @@ final class SteamLibraryImporter {
             // Nombre del exe ≈ nombre de la carpeta del juego (normalizado).
             if !folderKey.isEmpty, !baseNoExt.isEmpty,
                baseNoExt.contains(folderKey) || folderKey.contains(baseNoExt) { s += 150 }
+            // Algunos juegos entregan renderers equivalentes en la raíz (`game.exe` y
+            // `game_gl.exe`). En macOS la variante OpenGL puede ser la ruta compatible real, pero la
+            // heurística antigua empataba y elegía el nombre más corto. Solo la premiamos cuando
+            // existe el ejecutable base hermano Y el binario confirma que inicializa OpenGL.
+            let stemLower = rawStem.lowercased()
+            if stemLower.hasSuffix("_gl") {
+                let siblingStem = String(stemLower.dropLast(3))
+                let siblingDir = (rel as NSString).deletingLastPathComponent
+                let hasBaseSibling = exes.contains { candidate in
+                    (candidate.rel as NSString).deletingLastPathComponent == siblingDir
+                        && (((candidate.rel as NSString).lastPathComponent as NSString)
+                            .deletingPathExtension.lowercased() == siblingStem)
+                }
+                if hasBaseSibling, isConfirmedOpenGLVariant(full) { s += 220 }
+            }
             // Preferir la variante de **64 bits** (carpeta x64/win64/bin64/…): es la que los juegos
             // con doble build (p. ej. Grim Dawn: `Grim Dawn.exe` 32-bit arriba + `x64/Grim Dawn.exe`
             // 64-bit) lanzan por defecto, y la que va por DXMT→Metal (mejor que el 32-bit por

@@ -71,6 +71,30 @@ final class ExecutableResolverTests: XCTestCase {
         XCTAssertEqual((exe as NSString?)?.lastPathComponent, "tiny.exe")
     }
 
+    /// Cuando el juego ofrece un renderer OpenGL real junto al ejecutable base, debe preferirse la
+    /// variante explícita. Regresión de Dead Cells: el empate elegía `deadcells.exe` por ser más corto
+    /// y ocultaba `deadcells_gl.exe`, que es la ruta compatible con el motor OpenGL de Vessel.
+    func testPrefersConfirmedOpenGLSibling() throws {
+        let dir = tempDir("Dead Cells")
+        try makeTree(dir, files: ["deadcells.exe", "deadcells_gl.exe"], dirs: [])
+        try Data("binary padding… Failed to init SDL … OpenGL Error".utf8)
+            .write(to: URL(fileURLWithPath: "\(dir)/deadcells_gl.exe"))
+        defer { try? FileManager.default.removeItem(atPath: (dir as NSString).deletingLastPathComponent) }
+
+        let exe = SteamLibraryImporter.mainGameExecutable(in: dir)
+        XCTAssertEqual((exe as NSString?)?.lastPathComponent, "deadcells_gl.exe")
+    }
+
+    /// Un sufijo `_gl` sin evidencia dentro del binario no basta para alterar el ejecutable elegido.
+    func testDoesNotPreferUnconfirmedOpenGLSibling() throws {
+        let dir = tempDir("Stable Game")
+        try makeTree(dir, files: ["stablegame.exe", "stablegame_gl.exe"], dirs: [])
+        defer { try? FileManager.default.removeItem(atPath: (dir as NSString).deletingLastPathComponent) }
+
+        let exe = SteamLibraryImporter.mainGameExecutable(in: dir)
+        XCTAssertEqual((exe as NSString?)?.lastPathComponent, "stablegame.exe")
+    }
+
     /// Normalización de nombres: ignora espacios y símbolos.
     func testNormalizedNameStripsNonAlphanumerics() {
         XCTAssertEqual(SteamLibraryImporter.normalizedName("Ancient Kingdoms"), "ancientkingdoms")
