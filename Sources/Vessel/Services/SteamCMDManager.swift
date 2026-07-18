@@ -104,11 +104,34 @@ final class SteamCMDManager {
             "+quit"
         ]
         var success = false
+        // Estimador de velocidad (media móvil ~15 s) y ETA: la línea de steamcmd trae los bytes
+        // ("progress: 45.30 (1234 / 5678)") — con ellos el mensaje pasa a ser estilo Steam:
+        // "Descargando… 45 % · 12,3 MB/s · quedan 3 min" (antes solo el %, sin velocidad ni ETA).
+        var samples: [(at: Date, bytes: Int64)] = []
         let (output, code) = await withTaskCancellationHandler {
             await run(arguments: args, operationID: executionID) { line in
                 let l = line.lowercased()
                 if let pct = Self.progressPercent(in: line) {
-                    onProgress(pct, "Descargando… \(Int(pct))%")
+                    var message = "Descargando… \(Int(pct))%"
+                    if let (done, total) = Self.progressBytes(in: line), total > 0 {
+                        let now = Date()
+                        samples.append((now, done))
+                        samples.removeAll { now.timeIntervalSince($0.at) > 15 }
+                        if let first = samples.first, samples.count >= 2 {
+                            let dt = now.timeIntervalSince(first.at)
+                            let db = done - first.bytes
+                            if dt > 0.5, db > 0 {
+                                let speed = Double(db) / dt   // bytes/s
+                                let mb = speed / 1_000_000
+                                message += String(format: " · %.1f MB/s", mb)
+                                let remaining = Double(total - done) / speed
+                                if remaining > 1, remaining.isFinite {
+                                    message += " · quedan \(Self.formatETA(seconds: remaining))"
+                                }
+                            }
+                        }
+                    }
+                    onProgress(pct, message)
                 } else if l.contains("fully installed") {
                     onProgress(100, "Instalación completada")
                 } else if l.contains("validating") {
@@ -310,6 +333,24 @@ final class SteamCMDManager {
         let tail = parts[1].trimmingCharacters(in: .whitespaces)
         let num = tail.prefix { $0.isNumber || $0 == "." }
         return Double(num)
+    }
+
+    /// Bytes descargados y totales de la línea de progreso de steamcmd: "(1234 / 5678)".
+    nonisolated static func progressBytes(in line: String) -> (done: Int64, total: Int64)? {
+        guard let open = line.lastIndex(of: "("), let close = line.lastIndex(of: ")"), close > open else { return nil }
+        let inner = line[line.index(after: open)..<close]
+        let parts = inner.split(separator: "/").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard parts.count == 2, let done = Int64(parts[0]), let total = Int64(parts[1]) else { return nil }
+        return (done, total)
+    }
+
+    /// ETA legible: "< 1 min", "3 min", "1 h 12 min".
+    nonisolated static func formatETA(seconds: Double) -> String {
+        if seconds < 60 { return "< 1 min" }
+        let totalMinutes = Int((seconds / 60).rounded())
+        if totalMinutes < 60 { return "\(totalMinutes) min" }
+        let h = totalMinutes / 60, m = totalMinutes % 60
+        return m == 0 ? "\(h) h" : "\(h) h \(m) min"
     }
 
     nonisolated static func lastError(in output: String) -> String {

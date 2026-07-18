@@ -12,8 +12,16 @@ struct PlayStat: Codable, Hashable {
     var totalSeconds: Int = 0
     var lastPlayedAt: Date? = nil
     var sessions: Int = 0
+    /// Registro acotado de sesiones (fecha + duración) para métricas tipo "últimas 2 semanas"
+    /// (estilo Steam). Se poda a 30 días y 100 entradas para no crecer sin límite.
+    var sessionLog: [SessionRecord] = []
 
     var playtimeMinutes: Int { totalSeconds / 60 }
+}
+
+struct SessionRecord: Codable, Hashable {
+    var at: Date
+    var seconds: Int
 }
 
 @MainActor
@@ -57,8 +65,21 @@ final class PlayStatsStore {
         s.totalSeconds += seconds
         s.sessions += 1
         s.lastPlayedAt = Date()
+        s.sessionLog.append(SessionRecord(at: Date(), seconds: seconds))
+        // Poda: solo el último mes y como mucho 100 entradas (suficiente para "2 semanas").
+        let cutoff = Date().addingTimeInterval(-30 * 24 * 3600)
+        s.sessionLog = s.sessionLog.filter { $0.at >= cutoff }.suffix(100)
         stats[key] = s
         save()
+    }
+
+    /// Minutos jugados en los últimos `days` días (para el "últimas 2 semanas" de la ficha).
+    /// `nil` si no hay sesiones registradas en la ventana (la UI lo muestra como "—").
+    func minutesPlayed(inLastDays days: Int, key: String) -> Int? {
+        guard let s = stats[key] else { return nil }
+        let cutoff = Date().addingTimeInterval(-Double(days) * 24 * 3600)
+        let secs = s.sessionLog.filter { $0.at >= cutoff }.reduce(0) { $0 + $1.seconds }
+        return secs > 0 ? secs / 60 : nil
     }
 
     private func load() {

@@ -84,6 +84,11 @@ struct GameDetailView: View {
     var hasNote: Bool = false
     var onOpenNotes: () -> Void = {}
     var onBack: () -> Void = {}
+    /// Fase de la transferencia en curso (si la hay) y acciones de pausa/reanudación, para que el
+    /// usuario pueda pausar la descarga también desde la ficha (antes solo en el centro de descargas).
+    var transferPhase: LibraryTransferPhase = .running
+    var onPauseTransfer: (() -> Void)? = nil
+    var onResumeTransfer: (() -> Void)? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showingSettings = false
@@ -441,6 +446,11 @@ struct GameDetailView: View {
             $0.formatted(date: .abbreviated, time: .omitted)
         } ?? "—")
         stat("hourglass", "Tiempo de juego", playtimeText)
+        // «Últimas 2 semanas» (estilo Steam): sale del registro de sesiones de PlayStatsStore.
+        if let twoWeeks = PlayStatsStore.shared.minutesPlayed(inLastDays: 14, key: "\(store.rawValue):\(game.id)") {
+            stat("calendar", "Últimas 2 semanas",
+                 twoWeeks >= 60 ? "\(twoWeeks / 60) h \(twoWeeks % 60) min" : "\(twoWeeks) min")
+        }
     }
 
     @ViewBuilder private var directGameActions: some View {
@@ -544,6 +554,24 @@ struct GameDetailView: View {
                         if percent == nil { ProgressView().controlSize(.small).tint(.white) }
                         Text(progress ?? "Instalando…").font(.callout.weight(.medium)).foregroundStyle(.white)
                             .lineLimit(1).truncationMode(.middle)
+                        // Pausa/reanudación también desde la ficha (antes solo en el centro de descargas).
+                        if transferPhase == .paused, let onResumeTransfer {
+                            Button(action: onResumeTransfer) {
+                                Image(systemName: "play.fill").font(.callout.weight(.bold))
+                                    .frame(width: 30, height: 24)
+                            }
+                            .vesselButton(tint: steamGreen)
+                            .accessibilityLabel("Reanudar la descarga")
+                            .vesselHelp("Reanudar la descarga")
+                        } else if transferPhase == .running, let onPauseTransfer {
+                            Button(action: onPauseTransfer) {
+                                Image(systemName: "pause.fill").font(.callout.weight(.bold))
+                                    .frame(width: 30, height: 24)
+                            }
+                            .vesselButton(tint: steamGreen)
+                            .accessibilityLabel("Pausar la descarga")
+                            .vesselHelp("Pausar la descarga")
+                        }
                     }
                     if let p = percent {
                         ProgressView(value: p).progressViewStyle(.linear)
@@ -559,8 +587,15 @@ struct GameDetailView: View {
                 .vesselHelp("Jugar a \(game.title)", shortcut: "⌘↩")
             } else {
                 Button(action: onInstall) {
-                    Label("Instalar", systemImage: "arrow.down.circle.fill")
-                        .font(.title2.weight(.bold)).frame(minWidth: 170).frame(height: 28)
+                    // Estilo Steam: el tamaño de la descarga va junto a la acción cuando se conoce.
+                    if let size = game.installSizeBytes, size > 0 {
+                        Label("Instalar — \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))",
+                              systemImage: "arrow.down.circle.fill")
+                            .font(.title2.weight(.bold)).frame(minWidth: 170).frame(height: 28)
+                    } else {
+                        Label("Instalar", systemImage: "arrow.down.circle.fill")
+                            .font(.title2.weight(.bold)).frame(minWidth: 170).frame(height: 28)
+                    }
                 }
                 .vesselButton(tint: tint)
                 .vesselHelp("Instalar \(game.title)", shortcut: "⌘↩")

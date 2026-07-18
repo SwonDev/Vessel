@@ -12,6 +12,18 @@ struct GameCardBoundsPreferenceKey: PreferenceKey {
     }
 }
 
+/// Igual que `GameCardBoundsPreferenceKey` pero para las FILAS de la barra lateral: comunica la
+/// posición de cada fila visible para anclar el panel de hover junto a ella (hacia el panel de
+/// detalle), igual que hace Steam en su lista compacta.
+struct GameRowBoundsPreferenceKey: PreferenceKey {
+    static let defaultValue: [String: Anchor<CGRect>] = [:]
+
+    static func reduce(value: inout [String: Anchor<CGRect>],
+                       nextValue: () -> [String: Anchor<CGRect>]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
 /// Panel informativo estilo Steam que aparece junto a una carátula tras un hover intencional.
 /// Es estrictamente informativo: el clic de la tarjeta sigue abriendo la ficha completa, por lo
 /// que teclado y VoiceOver no dependen de una interacción exclusiva del ratón.

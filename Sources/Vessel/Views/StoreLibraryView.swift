@@ -338,6 +338,10 @@ struct StoreLibraryView: View {
     /// aplicar retardo, cancelar al cruzar huecos y evitar parpadeos en bibliotecas grandes.
     @State private var hoverCandidateID: String?
     @State private var previewedGame: StoreGame?
+    /// Origen del hover que abrió el panel (grid o fila de la sidebar): sin él, al compartir
+    /// `previewedGame` entre ambos overlays un juego con carátula Y fila visibles mostraba el
+    /// panel DUPLICADO (uno por cada ancla). Cada overlay solo se pinta para su origen.
+    @State private var previewOriginRow = false
     @State private var hoverPresentationTask: Task<Void, Never>?
     /// Elemento alineado en la estantería reciente para conservar snapping y navegación por teclado.
     @State private var recentlyPlayedScrollID: String?
@@ -789,7 +793,9 @@ struct StoreLibraryView: View {
             list = list.filter { LibraryTitleSearch.matches(title: $0.title, query: search) }
         }
         list.sort { a, b in
-            if a.installed != b.installed { return a.installed }   // instalados primero (como Steam)
+            // «Recientes» es orden PURO por actividad (como Steam: lo último jugado arriba del
+            // todo, instalado o no). Los demás criterios agrupan instalados primero.
+            if sortOrder != .recientes, a.installed != b.installed { return a.installed }
             switch sortOrder {
             case .nombre:    return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
             case .recientes: return (a.lastPlayed ?? .distantPast) > (b.lastPlayed ?? .distantPast)
@@ -834,6 +840,22 @@ struct StoreLibraryView: View {
                 .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: selectedGame)
         }
         .animation(reduceMotion ? nil : .smooth(duration: 0.38), value: sidebarCollapsed)
+        // Panel de hover para las FILAS de la sidebar (mismo panel rico que en el grid, anclado
+        // a la fila y abierto hacia el panel de detalle, como hace Steam en su lista compacta).
+        .overlayPreferenceValue(GameRowBoundsPreferenceKey.self) { anchors in
+            GeometryReader { proxy in
+                if let game = previewedGame, previewOriginRow, let anchor = anchors[game.id] {
+                    let rowBounds = proxy[anchor]
+                    GameHoverPreviewView(game: game, store: store, tint: tint)
+                        .frame(width: GameHoverPreviewView.panelSize.width,
+                               height: GameHoverPreviewView.panelSize.height)
+                        .position(rowPreviewPosition(for: rowBounds, in: proxy.size))
+                        .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                        .zIndex(100)
+                }
+            }
+            .allowsHitTesting(false)
+        }
         // Botón para MOSTRAR la lista cuando está colapsada (en el grid; en la ficha manda "atrás").
         .overlay(alignment: .topLeading) {
             if sidebarCollapsed && selectedGame == nil {
@@ -1188,7 +1210,10 @@ struct StoreLibraryView: View {
                 onToggleHidden: { toggleHidden(game.id) },
                 hasNote: notesStore.hasNote(storeID: store.rawValue, gameID: game.id),
                 onOpenNotes: { openNotes(for: game) },
-                onBack: navigateBackOrHome
+                onBack: navigateBackOrHome,
+                transferPhase: transferPhaseFor(game.id),
+                onPauseTransfer: canPauseTransfer(game.id) ? { onPauseTransfer?(game) } : nil,
+                onResumeTransfer: { onResumeTransfer?(game) }
             )
             .id(game.id)
             .transition(.opacity)
@@ -1203,6 +1228,7 @@ struct StoreLibraryView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.section) {
                 if showsRecentlyPlayed {
+                    continuePlayingSection
                     if !recentActivityEvents.isEmpty {
                         LibraryActivitySection(
                             events: recentActivityEvents,
@@ -1240,7 +1266,7 @@ struct StoreLibraryView: View {
         .vesselBackground(tint: tint)
         .overlayPreferenceValue(GameCardBoundsPreferenceKey.self) { anchors in
             GeometryReader { proxy in
-                if let game = previewedGame, let anchor = anchors[game.id] {
+                if let game = previewedGame, !previewOriginRow, let anchor = anchors[game.id] {
                     let cardBounds = proxy[anchor]
                     GameHoverPreviewView(game: game, store: store, tint: tint)
                         .frame(width: GameHoverPreviewView.panelSize.width,
@@ -1254,7 +1280,7 @@ struct StoreLibraryView: View {
         }
     }
 
-    /// Posiciona el panel al lado de la carátula, cambia a la izquierda si no cabe y limita su
+    /// Posiciona el panel junto a la carátula, cambia a la izquierda si no cabe y limita su
     /// centro al viewport. Los bordes nunca se salen de la ventana, incluso al hacer scroll.
     private func previewPosition(for card: CGRect, in viewport: CGSize) -> CGPoint {
         let panel = GameHoverPreviewView.panelSize
@@ -1274,13 +1300,29 @@ struct StoreLibraryView: View {
                        y: min(maximumY, max(minimumY, topAlignedY)))
     }
 
+    /// Posición del panel de hover para una FILA de la sidebar: siempre hacia la derecha (el
+    /// panel de detalle), con la misma alineación superior y límites al viewport que en el grid.
+    private func rowPreviewPosition(for row: CGRect, in viewport: CGSize) -> CGPoint {
+        let panel = GameHoverPreviewView.panelSize
+        let margin: CGFloat = 12
+        let minimumX = panel.width / 2 + margin
+        let maximumX = max(minimumX, viewport.width - panel.width / 2 - margin)
+        let x = min(maximumX, max(minimumX, row.maxX + margin + panel.width / 2))
+        let minimumY = panel.height / 2 + margin
+        let maximumY = max(minimumY, viewport.height - panel.height / 2 - margin)
+        let topAlignedY = row.minY + panel.height / 2
+        return CGPoint(x: x, y: min(maximumY, max(minimumY, topAlignedY)))
+    }
+
     /// Steam espera un instante antes de abrir la tarjeta rica: recorrer el grid no provoca red
     /// ni paneles fugaces. Una vez abierta, cambiar de juego es más rápido para sentirse continuo.
-    private func handleGridHover(_ hovering: Bool, game: StoreGame) {
+    /// `fromRow` distingue el origen (fila de la sidebar) del grid para no duplicar el panel.
+    private func handleGridHover(_ hovering: Bool, game: StoreGame, fromRow: Bool = false) {
         hoverPresentationTask?.cancel()
 
         if hovering {
             hoverCandidateID = game.id
+            previewOriginRow = fromRow
             let delay: Duration = previewedGame == nil ? .milliseconds(420) : .milliseconds(130)
             hoverPresentationTask = Task { @MainActor in
                 do { try await Task.sleep(for: delay) } catch { return }
@@ -1321,6 +1363,90 @@ struct StoreLibraryView: View {
         enriched.filter { $0.lastPlayed != nil && !isHidden($0.id) }
             .sorted { ($0.lastPlayed ?? .distantPast) > ($1.lastPlayed ?? .distantPast) }
             .prefix(8).map { $0 }
+    }
+
+    /// El último juego INSTALADO que se jugó: candidato del gran acceso «Seguir jugando» del
+    /// home (estilo Steam: abre la biblioteca con el botón grande de reanudar tu último juego).
+    /// Solo instalados (no se puede reanudar lo que no está) y nada en plena instalación.
+    private var continuePlayingGame: StoreGame? {
+        enriched.filter { $0.installed && $0.lastPlayed != nil && !isHidden($0.id) && !installingIDs.contains($0.id) }
+            .sorted { ($0.lastPlayed ?? .distantPast) > ($1.lastPlayed ?? .distantPast) }
+            .first
+    }
+
+    /// Gran tarjeta «Seguir jugando» sobre la estantería: hero del juego con la misma caché de
+    /// carátulas, acción primaria verde dominante y entrada animada (anulada con Reduce Motion,
+    /// pero el contenido siempre visible — nunca se quita funcionalidad ni animación al resto).
+    @ViewBuilder private var continuePlayingSection: some View {
+        if let game = continuePlayingGame {
+            let shape = RoundedRectangle(cornerRadius: Theme.Radius.panel, style: .continuous)
+            ZStack(alignment: .bottomLeading) {
+                GameCoverImage(cacheKey: "resume-\(game.id)", candidates: heroCandidates(for: game)) {
+                    LinearGradient(colors: [tint.opacity(0.30), Theme.navyDeep],
+                                   startPoint: .top, endPoint: .bottom)
+                }
+                .frame(maxWidth: .infinity).frame(height: 176)
+                .clipped()
+                LinearGradient(colors: [.clear, Theme.navyDeep.opacity(0.94)],
+                               startPoint: .center, endPoint: .bottom)
+                HStack(alignment: .bottom, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("SEGUIR JUGANDO")
+                            .font(.caption.weight(.heavy)).tracking(1.4)
+                            .foregroundStyle(.white.opacity(0.65))
+                            .accessibilityHidden(true)
+                        Text(game.title)
+                            .font(.title2.bold()).foregroundStyle(.white).lineLimit(1)
+                            .shadow(color: .black.opacity(0.6), radius: 6, y: 2)
+                        Text(resumeSubtitle(for: game))
+                            .font(.caption).foregroundStyle(.white.opacity(0.68))
+                    }
+                    Spacer(minLength: 8)
+                    Button { onPlay(game) } label: {
+                        Label("Jugar", systemImage: "play.fill")
+                            .font(.title3.weight(.bold))
+                            .frame(minWidth: 150).frame(height: 30)
+                    }
+                    .vesselButton(tint: Theme.play)
+                    .vesselHelp("Seguir jugando a \(game.title)", shortcut: "⌘↩")
+                }
+                .padding(.horizontal, 20).padding(.vertical, 16)
+            }
+            .clipShape(shape)
+            .overlay(shape.strokeBorder(.white.opacity(0.10), lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.35), radius: 14, y: 6)
+            .contentShape(shape)
+            .onTapGesture { openGame(game) }
+            .hoverLift(scale: 1.01)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Seguir jugando a \(game.title)")
+            .vesselHelp("Abrir la ficha de \(game.title)")
+            .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
+        }
+    }
+
+    /// Hero del juego para «Seguir jugando»: su banner horizontal o, si no hay, la carátula
+    /// vertical (misma cascada que la ficha, servida desde la caché compartida).
+    private func heroCandidates(for game: StoreGame) -> [URL] {
+        var urls: [URL] = []
+        if let s = game.heroURL, let u = URL(string: s) { urls.append(u) }
+        if let appId = game.steamAppId, !appId.isEmpty,
+           let u = URL(string: "https://cdn.cloudflare.steamstatic.com/steam/apps/\(appId)/library_hero.jpg") {
+            urls.append(u)
+        }
+        urls.append(contentsOf: game.coverCandidates)
+        return urls
+    }
+
+    private func resumeSubtitle(for game: StoreGame) -> String {
+        var parts: [String] = []
+        if let lastPlayed = game.lastPlayed {
+            parts.append("Última sesión \(lastPlayed.formatted(.relative(presentation: .named).locale(Locale(identifier: "es_ES"))))")
+        }
+        if let minutes = game.playtimeMinutes, minutes > 0 {
+            parts.append(minutes >= 60 ? "\(minutes / 60) h \(minutes % 60) min jugados" : "\(minutes) min jugados")
+        }
+        return parts.joined(separator: " · ")
     }
 
     private var recentActivityEvents: [LibraryActivityStore.Event] {
@@ -1817,6 +1943,10 @@ struct StoreLibraryView: View {
                         .contentShape(Rectangle())
                         .onTapGesture(count: 2) { performDoubleClickAction(for: game) }
                         .onTapGesture(count: 1) { openGame(game) }
+                        .onHover { handleGridHover($0, game: game, fromRow: true) }
+                        .anchorPreference(key: GameRowBoundsPreferenceKey.self, value: .bounds) {
+                            [game.id: $0]
+                        }
                         .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
                         .listRowBackground(Color.clear)
                         .accessibilityAddTraits(.isButton)
