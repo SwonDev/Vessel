@@ -41,7 +41,7 @@ struct GameDetailParallaxTests {
     @Test("Título y acciones flotan con el mismo desplazamiento sobre el borde del hero")
     func heroContentKeepsSafeBottomSpacing() {
         #expect(Theme.Space.heroActionOverlap == Theme.Space.page)
-        #expect(Theme.Space.heroTitleInset - Theme.Space.heroActionOverlap == 44)
+        #expect(Theme.Space.heroTitleInset - Theme.Space.heroActionOverlap == 52)
     }
 
     @Test("El carrusel limita la navegación al primer y último elemento")
