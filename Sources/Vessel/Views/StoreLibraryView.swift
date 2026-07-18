@@ -65,6 +65,16 @@ struct StoreGame: Identifiable, Hashable {
     }
 }
 
+/// Resuelve el valor que debe consumir una ficha ya abierta cuando la tienda publica una versión
+/// nueva de su biblioteca. Se mantiene como regla pura para cubrir las transiciones de instalación
+/// sin depender de cambiar de selección ni de una ventana SwiftUI.
+enum StoreGameStateResolver {
+    static func currentSelection(selected: StoreGame?, availableGames: [StoreGame]) -> StoreGame? {
+        guard let selected else { return nil }
+        return availableGames.first(where: { $0.id == selected.id }) ?? selected
+    }
+}
+
 enum StoreSortOrder: String, CaseIterable, Identifiable {
     case nombre = "Nombre"
     case recientes = "Recientes"
@@ -637,8 +647,11 @@ struct StoreLibraryView: View {
     /// Resuelve la versión más reciente del seleccionado, porque instalar/actualizar puede cambiar
     /// el modelo mientras su ficha sigue abierta.
     private var currentSelectedGame: StoreGame? {
-        guard let selectedGame else { return nil }
-        return enrichedGame(games.first(where: { $0.id == selectedGame.id }) ?? selectedGame)
+        guard let current = StoreGameStateResolver.currentSelection(
+            selected: selectedGame,
+            availableGames: games
+        ) else { return nil }
+        return enrichedGame(current)
     }
 
     /// Menú Juego y atajos nativos. No añade controles visibles: ofrece las acciones de Steam a
@@ -1113,11 +1126,9 @@ struct StoreLibraryView: View {
     // MARK: - Panel principal: ficha del juego seleccionado o grid "home"
 
     @ViewBuilder private var detailPane: some View {
-        if let selected = selectedGame {
-            // Enriquecer SOLO el seleccionado (O(1)): la ficha refleja el tiempo jugado y la última
-            // sesión EN VIVO al cerrar el juego (PlayStatsStore es @Observable) sin reconstruir toda
-            // la biblioteca en cada render.
-            let game = enrichedGame(selected)
+        if let game = currentSelectedGame {
+            // Resuelve por ID la versión ACTUAL de la biblioteca. Así la ficha cambia de Instalar a
+            // Jugar en el mismo instante en que termina la operación, sin exigir otra navegación.
             GameDetailView(
                 game: game, tint: tint, store: store,
                 artworkTransitionNamespace: reduceMotion ? nil : gameDetailTransitionNamespace,

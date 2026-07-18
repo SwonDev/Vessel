@@ -148,6 +148,63 @@ final class SteamCMDManager {
         })
     }
 
+    /// Manifiestos que pueden describir una instalación de Vessel, por orden de autoridad.
+    ///
+    /// SteamCMD escribe el manifiesto que realmente actualiza dentro de `force_install_dir`,
+    /// mientras el cliente Steam del bottle conserva su propia copia en la biblioteca. Cuando
+    /// Vessel actualiza un juego instalado por SteamCMD, esa segunda copia puede quedar antigua;
+    /// leerla primero hacía reaparecer «Actualización disponible» tras completar la descarga.
+    nonisolated static func appManifestPaths(
+        appID: String,
+        installPath: String,
+        steamDirectory: String
+    ) -> [String] {
+        var paths: [String] = []
+        if !installPath.isEmpty {
+            paths.append("\(installPath)/steamapps/appmanifest_\(appID).acf")
+        }
+        let clientManifest = "\(steamDirectory)/steamapps/appmanifest_\(appID).acf"
+        if !paths.contains(clientManifest) { paths.append(clientManifest) }
+        return paths
+    }
+
+    /// Devuelve la build instalada por la fuente que realmente gestiona los archivos. Solo acepta
+    /// manifiestos terminados (`StateFlags & 4`) para que una descarga parcial no se anuncie como
+    /// actualizada. Los manifiestos antiguos sin `StateFlags` mantienen compatibilidad.
+    nonisolated static func installedBuildID(
+        appID: String,
+        installPath: String,
+        steamDirectory: String,
+        contentsAtPath: (String) -> String?
+    ) -> String? {
+        for path in appManifestPaths(
+            appID: appID,
+            installPath: installPath,
+            steamDirectory: steamDirectory
+        ) {
+            guard let manifest = contentsAtPath(path),
+                  let buildID = manifestValue(named: "buildid", in: manifest),
+                  (Int(buildID) ?? 0) > 0 else { continue }
+            if let rawFlags = manifestValue(named: "StateFlags", in: manifest),
+               let flags = Int(rawFlags), flags & 4 == 0 {
+                continue
+            }
+            return buildID
+        }
+        return nil
+    }
+
+    nonisolated private static func manifestValue(named key: String, in manifest: String) -> String? {
+        for line in manifest.split(separator: "\n") {
+            let fields = line.split(separator: "\"").map(String.init)
+            guard fields.count >= 4,
+                  fields[1].caseInsensitiveCompare(key) == .orderedSame else { continue }
+            let value = fields[3].trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty { return value }
+        }
+        return nil
+    }
+
     // MARK: - Ejecución
 
     /// Ejecuta SteamCMD a través de un login shell (entorno completo, necesario para

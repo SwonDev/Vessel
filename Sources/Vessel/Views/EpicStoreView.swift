@@ -94,8 +94,11 @@ final class EpicStore {
             let games = try await legendary.ownedGames()
             phase = .connected(games)
             restoreOperations(for: games)
-            // Detección de actualizaciones (orientativa, no bloquea la biblioteca).
-            Task { self.updatesAvailable = await legendary.gamesWithUpdates() }
+            // La biblioteca ya es visible, pero `reloadLibrary()` no termina hasta reconciliar el
+            // estado real de Legendary. Antes se lanzaba una Task huérfana: la cola podía marcar la
+            // actualización como completada y esa comprobación tardía volver a pintar un estado
+            // anterior, exactamente el tipo de aviso persistente que no debe existir.
+            updatesAvailable = await legendary.gamesWithUpdates()
         } catch {
             log.log("Error cargando biblioteca Epic: \(error.localizedDescription)", level: .error)
             // Si ya mostramos la caché, no romper la vista con un error.

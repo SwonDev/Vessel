@@ -949,6 +949,9 @@ struct StoreGameRow: View {
                     .font(.caption2)
                     .foregroundStyle(game.updateAvailable ? tint
                                      : (game.installed ? Theme.play : .white.opacity(0.4)))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+                    .layoutPriority(1)
             }
             Spacer(minLength: 0)
             if game.updateAvailable {

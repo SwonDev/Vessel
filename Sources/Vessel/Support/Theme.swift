@@ -23,8 +23,10 @@ enum Theme {
         static let gameGrid: CGFloat = 18
         static let section: CGFloat = 24
         static let page: CGFloat = 32
-        /// Reserva visual entre el título del hero y la barra de acciones de la ficha.
-        static let heroTitleInset: CGFloat = 44
+        /// Eleva las acciones de la ficha sobre la imagen, como una franja contextual flotante.
+        static let heroActionOverlap: CGFloat = 32
+        /// Solape de acciones + 52 pt de aire entre la franja y el título del hero.
+        static let heroTitleInset: CGFloat = 84
     }
 
     // MARK: Paleta navy (barco · océano · profundidad · confianza)
