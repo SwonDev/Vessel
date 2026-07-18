@@ -11,7 +11,8 @@ invisible) y la estética premium (DESIGN.md). Basado en auditoría de huecos fr
 - Verificar/reparar integridad (las 3 tiendas).
 - Actualizaciones: detección + badge + acción "Actualizar" (las 3).
 - Cloud saves automáticos (Steam local + Epic + GOG; baja al jugar, sube al cerrar).
-- DLCs: lectura en la ficha (Steam/Epic/GOG) — se instalan junto al juego.
+- DLCs: lectura en la ficha (Steam/Epic/GOG) + instalación individual en Epic/GOG cuando el
+  backend publica un paquete independiente; Steam conserva el modelo nativo de SteamCMD.
 - Metadata rica: descripción, capturas ampliables (lightbox), logros (totales), compat ProtonDB.
 - **Desinstalar en Epic y GOG** (paridad con Steam, con regla de seguridad de rutas).
 - **Diagnóstico post-lanzamiento** (`LaunchDiagnostics`): avisos accionables al fallar un juego.
@@ -19,7 +20,14 @@ invisible) y la estética premium (DESIGN.md). Basado en auditoría de huecos fr
   (gráficos/crash/Vulkan), relanza con la otra capa una vez y avisa. Cableado en las 3 tiendas.
 - **Provisión de dependencias de runtime** (`RuntimeDependencyProvisioner`): detecta imports PE y
   copia junto al `.exe` los helpers de DirectX 9 (d3dx9/d3dcompiler) que empaquetamos. VC++/.NET/
-  XInput los cubre el builtin del motor; se registran para el diagnóstico.
+  XInput los cubre el builtin del motor; el diagnóstico puede auto-reparar VC++ con un winetricks
+  fijado y verificado por SHA-256, sin depender de Homebrew.
+- **Anti-cheat honesto**: cruza la ficha con MacAnticheatData y marca «No funciona» con la causa
+  solo para estados `Denied`/`Broken`; `Unknown` no se degrada. Los perfiles declaran también la
+  protección en Epic/GOG y nunca se intenta desactivar ni eludirla.
+- **Arquitectura y ejecutable robustos**: el resolver prioriza clientes Win64/Unity/Unreal frente a
+  launchers auxiliares y Ajustes → Avanzado permite elegir un `.exe` interno alternativo. La ruta
+  se canonicaliza, debe permanecer dentro de la instalación y vuelve al automático si queda rota.
 - Permisos macOS: `NSNetworkVolumesUsageDescription` (prompt una sola vez).
 - **UI premium**: scrollbars **Liquid Glass** en toda la app (NSScroller custom + swizzle global);
   **sidebar colapsable animada** + divisor arrastrable; **selector de tamaño de carátulas**
@@ -35,30 +43,23 @@ invisible) y la estética premium (DESIGN.md). Basado en auditoría de huecos fr
 - **Paridad visual común con Steam**: una sola biblioteca para Steam, Epic, GOG y DRM‑free; hero con
   parallax, continuidad carátula→ficha, acciones adaptativas y persistentes, previews enriquecidos y
   carruseles con snapping y teclado. Liquid Glass respeta Reducir movimiento/transparencia.
+- **Centro de descargas persistente**: cola serial visible en las tres tiendas, actualizar todo,
+  pausa/reanudación, cancelación real, prioridad, reintento y recuperación tras reiniciar.
+- **Filtros avanzados**: género con índice local persistente bajo petición, compatibilidad offline y
+  tamaño instalado, compartidos por Steam/Epic/GOG/DRM‑free sin bloquear la biblioteca.
 
 ## 🔜 Pendiente (orden por impacto en catálogo/UX)
 
-### Compatibilidad (más catálogo)
-1. **Provisión automática de dependencias** (vcredist / .NET / d3dx9) — el mayor multiplicador
-   (~40-60% de juegos legacy/Unity fallan sin ellas). Enfoque SEGURO (sin instaladores frágiles que
-   cuelguen): bundlear/descargar los DLLs redistribuibles y copiarlos a `system32`/`syswow64` del
-   prefijo según los imports PE del `.exe` (ampliar `detectRuntimeDependencies` + el sistema de
-   `winetricksVerbs` de los perfiles). Requiere decidir de dónde se obtienen los DLLs.
-2. ~~**Fallback automático de motor**~~ ✅ HECHO (ver arriba).
-3. **Anti-cheat** (EAC/BattlEye/CodeFusion): investigar; muchos no tienen solución en Mac → marcar
-   `rating: borked` con causa documentada.
-4. Detección de arquitectura más robusta (launcher 32-bit → exe 64-bit interno) + override manual.
-
 ### Funcionalidad por tienda
-5. **Instalar DLC individual** (botón en la ficha) — hoy los DLC son solo lectura.
-6. Steam: distinguir "Actualizar" (sin `validate`) de "Verificar" (con `validate`).
-7. "Actualizar todo" + cola de descargas/actualizaciones visible.
+5. ~~**Instalar DLC individual**~~ ✅ HECHO en Epic/GOG cuando existe paquete instalable; SteamCMD
+   gestiona los DLC poseídos con el juego base.
+6. ~~Steam: distinguir "Actualizar" de "Verificar"~~ ✅ HECHO.
+7. ~~"Actualizar todo" + cola visible~~ ✅ HECHO, persistente y cancelable.
 
 ### UI premium (DESIGN.md)
 8. ~~Paridad visual Epic/GOG con Steam y Liquid Glass común~~ ✅ HECHO.
-9. Filtros avanzados (género, rating de compatibilidad y tamaño). Las microinteracciones comunes ya
-   están implementadas; los filtros necesitan una fuente de metadatos local indexable para no
-   convertir cada consulta en tráfico remoto.
+9. ~~Filtros avanzados (género, rating de compatibilidad y tamaño)~~ ✅ HECHO con caché local
+   indexable y preparación explícita para evitar tráfico remoto al filtrar.
 
 ## Excluido por filosofía (solo bajo toggle "Avanzado")
 winecfg · regedit · ejecutar .exe arbitrario · selector de motor en UI — el bottle es invisible.

@@ -21,9 +21,14 @@ struct StoreDLC: Identifiable, Hashable {
     let id: String
     let title: String
     let coverURL: URL?
+    /// Identificador que espera el backend para instalarlo. Puede diferir del ID de catálogo.
+    var installID: String? = nil
     /// ¿El usuario lo POSEE? Los que no, se atenúan para que no destaquen. `true` por defecto
     /// (o si no hay datos de sesión → no atenuar sin saber).
     var owned: Bool = true
+    /// `nil` cuando la tienda no expone instalación individual; GOG informa el estado real de su
+    /// manifiesto local para ofrecer un botón Instalar solo cuando procede.
+    var installed: Bool? = nil
 }
 
 /// Ficha de juego al estilo Steam: banner hero + botón Jugar/Instalar + tiempo jugado y
@@ -72,6 +77,8 @@ struct GameDetailView: View {
     var onUninstall: () -> Void = {}
     var onVerify: () -> Void = {}
     var onUpdate: () -> Void = {}
+    var loadStoreDLCs: @MainActor () async -> [StoreDLC] = { [] }
+    var onInstallDLC: ((StoreDLC) -> Void)? = nil
     var onToggleFavorite: () -> Void = {}
     var onToggleHidden: () -> Void = {}
     var hasNote: Bool = false
@@ -93,6 +100,9 @@ struct GameDetailView: View {
     @State private var dlcs: [StoreDLC] = []
     /// Estado REAL de logros (desbloqueado/bloqueado) del usuario, si hay credencial de Steam.
     @State private var achievements: SteamAchievementsService.Progress?
+    /// Veredicto vivo de protección. Solo se usa para afirmar «No funciona» cuando la fuente
+    /// específica de macOS declara el anti-cheat como Denied/Broken.
+    @State private var drmVerdict: DRMDatabase.Verdict?
     /// Mostrar todos los logros (o solo un avance).
     @State private var showAllAchievements = false
     /// Observa la Web API key: si el usuario la pega en Ajustes con la ficha abierta, recargamos los
@@ -168,6 +178,7 @@ struct GameDetailView: View {
             }
         }
         .task(id: game.id) { await loadDetails() }
+        .task(id: game.steamAppId) { await loadDRMVerdict() }
         .onChange(of: steamApiKeyObserver) { _, _ in
             if store == .steam, let appId = game.steamAppId, !appId.isEmpty {
                 Task { await loadAchievements(appId) }
@@ -557,7 +568,11 @@ struct GameDetailView: View {
                 featuresSection
                 achievementsSection
                 dlcSection
-                if let p = profile { compatSection(p) }
+                if let verdict = drmVerdict, verdict.antiCheatBlocksMacOS {
+                    blockedAntiCheatSection(verdict)
+                } else if let p = profile {
+                    compatSection(p)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -978,15 +993,26 @@ struct GameDetailView: View {
                             Text(dlc.title).font(.caption)
                                 .foregroundStyle(.white.opacity(dlc.owned ? 0.85 : 0.5)).lineLimit(1)
                             Spacer(minLength: 0)
-                            if dlc.owned {
+                            if dlc.installed == true {
+                                Label("Instalado", systemImage: "checkmark.circle.fill")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(steamGreen.opacity(0.9))
+                            } else if dlc.owned, dlc.installed == false, let onInstallDLC {
+                                Button("Instalar") { onInstallDLC(dlc) }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                    .tint(tint)
+                                    .disabled(installing)
+                            } else if dlc.owned {
                                 Image(systemName: "checkmark.circle.fill")
                                     .font(.caption2).foregroundStyle(steamGreen.opacity(0.9))
                             }
                         }
                         .opacity(dlc.owned ? 1 : 0.5)   // atenúa el que no tienes para que no destaque
                     }
-                    Text(store == .epic ? "Contenido adicional disponible para este juego."
-                                        : "Los DLC marcados (✓) están en tu cuenta y se instalan junto al juego.")
+                    Text(store == .gog ? "Puedes instalar por separado el contenido que posees."
+                        : (store == .epic ? "Contenido adicional disponible para este juego."
+                           : "Los DLC marcados (✓) están en tu cuenta y se instalan junto al juego."))
                         .font(.caption2).foregroundStyle(.white.opacity(0.45)).padding(.top, 2)
                 }
             }
@@ -1018,6 +1044,12 @@ struct GameDetailView: View {
                     Text(notes).font(.caption).foregroundStyle(.white.opacity(0.6))
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                if let antiCheat = p.thirdPartyAntiCheat, !antiCheat.isEmpty {
+                    Label("Usa anti-cheat de terceros: \(antiCheat). Los modos con controlador de kernel no son compatibles con Wine en macOS.",
+                          systemImage: "exclamationmark.shield.fill")
+                        .font(.caption).foregroundStyle(.orange.opacity(0.9))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let url = game.protonDBURL {
                     Divider().overlay(.white.opacity(0.06)).padding(.vertical, 2)
                     Link(destination: url) {
@@ -1028,6 +1060,27 @@ struct GameDetailView: View {
                     .foregroundStyle(tint)
                     .vesselHelp("Abrir los informes comunitarios de compatibilidad en ProtonDB")
                 }
+            }
+        }
+    }
+
+    private func blockedAntiCheatSection(_ verdict: DRMDatabase.Verdict) -> some View {
+        cardSection("Compatibilidad en Mac") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Image(systemName: CompatProfile.Rating.borked.systemImage)
+                        .font(.title3).foregroundStyle(CompatProfile.Rating.borked.color)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("No funciona").font(.callout.bold()).foregroundStyle(.white)
+                        Text("Bloqueado por anti-cheat en macOS")
+                            .font(.caption2).foregroundStyle(.white.opacity(0.5))
+                    }
+                }
+                Label(verdict.antiCheats.joined(separator: " · "), systemImage: "shield.slash.fill")
+                    .font(.caption.weight(.semibold)).foregroundStyle(CompatProfile.Rating.borked.color)
+                Text("La base específica de macOS lo clasifica como \(verdict.antiCheatStatus?.lowercased() ?? "bloqueado"). Vessel no intenta desactivar ni eludir la protección; el modo multijugador protegido no puede iniciarse bajo Wine.")
+                    .font(.caption).foregroundStyle(.white.opacity(0.62))
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -1104,6 +1157,14 @@ struct GameDetailView: View {
     /// Descarga los metadatos del juego (solo Steam, API pública `appdetails`): descripción,
     /// géneros, capturas, estudio, editor, fecha y Metacritic. Metadatos públicos del juego,
     /// igual que las carátulas; sin datos personales.
+    @MainActor private func loadDRMVerdict() async {
+        drmVerdict = nil
+        guard let appId = game.steamAppId, !appId.isEmpty else { return }
+        let verdict = await DRMDatabase.shared.lookup(steamAppId: appId)
+        guard !Task.isCancelled else { return }
+        drmVerdict = verdict
+    }
+
     @MainActor private func loadDetails() async {
         details = nil; dlcs = []; achievements = nil
         if let appId = game.steamAppId, !appId.isEmpty {
@@ -1111,8 +1172,11 @@ struct GameDetailView: View {
             await loadAchievements(appId)
         } else if store == .gog {
             await loadGogDetails(game.id)
+            dlcs = await loadStoreDLCs()
         } else if store == .epic {
             await loadEpicDetails(game.id)
+            let ownedDLCs = await loadStoreDLCs()
+            if !ownedDLCs.isEmpty { dlcs = ownedDLCs }
         }
     }
 

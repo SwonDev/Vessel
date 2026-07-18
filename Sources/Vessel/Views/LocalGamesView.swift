@@ -79,6 +79,7 @@ struct LocalGamesView: View {
                 installed: g.installed,
                 updateAvailable: g.updateAvailable,
                 installPath: folder,
+                executablePath: g.executablePath.isEmpty ? nil : g.executablePath,
                 // Insignia con la FUENTE (Steam / itch.io / Humble / GOG offline) y, si es nativo de
                 // Mac, se dice: es la mejor noticia posible (corre sin Wine).
                 badge: g.platform == .mac ? "Nativo de Mac"
@@ -682,8 +683,13 @@ struct LocalGamesView: View {
             return
         }
         guard let bottle = bottle(for: game) else { return }
-        let exe = game.executablePath
         let id = game.id.uuidString
+        let cfg = GameConfigStore.load(id)
+        let exe = GameExecutableOverride.resolve(
+            configuredPath: cfg.executableOverride,
+            installRoot: folder(of: game),
+            fallback: game.executablePath
+        )
         let installDir = (exe as NSString).deletingLastPathComponent
         Task {
             // Juegos de GOG: completar su post-instalación si falta (los clásicos no arrancan sin
@@ -696,7 +702,7 @@ struct LocalGamesView: View {
                     winePath: wineManager.resolveGameWine(for: bottle, executable: exe))
             }
             let profile = CompatService.shared.profile(steam: nil, title: game.name)
-            var eff = CompatService.shared.effectiveConfig(profile: profile, user: GameConfigStore.load(id))
+            var eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
             if let forcedLayer { eff.graphicsOverride = forcedLayer }
             let usedLayer = wineManager.resolvedGraphicsLayer(forExecutable: exe, effective: eff)
             await tracker.track(

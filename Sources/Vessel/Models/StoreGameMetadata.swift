@@ -2,7 +2,7 @@ import Foundation
 
 /// Vídeo promocional público de una tienda. Vessel solo conserva la URL HTTPS y una miniatura;
 /// no descarga ni persiste el vídeo completo.
-struct StoreGameMovie: Hashable, Sendable {
+struct StoreGameMovie: Hashable, Codable, Sendable {
     let id: String
     let name: String?
     let thumbnailURL: URL?
@@ -11,7 +11,7 @@ struct StoreGameMovie: Hashable, Sendable {
 
 /// Metadatos públicos compartidos por la ficha completa y la previsualización al pasar el ratón.
 /// Mantenerlos fuera de la vista evita repetir parsers o peticiones entre ambas superficies.
-struct StoreGameMetadata: Sendable {
+struct StoreGameMetadata: Codable, Sendable {
     var description: String?
     var developers: [String] = []
     var publishers: [String] = []

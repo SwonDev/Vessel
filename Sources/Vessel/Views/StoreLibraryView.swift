@@ -16,6 +16,8 @@ struct StoreGame: Identifiable, Hashable {
     var lastPlayed: Date? = nil
     var playtimeMinutes: Int? = nil
     var installPath: String? = nil   // carpeta del juego (para "Abrir carpeta")
+    var executablePath: String? = nil // ejecutable detectado; permite un override avanzado seguro
+    var installSizeBytes: Int64? = nil
     /// Etiqueta opcional sobre la carátula (p. ej. la FUENTE en DRM‑free: Steam / itch.io / Humble).
     var badge: String? = nil
 
@@ -96,6 +98,53 @@ enum StoreLibraryFilter: String, CaseIterable, Identifiable {
         case .jugados:          return "clock.arrow.circlepath"
         case .ocultos:          return "eye.slash"
         }
+    }
+}
+
+enum LibraryCompatibilityFilter: String, CaseIterable, Identifiable {
+    case cualquiera = "Cualquiera"
+    case excelente = "Excelente"
+    case jugable = "Jugable"
+    case noFunciona = "No funciona"
+    case sinDatos = "Sin datos"
+    var id: String { rawValue }
+
+    func matches(_ rating: CompatProfile.Rating?) -> Bool {
+        switch self {
+        case .cualquiera: return true
+        case .excelente: return rating == .platinum || rating == .gold
+        case .jugable: return rating == .silver || rating == .bronze
+        case .noFunciona: return rating == .borked
+        case .sinDatos: return rating == nil
+        }
+    }
+}
+
+enum LibrarySizeFilter: String, CaseIterable, Identifiable {
+    case cualquiera = "Cualquier tamaño"
+    case pequeño = "Menos de 10 GB"
+    case mediano = "De 10 a 50 GB"
+    case grande = "Más de 50 GB"
+    case sinDatos = "Tamaño desconocido"
+    var id: String { rawValue }
+
+    func matches(_ bytes: Int64?) -> Bool {
+        let tenGB: Int64 = 10 * 1_000_000_000
+        let fiftyGB: Int64 = 50 * 1_000_000_000
+        switch self {
+        case .cualquiera: return true
+        case .pequeño: return bytes.map { $0 < tenGB } ?? false
+        case .mediano: return bytes.map { $0 >= tenGB && $0 <= fiftyGB } ?? false
+        case .grande: return bytes.map { $0 > fiftyGB } ?? false
+        case .sinDatos: return bytes == nil
+        }
+    }
+}
+
+enum LibraryAdvancedFilterRules {
+    static func matchesGenre(_ genres: [String], selected: String?) -> Bool {
+        guard let selected else { return true }
+        return genres.contains { $0.localizedCaseInsensitiveCompare(selected) == .orderedSame }
     }
 }
 
@@ -184,6 +233,18 @@ struct StoreLibraryView: View {
     /// Progreso de descarga 0.0–1.0 si se conoce (Steam vía SteamCMD). `nil` = indeterminado
     /// (spinner): Epic/GOG o fases de verificación. Pinta una barra estilo Steam cuando hay %.
     var percentFor: (String) -> Double? = { _ in nil }
+    var transferTitleFor: (String) -> String? = { _ in nil }
+    var transferPhaseFor: (String) -> LibraryTransferPhase = { _ in .running }
+    var transferPositionFor: (String) -> Int? = { _ in nil }
+    var canPauseTransfer: (String) -> Bool = { _ in false }
+    var canCancelTransfer: (String) -> Bool = { _ in false }
+    var canPrioritizeTransfer: (String) -> Bool = { _ in false }
+    var canRetryTransfer: (String) -> Bool = { _ in false }
+    var onPauseTransfer: ((StoreGame) -> Void)? = nil
+    var onResumeTransfer: ((StoreGame) -> Void)? = nil
+    var onCancelTransfer: ((StoreGame) -> Void)? = nil
+    var onPrioritizeTransfer: ((StoreGame) -> Void)? = nil
+    var onRetryTransfer: ((StoreGame) -> Void)? = nil
     var onInstall: (StoreGame) -> Void = { _ in }
     var onPlay: (StoreGame) -> Void = { _ in }
     var onUninstall: (StoreGame) -> Void = { _ in }
@@ -192,6 +253,12 @@ struct StoreLibraryView: View {
     var onVerify: (StoreGame) -> Void = { _ in }
     /// Aplicar la actualización de un juego instalado (mismo feedback que instalar/verificar).
     var onUpdate: (StoreGame) -> Void = { _ in }
+    /// Encola todas las actualizaciones disponibles en el orden visible de la biblioteca.
+    var onUpdateAll: (([StoreGame]) -> Void)? = nil
+    /// Contenido adicional propio de la tienda. Steam conserva su fuente pública interna; GOG
+    /// aporta aquí sus DLC reales y su estado de instalación mediante gogdl.
+    var dlcsFor: @MainActor (StoreGame) async -> [StoreDLC] = { _ in [] }
+    var onInstallDLC: ((StoreGame, StoreDLC) -> Void)? = nil
     var onReload: () -> Void = {}
     var onLogout: () -> Void = {}
     /// Iniciar sesión (re-login). Si se provee, aparece "Iniciar sesión" en el menú "…". Steam lo
@@ -215,6 +282,12 @@ struct StoreLibraryView: View {
     @FocusState private var searchFocused: Bool
     @State private var sortOrder: StoreSortOrder = .nombre
     @State private var filter: StoreLibraryFilter = .todos
+    @State private var compatibilityFilter: LibraryCompatibilityFilter = .cualquiera
+    @State private var sizeFilter: LibrarySizeFilter = .cualquiera
+    @State private var selectedGenre: String?
+    @State private var indexedMetadata: [String: StoreGameMetadata] = [:]
+    @State private var metadataIndexProgress: (completed: Int, total: Int)?
+    @State private var metadataIndexTask: Task<Void, Never>?
     @State private var showFavoritesOnly = false
     /// Sidebar colapsada (persistente): más espacio para el grid/ficha. Estilo Steam.
     @AppStorage("vessel.sidebarCollapsed") private var sidebarCollapsed = false
@@ -277,7 +350,14 @@ struct StoreLibraryView: View {
             games: activeTransferGames,
             activeIDs: installingIDs,
             progressFor: progressFor,
-            percentFor: percentFor
+            percentFor: percentFor,
+            titleFor: transferTitleFor,
+            phaseFor: transferPhaseFor,
+            positionFor: transferPositionFor,
+            canPauseFor: canPauseTransfer,
+            canCancelFor: canCancelTransfer,
+            canPrioritizeFor: canPrioritizeTransfer,
+            canRetryFor: canRetryTransfer
         )
     }
     /// Columnas adaptativas según la densidad elegida (tamaño de carátula).
@@ -421,7 +501,7 @@ struct StoreLibraryView: View {
     }
 
     private var activeQuickScope: LibraryQuickScope? {
-        guard selectedCollectionID == nil else { return nil }
+        guard selectedCollectionID == nil, !advancedFiltersActive else { return nil }
         if showFavoritesOnly && filter == .todos { return .favoritos }
         guard !showFavoritesOnly else { return nil }
         switch filter {
@@ -457,6 +537,9 @@ struct StoreLibraryView: View {
     private func resetQuery() {
         search = ""
         filter = .todos
+        compatibilityFilter = .cualquiera
+        sizeFilter = .cualquiera
+        selectedGenre = nil
         showFavoritesOnly = false
         selectedCollectionID = nil
     }
@@ -473,6 +556,15 @@ struct StoreLibraryView: View {
            let stored = StoreSortOrder(rawValue: raw) {
             sortOrder = stored
         }
+        if let raw = defaults.string(forKey: "\(preferencePrefix).compatibility"),
+           let stored = LibraryCompatibilityFilter(rawValue: raw) {
+            compatibilityFilter = stored
+        }
+        if let raw = defaults.string(forKey: "\(preferencePrefix).size"),
+           let stored = LibrarySizeFilter(rawValue: raw) {
+            sizeFilter = stored
+        }
+        selectedGenre = defaults.string(forKey: "\(preferencePrefix).genre")
         showFavoritesOnly = defaults.bool(forKey: "\(preferencePrefix).favoritesOnly")
         if let raw = defaults.string(forKey: "\(preferencePrefix).collection"),
            let id = UUID(uuidString: raw), collectionsStore.collection(id: id) != nil {
@@ -495,6 +587,13 @@ struct StoreLibraryView: View {
         let defaults = UserDefaults.standard
         defaults.set(filter.rawValue, forKey: "\(preferencePrefix).filter")
         defaults.set(sortOrder.rawValue, forKey: "\(preferencePrefix).sort")
+        defaults.set(compatibilityFilter.rawValue, forKey: "\(preferencePrefix).compatibility")
+        defaults.set(sizeFilter.rawValue, forKey: "\(preferencePrefix).size")
+        if let selectedGenre {
+            defaults.set(selectedGenre, forKey: "\(preferencePrefix).genre")
+        } else {
+            defaults.removeObject(forKey: "\(preferencePrefix).genre")
+        }
         defaults.set(showFavoritesOnly, forKey: "\(preferencePrefix).favoritesOnly")
         if let selectedCollectionID {
             defaults.set(selectedCollectionID.uuidString, forKey: "\(preferencePrefix).collection")
@@ -592,6 +691,42 @@ struct StoreLibraryView: View {
     /// juegos el tecleo y los cambios de estado son fluidos.
     @State private var displayed: [StoreGame] = []
 
+    private var metadataRequests: [StoreGameMetadataRequest] {
+        let source: StoreGameMetadataRequest.Source = switch store {
+        case .steam: .steam
+        case .epic: .epic
+        case .gog: .gog
+        case .local: .local
+        }
+        return games.map {
+            StoreGameMetadataRequest(source: source, id: $0.id,
+                                     title: $0.title, steamAppId: $0.steamAppId)
+        }
+    }
+
+    private var availableGenres: [String] {
+        Set(indexedMetadata.values.flatMap(\.genres))
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    private func compatibilityProfile(for game: StoreGame) -> CompatProfile? {
+        switch store {
+        case .steam:
+            return CompatService.shared.profile(steam: game.steamAppId ?? game.id, title: game.title)
+        case .epic:
+            return CompatService.shared.profile(epic: game.id, title: game.title)
+        case .gog:
+            return CompatService.shared.profile(gog: game.id, title: game.title)
+        case .local:
+            return CompatService.shared.profile(steam: game.steamAppId, title: game.title)
+        }
+    }
+
+    private func matchesCompatibility(_ game: StoreGame) -> Bool {
+        compatibilityFilter.matches(compatibilityProfile(for: game)?.rating)
+    }
+
     private func computeFiltered() -> [StoreGame] {
         var list = enriched
         if filter == .ocultos {
@@ -613,6 +748,19 @@ struct StoreLibraryView: View {
             list = list.filter { selectedCollection.gameIDs.contains($0.id) }
         }
         if showFavoritesOnly { list = list.filter { isFav($0.id) } }
+        if compatibilityFilter != .cualquiera {
+            list = list.filter(matchesCompatibility)
+        }
+        if sizeFilter != .cualquiera {
+            list = list.filter { sizeFilter.matches($0.installSizeBytes) }
+        }
+        if let selectedGenre {
+            list = list.filter { game in
+                LibraryAdvancedFilterRules.matchesGenre(
+                    indexedMetadata[game.id]?.genres ?? [], selected: selectedGenre
+                )
+            }
+        }
         if !search.isEmpty {
             list = list.filter { LibraryTitleSearch.matches(title: $0.title, query: search) }
         }
@@ -685,7 +833,12 @@ struct StoreLibraryView: View {
                     onOpen: { game in
                         transferCenterPresented = false
                         openGame(game)
-                    }
+                    },
+                    onPause: { onPauseTransfer?($0) },
+                    onResume: { onResumeTransfer?($0) },
+                    onCancel: { onCancelTransfer?($0) },
+                    onPrioritize: { onPrioritizeTransfer?($0) },
+                    onRetry: { onRetryTransfer?($0) }
                 )
                 .padding(.trailing, 18)
                 .padding(.bottom, 16)
@@ -718,6 +871,9 @@ struct StoreLibraryView: View {
         .onChange(of: search) { _, _ in refreshDisplayed() }
         .onChange(of: filter) { _, _ in persistLibraryPreferences(); refreshDisplayed() }
         .onChange(of: sortOrder) { _, _ in persistLibraryPreferences(); refreshDisplayed() }
+        .onChange(of: compatibilityFilter) { _, _ in persistLibraryPreferences(); refreshDisplayed() }
+        .onChange(of: sizeFilter) { _, _ in persistLibraryPreferences(); refreshDisplayed() }
+        .onChange(of: selectedGenre) { _, _ in persistLibraryPreferences(); refreshDisplayed() }
         .onChange(of: showFavoritesOnly) { _, _ in persistLibraryPreferences(); refreshDisplayed() }
         .onChange(of: favorites) { _, _ in refreshDisplayed() }
         .onChange(of: hiddenGames) { _, _ in refreshDisplayed() }
@@ -749,6 +905,8 @@ struct StoreLibraryView: View {
         .task(id: games) {
             refreshDisplayed()
             CoverCache.shared.prefetch(games.map { ($0.id, $0.coverCandidates) })
+            indexedMetadata = await StoreGameMetadataService.shared.cachedDetails(for: metadataRequests)
+            refreshDisplayed()
         }
         .onDisappear(perform: cancelTransientTasks)
     }
@@ -828,6 +986,9 @@ struct StoreLibraryView: View {
         hoverPresentationTask = nil
         undoHiddenTask?.cancel()
         undoHiddenTask = nil
+        metadataIndexTask?.cancel()
+        metadataIndexTask = nil
+        metadataIndexProgress = nil
     }
 
     @ViewBuilder
@@ -967,6 +1128,8 @@ struct StoreLibraryView: View {
                 onUninstall: { onUninstall(game) },
                 onVerify: { onVerify(game) },
                 onUpdate: { onUpdate(game) },
+                loadStoreDLCs: { await dlcsFor(game) },
+                onInstallDLC: onInstallDLC.map { callback in { callback(game, $0) } },
                 onToggleFavorite: { toggleFav(game.id) },
                 onToggleHidden: { toggleHidden(game.id) },
                 hasNote: notesStore.hasNote(storeID: store.rawValue, gameID: game.id),
@@ -1099,7 +1262,8 @@ struct StoreLibraryView: View {
     /// La estantería global solo pertenece a la portada sin restricciones. Al entrar en una
     /// colección o aplicar una consulta, ocultarla evita mezclar juegos ajenos al resultado.
     private var showsRecentlyPlayed: Bool {
-        selectedCollectionID == nil && filter == .todos && !showFavoritesOnly && search.isEmpty
+        selectedCollectionID == nil && filter == .todos && !showFavoritesOnly
+            && search.isEmpty && !advancedFiltersActive
     }
 
     private var homeTitle: String {
@@ -1181,6 +1345,40 @@ struct StoreLibraryView: View {
                     ) {
                         apply(scope)
                     }
+                }
+
+                let availableUpdates = source.filter { $0.updateAvailable && !installingIDs.contains($0.id) }
+                if let onUpdateAll, !availableUpdates.isEmpty {
+                    Button {
+                        onUpdateAll(availableUpdates)
+                    } label: {
+                        Label("Actualizar todo", systemImage: "arrow.triangle.2.circlepath.circle.fill")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .vesselButton(activeQuickScope == .actualizaciones, tint: tint)
+                    .accessibilityValue("\(availableUpdates.count) actualizaciones")
+                    .vesselHelp(
+                        "Actualizar todo",
+                        detail: "Añade \(availableUpdates.count) juego\(availableUpdates.count == 1 ? "" : "s") a la cola."
+                    )
+                }
+
+                if let progress = metadataIndexProgress {
+                    HStack(spacing: 7) {
+                        ProgressView(value: Double(progress.completed),
+                                     total: Double(max(1, progress.total)))
+                            .progressViewStyle(.linear)
+                            .tint(tint)
+                            .frame(width: 62)
+                        Text("Preparando géneros \(progress.completed)/\(progress.total)")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.white.opacity(0.65))
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .liquidGlass(in: Capsule())
+                    .accessibilityLabel("Preparando filtros de género")
+                    .accessibilityValue("\(progress.completed) de \(progress.total)")
                 }
 
                 LibraryCollectionScopeMenu(
@@ -1381,14 +1579,74 @@ struct StoreLibraryView: View {
                 ForEach(StoreLibraryFilter.allCases) { Label($0.rawValue, systemImage: $0.symbol).tag($0) }
             }
             .pickerStyle(.inline)
+            Divider()
+            Menu("Compatibilidad") {
+                Picker("Compatibilidad", selection: $compatibilityFilter) {
+                    ForEach(LibraryCompatibilityFilter.allCases) { Text($0.rawValue).tag($0) }
+                }
+            }
+            Menu("Tamaño instalado") {
+                Picker("Tamaño instalado", selection: $sizeFilter) {
+                    ForEach(LibrarySizeFilter.allCases) { Text($0.rawValue).tag($0) }
+                }
+            }
+            Menu("Género") {
+                Button {
+                    selectedGenre = nil
+                } label: {
+                    if selectedGenre == nil { Label("Todos", systemImage: "checkmark") }
+                    else { Text("Todos") }
+                }
+                ForEach(availableGenres, id: \.self) { genre in
+                    Button {
+                        selectedGenre = genre
+                    } label: {
+                        if selectedGenre == genre { Label(genre, systemImage: "checkmark") }
+                        else { Text(genre) }
+                    }
+                }
+                Divider()
+                Button(metadataIndexProgress == nil ? "Preparar todos los géneros…" : "Indexando géneros…") {
+                    startMetadataIndexing()
+                }
+                .disabled(metadataIndexProgress != nil)
+            }
+            if advancedFiltersActive {
+                Divider()
+                Button("Restablecer filtros avanzados") {
+                    compatibilityFilter = .cualquiera
+                    sizeFilter = .cualquiera
+                    selectedGenre = nil
+                }
+            }
         } label: {
             Label(filter.rawValue, systemImage: "line.3.horizontal.decrease")
                 .font(.caption.weight(.medium))
-                .foregroundStyle(filter == .todos ? .white.opacity(0.6) : tint)
+                .foregroundStyle(filter == .todos && !advancedFiltersActive ? .white.opacity(0.6) : tint)
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
         .accessibilityLabel("Filtrar por estado")
         .vesselHelp("Filtrar juegos por estado")
+    }
+
+    private var advancedFiltersActive: Bool {
+        compatibilityFilter != .cualquiera || sizeFilter != .cualquiera || selectedGenre != nil
+    }
+
+    private func startMetadataIndexing() {
+        guard metadataIndexTask == nil else { return }
+        let requests = metadataRequests
+        metadataIndexProgress = (0, requests.count)
+        metadataIndexTask = Task { @MainActor in
+            let indexed = await StoreGameMetadataService.shared.indexDetails(for: requests) { completed, total in
+                Task { @MainActor in metadataIndexProgress = (completed, total) }
+            }
+            guard !Task.isCancelled else { return }
+            indexedMetadata = indexed
+            metadataIndexProgress = nil
+            metadataIndexTask = nil
+            refreshDisplayed()
+        }
     }
 
     /// Menú de orden (reutilizado por la sidebar y la cabecera del grid al colapsar).

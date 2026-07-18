@@ -32,7 +32,14 @@ final class GogdlManager {
         var installed: Bool
         /// Carátula del juego (API web de GOG); puede ser `nil` → placeholder.
         var coverURL: String? = nil
+        var installSizeBytes: Int64? = nil
         var id: String { appId }
+    }
+
+    struct GogDLC: Identifiable, Hashable, Sendable {
+        let id: String
+        let title: String
+        let installed: Bool
     }
 
     // MARK: - Rutas (estáticas)
@@ -56,6 +63,7 @@ final class GogdlManager {
     // MARK: - Estado
 
     private let log = LogStore.shared
+    nonisolated private let processRegistry = ManagedProcessRegistry()
 
     /// Versión de gogdl pinneada (la misma que usa Heroic). Repo: `Heroic-Games-Launcher/heroic-gogdl`.
     private static let gogdlVersion = "v1.2.2"
@@ -285,7 +293,7 @@ final class GogdlManager {
 
     /// Instala un juego de GOG en `installDir` (dentro del bottle de Vessel) con progreso en vivo.
     /// Ejecuta: `gogdl --auth-config-path <auth.json> download <id> --path <dir> --platform windows`.
-    func installGame(appId: String, installDir: String,
+    func installGame(appId: String, installDir: String, operationID: String? = nil,
                      onProgress: @escaping @Sendable (String) -> Void) async throws {
         let bin = try resolvedBinaryPath()
         try FileManager.default.createDirectory(atPath: installDir, withIntermediateDirectories: true)
@@ -293,7 +301,7 @@ final class GogdlManager {
             "--auth-config-path", Self.authConfigPath,
             "download", appId, "--path", installDir,
             "--with-dlcs", "--platform", "windows", "--lang", "en-US"
-        ], onLine: onProgress)
+        ], operationID: operationID, onLine: onProgress)
         guard code == 0 else {
             throw GogdlError.installFailed("La instalación de GOG falló (código \(code)). Revisa los logs.")
         }
@@ -317,14 +325,14 @@ final class GogdlManager {
 
     /// Verifica y REPARA un juego de GOG ya instalado. `repair` es un alias de `download` en
     /// gogdl: re-descarga SOLO lo dañado o ausente. Mismo progreso que `installGame`.
-    func repairGame(appId: String, installDir: String,
+    func repairGame(appId: String, installDir: String, operationID: String? = nil,
                     onProgress: @escaping @Sendable (String) -> Void) async throws {
         let bin = try resolvedBinaryPath()
         let code = try await runStreaming(bin, args: [
             "--auth-config-path", Self.authConfigPath,
             "repair", appId, "--path", installDir,
             "--with-dlcs", "--platform", "windows", "--lang", "en-US"
-        ], onLine: onProgress)
+        ], operationID: operationID, onLine: onProgress)
         guard code == 0 else {
             throw GogdlError.installFailed("La verificación de GOG falló (código \(code)). Revisa los logs.")
         }
@@ -332,18 +340,147 @@ final class GogdlManager {
     }
 
     /// Aplica la actualización de un juego de GOG (`gogdl update`, alias de download).
-    func updateGame(appId: String, installDir: String,
+    func updateGame(appId: String, installDir: String, operationID: String? = nil,
                     onProgress: @escaping @Sendable (String) -> Void) async throws {
         let bin = try resolvedBinaryPath()
         let code = try await runStreaming(bin, args: [
             "--auth-config-path", Self.authConfigPath,
             "update", appId, "--path", installDir,
             "--with-dlcs", "--platform", "windows", "--lang", "en-US"
-        ], onLine: onProgress)
+        ], operationID: operationID, onLine: onProgress)
         guard code == 0 else {
             throw GogdlError.installFailed("La actualización de GOG falló (código \(code)). Revisa los logs.")
         }
         log.log("✓ GOG: \(appId) actualizado", level: .info)
+    }
+
+    /// DLC propiedad del usuario y su estado según el manifiesto local de gogdl. `info` devuelve
+    /// únicamente contenido poseído; no presentamos complementos comprables como si ya fueran suyos.
+    func ownedDLCs(appId: String) async -> [GogDLC] {
+        guard let bin = try? resolvedBinaryPath(),
+              let result = try? await runBackground(bin, args: [
+                "--auth-config-path", Self.authConfigPath,
+                "info", appId, "--skip-dlcs", "--platform", "windows", "--lang", "en-US"
+              ]), result.exitCode == 0,
+              Self.lastJSONObject(in: result.output) != nil else { return [] }
+        let installed = installedDLCIDs(appId: appId)
+        return Self.parseOwnedDLCs(infoOutput: result.output, installedIDs: installed)
+    }
+
+    nonisolated static func parseOwnedDLCs(infoOutput: String, installedIDs: Set<String>) -> [GogDLC] {
+        guard let object = lastJSONObject(in: infoOutput),
+              let rawDLCs = object["dlcs"] as? [[String: Any]] else { return [] }
+        return rawDLCs.compactMap { raw -> GogDLC? in
+            let id: String?
+            if let value = raw["id"] as? String { id = value }
+            else if let value = raw["id"] as? NSNumber { id = value.stringValue }
+            else { id = nil }
+            guard let id, !id.isEmpty,
+                  let title = raw["title"] as? String, !title.isEmpty else { return nil }
+            return GogDLC(id: id, title: title, installed: installedIDs.contains(id))
+        }
+        .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    /// Instala un solo DLC sin volver a recorrer los ficheros del juego base. gogdl conserva el
+    /// mismo manifiesto y directorio, por lo que futuras reparaciones/actualizaciones lo incluyen.
+    func installDLC(appId: String, dlcID: String, installDir: String,
+                    operationID: String? = nil,
+                    onProgress: @escaping @Sendable (String) -> Void) async throws {
+        let bin = try resolvedBinaryPath()
+        let code = try await runStreaming(bin, args: [
+            "--auth-config-path", Self.authConfigPath,
+            "download", appId, "--path", installDir,
+            "--dlcs", dlcID, "--dlc-only",
+            "--platform", "windows", "--lang", "en-US"
+        ], operationID: operationID, onLine: onProgress)
+        guard code == 0 else {
+            throw GogdlError.installFailed("No se pudo instalar el contenido de GOG (código \(code)).")
+        }
+        log.log("✓ GOG: DLC \(dlcID) instalado para \(appId)", level: .info)
+    }
+
+    private func installedDLCIDs(appId: String) -> Set<String> {
+        let path = "\(Self.configDir)/heroic_gogdl/manifests/\(appId)"
+        guard let data = FileManager.default.contents(atPath: path),
+              !data.isEmpty else { return [] }
+        return Self.installedDLCIDs(manifestData: data)
+    }
+
+    nonisolated static func installedDLCIDs(manifestData: Data) -> Set<String> {
+        guard let object = try? JSONSerialization.jsonObject(with: manifestData) as? [String: Any],
+              let raw = object["HGLdlcs"] as? [Any] else { return [] }
+        return Set(raw.compactMap { item in
+            if let value = item as? String { return value }
+            guard let dictionary = item as? [String: Any] else { return nil }
+            if let value = dictionary["id"] as? String { return value }
+            if let value = dictionary["id"] as? NSNumber { return value.stringValue }
+            return nil
+        })
+    }
+
+    /// Detecta actualizaciones comparando el `buildId` del `goggame-<id>.info` local con el
+    /// `buildId` que devuelve `gogdl info`. Se limita a cuatro consultas simultáneas para no
+    /// saturar la API ni lanzar decenas de procesos en bibliotecas grandes.
+    func gamesWithUpdates(installedGames: [(appId: String, installDir: String)]) async -> Set<String> {
+        let comparable = installedGames.compactMap { game -> (String, String)? in
+            guard let buildID = installedBuildID(appId: game.appId, installDir: game.installDir) else { return nil }
+            return (game.appId, buildID)
+        }
+        guard !comparable.isEmpty else { return [] }
+
+        var updates = Set<String>()
+        let batchSize = 4
+        for start in stride(from: 0, to: comparable.count, by: batchSize) {
+            let batch = Array(comparable[start..<min(start + batchSize, comparable.count)])
+            let results = await withTaskGroup(of: (String, Bool).self) { group in
+                for (appID, localBuildID) in batch {
+                    group.addTask { [weak self] in
+                        guard let self,
+                              let remoteBuildID = await self.latestBuildID(appId: appID) else {
+                            return (appID, false)
+                        }
+                        return (appID, remoteBuildID != localBuildID)
+                    }
+                }
+                var batchResults: [(String, Bool)] = []
+                for await result in group { batchResults.append(result) }
+                return batchResults
+            }
+            updates.formUnion(results.compactMap { $0.1 ? $0.0 : nil })
+        }
+        return updates
+    }
+
+    private func installedBuildID(appId: String, installDir: String) -> String? {
+        guard let root = gameRoot(appId: appId, installDir: installDir),
+              let data = FileManager.default.contents(atPath: "\(root)/goggame-\(appId).info"),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        if let value = object["buildId"] as? String, !value.isEmpty { return value }
+        if let value = object["buildId"] as? NSNumber { return value.stringValue }
+        return nil
+    }
+
+    private func latestBuildID(appId: String) async -> String? {
+        guard let bin = try? resolvedBinaryPath(),
+              let result = try? await runBackground(bin, args: [
+                "--auth-config-path", Self.authConfigPath,
+                "info", appId, "--skip-dlcs", "--platform", "windows", "--lang", "en-US"
+              ]), result.exitCode == 0,
+              let object = Self.lastJSONObject(in: result.output) else { return nil }
+        if let value = object["buildId"] as? String, !value.isEmpty { return value }
+        if let value = object["buildId"] as? NSNumber { return value.stringValue }
+        return nil
+    }
+
+    nonisolated private static func lastJSONObject(in output: String) -> [String: Any]? {
+        for line in output.split(separator: "\n").reversed() {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.hasPrefix("{"), let data = trimmed.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            return object
+        }
+        return nil
     }
 
     /// Carpeta REAL del juego dentro de `installDir`. gogdl ANIDA los archivos en una subcarpeta
@@ -359,6 +496,28 @@ final class GogdlManager {
             }
         }
         return nil
+    }
+
+    /// Tamaño físico local sin seguir enlaces simbólicos. Se invoca fuera del actor principal para
+    /// alimentar el filtro de tamaño sin bloquear animaciones ni el scroll de la biblioteca.
+    nonisolated static func installedSizeBytes(at path: String) -> Int64? {
+        let root = URL(fileURLWithPath: path, isDirectory: true)
+        let keys: [URLResourceKey] = [
+            .isRegularFileKey, .isSymbolicLinkKey, .totalFileAllocatedSizeKey,
+            .fileAllocatedSizeKey, .fileSizeKey
+        ]
+        guard let enumerator = FileManager.default.enumerator(
+            at: root, includingPropertiesForKeys: keys,
+            options: [.skipsPackageDescendants],
+            errorHandler: { _, _ in true }
+        ) else { return nil }
+        var total: Int64 = 0
+        for case let url as URL in enumerator {
+            guard let values = try? url.resourceValues(forKeys: Set(keys)),
+                  values.isSymbolicLink != true, values.isRegularFile == true else { continue }
+            total += Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? values.fileSize ?? 0)
+        }
+        return total > 0 ? total : nil
     }
 
     /// `true` si el juego está instalado (existe su `goggame-<id>.info` en la carpeta real).
@@ -576,13 +735,22 @@ final class GogdlManager {
     }
 
     /// Ejecuta gogdl en un hilo de fondo para no bloquear el actor principal.
-    /// Inyecta `GOGDL_CONFIG_PATH` apuntando al directorio aislado de Vessel.
+    /// Inyecta `GOGDL_CONFIG_PATH` apuntando al directorio aislado de Vessel. La salida se drena
+    /// mientras el proceso sigue vivo para que una respuesta JSON grande no llene la pipe y
+    /// bloquee tanto gogdl como Vessel.
     private func runBackground(_ binary: String, args: [String]) async throws -> RunResult {
         let configDir = Self.configDir
         let shellEnv  = WineManager.userShellEnvironment
 
-        return try await withCheckedThrowingContinuation { cont in
-            Task.detached(priority: .userInitiated) {
+        final class SafeBuffer: @unchecked Sendable {
+            private let lock = NSLock()
+            private var storage = Data()
+            func append(_ data: Data) { lock.withLock { storage.append(data) } }
+            var data: Data { lock.withLock { storage } }
+        }
+
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<RunResult, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
                 var env = shellEnv
                 env["GOGDL_CONFIG_PATH"] = configDir
                 env["TERM"] = "xterm-256color"
@@ -592,52 +760,90 @@ final class GogdlManager {
                 task.arguments = args
                 task.environment = env
 
-                let pipe = Pipe()
-                task.standardOutput = pipe
-                task.standardError  = pipe
+                let stdoutPipe = Pipe()
+                let stderrPipe = Pipe()
+                task.standardOutput = stdoutPipe
+                task.standardError  = stderrPipe
 
                 do {
                     try task.run()
-                    task.waitUntilExit()
-                    let data   = pipe.fileHandleForReading.readDataToEndOfFile()
-                    let output = String(data: data, encoding: .utf8) ?? ""
-                    cont.resume(returning: RunResult(exitCode: task.terminationStatus, output: output))
                 } catch {
                     cont.resume(throwing: error)
+                    return
                 }
+
+                let stdout = SafeBuffer()
+                let stderr = SafeBuffer()
+                let drains = DispatchGroup()
+                drains.enter()
+                DispatchQueue.global(qos: .userInitiated).async {
+                    stdout.append(stdoutPipe.fileHandleForReading.readDataToEndOfFile())
+                    drains.leave()
+                }
+                drains.enter()
+                DispatchQueue.global(qos: .userInitiated).async {
+                    stderr.append(stderrPipe.fileHandleForReading.readDataToEndOfFile())
+                    drains.leave()
+                }
+
+                task.waitUntilExit()
+                drains.wait()
+                let standardOutput = String(data: stdout.data, encoding: .utf8) ?? ""
+                let standardError = String(data: stderr.data, encoding: .utf8) ?? ""
+                let separator = standardOutput.isEmpty || standardError.isEmpty ? "" : "\n"
+                cont.resume(returning: RunResult(
+                    exitCode: task.terminationStatus,
+                    output: standardOutput + separator + standardError
+                ))
             }
         }
     }
 
     /// Ejecuta gogdl para una operación LARGA (descarga), drenando la salida en vivo y
     /// reportando cada línea de progreso. Sin timeout: las descargas pueden durar mucho.
-    private func runStreaming(_ binary: String, args: [String],
+    private func runStreaming(_ binary: String, args: [String], operationID: String? = nil,
                               onLine: @escaping @Sendable (String) -> Void) async throws -> Int32 {
         let shellEnv = WineManager.userShellEnvironment
-        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Int32, Error>) in
-            DispatchQueue.global(qos: .userInitiated).async {
-                var env = shellEnv
-                env["TERM"] = "xterm-256color"
-                let task = Process()
-                task.executableURL = URL(fileURLWithPath: binary)
-                task.arguments = args
-                task.environment = env
-                let pipe = Pipe()
-                task.standardOutput = pipe
-                task.standardError  = pipe
-                pipe.fileHandleForReading.readabilityHandler = { fh in
-                    let d = fh.availableData
-                    guard !d.isEmpty, let s = String(data: d, encoding: .utf8) else { return }
-                    for line in s.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) where !line.isEmpty {
-                        onLine(String(line))
+        let executionID = operationID ?? "gogdl-\(UUID().uuidString)"
+        let processRegistry = self.processRegistry
+        processRegistry.prepare(executionID)
+        return try await withTaskCancellationHandler {
+            let code = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Int32, Error>) in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    var env = shellEnv
+                    env["TERM"] = "xterm-256color"
+                    let task = Process()
+                    task.executableURL = URL(fileURLWithPath: binary)
+                    task.arguments = args
+                    task.environment = env
+                    task.standardInput = FileHandle.nullDevice
+                    let pipe = Pipe()
+                    task.standardOutput = pipe
+                    task.standardError  = pipe
+                    pipe.fileHandleForReading.readabilityHandler = { fh in
+                        let d = fh.availableData
+                        guard !d.isEmpty, let s = String(data: d, encoding: .utf8) else { return }
+                        for line in s.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) where !line.isEmpty {
+                            onLine(String(line))
+                        }
                     }
+                    do { try task.run() } catch { processRegistry.finish(executionID); cont.resume(throwing: error); return }
+                    processRegistry.register(task, for: executionID)
+                    task.waitUntilExit()
+                    pipe.fileHandleForReading.readabilityHandler = nil
+                    processRegistry.finish(executionID)
+                    cont.resume(returning: task.terminationStatus)
                 }
-                do { try task.run() } catch { cont.resume(throwing: error); return }
-                task.waitUntilExit()
-                pipe.fileHandleForReading.readabilityHandler = nil
-                cont.resume(returning: task.terminationStatus)
             }
+            try Task.checkCancellation()
+            return code
+        } onCancel: {
+            processRegistry.cancel(executionID)
         }
+    }
+
+    nonisolated func cancel(operationID: String) {
+        processRegistry.cancel(operationID)
     }
 
     // MARK: - Cuarentena y firma

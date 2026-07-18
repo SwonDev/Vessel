@@ -23,13 +23,28 @@ actor StoreGameMetadataService {
     static let shared = StoreGameMetadataService()
 
     private static let maximumPayloadBytes = 6 * 1_024 * 1_024
-    private var cache: [String: StoreGameMetadata] = [:]
+    private struct CacheEntry: Codable, Sendable {
+        let metadata: StoreGameMetadata
+        let fetchedAt: Date
+    }
+
+    private static let persistentCacheURL = URL(fileURLWithPath: VesselPaths.cacheDirectory)
+        .appendingPathComponent("store-metadata-v1.json")
+    private static let cacheLifetime: TimeInterval = 7 * 24 * 60 * 60
+    private var cache: [String: CacheEntry]
     private var inFlight: [String: Task<StoreGameMetadata?, Never>] = [:]
     private var failedAt: [String: Date] = [:]
+    private var persistenceTask: Task<Void, Never>?
+
+    init() {
+        cache = Self.loadPersistentCache()
+    }
 
     func details(for request: StoreGameMetadataRequest) async -> StoreGameMetadata? {
         let key = "\(request.source.rawValue):\(request.id)"
-        if let cached = cache[key] { return cached }
+        if let cached = cache[key], Date().timeIntervalSince(cached.fetchedAt) < Self.cacheLifetime {
+            return cached.metadata
+        }
         if let failure = failedAt[key], Date().timeIntervalSince(failure) < 300 { return nil }
         if let task = inFlight[key] { return await task.value }
 
@@ -38,8 +53,9 @@ actor StoreGameMetadataService {
         let result = await task.value
         inFlight[key] = nil
         if let result {
-            cache[key] = result
+            cache[key] = CacheEntry(metadata: result, fetchedAt: Date())
             failedAt[key] = nil
+            schedulePersistence()
         } else {
             failedAt[key] = Date()
         }
@@ -56,6 +72,76 @@ actor StoreGameMetadataService {
 
     func steamAppId(matching title: String) async -> String? {
         await Self.fetchMatchingSteamAppId(title: title)
+    }
+
+    /// Devuelve el índice local disponible sin tráfico. Es el primer paso de los filtros avanzados:
+    /// al abrir una biblioteca aparecen inmediatamente los géneros ya vistos en fichas anteriores.
+    func cachedDetails(for requests: [StoreGameMetadataRequest]) -> [String: StoreGameMetadata] {
+        let now = Date()
+        let values: [(String, StoreGameMetadata)] = requests.compactMap { request in
+            guard let entry = cache[cacheKey(for: request)],
+                  now.timeIntervalSince(entry.fetchedAt) < Self.cacheLifetime else { return nil }
+            return (request.id, entry.metadata)
+        }
+        return Dictionary(uniqueKeysWithValues: values)
+    }
+
+    /// Completa el índice bajo petición explícita, en lotes pequeños. Nunca se lanza al iniciar la
+    /// app ni al teclear en el buscador, evitando cientos de solicitudes invisibles.
+    func indexDetails(for requests: [StoreGameMetadataRequest],
+                      onProgress: @escaping @Sendable (Int, Int) -> Void) async -> [String: StoreGameMetadata] {
+        var indexed = cachedDetails(for: requests)
+        let missing = requests.filter { indexed[$0.id] == nil }
+        let total = missing.count
+        onProgress(0, total)
+        var completed = 0
+        for start in stride(from: 0, to: missing.count, by: 4) {
+            guard !Task.isCancelled else { break }
+            let batch = Array(missing[start..<min(start + 4, missing.count)])
+            let results = await withTaskGroup(of: (String, StoreGameMetadata?).self) { group in
+                for request in batch {
+                    group.addTask { [weak self] in
+                        guard let self else { return (request.id, nil) }
+                        return (request.id, await self.details(for: request))
+                    }
+                }
+                var values: [(String, StoreGameMetadata?)] = []
+                for await value in group { values.append(value) }
+                return values
+            }
+            for (id, metadata) in results { if let metadata { indexed[id] = metadata } }
+            completed += batch.count
+            onProgress(completed, total)
+        }
+        return indexed
+    }
+
+    private func cacheKey(for request: StoreGameMetadataRequest) -> String {
+        "\(request.source.rawValue):\(request.id)"
+    }
+
+    private func schedulePersistence() {
+        persistenceTask?.cancel()
+        let snapshot = cache
+        persistenceTask = Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            Self.persist(snapshot)
+        }
+    }
+
+    private static func loadPersistentCache() -> [String: CacheEntry] {
+        guard let data = try? Data(contentsOf: persistentCacheURL),
+              data.count <= 24 * 1_024 * 1_024,
+              let decoded = try? JSONDecoder().decode([String: CacheEntry].self, from: data) else { return [:] }
+        return decoded
+    }
+
+    private static func persist(_ entries: [String: CacheEntry]) {
+        guard let data = try? JSONEncoder().encode(entries) else { return }
+        try? FileManager.default.createDirectory(
+            at: persistentCacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: persistentCacheURL, options: .atomic)
     }
 
     // MARK: - Fuentes

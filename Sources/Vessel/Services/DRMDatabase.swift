@@ -36,6 +36,17 @@ actor DRMDatabase {
         var antiCheatStatus: String?
         var checkedAt: Date = Date()
 
+        /// MacAnticheatData usa `Denied` y `Broken` para estados que no pueden jugarse en macOS.
+        /// `Unknown` se conserva como incertidumbre y nunca se convierte automáticamente en
+        /// «No funciona» para evitar falsos negativos.
+        var antiCheatBlocksMacOS: Bool {
+            guard !antiCheats.isEmpty else { return false }
+            switch antiCheatStatus?.lowercased() {
+            case "denied", "broken": return true
+            default: return false
+            }
+        }
+
         /// PCGW lo declara **DRM‑free**: la señal positiva más fiable que existe.
         var isDRMFreeConfirmed: Bool {
             pcgwSteamDRM.contains { $0.caseInsensitiveCompare("DRM-free") == .orderedSame }

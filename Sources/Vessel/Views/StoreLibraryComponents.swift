@@ -164,6 +164,11 @@ struct LibraryTransferCenterButton: View {
     let tint: Color
     @Binding var isPresented: Bool
     let onOpen: (StoreGame) -> Void
+    let onPause: (StoreGame) -> Void
+    let onResume: (StoreGame) -> Void
+    let onCancel: (StoreGame) -> Void
+    let onPrioritize: (StoreGame) -> Void
+    let onRetry: (StoreGame) -> Void
 
     private var overallProgress: Double? {
         LibraryTransferSnapshot.overallProgress(for: items)
@@ -192,7 +197,17 @@ struct LibraryTransferCenterButton: View {
             detail: "Muestra instalaciones, actualizaciones y verificaciones en curso."
         )
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
-            LibraryTransferCenterPopover(items: items, games: games, tint: tint, onOpen: onOpen)
+            LibraryTransferCenterPopover(
+                items: items,
+                games: games,
+                tint: tint,
+                onOpen: onOpen,
+                onPause: onPause,
+                onResume: onResume,
+                onCancel: onCancel,
+                onPrioritize: onPrioritize,
+                onRetry: onRetry
+            )
         }
     }
 
@@ -223,6 +238,11 @@ struct LibraryTransferCenterPopover: View {
     let games: [StoreGame]
     let tint: Color
     let onOpen: (StoreGame) -> Void
+    let onPause: (StoreGame) -> Void
+    let onResume: (StoreGame) -> Void
+    let onCancel: (StoreGame) -> Void
+    let onPrioritize: (StoreGame) -> Void
+    let onRetry: (StoreGame) -> Void
 
     private var gamesByID: [String: StoreGame] {
         Dictionary(games.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -235,9 +255,9 @@ struct LibraryTransferCenterPopover: View {
                     .font(.title3.weight(.semibold))
                     .foregroundStyle(tint)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Descargas activas")
+                    Text("Cola de descargas")
                         .font(.headline)
-                    Text("\(items.count) operación\(items.count == 1 ? "" : "es") en curso")
+                    Text("\(items.count) operación\(items.count == 1 ? "" : "es")")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -251,9 +271,17 @@ struct LibraryTransferCenterPopover: View {
                 LazyVStack(spacing: 4) {
                     ForEach(items) { item in
                         if let game = gamesByID[item.id] {
-                            LibraryTransferRow(item: item, game: game, tint: tint) {
-                                onOpen(game)
-                            }
+                            LibraryTransferRow(
+                                item: item,
+                                game: game,
+                                tint: tint,
+                                onOpen: { onOpen(game) },
+                                onPause: { onPause(game) },
+                                onResume: { onResume(game) },
+                                onCancel: { onCancel(game) },
+                                onPrioritize: { onPrioritize(game) },
+                                onRetry: { onRetry(game) }
+                            )
                         }
                     }
                 }
@@ -262,7 +290,7 @@ struct LibraryTransferCenterPopover: View {
             .frame(maxHeight: 330)
 
             Divider().opacity(0.14)
-            Label("El progreso se actualiza en tiempo real", systemImage: "bolt.horizontal.circle")
+            Label("La cola se conserva al cerrar Vessel", systemImage: "checkmark.icloud")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .padding(.horizontal, 16)
@@ -279,13 +307,19 @@ struct LibraryTransferRow: View {
     let item: LibraryTransferItem
     let game: StoreGame
     let tint: Color
-    let action: () -> Void
+    let onOpen: () -> Void
+    let onPause: () -> Void
+    let onResume: () -> Void
+    let onCancel: () -> Void
+    let onPrioritize: () -> Void
+    let onRetry: () -> Void
     @State private var hovering = false
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-        Button(action: action) {
-            HStack(spacing: 12) {
+        HStack(spacing: 8) {
+            Button(action: onOpen) {
+                HStack(spacing: 12) {
                 GameCoverImage(cacheKey: "transfer-\(game.id)", candidates: game.coverCandidates) {
                     ZStack {
                         game.placeholderColor
@@ -297,7 +331,7 @@ struct LibraryTransferRow: View {
                 .frame(width: 38, height: 52)
                 .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
 
-                VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: 6) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(game.title)
                             .font(.callout.weight(.semibold))
@@ -310,35 +344,99 @@ struct LibraryTransferRow: View {
                         }
                     }
 
-                    Text(item.message)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                        HStack(spacing: 5) {
+                            phaseIcon
+                            Text(item.message)
+                                .font(.caption)
+                                .foregroundStyle(item.phase == .failed ? Color.red.opacity(0.86) : .secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
 
-                    if let fraction = item.fractionCompleted {
-                        ProgressView(value: fraction)
-                            .progressViewStyle(.linear)
-                            .tint(tint)
-                    } else {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .tint(tint)
+                        if let fraction = item.fractionCompleted {
+                            ProgressView(value: fraction)
+                                .progressViewStyle(.linear)
+                                .tint(tint)
+                        } else if [.running, .pausing, .cancelling].contains(item.phase) {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .tint(tint)
+                        }
                     }
                 }
             }
+            .buttonStyle(.plain)
+
+            transferControls
+        }
             .padding(.horizontal, 9)
             .padding(.vertical, 7)
             .background {
                 if hovering { shape.fill(.white.opacity(0.055)) }
             }
             .contentShape(shape)
-        }
-        .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .accessibilityLabel(game.title)
         .accessibilityValue(accessibilityValue)
-        .accessibilityHint("Abre los detalles del juego")
+        .accessibilityHint("Abre los detalles o gestiona la operación")
+    }
+
+    @ViewBuilder private var phaseIcon: some View {
+        switch item.phase {
+        case .queued:
+            Image(systemName: "clock").foregroundStyle(.secondary)
+        case .running:
+            Image(systemName: "arrow.down.circle.fill").foregroundStyle(tint)
+        case .pausing, .cancelling:
+            Image(systemName: "ellipsis.circle").foregroundStyle(.secondary)
+        case .paused:
+            Image(systemName: "pause.circle.fill").foregroundStyle(.secondary)
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red.opacity(0.86))
+        }
+    }
+
+    @ViewBuilder private var transferControls: some View {
+        HStack(spacing: 3) {
+            if item.canRetry {
+                Button(action: onRetry) {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .vesselHelp("Reintentar")
+            } else if item.phase == .paused {
+                Button(action: onResume) {
+                    Image(systemName: "play.fill")
+                }
+                .vesselHelp("Reanudar")
+            } else if item.canPause {
+                Button(action: onPause) {
+                    Image(systemName: "pause.fill")
+                }
+                .vesselHelp("Pausar")
+            }
+
+            Menu {
+                if item.canPrioritize {
+                    Button(action: onPrioritize) {
+                        Label("Priorizar", systemImage: "arrow.up.to.line")
+                    }
+                }
+                if item.canCancel {
+                    Button(role: .destructive, action: onCancel) {
+                        Label("Cancelar", systemImage: "xmark")
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .disabled(!item.canPrioritize && !item.canCancel)
+            .vesselHelp("Más acciones")
+        }
+        .buttonStyle(.plain)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.secondary)
     }
 
     private var accessibilityValue: String {

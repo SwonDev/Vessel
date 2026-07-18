@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Gestiona **SteamCMD** (cliente de línea de comandos de Steam) para instalar juegos
 /// de forma ROBUSTA, sin depender del frágil cliente GUI bajo Wine. Descarga los
@@ -22,6 +23,7 @@ final class SteamCMDManager {
     var isInstalled: Bool { FileManager.default.isExecutableFile(atPath: scriptPath) }
 
     private let log = LogStore.shared
+    nonisolated private let processRegistry = ManagedProcessRegistry()
 
     // MARK: - Instalación de SteamCMD
 
@@ -83,8 +85,17 @@ final class SteamCMDManager {
     /// Instala/actualiza/verifica un juego con SteamCMD. `validate` fuerza la comprobación de
     /// integridad (re-hash de TODOS los ficheros): necesaria para instalar y para "Verificar/
     /// reparar", pero innecesaria y lenta para una simple "Actualización" (que es incremental).
-    func installGame(appId: String, user: String, installDir: String, validate: Bool = true, onProgress: @escaping @MainActor (Double, String) -> Void) async -> Bool {
+    func installGame(
+        appId: String,
+        user: String,
+        installDir: String,
+        validate: Bool = true,
+        operationID: String? = nil,
+        onProgress: @escaping @MainActor (Double, String) -> Void
+    ) async -> Bool {
         try? FileManager.default.createDirectory(atPath: installDir, withIntermediateDirectories: true)
+        let executionID = operationID ?? "steamcmd-\(UUID().uuidString)"
+        processRegistry.prepare(executionID)
         let args = [
             "+@sSteamCmdForcePlatformType windows",
             "+force_install_dir \(shellQuote(installDir))",
@@ -93,28 +104,61 @@ final class SteamCMDManager {
             "+quit"
         ]
         var success = false
-        let (output, code) = await run(arguments: args) { line in
-            let l = line.lowercased()
-            if let pct = Self.progressPercent(in: line) {
-                onProgress(pct, "Descargando… \(Int(pct))%")
-            } else if l.contains("fully installed") {
-                onProgress(100, "Instalación completada")
-            } else if l.contains("validating") {
-                onProgress(0, "Verificando…")
+        let (output, code) = await withTaskCancellationHandler {
+            await run(arguments: args, operationID: executionID) { line in
+                let l = line.lowercased()
+                if let pct = Self.progressPercent(in: line) {
+                    onProgress(pct, "Descargando… \(Int(pct))%")
+                } else if l.contains("fully installed") {
+                    onProgress(100, "Instalación completada")
+                } else if l.contains("validating") {
+                    onProgress(0, "Verificando…")
+                }
             }
+        } onCancel: {
+            processRegistry.cancel(executionID)
         }
+        guard !Task.isCancelled else { return false }
         if output.lowercased().contains("fully installed") || code == 0 {
             success = output.lowercased().contains("fully installed")
         }
         return success
     }
 
+    /// Interrumpe una operación concreta. SteamCMD conserva su staging y una ejecución posterior
+    /// continúa desde el punto descargado, lo que permite pausar sin corromper la instalación.
+    nonisolated func cancel(operationID: String) {
+        processRegistry.cancel(operationID)
+    }
+
+    /// Compara en una sola sesión de SteamCMD los `buildid` locales con la rama pública remota.
+    /// Se usa solo para juegos cuyo appmanifest contiene una versión real (> 0).
+    func gamesWithUpdates(localBuildIDs: [String: String]) async -> Set<String> {
+        let comparable = localBuildIDs.filter { !$0.key.isEmpty && (Int($0.value) ?? 0) > 0 }
+        guard isInstalled, !comparable.isEmpty else { return [] }
+        var arguments = ["+login anonymous", "+app_info_update 1"]
+        arguments.append(contentsOf: comparable.keys.sorted().map { "+app_info_print \($0)" })
+        arguments.append("+quit")
+        let (output, code) = await run(arguments: arguments, onLine: nil)
+        guard code == 0 else { return [] }
+        let remote = Self.publicBuildIDs(in: output)
+        return Set(comparable.compactMap { appID, localBuild in
+            guard let remoteBuild = remote[appID], remoteBuild != localBuild else { return nil }
+            return appID
+        })
+    }
+
     // MARK: - Ejecución
 
     /// Ejecuta SteamCMD a través de un login shell (entorno completo, necesario para
     /// Rosetta/SteamCMD). Transmite cada línea de salida a `onLine`.
-    private func run(arguments: [String], onLine: (@MainActor (String) -> Void)?) async -> (output: String, exitCode: Int32) {
-        let command = "cd \(shellQuote(dir)) && ./steamcmd.sh \(arguments.joined(separator: " "))"
+    private func run(
+        arguments: [String],
+        operationID: String? = nil,
+        onLine: (@MainActor (String) -> Void)?
+    ) async -> (output: String, exitCode: Int32) {
+        let command = "cd \(shellQuote(dir)) && exec ./steamcmd.sh \(arguments.joined(separator: " "))"
+        let processRegistry = self.processRegistry
         return await withCheckedContinuation { (continuation: CheckedContinuation<(String, Int32), Never>) in
             DispatchQueue.global().async {
                 let process = Process()
@@ -148,18 +192,30 @@ final class SteamCMDManager {
                 do {
                     try process.run()
                 } catch {
+                    if let operationID { processRegistry.finish(operationID) }
                     continuation.resume(returning: (error.localizedDescription, -1))
                     return
                 }
+                let processGroupID: pid_t? = setpgid(process.processIdentifier, process.processIdentifier) == 0
+                    ? process.processIdentifier
+                    : nil
+                if let operationID {
+                    processRegistry.register(process, processGroupID: processGroupID, for: operationID)
+                }
                 let watchdog = DispatchWorkItem {
                     while process.isRunning {
-                        if activity.secondsSinceLastMark() > 1200 { process.terminate(); break }
+                        if activity.secondsSinceLastMark() > 1200 {
+                            if let operationID { processRegistry.cancel(operationID) }
+                            else { process.terminate() }
+                            break
+                        }
                         Thread.sleep(forTimeInterval: 30)
                     }
                 }
                 DispatchQueue.global().async(execute: watchdog)
                 process.waitUntilExit()
                 pipe.fileHandleForReading.readabilityHandler = nil
+                if let operationID { processRegistry.finish(operationID) }
                 continuation.resume(returning: (buffer.value, process.terminationStatus))
             }
         }
@@ -205,5 +261,38 @@ final class SteamCMDManager {
             return err.trimmingCharacters(in: .whitespaces)
         }
         return "No se pudo completar la operación de SteamCMD."
+    }
+
+    nonisolated static func sizeOnDisk(in manifest: String) -> Int64? {
+        for line in manifest.split(separator: "\n") where line.lowercased().contains("\"sizeondisk\"") {
+            let fields = line.split(separator: "\"").map(String.init)
+            if let value = fields.last(where: { Int64($0.trimmingCharacters(in: .whitespaces)) != nil }) {
+                return Int64(value.trimmingCharacters(in: .whitespaces))
+            }
+        }
+        return nil
+    }
+
+    /// Extrae el `buildid` de la rama `public` de cada bloque `app_info_print`.
+    nonisolated static func publicBuildIDs(in output: String) -> [String: String] {
+        guard let appRegex = try? NSRegularExpression(pattern: #"(?m)^AppID\s*:\s*(\d+)"#),
+              let branchRegex = try? NSRegularExpression(
+                pattern: #"(?s)\"branches\"\s*\{.*?\"public\"\s*\{.*?\"buildid\"\s*\"(\d+)\""#
+              ) else { return [:] }
+        let ns = output as NSString
+        let matches = appRegex.matches(in: output, range: NSRange(location: 0, length: ns.length))
+        var result: [String: String] = [:]
+        for (index, match) in matches.enumerated() {
+            guard match.numberOfRanges > 1 else { continue }
+            let appID = ns.substring(with: match.range(at: 1))
+            let start = match.range.location + match.range.length
+            let end = index + 1 < matches.count ? matches[index + 1].range.location : ns.length
+            guard end > start else { continue }
+            let blockRange = NSRange(location: start, length: end - start)
+            guard let branch = branchRegex.firstMatch(in: output, range: blockRange),
+                  branch.numberOfRanges > 1 else { continue }
+            result[appID] = ns.substring(with: branch.range(at: 1))
+        }
+        return result
     }
 }

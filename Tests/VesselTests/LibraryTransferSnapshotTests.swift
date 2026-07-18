@@ -34,4 +34,27 @@ struct LibraryTransferSnapshotTests {
         #expect(LibraryTransferSnapshot.overallProgress(for: items) == nil)
         #expect(LibraryTransferSnapshot.overallProgress(for: []) == nil)
     }
+
+    @Test("Respeta el orden real de la cola y excluye pausas del progreso conjunto")
+    func reflectsQueueOrderAndActiveProgress() {
+        let games = [
+            StoreGame(id: "a", title: "Alfa"),
+            StoreGame(id: "b", title: "Beta"),
+            StoreGame(id: "c", title: "Charlie")
+        ]
+        let positions = ["a": 2, "b": 0, "c": 1]
+        let phases: [String: LibraryTransferPhase] = ["a": .paused, "b": .running, "c": .queued]
+
+        let items = LibraryTransferSnapshot.items(
+            games: games,
+            activeIDs: Set(games.map(\.id)),
+            progressFor: { _ in "Preparando" },
+            percentFor: { $0 == "b" ? 0.75 : nil },
+            phaseFor: { phases[$0] ?? .queued },
+            positionFor: { positions[$0] }
+        )
+
+        #expect(items.map(\.id) == ["b", "c", "a"])
+        #expect(LibraryTransferSnapshot.overallProgress(for: items) == 0.75)
+    }
 }
