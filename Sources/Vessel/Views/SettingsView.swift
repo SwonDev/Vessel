@@ -69,6 +69,11 @@ struct SettingsView: View {
         }
         .frame(width: 660, height: 580)
         .vesselBackground()
+        // La barra de pestañas hereda el navy del sistema de diseño: con el cromo gris por
+        // defecto de macOS el encabezado desentonaba del resto de la app (DESIGN.md §Colors:
+        // la cabecera es Background Top, nunca el gris del sistema).
+        .toolbarBackground(Theme.navyTop, for: .windowToolbar)
+        .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
         .task { checkResults = await dependencyManager.checkAll() }
     }
 
