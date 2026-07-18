@@ -366,10 +366,15 @@ final class GogStore {
                                                    useRealSteam: c.useRealSteam)
             },
             // Auto-reparación de runtime (VC++/.NET) también para GOG, igual que Steam.
-            retryWithRuntimeFix: { [weak self] in
-                guard let self else { return }
-                await self.wineManager.installMissingRuntimes(in: bottle, forExecutable: executable)
-                await self.play(game, attempt: attempt + 1)
+            retryWithRuntimeFix: { [weak self] missingLibrary in
+                guard let self else { return false }
+                let repaired = await self.wineManager.installMissingRuntimes(
+                    in: bottle,
+                    forExecutable: executable,
+                    missingLibrary: missingLibrary
+                )
+                if repaired { await self.play(game, attempt: attempt + 1) }
+                return repaired
             }
         ) { [weak self] next in await self?.play(game, forcedLayer: next, attempt: attempt + 1) }
     }

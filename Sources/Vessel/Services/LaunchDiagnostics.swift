@@ -32,6 +32,16 @@ enum LaunchDiagnostics {
         let category: Category
         let title: String
         let body: String
+        /// DLL concreto extraído del error de Wine, si aparece. Permite reparar cargas dinámicas
+        /// que no se observan en la tabla de imports del ejecutable.
+        let missingLibrary: String?
+
+        init(category: Category, title: String, body: String, missingLibrary: String? = nil) {
+            self.category = category
+            self.title = title
+            self.body = body
+            self.missingLibrary = missingLibrary
+        }
     }
 
     private struct Signature {
@@ -116,7 +126,12 @@ enum LaunchDiagnostics {
         let haystack = recentLogText(prefix: prefix)
         guard !haystack.isEmpty else { return nil }
         for sig in signatures where sig.markers.contains(where: { haystack.contains($0) }) {
-            return Failure(category: sig.category, title: sig.title, body: sig.body)
+            return Failure(
+                category: sig.category,
+                title: sig.title,
+                body: sig.body,
+                missingLibrary: sig.category == .missingLibrary ? missingLibraryName(in: haystack) : nil
+            )
         }
         return nil
     }
@@ -140,7 +155,7 @@ enum LaunchDiagnostics {
         isRunning: @escaping @MainActor () -> Bool = { false },
         persistWinningLayer: (@MainActor (GameConfig.GraphicsLayer) -> Void)? = nil,
         retryWithRealSteam: (@MainActor () async -> Void)? = nil,
-        retryWithRuntimeFix: (@MainActor () async -> Void)? = nil,
+        retryWithRuntimeFix: (@MainActor (String?) async -> Bool)? = nil,
         relaunch: @escaping @MainActor (GameConfig.GraphicsLayer) async -> Void
     ) {
         Task { @MainActor in
@@ -220,16 +235,20 @@ enum LaunchDiagnostics {
                 return
             }
 
-            // AUTO-REPARACIÓN DE RUNTIME: falta VC++/.NET (missingLibrary/dotNet). Cambiar de capa
-            // gráfica NO lo arregla → se instala el runtime (winetricks vcrun2022) y se relanza UNA vez.
+            // AUTO-REPARACIÓN DE RUNTIME: falta una dependencia de Windows (missingLibrary/dotNet).
+            // Cambiar de capa gráfica no lo arregla → se identifica el componente exacto, se instala
+            // de forma desatendida y solo se relanza si la reparación terminó correctamente.
             if failed, attempt < 1, let retryRuntime = retryWithRuntimeFix,
                failure?.category == .missingLibrary || failure?.category == .dotNet {
-                LogStore.shared.log("\(gameTitle): falta un runtime (VC++/.NET) → instalándolo automáticamente y relanzando…", level: .info)
+                LogStore.shared.log("\(gameTitle): falta un runtime de Windows → identificándolo, instalándolo y relanzando…", level: .info)
                 NotificationService.shared.notify(title: "Reparando automáticamente: \(gameTitle)",
-                                                  body: "Instalando el runtime que falta (Visual C++ / .NET)…")
+                                                  body: "Instalando el componente de Windows que necesita el juego…")
                 GameLaunchTracker.shared.stop(gameId)
                 try? await Task.sleep(for: .seconds(2))
-                await retryRuntime()
+                let repaired = await retryRuntime(failure?.missingLibrary)
+                if !repaired, let failure {
+                    report(failure, gameTitle: gameTitle)
+                }
                 return
             }
 
@@ -389,5 +408,25 @@ enum LaunchDiagnostics {
               let data = fm.contents(atPath: path),
               let text = String(data: data, encoding: .utf8) else { return nil }
         return text
+    }
+
+    /// Extrae el primer nombre `.dll` de una línea que Wine marque realmente como ausente. No toma
+    /// cualquier DLL del log porque `loaddll` también registra cargas sanas y provocaría reparaciones
+    /// falsas. Se deja accesible al módulo para cubrir el parser con pruebas de regresión.
+    nonisolated static func missingLibraryName(in output: String) -> String? {
+        let failureMarkers = ["not found", "could not load", "module not found", "status_dll_not_found",
+                              "c0000135", "can't find", "cannot find"]
+        for line in output.split(separator: "\n").map(String.init) {
+            let lowercased = line.lowercased()
+            guard failureMarkers.contains(where: lowercased.contains),
+                  let dllRange = lowercased.range(of: ".dll") else { continue }
+            let throughDLL = String(line[..<dllRange.upperBound])
+            let delimiters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-\\/"))
+            let candidate = throughDLL.components(separatedBy: delimiters.inverted).last ?? ""
+            let name = candidate.components(separatedBy: CharacterSet(charactersIn: "\\/")).last ?? ""
+            guard name.lowercased().hasSuffix(".dll"), name.count <= 128 else { continue }
+            return name
+        }
+        return nil
     }
 }

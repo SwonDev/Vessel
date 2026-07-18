@@ -751,9 +751,14 @@ struct LocalGamesView: View {
                     DiscoveredFixesStore.shared.record(id: id, title: game.name, store: "local", storeId: nil,
                                                        graphicsLayer: winLayer.rawValue, useRealSteam: false)
                 },
-                retryWithRuntimeFix: {
-                    await wineManager.installMissingRuntimes(in: bottle, forExecutable: exe)
-                    play(game, attempt: attempt + 1)
+                retryWithRuntimeFix: { missingLibrary in
+                    let repaired = await wineManager.installMissingRuntimes(
+                        in: bottle,
+                        forExecutable: exe,
+                        missingLibrary: missingLibrary
+                    )
+                    if repaired { play(game, attempt: attempt + 1) }
+                    return repaired
                 }
             ) { next in play(game, forcedLayer: next, attempt: attempt + 1) }
         }

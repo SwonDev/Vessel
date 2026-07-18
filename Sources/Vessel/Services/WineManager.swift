@@ -4578,15 +4578,40 @@ final class WineManager {
         )
     }
 
-    /// Auto-reparación de RUNTIME: cuando `LaunchDiagnostics` detecta que falta una librería del
-    /// sistema (firma `missingLibrary`/`dotNet`), instala en el prefijo del juego los redistribuibles
-    /// que suelen faltar — **Visual C++ 2015-2022** (`vcrun2022`, idempotente vía winetricks). El .NET
-    /// Framework lo cubre `wine-mono` (que Wine auto-instala); el .NET moderno lo trae el propio juego.
-    /// Best-effort: si winetricks no está, `applyWinetricksVerbs` avisa sin bloquear. Cambiar de motor
-    /// NO arregla un runtime que falta, por eso esto es una reparación DEDICADA (no un ciclo de capas).
-    func installMissingRuntimes(in bottle: Bottle, forExecutable executable: String) async {
+    /// Auto-reparación de runtime: cuando `LaunchDiagnostics` confirma que falta una librería,
+    /// inspecciona la instalación y aplica únicamente las generaciones de VC++, .NET, DirectX,
+    /// XNA, audio u otros componentes que el juego referencia. El plan evita el antiguo
+    /// `vcrun2022` universal, que no cubría títulos antiguos y podía ocultar la causa real.
+    ///
+    /// `applyWinetricksVerbs` conserva la instalación idempotente, desatendida y verificada. Cambiar
+    /// de motor no arregla una dependencia ausente, por eso esta reparación es independiente del
+    /// ciclo de capas gráficas.
+    @discardableResult
+    func installMissingRuntimes(in bottle: Bottle, forExecutable executable: String,
+                                missingLibrary: String? = nil) async -> Bool {
         let wine = resolveGameWine(for: bottle, executable: executable)
-        await applyWinetricksVerbs(["vcrun2022"], prefix: bottle.prefixPath, wine: wine)
+        let plan = RuntimeDependencyProvisioner.repairPlan(
+            executable: executable,
+            missingLibrary: missingLibrary
+        )
+        let verbs: [String]
+        if plan.winetricksVerbs.isEmpty, missingLibrary == nil, plan.dependencies.isEmpty {
+            verbs = ["vcrun2022"]
+        }
+        else { verbs = plan.winetricksVerbs }
+        guard !verbs.isEmpty else {
+            log.log("La librería ausente \(missingLibrary ?? "desconocida") no corresponde a un runtime autorreparable; se evita instalar componentes sin evidencia.", level: .warn)
+            return false
+        }
+        if plan.dependencies.isEmpty {
+            log.log("No se pudo identificar el runtime exacto; aplicando el fallback seguro VC++ 2015-2022.", level: .warn)
+        } else {
+            log.log("Plan de reparación detectado: \(plan.dependencies.map(\.label).joined(separator: ", ")) → \(verbs.joined(separator: ", ")).", level: .info)
+        }
+        // Llegamos aquí porque existe evidencia de fallo aunque el marcador diga que el verbo se
+        // aplicó anteriormente. Forzar una reinstalación permite autorreparar un prefijo incompleto
+        // o dañado; sin esto la ruta de reparación podía convertirse en un no-op.
+        return await applyWinetricksVerbs(verbs, prefix: bottle.prefixPath, wine: wine, force: true)
     }
 
     /// Resuelve `winetricks`: si no está en el sistema, DESCARGA el script oficial (un único fichero
@@ -4625,16 +4650,19 @@ final class WineManager {
     /// Aplica los verbos de winetricks que pide el perfil (vcrun, d3dx9…) de forma IDEMPOTENTE:
     /// lleva un registro en `<prefix>/.vessel-winetricks-applied` y solo aplica los que falten.
     ///
-    /// NO descarga winetricks en el camino de lanzamiento (sería lento/bloqueante y rompería el
-    /// "sin fricciones"): si no hay un `winetricks` instalado en el sistema, avisa en el log
-    /// nombrando los verbos pendientes y sigue. Así el juego arranca igual y el usuario sabe qué
-    /// runtime podría faltarle. (`winetricks` se instala con `brew install winetricks`.)
-    private func applyWinetricksVerbs(_ verbs: [String], prefix: String, wine: String) async {
+    /// Si el equipo no tiene winetricks, usa `ensureWinetricks()` para obtener el script oficial
+    /// fijado y verificado por SHA-256 en la caché de Vessel. La ejecución es asíncrona y desatendida,
+    /// de modo que no depende de Homebrew ni bloquea la interfaz mientras instala el runtime.
+    @discardableResult
+    private func applyWinetricksVerbs(_ verbs: [String], prefix: String, wine: String,
+                                      force: Bool = false) async -> Bool {
         let marker = "\(prefix)/.vessel-winetricks-applied"
         let already = Set(((try? String(contentsOfFile: marker, encoding: .utf8)) ?? "")
             .split(separator: "\n").map(String.init))
-        let pending = verbs.filter { !already.contains($0) }
-        guard !pending.isEmpty else { return }
+        var seen = Set<String>()
+        let requested = verbs.filter { seen.insert($0).inserted }
+        let pending = force ? requested : requested.filter { !already.contains($0) }
+        guard !pending.isEmpty else { return true }
 
         // winetricks: del sistema o AUTO-DESCARGADO (es un único script shell público, sin compilar),
         // para que la auto-reparación de runtimes NO dependa de `brew install winetricks`.
@@ -4646,13 +4674,13 @@ final class WineManager {
             winetricks = dl
         } else {
             log.log("Falta winetricks para instalar [\(pending.joined(separator: ", "))] y no se pudo descargar (¿sin red?); el juego podría faltarle ese runtime.", level: .warn)
-            return
+            return false
         }
 
         log.log("Aplicando winetricks (perfil): \(pending.joined(separator: ", "))…", level: .info)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: winetricks)
-        process.arguments = ["--unattended"] + pending
+        process.arguments = ["--unattended"] + (force ? ["--force"] : []) + pending
         var env = ProcessInfo.processInfo.environment
         env["WINE"] = wine
         env["WINEPREFIX"] = prefix
@@ -4700,11 +4728,13 @@ final class WineManager {
             let updated = already.union(pending).sorted().joined(separator: "\n")
             try? updated.write(toFile: marker, atomically: true, encoding: .utf8)
             log.log("✓ winetricks aplicado: \(pending.joined(separator: ", "))", level: .info)
+            return true
         } else if let status {
             log.log("winetricks devolvió código \(status) aplicando [\(pending.joined(separator: ", "))]. Detalle: \(outPath)", level: .warn)
         } else {
             log.log("No se pudo ejecutar winetricks.", level: .warn)
         }
+        return false
     }
 
     nonisolated static func isRecoverableSteamServiceCrash(_ output: String) -> Bool {

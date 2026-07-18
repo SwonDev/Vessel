@@ -1,5 +1,4 @@
 import Foundation
-import AppKit
 
 @MainActor
 @Observable
@@ -13,11 +12,6 @@ final class SteamLibraryImporter {
         let coverURL: String?
     }
 
-    struct SteamLibrary {
-        let path: String
-        let games: [ImportedGame]
-    }
-
     /// Escanea los juegos instalados DENTRO del bottle (el Steam del prefijo),
     /// que es donde Vessel los instala — no el Steam nativo de macOS. Es la fuente
     /// correcta para que los juegos aparezcan en la lista de Vessel.
@@ -27,40 +21,6 @@ final class SteamLibraryImporter {
         // Filtramos los AppID de herramientas internas de Steam (Steamworks, redist…).
         let internalAppIds: Set<String> = ["228980", "1070560", "1391110", "1493710", "250820"]
         return scanSteamApps(at: bottleSteam).filter { !internalAppIds.contains($0.appId) }
-    }
-
-    func discoverSteamLibraries() -> [SteamLibrary] {
-        var libraries: [SteamLibrary] = []
-        let home = NSHomeDirectory()
-
-        let possiblePaths = [
-            "\(home)/Library/Application Support/Steam",
-            "\(home)/.steam/steam",
-            "\(home)/.local/share/Steam",
-            "/Applications/Steam.app/Contents/MacOS"
-        ]
-
-        for path in possiblePaths {
-            if FileManager.default.fileExists(atPath: path) {
-                let games = scanSteamApps(at: path)
-                if !games.isEmpty {
-                    libraries.append(SteamLibrary(path: path, games: games))
-                }
-            }
-        }
-
-        if let configPath = "\(home)/Library/Application Support/Steam/steamapps/libraryfolders.vdf".asFileURL,
-           let data = try? String(contentsOf: configPath, encoding: .utf8) {
-            let extraPaths = parseLibraryFolders(data)
-            for extra in extraPaths {
-                if !libraries.contains(where: { $0.path == extra }) {
-                    let games = scanSteamApps(at: extra)
-                    libraries.append(SteamLibrary(path: extra, games: games))
-                }
-            }
-        }
-
-        return libraries
     }
 
     private func scanSteamApps(at steamPath: String) -> [ImportedGame] {
@@ -269,26 +229,4 @@ final class SteamLibraryImporter {
         return nil
     }
 
-    private func parseLibraryFolders(_ content: String) -> [String] {
-        var paths: [String] = []
-        let pattern = #""path"\s+"([^"]+)""#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return paths }
-        let range = NSRange(content.startIndex..., in: content)
-        for match in regex.matches(in: content, range: range) {
-            if let r = Range(match.range(at: 1), in: content) {
-                paths.append(String(content[r]))
-            }
-        }
-        return paths
-    }
-}
-
-private extension String {
-    var asFileURL: URL? {
-        let expanded = (self as NSString).expandingTildeInPath
-        if FileManager.default.fileExists(atPath: expanded) {
-            return URL(fileURLWithPath: expanded)
-        }
-        return nil
-    }
 }

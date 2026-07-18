@@ -18,10 +18,12 @@ invisible) y la estética premium (DESIGN.md). Basado en auditoría de huecos fr
 - **Diagnóstico post-lanzamiento** (`LaunchDiagnostics`): avisos accionables al fallar un juego.
 - **Fallback automático de motor** (DXMT↔GPTK): si el arranque falla de forma recuperable
   (gráficos/crash/Vulkan), relanza con la otra capa una vez y avisa. Cableado en las 3 tiendas.
-- **Provisión de dependencias de runtime** (`RuntimeDependencyProvisioner`): detecta imports PE y
-  copia junto al `.exe` los helpers de DirectX 9 (d3dx9/d3dcompiler) que empaquetamos. VC++/.NET/
-  XInput los cubre el builtin del motor; el diagnóstico puede auto-reparar VC++ con un winetricks
-  fijado y verificado por SHA-256, sin depender de Homebrew.
+- **Provisión y autorreparación de runtimes** (`RuntimeDependencyProvisioner`): inspecciona de forma
+  acotada el ejecutable, DLLs y configuraciones del juego; distingue generaciones VC++ 6–2022,
+  .NET Framework/.NET Desktop 6–9, XNA, helpers DirectX, XInput/XAudio/XACT, OpenAL, PhysX, GDI+ y
+  DirectShow. Copia los helpers D3DX empaquetados y, solo ante un fallo real, aplica el plan exacto
+  con winetricks fijado y verificado por SHA-256. La reparación forzada recompone también prefijos
+  dañados aunque el runtime figurase como instalado, sin depender de Homebrew ni de Steam macOS.
 - **Anti-cheat honesto**: cruza la ficha con MacAnticheatData y marca «No funciona» con la causa
   solo para estados `Denied`/`Broken`; `Unknown` no se degrada. Los perfiles declaran también la
   protección en Epic/GOG y nunca se intenta desactivar ni eludirla.

@@ -636,9 +636,14 @@ struct BottleDetailView: View {
                 await launchGame(game, attempt: attempt + 1)
             } as @MainActor () async -> Void),
             // Auto-reparación de RUNTIME: si falta VC++/.NET, instálalo (winetricks) y relanza (una vez).
-            retryWithRuntimeFix: {
-                await wineManager.installMissingRuntimes(in: localBottle, forExecutable: exePath)
-                await launchGame(game, attempt: attempt + 1)
+            retryWithRuntimeFix: { missingLibrary in
+                let repaired = await wineManager.installMissingRuntimes(
+                    in: localBottle,
+                    forExecutable: exePath,
+                    missingLibrary: missingLibrary
+                )
+                if repaired { await launchGame(game, attempt: attempt + 1) }
+                return repaired
             }
         ) { next in await launchGame(game, forcedLayer: next, attempt: attempt + 1) }
     }

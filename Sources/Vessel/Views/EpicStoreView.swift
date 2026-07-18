@@ -293,9 +293,15 @@ final class EpicStore {
                                                    useRealSteam: c.useRealSteam)
             },
             // Auto-reparación de runtime (VC++/.NET) también para Epic, igual que Steam.
-            retryWithRuntimeFix: { [weak self] in
-                await self?.wineManager.installMissingRuntimes(in: bottle, forExecutable: exe)
-                await self?.play(game, attempt: attempt + 1)
+            retryWithRuntimeFix: { [weak self] missingLibrary in
+                guard let self else { return false }
+                let repaired = await self.wineManager.installMissingRuntimes(
+                    in: bottle,
+                    forExecutable: exe,
+                    missingLibrary: missingLibrary
+                )
+                if repaired { await self.play(game, attempt: attempt + 1) }
+                return repaired
             }
         ) { [weak self] next in await self?.play(game, forcedLayer: next, attempt: attempt + 1) }
     }
