@@ -202,6 +202,15 @@ enum WineEngineLocator {
         winePath.contains("/\(d3dmetalEngineName)/")
     }
 
+    /// True si la ruta de Wine pertenece al **GPTK/D3DMetal de Apple** (`gptk-mythic` o su
+    /// variante `gptk-mythic-mousefix`). Mismo modelo de contexto que DXMT/D3DMetal: desde la
+    /// app (hijo directo con herencia de bundle) el device Metal no se crea y el juego muere
+    /// al instante — necesita el lanzamiento con entorno LIMPIO. Verificado con Dwarven Realms
+    /// (UE5): a mano y vía env -i abre hasta el menú; desde la app moría sin dejar log.
+    static func isGPTKEngine(_ winePath: String) -> Bool {
+        winePath.contains("/gptk-mythic/") || winePath.contains("/gptk-mythic-mousefix/")
+    }
+
     /// True si el motor corre el **CEF moderno de Steam** con el modelo unificado
     /// (`WINEMSYNC=0` + `DYLD_FALLBACK_LIBRARY_PATH` a su `lib/` para freetype/gnutls, wrapper
     /// SwiftShader, self-update permitido). Lo cumplen tanto el unificado como el D3DMetal

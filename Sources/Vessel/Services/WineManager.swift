@@ -654,6 +654,43 @@ final class WineManager {
         }
     }
 
+    /// Responde «No» automáticamente al diálogo modal **«WARNING: Known issues with graphics
+    /// driver»** que UE4/UE5 muestran cuando la GPU se reporta como AMD (es lo que hace el
+    /// D3DMetal de GPTK: su dxgi/d3d11 dice "AMD Compatibility Mode" y la AGS de AMD salta).
+    /// El diálogo BLOQUEA el arranque del juego: sin respuesta el watchdog lo mata por «no
+    /// renderizar». «No» = seguir jugando sin abrir la web de AMD; es la respuesta correcta
+    /// siempre (no cambia rutas ni afecta a juegos sin ese diálogo: solo actúa si aparece una
+    /// ventana con ese título exacto). Verificado con Dwarven Realms (UE5): tras el «No»
+    /// automático arranca hasta su menú. El botón «No» va anclado abajo-derecha a posición
+    /// RELATIVA (~88,5 % del ancho, ~92,5 % del alto — medido a 464×289 y 232×159 pt, que
+    /// tienen márgenes en puntos DISTINTOS: la relativa es la que se mantiene). Reintenta
+    /// mientras el diálogo siga visible (un clic puede caer durante la animación de apertura).
+    private func dismissAMDDriverWarningDialog() {
+        Task { @MainActor in
+            let deadline = Date().addingTimeInterval(240)
+            while Date() < deadline {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                let ventanas = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                                           kCGNullWindowID) as? [[String: Any]]) ?? []
+                guard let dlg = ventanas.first(where: {
+                    ($0[kCGWindowName as String] as? String) == "WARNING: Known issues with graphics driver"
+                }), let b = dlg[kCGWindowBounds as String] as? [String: Any],
+                  let x = b["X"] as? Double, let y = b["Y"] as? Double,
+                  let w = b["Width"] as? Double, let h = b["Height"] as? Double else { continue }
+                let punto = CGPoint(x: x + w * 0.885, y: y + h * 0.925)
+                let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,
+                                   mouseCursorPosition: punto, mouseButton: .left)
+                let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp,
+                                 mouseCursorPosition: punto, mouseButton: .left)
+                down?.post(tap: .cghidEventTap)
+                up?.post(tap: .cghidEventTap)
+                log.log("Diálogo AMD «Known issues with graphics driver» respondido con «No» en \(Int(punto.x)),\(Int(punto.y)) (el juego sigue arrancando).", level: .info)
+                // Sin `return`: si el clic no cuajó (animación, foco), el siguiente sondeo reintenta.
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+            }
+        }
+    }
+
     /// Carpeta del **mod de Source** que hay que arrancar (la que tiene el `gameinfo.txt`), o `nil`
     /// si no es un juego de este motor.
     ///
@@ -2106,8 +2143,17 @@ final class WineManager {
             try await gptkManager.ensureInstalled { msg, pct in
                 Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
             }
-            guard let gptkWine = gptkManager.wineBinaryPath else {
+            guard var gptkWine = gptkManager.wineBinaryPath else {
                 throw WineError.launchFailed("No se pudo localizar el wine de GPTK/D3DMetal.")
+            }
+            // Unreal (UE4/UE5) MUERE con la variante **mousefix** del GPTK (su `win32u`
+            // parcheado a WM_POINTER tumba el proceso antes de crear ventana; verificado con
+            // Dwarven Realms, UE5: mousefix muere en <60 s sin dejar log; el motor BASE llega
+            // al menú). El mousefix se creó para el ratón de Unity 6 (Dragon Is Dead): ahí se
+            // queda — este cambio solo desvía a Unreal al motor base, no toca la ruta Unity.
+            if isUnrealGame(executable) {
+                let gptkBase = "\(gptkManager.engineRootPath)/wine/bin/wine"
+                if FileManager.default.isExecutableFile(atPath: gptkBase) { gptkWine = gptkBase }
             }
             d3d12Wine = gptkWine
         }
@@ -2143,6 +2189,12 @@ final class WineManager {
         var env = useD3DMetalEngine
             ? d3dMetalUnifiedEnvironment(prefix: bottle.prefixPath)
             : gptkManager.d3dMetalEnvironment(prefix: bottle.prefixPath)
+        // Unreal + GPTK: DYLD al `external` del motor BASE (el de mousefix no le sirve).
+        // El sync (esync/fsync=0) se pisa más abajo, en el overlay efectivo de launchWineProcess
+        // (que si no volvería a activarlos según el perfil). Solo afecta a Unreal.
+        if !useD3DMetalEngine, isUnrealGame(executable) {
+            env["DYLD_FALLBACK_LIBRARY_PATH"] = "\(gptkManager.engineRootPath)/wine/lib/external"
+        }
         if let appId = steamAppId, !appId.isEmpty {
             env["SteamAppId"] = appId
             env["SteamGameId"] = appId
@@ -4171,6 +4223,15 @@ final class WineManager {
                 fullEnv["WINEESYNC"] = (eff.esync || eff.msync) ? "1" : "0"
                 fullEnv["WINEFSYNC"] = eff.fsync ? "1" : "0"
             }
+            // Unreal (UE4/UE5) sobre GPTK: esync/fsync le MATAN el arranque (mismo criterio que
+            // la ruta UE4 de wine-full); solo msync es compatible. Pisa el sync del perfil SOLO
+            // en este caso. Verificado con Dwarven Realms (UE5): con WINEESYNC=1 muere antes de
+            // crear ventana; con msync solo llega al menú.
+            if WineEngineLocator.isGPTKEngine(winePath),
+               let exe = arguments.first, isUnrealGame(exe) {
+                fullEnv["WINEESYNC"] = "0"
+                fullEnv["WINEFSYNC"] = "0"
+            }
             // HUD de rendimiento de Metal (ajuste del usuario). Se aplica AQUÍ, en el overlay
             // efectivo, para que pise el `MTL_HUD_ENABLED=0` que fija el entorno base de D3DMetal
             // (GPTKManager) — así el toggle también funciona en juegos D3D12.
@@ -4264,6 +4325,71 @@ final class WineManager {
             process.executableURL = URL(fileURLWithPath: "/bin/bash")
             process.arguments = ["-c", "exec /usr/bin/env -i \(assignments) \(cmdline)"]
             process.environment = fullEnv
+        } else if WineEngineLocator.isGPTKEngine(winePath), effective != nil {
+            // Juegos por **GPTK/D3DMetal de Apple (gptk-mythic)**: desde la app MUEREN al instante
+            // tanto con el entorno heredado como con `env -i` en hijo directo — el "responsible
+            // process" de la .app les impide crear su contexto gráfico (UE5 integra CEF para sus
+            // web widgets: misma clase de problema que el CEF del cliente Steam). Solo arrancan
+            // vía **LaunchAgent** (bootstrap en `gui/<uid>`, PPID=1, sesión Aqua propia), igual que
+            // el cliente Steam del motor completo. Verificado con Dwarven Realms (UE5): hijo
+            // directo (heredado o env -i) muere en <60 s sin dejar log; LaunchAgent abre hasta el
+            // menú. Agente PROPIO (no el del cliente Steam): ni le pisa el label ni mata steam.exe.
+            log.log("GPTK/D3DMetal: lanzando el juego vía LaunchAgent (launchd bootstrap, independiente de la app).", level: .info)
+            var clean: [String: String] = [:]
+            for k in ["HOME", "USER", "TMPDIR", "WINEPREFIX", "WINEDEBUG", "MVK_CONFIG_LOG_LEVEL",
+                      "WINEDLLOVERRIDES", "DYLD_FALLBACK_LIBRARY_PATH", "SteamAppId", "SteamGameId",
+                      "WINEMSYNC", "WINEESYNC", "WINEFSYNC", "CX_FWD_COMPAT_GL_CTX", "MTL_HUD_ENABLED",
+                      "ROSETTA_ADVERTISE_AVX", "SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS",
+                      "SDL_JOYSTICK_HIDAPI", "SDL_JOYSTICK_HIDAPI_PS4", "SDL_JOYSTICK_HIDAPI_PS4_RUMBLE",
+                      "SDL_JOYSTICK_HIDAPI_PS5", "SDL_JOYSTICK_HIDAPI_PS5_RUMBLE", "SDL_JOYSTICK_HIDAPI_SWITCH"] {
+                if let v = fullEnv[k] { clean[k] = v }
+            }
+            func shq(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+            let assignments = clean.map { "\($0.key)=\(shq($0.value))" }.joined(separator: " ")
+            let cmdline = ([winePath] + arguments).map { shq($0) }.joined(separator: " ")
+            let cwd = workingDirectory ?? (prefix as NSString).deletingLastPathComponent
+            let script = "cd \(shq(cwd))\nexec /usr/bin/env -i \(assignments) \(cmdline)\n"
+            let cmdFile = "\(NSHomeDirectory())/Library/Application Support/Vessel/.game-launch.sh"
+            try? script.write(toFile: cmdFile, atomically: true, encoding: .utf8)
+            let uid = getuid()
+            let agentLabel = "com.swondev.vessel.gamelauncher"
+            let agentPlist = "\(NSHomeDirectory())/Library/Application Support/Vessel/gamelauncher.plist"
+            let agentLog = "\(NSHomeDirectory())/Library/Logs/Vessel/game-agent.log"
+            let plistXML = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+                <key>Label</key><string>\(agentLabel)</string>
+                <key>ProgramArguments</key>
+                <array><string>/bin/bash</string><string>\(cmdFile)</string></array>
+                <key>RunAtLoad</key><true/>
+                <key>LimitLoadToSessionType</key><string>Aqua</string>
+                <key>ProcessType</key><string>Interactive</string>
+                <key>StandardOutPath</key><string>\(agentLog)</string>
+                <key>StandardErrorPath</key><string>\(agentLog)</string>
+            </dict>
+            </plist>
+            """
+            try? plistXML.write(toFile: agentPlist, atomically: true, encoding: .utf8)
+            // bootout del agente previo (idempotente) + bootstrap; el kickstart de refuerzo espera
+            // al exe del juego (RunAtLoad puede fallar si el wineserver anterior aún se cierra).
+            let exeBase = arguments.first(where: { $0.lowercased().hasSuffix(".exe") })
+                .map { (($0 as NSString).lastPathComponent as NSString).deletingPathExtension } ?? "wine"
+            let bootCmd =
+                "/bin/launchctl bootout gui/\(uid)/\(agentLabel) 2>/dev/null; sleep 1; "
+                + "/bin/launchctl bootstrap gui/\(uid) '\(agentPlist)' 2>/dev/null; "
+                + "for r in 1 2 3 4 5 6; do sleep 4; /usr/bin/pgrep -f '\(exeBase)' >/dev/null 2>&1 && break; "
+                + "/bin/launchctl kickstart gui/\(uid)/\(agentLabel) 2>/dev/null; done; "
+                // VITAL: el bash devuelto debe VIVIR lo que viva el juego — el tracker
+                // (GameLaunchTracker) y el watchdog miden la vida del juego por ESTE proceso.
+                // Si el bash sale tras el bootstrap, el watchdog cree a los ~9 s que el juego
+                // murió y dispara la auto-reparación (Dwarven Realms: mató el agente sano).
+                + "while /usr/bin/pgrep -f '\(exeBase)' >/dev/null 2>&1; do sleep 5; done"
+            process.executableURL = URL(fileURLWithPath: "/bin/bash")
+            process.arguments = ["-c", bootCmd]
+            process.environment = ["HOME": NSHomeDirectory(), "USER": NSUserName(),
+                                   "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
         } else if WineEngineLocator.isFullEngine(winePath) {
             // Motor COMPLETO (wine-full): el cliente Steam CEF **y** los juegos necesitan el contexto
             // LIMPIO (`env -i` vía bash). Desde la app (hijo directo), el bundle GUI
@@ -4401,6 +4527,7 @@ final class WineManager {
             if let exe = arguments.first(where: { $0.lowercased().hasSuffix(".exe") }) {
                 nudgeGameWindowFocus(exeName: (exe as NSString).lastPathComponent)
             }
+            dismissAMDDriverWarningDialog()
             return process
         } catch {
             try? await terminateWineProcesses(winePath: winePath, prefix: prefix)

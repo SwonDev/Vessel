@@ -19,6 +19,18 @@ final class GoldbergManager {
 
     private let dependencyManager = DependencyManager()
 
+    /// Juegos cuyo runtime exige una vtable de ISteamClient ANTIGUA (con
+    /// ISteamUnifiedMessages en su slot histórico; Valve lo movió al final como
+    /// «deprecated» a partir de SteamClient017). gbe_fork se queda con la ÚLTIMA
+    /// línea `SteamClientNNN` de `steam_interfaces.txt` para decidir la vtable que
+    /// expone: si es demasiado nueva, las llamadas por slot del juego caen en la
+    /// función equivocada (pedía GetISteamUnifiedMessages y gbe recibía la versión
+    /// en GetISteamHTTP → diálogo modal «Missing interface» + exit(0x4155149)).
+    /// Verificado con Archvale (GameMaker Studio 2.3): con SteamClient016 arranca.
+    private static let steamClientVtableOverride: [String: String] = [
+        "1296360": "SteamClient016", // Archvale — GameMaker Studio 2.3 (slot ISteamUnifiedMessages)
+    ]
+
     var cacheDir: String { "\(VesselPaths.cacheDirectory)/goldberg" }
     var steamApi64Path: String { "\(cacheDir)/steam_api64.dll" }
     var steamApi32Path: String { "\(cacheDir)/steam_api.dll" }
@@ -62,6 +74,7 @@ final class GoldbergManager {
                 try? appId.write(toFile: "\(dir)/steam_appid.txt", atomically: true, encoding: .utf8)
             }
             writeSteamSettings(inDir: dir, appId: appId, accountName: accountName)
+            applySteamClientVtableOverride(appId: appId, settingsDir: "\(dir)/steam_settings", fm: fm)
         }
         // Fallback defensivo: si no se halló ningún DLL, aplicar en la carpeta del exe (como antes).
         if dlls.isEmpty {
@@ -72,6 +85,7 @@ final class GoldbergManager {
             if replaceDLL(at: "\(gameDir)/steam_api.dll", with: steamApi32Path, fm: fm) { applied = true }
             if !appId.isEmpty { try? appId.write(toFile: "\(gameDir)/steam_appid.txt", atomically: true, encoding: .utf8) }
             writeSteamSettings(inDir: gameDir, appId: appId, accountName: accountName)
+            applySteamClientVtableOverride(appId: appId, settingsDir: "\(gameDir)/steam_settings", fm: fm)
         }
         return applied
     }
@@ -212,5 +226,23 @@ final class GoldbergManager {
         offline=1
         """
         try? mainIni.write(toFile: "\(settingsDir)/configs.main.ini", atomically: true, encoding: .utf8)
+    }
+
+    /// Fuerza la versión de vtable de ISteamClient que gbe_fork expone, para juegos con
+    /// runtimes antiguos (ver `steamClientVtableOverride`). Reescribe las líneas
+    /// `SteamClientNNN` del `steam_interfaces.txt` del juego dejando solo la versión
+    /// pedida, y garantiza la línea STEAMUNIFIEDMESSAGES (el runtime la pide por nombre).
+    /// Aislado por appId: no cambia el archivo de ningún otro juego.
+    private func applySteamClientVtableOverride(appId: String, settingsDir: String, fm: FileManager) {
+        guard let version = Self.steamClientVtableOverride[appId] else { return }
+        let path = "\(settingsDir)/steam_interfaces.txt"
+        var lines = (try? String(contentsOfFile: path, encoding: .utf8))?
+            .components(separatedBy: .newlines)
+            .filter { !$0.isEmpty && !$0.hasPrefix("SteamClient") } ?? []
+        if !lines.contains("STEAMUNIFIEDMESSAGES_INTERFACE_VERSION001") {
+            lines.append("STEAMUNIFIEDMESSAGES_INTERFACE_VERSION001")
+        }
+        lines.append(version)
+        try? (lines.joined(separator: "\n") + "\n").write(toFile: path, atomically: true, encoding: .utf8)
     }
 }
