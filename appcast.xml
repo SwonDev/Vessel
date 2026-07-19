@@ -6,6 +6,19 @@
     <description>Actualizaciones de Vessel — la mejor app para jugar a Steam en Mac Silicon.</description>
     <language>es</language>
     <item>
+      <title>Versión 0.0.8</title>
+      <sparkle:version>8</sparkle:version>
+      <sparkle:shortVersionString>0.0.8</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[ Integra las mejoras visuales de Kimi, reseñas y noticias de Steam, estado reactivo tras instalar, nuevos motores automáticos para Noita, Slay the Spire, CrossCode y juegos Vulkan como Hades, y validación de ventana real para evitar falsos arreglos. ]]></description>
+      <pubDate>Sun, 19 Jul 2026 11:16:21 +0100</pubDate>
+      <enclosure
+        url="https://github.com/SwonDev/Vessel/releases/download/v0.0.8/Vessel-0.0.8.zip"
+        sparkle:edSignature="xm+Xhie2kBp0KOSbFVzKfR/2lGLIRzSxwxki8g4rlzYIz4PQUpozkf+/apJtWda6igC56IkL5AQ7npV8puMeAg=="
+        length="23163018"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>Versión 0.0.7</title>
       <sparkle:version>7</sparkle:version>
       <sparkle:shortVersionString>0.0.7</sparkle:shortVersionString>
