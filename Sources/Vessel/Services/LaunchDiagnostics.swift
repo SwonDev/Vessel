@@ -142,6 +142,13 @@ enum LaunchDiagnostics {
         report(f, gameTitle: gameTitle)
     }
 
+    /// El modo Steam real solo se aprende con evidencia directa de una interfaz/DRM de Steam.
+    /// Que un juego use Steamworks o agote sus capas gráficas no demuestra esa necesidad: un fallo
+    /// de DLL o del motor produciría un falso positivo persistente y ocultaría la causa verdadera.
+    static func shouldRetryWithRealSteam(_ failure: Failure?) -> Bool {
+        failure?.category == .steam
+    }
+
     /// Monitoriza el arranque y, si detecta un fallo recuperable, **relanza con la otra capa
     /// gráfica** (una sola vez). Si no es recuperable o ya se reintentó, avisa. Llamar justo tras
     /// arrancar el juego; espera unos segundos a que el juego escriba su log.
@@ -151,7 +158,6 @@ enum LaunchDiagnostics {
         currentLayer: GameConfig.GraphicsLayer, attempt: Int,
         fallbackLayers: [GameConfig.GraphicsLayer] = [],
         usesRealSteam: Bool = false,
-        usesSteamworks: Bool = false,
         launchStartedAt: Date? = nil,
         isRunning: @escaping @MainActor () -> Bool = { false },
         persistWinningLayer: (@MainActor (GameConfig.GraphicsLayer) -> Void)? = nil,
@@ -242,14 +248,11 @@ enum LaunchDiagnostics {
             // las provee. Si aún NO está en modo Steam-real, se ACTIVA automáticamente y se relanza
             // (como Grim Dawn, pero solo). Validado con CaveBlazers (32-bit GameMaker, corre en el
             // motor unificado que usa Steam-real). Persistir el modo lo hace el propio `retryWithRealSteam`.
-            let steamSignature = failure?.category == .steam
-            let engineExhausted = nextSensibleLayer(after: currentLayer, in: fallbackLayers) == nil
             if failed, !usesRealSteam, let retrySteam = retryWithRealSteam,
-               steamSignature || (usesSteamworks && engineExhausted) {
-                // Se activa si: (a) hay FIRMA de Steam (interfaz que falta: CaveBlazers), o (b) es un
-                // juego Steamworks que falló y YA se agotaron sus capas gráficas (heurística: muchos
-                // fallos de Steamworks son de DRM/interfaz, no de motor — Grim Dawn, CaveBlazers).
-                let why = steamSignature ? failure!.title : "no arrancó tras probar sus capas gráficas"
+               shouldRetryWithRealSteam(failure) {
+                // Solo una FIRMA de Steam permite aprender este modo. Los perfiles ya verificados
+                // (p. ej. DRM estricto) entran directamente por `usesRealSteam` y no dependen de aquí.
+                let why = failure!.title
                 LogStore.shared.log("\(gameTitle): \(why) → activando modo Steam real (cliente conectado) y relanzando…", level: .info)
                 NotificationService.shared.notify(title: "Reparando automáticamente: \(gameTitle)",
                                                   body: "El juego necesita Steam conectado. Activando el modo Steam real…")

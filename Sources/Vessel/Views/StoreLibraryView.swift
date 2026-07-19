@@ -259,6 +259,9 @@ struct StoreLibraryView: View {
     var onRetryTransfer: ((StoreGame) -> Void)? = nil
     var onInstall: (StoreGame) -> Void = { _ in }
     var onPlay: (StoreGame) -> Void = { _ in }
+    /// Reconciliar el estado con un proceso real que sobrevivió a una actualización/reinicio de
+    /// Vessel. Las tiendas que lanzan Wine pueden adoptarlo; el resto conserva el no-op.
+    var onReconcileRunning: @MainActor (StoreGame) async -> Void = { _ in }
     var onUninstall: (StoreGame) -> Void = { _ in }
     /// Verificar/reparar integridad de un juego instalado (re-descarga lo dañado). Reusa el
     /// feedback de instalación (`installingIDs`/`progressFor`/`percentFor`).
@@ -1291,6 +1294,7 @@ struct StoreLibraryView: View {
                 onResumeTransfer: { onResumeTransfer?(game) }
             )
             .id(game.id)
+            .task(id: game.id) { await onReconcileRunning(game) }
             .transition(.opacity)
         } else {
             homeGrid.transition(.opacity)

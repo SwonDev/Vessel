@@ -46,7 +46,7 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         let executable = try makePE64(named: "Melvor Idle.exe")
         let directory = executable.deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: directory) }
-        try Data("ANGLE d3d11 dxgi".utf8).write(to: directory.appendingPathComponent("nw.dll"))
+        try Data("ANGLE d3d11 dxgi d3d9.dll".utf8).write(to: directory.appendingPathComponent("nw.dll"))
         try FileManager.default.createDirectory(
             at: directory.appendingPathComponent("package.nw"),
             withIntermediateDirectories: true
@@ -62,6 +62,49 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .d3d11)
         XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path, effective: stale), .dxmt)
         XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path, effective: stale), [.dxmt])
+        XCTAssertTrue(manager.needsExeAdjacentD3D9Support(executable.path))
+    }
+
+    func testNWJSAutomaticEngineArgumentsSurviveEveryLaunchRouteWithoutUserInput() throws {
+        let executable = try makePE64(named: "CrossCode.exe")
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("ANGLE d3d11 dxgi".utf8).write(to: directory.appendingPathComponent("nw.dll"))
+        try Data(#"{"main":"index.html"}"#.utf8)
+            .write(to: directory.appendingPathComponent("package.json"))
+
+        let manager = WineManager()
+        var config = EffectiveLaunchConfig()
+        config.launchArgs = ["--language=es"]
+
+        let detected = manager.resolvedLaunchArguments(
+            forExecutable: executable.path,
+            requested: [],
+            effective: config
+        )
+        XCTAssertEqual(detected, ["--language=es", "--in-process-gpu"])
+
+        config.launchArgs.append("--IN-PROCESS-GPU")
+        let alreadyPresent = manager.resolvedLaunchArguments(
+            forExecutable: executable.path,
+            requested: [],
+            effective: config
+        )
+        XCTAssertEqual(
+            alreadyPresent.filter { $0.caseInsensitiveCompare("--in-process-gpu") == .orderedSame }.count,
+            1
+        )
+
+        try Data(#"{"main":"index.html","chromium-args":"--ignore-gpu-blocklist --in-process-gpu"}"#.utf8)
+            .write(to: directory.appendingPathComponent("package.json"))
+        let providedByRuntime = manager.resolvedLaunchArguments(
+            forExecutable: executable.path,
+            requested: [],
+            effective: EffectiveLaunchConfig()
+        )
+        XCTAssertFalse(providedByRuntime.contains {
+            $0.caseInsensitiveCompare("--in-process-gpu") == .orderedSame
+        })
     }
 
     func testForcedDXMTIsReportedAsDXMTForDynamic64BitGame() throws {
@@ -123,5 +166,31 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             ),
             2
         )
+    }
+
+    func testSteamRealAutoRepairRequiresDirectSteamEvidence() {
+        let genericFailure = LaunchDiagnostics.Failure(
+            category: .crash,
+            title: "Fallo de motor",
+            body: "El proceso se cerró"
+        )
+        let steamFailure = LaunchDiagnostics.Failure(
+            category: .steam,
+            title: "Falta Steam Input",
+            body: "La interfaz no está disponible"
+        )
+
+        XCTAssertFalse(LaunchDiagnostics.shouldRetryWithRealSteam(nil))
+        XCTAssertFalse(LaunchDiagnostics.shouldRetryWithRealSteam(genericFailure))
+        XCTAssertTrue(LaunchDiagnostics.shouldRetryWithRealSteam(steamFailure))
+    }
+
+    func testLegacyManualLaunchArgumentsNeverBecomeACompatibilityRequirement() {
+        var user = GameConfig()
+        user.launchArguments = "-windowed -novid"
+
+        let effective = CompatService.shared.effectiveConfig(profile: nil, user: user)
+
+        XCTAssertTrue(effective.launchArgs.isEmpty)
     }
 }

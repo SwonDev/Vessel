@@ -10,7 +10,7 @@ import Foundation
 ///     pisa a la empaquetada por `id`.
 ///
 /// Expone la búsqueda por `(tienda, appId)`/título y la resolución de la
-/// `EffectiveLaunchConfig` (defaults base → perfil → overrides del usuario).
+/// `EffectiveLaunchConfig` (defaults base → perfil automático → preferencias seguras del usuario).
 @MainActor
 @Observable
 final class CompatService {
@@ -111,8 +111,9 @@ final class CompatService {
 
     // MARK: - Resolución de config efectiva
 
-    /// Combina **defaults base → perfil de compatibilidad → overrides del usuario**.
-    /// El usuario siempre gana sobre el perfil; el perfil gana sobre los defaults.
+    /// Combina **defaults base → perfil de compatibilidad → preferencias seguras del usuario**.
+    /// Los argumentos del perfil forman parte del adaptador automático. Los argumentos manuales
+    /// legados se ignoran deliberadamente: el usuario final nunca debe conocer una receta de inicio.
     func effectiveConfig(profile: CompatProfile?, user: GameConfig) -> EffectiveLaunchConfig {
         var cfg = EffectiveLaunchConfig()   // defaults base (msync/esync on, fsync off, retina on)
 
@@ -154,9 +155,6 @@ final class CompatService {
         cfg.metalHUD = user.metalHUD
         // Steam-real: el override del usuario/auto-repair SUMA (nunca desactiva lo que pida el perfil).
         if user.useRealSteam { cfg.useRealSteam = true }
-        let userArgs = user.launchArguments.split(separator: " ").map(String.init)
-        cfg.launchArgs += userArgs
-
         return cfg
     }
 
