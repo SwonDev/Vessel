@@ -110,15 +110,15 @@ final class WineManager {
 
     /// Motor para JUEGOS D3D11: wine-dxmt (DXMT builtin → Metal nativo, FL 11_0).
     /// Fallback: motor cliente o bottle.winePath.
-    /// EXCEPCIÓN por juego: los juegos con **Epic Online Services (EOS)** CRASHEAN al inicializar su
-    /// SDK bajo el motor unificado (WineHQ 11.10) — el crash cae en `UnityPlayer.dll` justo en la init
-    /// de la plataforma (visto en AK-xolotl y Dragon Is Dead). En `wine-dxmt-mousefix` (Wine 9.9)
-    /// arrancan bien (es donde funcionaban antes de que el unificado pasara a ser el motor por defecto).
-    /// Por eso, si el ejecutable trae EOS, se ruta a mousefix. Aethermancer (sin EOS) sigue en el unificado.
+    /// EXCEPCIÓN por motor: los juegos **Unity** con Epic Online Services (EOS) CRASHEAN al inicializar
+    /// el SDK bajo el motor unificado (WineHQ 11.10); la caída ocurre en `UnityPlayer.dll` (AK-xolotl,
+    /// Dragon Is Dead). En `wine-dxmt-mousefix` (Wine 9.9) arrancan bien. EOS por sí solo no basta para
+    /// aplicar esa excepción: motores nativos como el de Hades también empaquetan EOS, pero necesitan
+    /// el DXMT del motor unificado y se cerraban al ser enviados al Wine antiguo de Unity.
     func resolveGameWine(for bottle: Bottle, executable: String? = nil) -> String {
-        if let exe = executable, usesEpicOnlineServices(exe),
+        if let exe = executable, needsLegacyUnityEOSWine(exe),
            let mousefix = WineEngineLocator.wineBinary(in: WineEngineLocator.mousefixEngineName) {
-            log.log("Juego con Epic Online Services (EOS): se usa wine-dxmt-mousefix (el motor unificado crashea su SDK).", level: .info)
+            log.log("Unity con Epic Online Services (EOS): se usa wine-dxmt-mousefix para proteger la inicialización del SDK.", level: .info)
             return mousefix
         }
         // Juegos OpenGL (motor GL propio, p. ej. Heroes of Hammerwatch II): motor ESPECÍFICO
@@ -143,6 +143,10 @@ final class WineManager {
         if fm.fileExists(atPath: "\(dir)/EOSSDK-Win64-Shipping.dll") { return true }
         let exeName = ((executable as NSString).lastPathComponent as NSString).deletingPathExtension
         return fm.fileExists(atPath: "\(dir)/\(exeName)_Data/Plugins/x86_64/EOSSDK-Win64-Shipping.dll")
+    }
+
+    func needsLegacyUnityEOSWine(_ executable: String) -> Bool {
+        usesEpicOnlineServices(executable) && isUnityGame(executable)
     }
 
     /// Importa en el prefijo los **root CAs + intermedios de DigiCert** que la cadena de
@@ -785,6 +789,23 @@ final class WineManager {
         exeContains(executable, anyOf: ["Godot Engine"]) && exeContains(executable, anyOf: ["vulkan"])
     }
 
+    /// Confirma que el ejecutable, o la DLL de motor que carga, usa Vulkan de Windows de forma
+    /// nativa. Es distinto de DXVK: aquí el propio juego importa `vulkan-1.dll` y necesita un Wine
+    /// con `winevulkan` + MoltenVK. Algunos launchers son mínimos (Hades) y el import vive en una
+    /// `Engine*.dll` hermana, por lo que inspeccionar solo el `.exe` daría un falso negativo.
+    func isNativeVulkanGame(_ executable: String) -> Bool {
+        if exeImports(executable, anyOf: ["vulkan-1.dll"]) { return true }
+        let directory = (executable as NSString).deletingLastPathComponent
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory) else {
+            return false
+        }
+        return names.prefix(256).contains { name in
+            let lower = name.lowercased()
+            guard lower.hasPrefix("engine"), lower.hasSuffix(".dll") else { return false }
+            return exeImports("\(directory)/\(name)", anyOf: ["vulkan-1.dll"])
+        }
+    }
+
     /// True si el ejecutable es un juego **Java con JVM embebida** (p. ej. Wurm Unlimited): junto
     /// al exe hay un runtime Java (`runtime/bin/java.exe`, `jre/bin/java.exe`) o un `client.jar`.
     /// Misma detección por estructura que usa el importador (`SteamLibraryImporter`).
@@ -945,6 +966,13 @@ final class WineManager {
             if exeImports(executable, anyOf: ["d3d12.dll"]) { return .d3d12 }
             return .d3d11
         }
+        // Algunos motores mantienen un launcher mínimo y cargan toda la capa gráfica desde una DLL
+        // hermana `Engine*.dll`. Mirar solo el PE del `.exe` los clasifica como carga dinámica y los
+        // manda primero a Gcenx aunque la DLL declare D3D11 de forma inequívoca (Hades). Se limita a
+        // librerías cuyo nombre empieza por `engine` para no confundir renderers opcionales o SDKs.
+        if let siblingAPI = siblingEngineGraphicsAPI(forExecutable: executable) {
+            return siblingAPI
+        }
         // **Vulkan NATIVO** (el exe importa `vulkan-1.dll` directamente: Godot 4, id Tech, etc.).
         // El motor UNIFICADO trae MoltenVK (Vulkan→Metal), así que estos juegos renderizan por su
         // Vulkan nativo. Se enrutan como .d3d11 (usan el motor unificado y `ensureGameDXMTDLLs` copia
@@ -990,6 +1018,28 @@ final class WineManager {
             return .d3d11
         }
         return .other
+    }
+
+    private func siblingEngineGraphicsAPI(forExecutable executable: String) -> GameGraphicsAPI? {
+        let directory = (executable as NSString).deletingLastPathComponent
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory) else {
+            return nil
+        }
+        let engines = names.filter {
+            let lower = $0.lowercased()
+            return lower.hasPrefix("engine") && lower.hasSuffix(".dll")
+        }.prefix(12)
+        guard !engines.isEmpty else { return nil }
+
+        let paths = engines.map { "\(directory)/\($0)" }
+        if paths.contains(where: { exeImports($0, anyOf: ["d3d12.dll"]) }) { return .d3d12 }
+        if paths.contains(where: { exeImports($0, anyOf: ["d3d11.dll", "dxgi.dll", "d3d10.dll", "d3d10core.dll"]) }) {
+            return .d3d11
+        }
+        if paths.contains(where: { exeImports($0, anyOf: ["vulkan-1.dll"]) }) { return .d3d11 }
+        if paths.contains(where: { exeImports($0, anyOf: ["d3d9.dll", "d3d8.dll", "ddraw.dll"]) }) { return .d3d9 }
+        if paths.contains(where: { exeImports($0, anyOf: ["opengl32.dll"]) }) { return .opengl }
+        return nil
     }
 
     /// Motor gráfico REAL que usará `launch()` para este ejecutable + override. Se usa para
@@ -1252,6 +1302,44 @@ final class WineManager {
                 effective: eff
             )
         }
+        // **Vulkan nativo**: el juego habla directamente con `vulkan-1.dll`, por lo que no debe
+        // entrar en el motor unificado de DXMT (esa build no incluye winevulkan). El Wine completo
+        // aporta winevulkan + MoltenVK y conserva el lanzamiento sin flags ni configuración manual.
+        // La detección también cubre el import transitivo desde `Engine*.dll` (Hades x64Vk).
+        if go == .auto, isNativeVulkanGame(executable),
+           let fullEngineWine = await fullEngineWineEnsured() {
+            log.log("Juego Vulkan nativo detectado: MoltenVK→Metal con el motor completo.", level: .info)
+            cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
+            try? await terminateWineProcesses(winePath: fullEngineWine, prefix: bottle.prefixPath)
+            try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: fullEngineWine)
+            await resyncGamePrefix(gameWine: fullEngineWine, prefix: bottle.prefixPath)
+            await setMacDriverRetinaMode(
+                prefix: bottle.prefixPath,
+                wine: fullEngineWine,
+                enabled: eff.retina
+            )
+            var env = [
+                "WINEPREFIX": bottle.prefixPath,
+                "WINEDEBUG": "-all",
+                "WINEDLLOVERRIDES": "winemenubuilder.exe=d",
+                "WINEMSYNC": "1",
+                "WINEESYNC": "1",
+                "WINEFSYNC": "1",
+                "MVK_CONFIG_LOG_LEVEL": "0"
+            ]
+            if let appId = steamAppId, !appId.isEmpty {
+                env["SteamAppId"] = appId
+                env["SteamGameId"] = appId
+            }
+            return try await launchWineProcess(
+                winePath: fullEngineWine,
+                prefix: bottle.prefixPath,
+                arguments: [executable] + allArgs,
+                environment: env,
+                workingDirectory: gameWorkingDirectory(forExecutable: executable),
+                effective: eff
+            )
+        }
         // **Godot con Vulkan**: se le dice explícitamente que use Vulkan y va por el Wine completo.
         // Sin esto acaba clasificado por descarte (su PE no declara `vulkan-1.dll`, la carga en
         // runtime), arranca —su log escribe "Godot Engine v4.3"— y NO abre ventana jamás.
@@ -1455,7 +1543,7 @@ final class WineManager {
         // Dependencias de runtime: detecta lo que el juego importa y provisiona los DirectX helper
         // que empaquetamos (d3dx9/d3dcompiler, cuyo builtin de Wine es incompleto). El resto
         // (Visual C++, .NET, XInput) lo cubre el builtin del motor; se registra para el diagnóstico.
-        RuntimeDependencyProvisioner.provision(executable: executable)
+        let runtimeDependencies = RuntimeDependencyProvisioner.provision(executable: executable)
         // Cerrar procesos previos (el cliente Steam corre en Gcenx y deja el prefix
         // en su versión; hay que liberarlo antes de re-sincronizar a wine-dxmt).
         log.log("Preparando prefijo para el juego…", level: .info)
@@ -1508,13 +1596,12 @@ final class WineManager {
         if graphicsAPI == .opengl {
             env["CX_FWD_COMPAT_GL_CTX"] = "1"
         }
-        // Juegos **.NET Core**: NO deshabilitar `mscoree`. Aunque .NET Core usa `coreclr` (no el Mono
-        // de Wine), el loader de Wine necesita `mscoree` PRESENTE para mapear los assemblies managed
-        // (`System.Runtime.dll`, etc.); con `mscoree=d` el CLR aborta con "Could not load … Module not
-        // found". VALIDADO aislando la variable: era el último eslabón para que Romestead renderice.
-        if isDotNetCoreGame(executable), let ov = env["WINEDLLOVERRIDES"] {
-            env["WINEDLLOVERRIDES"] = ov.replacingOccurrences(of: "mscoree,mshtml=d", with: "mshtml=d")
-                                       .replacingOccurrences(of: "mscoree=d", with: "")
+        // Cualquier import administrado real necesita `mscoree` disponible. Incluye .NET Core y
+        // DLLs mixtas C++/CLI usadas por motores nativos (p. ej. el reporter de Hades). La evidencia
+        // se obtiene del escaneo PE acotado; no se habilita Mono/.NET globalmente ni por título.
+        if (isDotNetCoreGame(executable) || runtimeDependencies.contains(.dotNet)),
+           let overrides = env["WINEDLLOVERRIDES"] {
+            env["WINEDLLOVERRIDES"] = Self.enablingManagedRuntime(in: overrides)
         }
         if let appId = steamAppId, !appId.isEmpty {
             let gameDir = (executable as NSString).deletingLastPathComponent
@@ -3211,6 +3298,38 @@ final class WineManager {
         )).isEmpty
     }
 
+    /// Confirma que la familia exacta del juego posee una ventana visible y utilizable. Mantener un
+    /// proceso Wine vivo no basta: launchers, SDKs y watchdogs pueden sobrevivir sin renderizar nada
+    /// y no deben convertirse en una capa de compatibilidad «aprendida».
+    nonisolated func hasVisibleGameWindow(executable: String, prefix: String) async -> Bool {
+        let imageName = (executable as NSString).lastPathComponent
+        let executableDirectory = (executable as NSString).deletingLastPathComponent
+        guard !imageName.isEmpty else { return false }
+        let processIDs = Set(await Self.gameWineProcessIDs(
+            matching: imageName,
+            prefix: prefix,
+            executableDirectory: executableDirectory
+        ))
+        guard !processIDs.isEmpty,
+              let windows = CGWindowListCopyWindowInfo(
+                [.optionOnScreenOnly, .excludeDesktopElements],
+                kCGNullWindowID
+              ) as? [[String: Any]] else { return false }
+
+        return windows.contains { window in
+            guard let ownerPID = window[kCGWindowOwnerPID as String] as? pid_t,
+                  processIDs.contains(ownerPID),
+                  (window[kCGWindowLayer as String] as? Int ?? 0) == 0,
+                  (window[kCGWindowAlpha as String] as? Double ?? 1) > 0,
+                  let bounds = window[kCGWindowBounds as String] as? [String: Any] else {
+                return false
+            }
+            let width = bounds["Width"] as? Double ?? 0
+            let height = bounds["Height"] as? Double ?? 0
+            return width >= 200 && height >= 150
+        }
+    }
+
     /// Cierra únicamente la familia exacta del juego en su prefijo. Nunca usa `wineserver -k`, por
     /// lo que el cliente Steam interno y sus descargas permanecen intactos.
     nonisolated func terminateGameProcessFamily(executable: String, prefix: String) async {
@@ -3510,7 +3629,7 @@ final class WineManager {
     private func gameWorkingDirectory(forExecutable executable: String) -> String {
         let exeDir = (executable as NSString).deletingLastPathComponent
         let last = (exeDir as NSString).lastPathComponent.lowercased()
-        let bin64: Set<String> = ["x64", "win64", "bin64", "binaries64", "x86_64", "amd64"]
+        let bin64: Set<String> = ["x64", "x64vk", "win64", "bin64", "binaries64", "x86_64", "amd64"]
         guard bin64.contains(last) else { return exeDir }
         // El exe vive en una subcarpeta de binarios (x64/Win64/…). Subir UN nivel es correcto cuando
         // esa subcarpeta cuelga DIRECTAMENTE de la raíz del juego (p. ej. Grim Dawn `x64/Grim Dawn.exe`
@@ -4497,6 +4616,40 @@ final class WineManager {
             .contains(where: lower.contains)
     }
 
+    /// Coincide con el ejecutable real, pero no con la propia orden de vigilancia que contiene el
+    /// patrón. `pgrep -f 'Hades'` también encontraba al bash cuyo argumento incluía `Hades` y podía
+    /// mantener el tracker vivo sin juego; `[H]ades` conserva la coincidencia real y evita la propia.
+    nonisolated static func selfExcludingProcessPattern(_ executableName: String) -> String {
+        let escaped = NSRegularExpression.escapedPattern(for: executableName)
+        guard let index = escaped.firstIndex(where: { $0.isLetter || $0.isNumber }) else {
+            return escaped
+        }
+        let character = escaped[index]
+        return String(escaped[..<index])
+            + "[\(character)]"
+            + String(escaped[escaped.index(after: index)...])
+    }
+
+    /// Retira únicamente la desactivación de `mscoree` de una cadena de overrides y conserva el
+    /// resto. Así un juego con evidencia administrada puede usar Wine Mono/.NET sin reactivar Gecko
+    /// (`mshtml`) ni alterar sus capas gráficas. El parser evita reemplazos frágiles dependientes del
+    /// orden (`mscoree,mshtml=d`, `mscoree=d`, etc.).
+    nonisolated static func enablingManagedRuntime(in overrides: String) -> String {
+        overrides.split(separator: ";", omittingEmptySubsequences: true).compactMap { rawSegment in
+            let segment = rawSegment.trimmingCharacters(in: .whitespacesAndNewlines)
+            let parts = segment.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2,
+                  parts[1].trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "d" else {
+                return segment.isEmpty ? nil : segment
+            }
+            let names = parts[0].split(separator: ",", omittingEmptySubsequences: true)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { $0.caseInsensitiveCompare("mscoree") != .orderedSame }
+            guard !names.isEmpty else { return nil }
+            return "\(names.joined(separator: ","))=d"
+        }.joined(separator: ";")
+    }
+
     nonisolated static func redactedArgumentsForLogging(_ arguments: [String]) -> [String] {
         arguments.map { argument in
             guard isSensitiveLaunchArgument(argument) else { return argument }
@@ -4789,17 +4942,19 @@ final class WineManager {
             // al exe del juego (RunAtLoad puede fallar si el wineserver anterior aún se cierra).
             let exeBase = arguments.first(where: { $0.lowercased().hasSuffix(".exe") })
                 .map { (($0 as NSString).lastPathComponent as NSString).deletingPathExtension } ?? "wine"
+            let processPattern = Self.selfExcludingProcessPattern(exeBase)
+            let pgrepGame = "/usr/bin/pgrep -f \(shq(processPattern))"
             let bootCmd =
                 "/bin/launchctl bootout gui/\(uid)/\(agentLabel) 2>/dev/null; sleep 1; "
                 + "/bin/launchctl bootstrap gui/\(uid) '\(agentPlist)' 2>/dev/null; "
-                + "for r in 1 2 3 4 5 6; do sleep 4; /usr/bin/pgrep -f '\(exeBase)' >/dev/null 2>&1 && break; "
+                + "for r in 1 2 3 4 5 6; do sleep 4; \(pgrepGame) >/dev/null 2>&1 && break; "
                 + "/bin/launchctl kickstart gui/\(uid)/\(agentLabel) 2>/dev/null; done; "
                 + "/bin/rm -f \(shq(cmdFile)); "
                 // VITAL: el bash devuelto debe VIVIR lo que viva el juego — el tracker
                 // (GameLaunchTracker) y el watchdog miden la vida del juego por ESTE proceso.
                 // Si el bash sale tras el bootstrap, el watchdog cree a los ~9 s que el juego
                 // murió y dispara la auto-reparación (Dwarven Realms: mató el agente sano).
-                + "while /usr/bin/pgrep -f '\(exeBase)' >/dev/null 2>&1; do sleep 5; done"
+                + "while \(pgrepGame) >/dev/null 2>&1; do sleep 5; done"
             process.executableURL = URL(fileURLWithPath: "/bin/bash")
             process.arguments = ["-c", bootCmd]
             process.environment = ["HOME": NSHomeDirectory(), "USER": NSUserName(),

@@ -357,6 +357,9 @@ final class GogStore {
             currentLayer: usedLayer, attempt: attempt,
             fallbackLayers: wineManager.fallbackLayers(forExecutable: executable, effective: eff),
             isRunning: { GameLaunchTracker.shared.state(game.appId) == .running },
+            hasVisibleWindow: {
+                await self.wineManager.hasVisibleGameWindow(executable: executable, prefix: prefix)
+            },
             persistWinningLayer: { winLayer in
                 var c = GameConfigStore.load(game.appId)
                 c.graphicsLayer = winLayer

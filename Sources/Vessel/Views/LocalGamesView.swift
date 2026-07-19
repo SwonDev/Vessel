@@ -746,6 +746,12 @@ struct LocalGamesView: View {
                 currentLayer: usedLayer, attempt: attempt,
                 fallbackLayers: wineManager.fallbackLayers(forExecutable: exe, effective: eff),
                 isRunning: { tracker.state(id) == .running },
+                hasVisibleWindow: {
+                    await wineManager.hasVisibleGameWindow(
+                        executable: exe,
+                        prefix: bottle.prefixPath
+                    )
+                },
                 persistWinningLayer: { winLayer in
                     var c = GameConfigStore.load(id); c.graphicsLayer = winLayer; GameConfigStore.save(id, c)
                     DiscoveredFixesStore.shared.record(id: id, title: game.name, store: "local", storeId: nil,

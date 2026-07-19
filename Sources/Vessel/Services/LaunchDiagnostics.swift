@@ -160,6 +160,7 @@ enum LaunchDiagnostics {
         usesRealSteam: Bool = false,
         launchStartedAt: Date? = nil,
         isRunning: @escaping @MainActor () -> Bool = { false },
+        hasVisibleWindow: (@MainActor () async -> Bool)? = nil,
         persistWinningLayer: (@MainActor (GameConfig.GraphicsLayer) -> Void)? = nil,
         retryWithRealSteam: (@MainActor () async -> Void)? = nil,
         retryWithRuntimeFix: (@MainActor (String?) async -> Bool)? = nil,
@@ -190,9 +191,11 @@ enum LaunchDiagnostics {
             // interpretaba como fallo → relanzar → nuevo monitor → cerrar → relanzar = bucle infinito
             // "cerrar→reabrir" (reportado con Aethermancer). El grace inicial evita falsos negativos.
             var everRunning = false
+            var everVisible = false
             while elapsed < deadline {
                 try? await Task.sleep(for: .seconds(3)); elapsed += 3
                 if elapsed >= 9, isRunning() { everRunning = true }
+                if let hasVisibleWindow, await hasVisibleWindow() { everVisible = true }
                 if hasWineCrashDialog() { crashed = true; break }
                 // Diálogo "Missing interface" de Steam (Steam Input/Controller) — señal directa aunque
                 // el log no lo capture. El juego lo muestra y muere; solo el Steam real lo resuelve.
@@ -226,7 +229,14 @@ enum LaunchDiagnostics {
             // FALLIDO si: crasheó (winedbg), hay FIRMA de fallo conocida, o salió SIN haber llegado a
             // correr (arranque fallido). Si SÍ llegó a correr (`everRunning`) y salió limpio, es que el
             // USUARIO lo cerró — NO es un fallo y NO se relanza (evita el bucle cerrar→reabrir).
-            let failed = crashed || failure != nil || (!isRunning() && !everRunning)
+            let failed = startupFailed(
+                crashed: crashed,
+                failureDetected: failure != nil,
+                isRunning: isRunning(),
+                everRunning: everRunning,
+                requiresVisibleWindow: hasVisibleWindow != nil,
+                everVisible: everVisible
+            )
             let alive = !failed
 
             // Juego en modo "Steam real" (DRM real): el motor es el unificado FIJO, así que si se
@@ -325,6 +335,22 @@ enum LaunchDiagnostics {
                        gameTitle: gameTitle)
             }
         }
+    }
+
+    /// Regla pura de aceptación del arranque. Cuando el flujo aporta una sonda visual, una familia
+    /// de procesos sin ninguna ventana real es un fallo aunque haya sobrevivido varios segundos.
+    nonisolated static func startupFailed(
+        crashed: Bool,
+        failureDetected: Bool,
+        isRunning: Bool,
+        everRunning: Bool,
+        requiresVisibleWindow: Bool,
+        everVisible: Bool
+    ) -> Bool {
+        crashed
+            || failureDetected
+            || (!isRunning && !everRunning)
+            || (requiresVisibleWindow && !everVisible)
     }
 
     /// ¿Hay en pantalla el diálogo de CRASH de Wine (`winedbg` / "Program Error Details")? Es la

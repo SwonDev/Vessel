@@ -344,6 +344,9 @@ final class EpicStore {
             fallbackLayers: wineManager.fallbackLayers(forExecutable: exe, effective: eff),
             launchStartedAt: launchStartedAt,
             isRunning: { GameLaunchTracker.shared.state(game.appName) == .running },
+            hasVisibleWindow: {
+                await self.wineManager.hasVisibleGameWindow(executable: exe, prefix: prefix)
+            },
             persistWinningLayer: { winLayer in
                 var c = GameConfigStore.load(game.appName)
                 c.graphicsLayer = winLayer

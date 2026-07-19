@@ -132,6 +132,31 @@ final class SteamLibraryImporter {
             .contains { data.range(of: Data($0.utf8)) != nil }
     }
 
+    /// Confirma una variante Vulkan oficial distribuida en una carpeta dedicada (`x64Vk`,
+    /// `Vulkan`, etc.). Algunos launchers son mínimos y el renderer vive en `Engine*.dll`, por lo
+    /// que no basta con inspeccionar el `.exe`. Se exigen marcadores inequívocos del backend para no
+    /// preferir una carpeta cuyo nombre contenga `vk` por casualidad.
+    private static func isConfirmedVulkanVariant(_ executable: String) -> Bool {
+        let directory = (executable as NSString).deletingLastPathComponent
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory) else {
+            return false
+        }
+        let candidates = names.filter {
+            let lower = $0.lowercased()
+            return lower.hasPrefix("engine") && lower.hasSuffix(".dll")
+        }.prefix(12)
+        for name in candidates {
+            let path = "\(directory)/\(name)"
+            guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe)
+            else { continue }
+            let hasLoader = data.range(of: Data("vulkan-1.dll".utf8)) != nil
+            let hasRenderer = ["Running Vulkan", "Vulkan initialization failed", "renderer/vulkan"]
+                .contains { data.range(of: Data($0.utf8)) != nil }
+            if hasLoader && hasRenderer { return true }
+        }
+        return false
+    }
+
     static func mainGameExecutable(in dir: String) -> String? {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(atPath: dir) else { return nil }
@@ -223,11 +248,18 @@ final class SteamLibraryImporter {
                 }
                 if hasBaseSibling, isConfirmedOpenGLVariant(full) { s += 220 }
             }
+            // Variantes Vulkan oficiales: en Apple Silicon se enrutan después al motor completo con
+            // winevulkan + MoltenVK. Se eligen automáticamente cuando la carpeta lo declara y una DLL
+            // de motor confirma el backend; no hay argumento ni ajuste manual para el usuario.
+            let rendererDirectory = comps.dropLast().last ?? ""
+            let vulkanDirectory = rendererDirectory.contains("vulkan")
+                || rendererDirectory.hasSuffix("vk")
+            if vulkanDirectory, isConfirmedVulkanVariant(full) { s += 260 }
             // Preferir la variante de **64 bits** (carpeta x64/win64/bin64/…): es la que los juegos
             // con doble build (p. ej. Grim Dawn: `Grim Dawn.exe` 32-bit arriba + `x64/Grim Dawn.exe`
             // 64-bit) lanzan por defecto, y la que va por DXMT→Metal (mejor que el 32-bit por
             // CrossOver). +120 supera el −50 de profundidad, así que gana al mismo exe en la raíz.
-            let dir64: Set<String> = ["x64", "win64", "bin64", "binaries64", "x86_64", "amd64"]
+            let dir64: Set<String> = ["x64", "x64vk", "win64", "bin64", "binaries64", "x86_64", "amd64"]
             if comps.dropLast().contains(where: { dir64.contains($0) }) { s += 120 }
             // Preferir la raíz del juego frente a subcarpetas.
             s -= depth * 50

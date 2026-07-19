@@ -95,6 +95,28 @@ final class ExecutableResolverTests: XCTestCase {
         XCTAssertEqual((exe as NSString?)?.lastPathComponent, "stablegame.exe")
     }
 
+    /// Cuando el juego distribuye renderers paralelos y la DLL de la carpeta `x64Vk` confirma
+    /// Vulkan, Vessel debe elegirla automáticamente para el motor completo con MoltenVK, sin
+    /// parámetros del usuario.
+    func testPrefersConfirmedVulkanRendererDirectory() throws {
+        let dir = tempDir("Hades")
+        try makeTree(dir,
+            files: [
+                "x64/Hades.exe", "x64/EngineWin64s.dll",
+                "x64Vk/Hades.exe", "x64Vk/EngineWin64sv.dll"
+            ],
+            dirs: []
+        )
+        try Data("vulkan-1.dll … Running Vulkan … renderer/vulkan".utf8)
+            .write(to: URL(fileURLWithPath: "\(dir)/x64Vk/EngineWin64sv.dll"))
+        try Data("dxgi.dll … d3d11.dll".utf8)
+            .write(to: URL(fileURLWithPath: "\(dir)/x64/EngineWin64s.dll"))
+        defer { try? FileManager.default.removeItem(atPath: (dir as NSString).deletingLastPathComponent) }
+
+        let exe = SteamLibraryImporter.mainGameExecutable(in: dir)
+        XCTAssertEqual(exe, "\(dir)/x64Vk/Hades.exe")
+    }
+
     /// Normalización de nombres: ignora espacios y símbolos.
     func testNormalizedNameStripsNonAlphanumerics() {
         XCTAssertEqual(SteamLibraryImporter.normalizedName("Ancient Kingdoms"), "ancientkingdoms")

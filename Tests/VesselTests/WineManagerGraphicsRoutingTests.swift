@@ -151,6 +151,85 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path, effective: config), .dxmt)
     }
 
+    func testSiblingEngineDLLRoutesMinimalLauncherToD3D11() throws {
+        let executable = try makePE64(named: "Hades.exe")
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // `makePE64` crea su propio directorio; copiamos la DLL al lado del launcher, como en Hades.
+        let engineSource = try makePE64(named: "EngineWin64s.dll", marker: "dxgi.dll d3d11.dll D3DCOMPILER_47.dll")
+        defer { try? FileManager.default.removeItem(at: engineSource.deletingLastPathComponent()) }
+        try FileManager.default.copyItem(
+            at: engineSource,
+            to: directory.appendingPathComponent("EngineWin64s.dll")
+        )
+
+        let manager = WineManager()
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .d3d11)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .dxmt)
+    }
+
+    func testSiblingEngineDLLConfirmsNativeVulkanRenderer() throws {
+        let executable = try makePE64(named: "Hades.exe")
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engineSource = try makePE64(
+            named: "EngineWin64sv.dll",
+            marker: "vulkan-1.dll Running Vulkan renderer/vulkan"
+        )
+        defer { try? FileManager.default.removeItem(at: engineSource.deletingLastPathComponent()) }
+        try FileManager.default.copyItem(
+            at: engineSource,
+            to: directory.appendingPathComponent("EngineWin64sv.dll")
+        )
+
+        let manager = WineManager()
+        XCTAssertTrue(manager.isNativeVulkanGame(executable.path))
+    }
+
+    func testEOSCompatibilityEngineIsScopedToUnity() throws {
+        let executable = try makePE64(named: "Hades.exe")
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data().write(to: directory.appendingPathComponent("EOSSDK-Win64-Shipping.dll"))
+
+        let manager = WineManager()
+        XCTAssertTrue(manager.usesEpicOnlineServices(executable.path))
+        XCTAssertFalse(manager.needsLegacyUnityEOSWine(executable.path))
+
+        try Data().write(to: directory.appendingPathComponent("UnityPlayer.dll"))
+        XCTAssertTrue(manager.needsLegacyUnityEOSWine(executable.path))
+    }
+
+    func testLaunchAgentProcessPatternCannotMatchItsOwnWatcher() throws {
+        let pattern = WineManager.selfExcludingProcessPattern("Hades")
+        let regex = try NSRegularExpression(pattern: pattern)
+
+        let realProcess = #"/wine64-preloader Z:\\Games\\Hades\\x64Vk\\Hades.exe"#
+        let watcher = "while /usr/bin/pgrep -f '\(pattern)' >/dev/null; do sleep 5; done"
+
+        XCTAssertNotNil(regex.firstMatch(
+            in: realProcess,
+            range: NSRange(realProcess.startIndex..., in: realProcess)
+        ))
+        XCTAssertNil(regex.firstMatch(
+            in: watcher,
+            range: NSRange(watcher.startIndex..., in: watcher)
+        ))
+    }
+
+    func testManagedRuntimeOnlyReenablesMSCoree() {
+        XCTAssertEqual(
+            WineManager.enablingManagedRuntime(
+                in: "mscoree,mshtml=d;winegstreamer=d;d3d9,d3d8,ddraw=b"
+            ),
+            "mshtml=d;winegstreamer=d;d3d9,d3d8,ddraw=b"
+        )
+        XCTAssertEqual(
+            WineManager.enablingManagedRuntime(in: "mscoree=d;winemenubuilder.exe=d"),
+            "winemenubuilder.exe=d"
+        )
+    }
+
     func testEpicLaunchArgumentsAreRedacted() {
         let arguments = [
             "/Games/Melvor Idle.exe",
@@ -216,6 +295,25 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertFalse(LaunchDiagnostics.shouldRetryWithRealSteam(nil))
         XCTAssertFalse(LaunchDiagnostics.shouldRetryWithRealSteam(genericFailure))
         XCTAssertTrue(LaunchDiagnostics.shouldRetryWithRealSteam(steamFailure))
+    }
+
+    func testHeadlessProcessCannotBeLearnedAsSuccessfulEngine() {
+        XCTAssertTrue(LaunchDiagnostics.startupFailed(
+            crashed: false,
+            failureDetected: false,
+            isRunning: true,
+            everRunning: true,
+            requiresVisibleWindow: true,
+            everVisible: false
+        ))
+        XCTAssertFalse(LaunchDiagnostics.startupFailed(
+            crashed: false,
+            failureDetected: false,
+            isRunning: false,
+            everRunning: true,
+            requiresVisibleWindow: true,
+            everVisible: true
+        ))
     }
 
     func testLegacyManualLaunchArgumentsNeverBecomeACompatibilityRequirement() {
