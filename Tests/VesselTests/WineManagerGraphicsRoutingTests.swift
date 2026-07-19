@@ -4,30 +4,98 @@ import XCTest
 
 @MainActor
 final class WineManagerGraphicsRoutingTests: XCTestCase {
-    private func makePE32(named name: String, marker: String) throws -> URL {
+    private func writeUInt16(_ value: UInt16, to data: inout Data, at offset: Int) {
+        data[offset] = UInt8(value & 0xff)
+        data[offset + 1] = UInt8((value >> 8) & 0xff)
+    }
+
+    private func writeUInt32(_ value: UInt32, to data: inout Data, at offset: Int) {
+        for index in 0..<4 { data[offset + index] = UInt8((value >> (index * 8)) & 0xff) }
+    }
+
+    private func writeUInt64(_ value: UInt64, to data: inout Data, at offset: Int) {
+        for index in 0..<8 { data[offset + index] = UInt8((value >> (index * 8)) & 0xff) }
+    }
+
+    private func writePE(
+        to url: URL,
+        is64Bit: Bool,
+        imports: [String],
+        marker: String
+    ) throws {
+        var data = Data(repeating: 0, count: 0x800)
+        let peOffset = 0x80
+        let optionalOffset = peOffset + 24
+        let optionalSize = is64Bit ? 0xf0 : 0xe0
+        let directoryOffset = optionalOffset + (is64Bit ? 112 : 96)
+        let sectionOffset = optionalOffset + optionalSize
+        let rawSectionOffset = 0x200
+
+        data[0] = 0x4d
+        data[1] = 0x5a
+        writeUInt32(UInt32(peOffset), to: &data, at: 0x3c)
+        data[peOffset] = 0x50
+        data[peOffset + 1] = 0x45
+        writeUInt16(is64Bit ? 0x8664 : 0x014c, to: &data, at: peOffset + 4)
+        writeUInt16(1, to: &data, at: peOffset + 6)
+        writeUInt16(UInt16(optionalSize), to: &data, at: peOffset + 20)
+        writeUInt16(is64Bit ? 0x020b : 0x010b, to: &data, at: optionalOffset)
+        if is64Bit {
+            writeUInt64(0x0000_0001_4000_0000, to: &data, at: optionalOffset + 24)
+            writeUInt32(16, to: &data, at: optionalOffset + 108)
+        } else {
+            writeUInt32(0x0040_0000, to: &data, at: optionalOffset + 28)
+            writeUInt32(16, to: &data, at: optionalOffset + 92)
+        }
+        writeUInt32(0x200, to: &data, at: optionalOffset + 60) // SizeOfHeaders
+
+        data.replaceSubrange(sectionOffset..<(sectionOffset + 8), with: Data(".rdata\0\0".utf8))
+        writeUInt32(0x600, to: &data, at: sectionOffset + 8)
+        writeUInt32(0x1000, to: &data, at: sectionOffset + 12)
+        writeUInt32(0x600, to: &data, at: sectionOffset + 16)
+        writeUInt32(UInt32(rawSectionOffset), to: &data, at: sectionOffset + 20)
+
+        if !imports.isEmpty {
+            writeUInt32(0x1000, to: &data, at: directoryOffset + 8)
+            writeUInt32(UInt32((imports.count + 1) * 20), to: &data, at: directoryOffset + 12)
+            var nameOffset = 0x400
+            for (index, library) in imports.enumerated() {
+                let descriptor = rawSectionOffset + index * 20
+                let nameRVA = UInt32(0x1000 + nameOffset - rawSectionOffset)
+                writeUInt32(nameRVA, to: &data, at: descriptor + 12)
+                let bytes = Data(library.utf8) + Data([0])
+                data.replaceSubrange(nameOffset..<(nameOffset + bytes.count), with: bytes)
+                nameOffset += bytes.count
+            }
+        }
+
+        data.append(Data(marker.utf8))
+        try data.write(to: url)
+    }
+
+    private func makePE32(
+        named name: String,
+        marker: String = "",
+        imports: [String] = []
+    ) throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("vessel-graphics-test-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent(name)
-        var data = Data(repeating: 0, count: 0x200)
-        data[0] = 0x4d
-        data[1] = 0x5a
-        data[0x3c] = 0x80
-        data[0x80] = 0x50
-        data[0x81] = 0x45
-        data[0x84] = 0x4c
-        data[0x85] = 0x01
-        data.append(Data(marker.utf8))
-        try data.write(to: url)
+        try writePE(to: url, is64Bit: false, imports: imports, marker: marker)
         return url
     }
 
-    private func makePE64(named name: String, marker: String = "") throws -> URL {
-        let url = try makePE32(named: name, marker: marker)
-        var data = try Data(contentsOf: url)
-        data[0x84] = 0x64
-        data[0x85] = 0x86
-        try data.write(to: url)
+    private func makePE64(
+        named name: String,
+        marker: String = "",
+        imports: [String] = []
+    ) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-graphics-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent(name)
+        try writePE(to: url, is64Bit: true, imports: imports, marker: marker)
         return url
     }
 
@@ -42,8 +110,54 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [.dxmt])
     }
 
+    func testRendererNameOutsideImportTableCannotMisrouteOpenGLAsD3D9() throws {
+        let executable = try makePE32(
+            named: "moai-game.exe",
+            marker: "Optional renderer list: D3D9.DLL",
+            imports: ["OPENGL32.dll"]
+        )
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+        let manager = WineManager()
+
+        XCTAssertEqual(manager.peImportedLibraries(forExecutable: executable.path), ["opengl32.dll"])
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .opengl)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .dxmt)
+    }
+
+    func testMoaiAKUSDLPE32UsesOnlyTheFullCompatibilityEngine() throws {
+        let executable = try makePE32(
+            named: "moai-game.exe",
+            marker: "MOAIEnvironment MOAISim AKUSDL",
+            imports: ["OPENGL32.dll"]
+        )
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+        let manager = WineManager()
+
+        XCTAssertTrue(manager.isLegacyMoaiOpenGLGame(executable.path))
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .gcenx)
+        XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [])
+    }
+
+    func testFullEngineExposesBundledMoltenVKWithoutForcingBackend() {
+        let environment = WineManager.fullEngineEnvironment(
+            prefix: "/tmp/vessel-bottle",
+            engineRoot: "/tmp/vessel-wine-full"
+        )
+
+        XCTAssertEqual(environment["WINEPREFIX"], "/tmp/vessel-bottle")
+        XCTAssertEqual(
+            environment["DYLD_FALLBACK_LIBRARY_PATH"],
+            "/tmp/vessel-wine-full/lib"
+        )
+        XCTAssertNil(environment["CX_GRAPHICS_BACKEND"])
+    }
+
     func testPE32SDL2OpenGLDisablesLegacyRetinaScaling() throws {
-        let executable = try makePE32(named: "pixel-engine.exe", marker: "opengl32.dll SDL2.dll")
+        let executable = try makePE32(
+            named: "pixel-engine.exe",
+            marker: "SDL2.dll",
+            imports: ["opengl32.dll"]
+        )
         let directory = executable.deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: directory) }
         try Data("SDL2".utf8).write(to: directory.appendingPathComponent("SDL2.dll"))
@@ -54,7 +168,11 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
     }
 
     func testSDL2OpenGLScalingRuleDoesNotAffect64BitGames() throws {
-        let executable = try makePE64(named: "modern-engine.exe", marker: "opengl32.dll SDL2.dll")
+        let executable = try makePE64(
+            named: "modern-engine.exe",
+            marker: "SDL2.dll",
+            imports: ["opengl32.dll"]
+        )
         let directory = executable.deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: directory) }
         try Data("SDL2".utf8).write(to: directory.appendingPathComponent("SDL2.dll"))
@@ -65,7 +183,7 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
     }
 
     func testUnusedSiblingSDL2DoesNotTriggerLegacyScaling() throws {
-        let executable = try makePE32(named: "unrelated-tool.exe", marker: "opengl32.dll")
+        let executable = try makePE32(named: "unrelated-tool.exe", imports: ["opengl32.dll"])
         let directory = executable.deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: directory) }
         try Data("SDL2".utf8).write(to: directory.appendingPathComponent("SDL2.dll"))
@@ -79,7 +197,12 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         let executable = try makePE64(named: "Melvor Idle.exe")
         let directory = executable.deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: directory) }
-        try Data("ANGLE d3d11 dxgi d3d9.dll".utf8).write(to: directory.appendingPathComponent("nw.dll"))
+        try writePE(
+            to: directory.appendingPathComponent("nw.dll"),
+            is64Bit: true,
+            imports: ["d3d9.dll"],
+            marker: "ANGLE d3d11 dxgi"
+        )
         try FileManager.default.createDirectory(
             at: directory.appendingPathComponent("package.nw"),
             withIntermediateDirectories: true
@@ -156,7 +279,11 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         let directory = executable.deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: directory) }
         // `makePE64` crea su propio directorio; copiamos la DLL al lado del launcher, como en Hades.
-        let engineSource = try makePE64(named: "EngineWin64s.dll", marker: "dxgi.dll d3d11.dll D3DCOMPILER_47.dll")
+        let engineSource = try makePE64(
+            named: "EngineWin64s.dll",
+            marker: "D3DCOMPILER_47.dll",
+            imports: ["dxgi.dll", "d3d11.dll"]
+        )
         defer { try? FileManager.default.removeItem(at: engineSource.deletingLastPathComponent()) }
         try FileManager.default.copyItem(
             at: engineSource,
@@ -174,7 +301,8 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let engineSource = try makePE64(
             named: "EngineWin64sv.dll",
-            marker: "vulkan-1.dll Running Vulkan renderer/vulkan"
+            marker: "Running Vulkan renderer/vulkan",
+            imports: ["vulkan-1.dll"]
         )
         defer { try? FileManager.default.removeItem(at: engineSource.deletingLastPathComponent()) }
         try FileManager.default.copyItem(

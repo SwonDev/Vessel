@@ -806,6 +806,17 @@ final class WineManager {
         }
     }
 
+    /// Motor Moai clásico con backend SDL estático. Estas builds PE32 importan OpenGL pero no usan
+    /// el contexto core/forward-compatible de los motores OpenGL modernos: con el clon unificado el
+    /// proceso queda vivo sin ventana; el Wine completo crea el contexto compatible y renderiza.
+    /// La firma exige motor + capa SDL + import PE real para no afectar a otros OpenGL de 32 bits.
+    func isLegacyMoaiOpenGLGame(_ executable: String) -> Bool {
+        isExecutable32Bit(executable)
+            && detectGraphicsAPI(forExecutable: executable) == .opengl
+            && exeContains(executable, anyOf: ["MOAIEnvironment", "MOAISim"])
+            && exeContains(executable, anyOf: ["AKUSDL"])
+    }
+
     /// True si el ejecutable es un juego **Java con JVM embebida** (p. ej. Wurm Unlimited): junto
     /// al exe hay un runtime Java (`runtime/bin/java.exe`, `jre/bin/java.exe`) o un `client.jar`.
     /// Misma detección por estructura que usa el importador (`SteamLibraryImporter`).
@@ -1053,6 +1064,9 @@ final class WineManager {
         // Chromium necesita el swapchain de DXMT en el mismo proceso; otras rutas producen una
         // ventana negra aunque el proceso sobreviva. Es una restricción del motor, no una preferencia.
         if isNWJSGame(executable) { return .dxmt }
+        // El enum aún no tiene una categoría «Wine completo»; `.gcenx` representa aquí la familia
+        // wined3d/compatibilidad y evita que el diagnóstico crea que se lanzó por DXMT.
+        if isLegacyMoaiOpenGLGame(executable) { return .gcenx }
         let go = eff.graphicsOverride
         if go == .gcenx { return .gcenx }
         let api = detectGraphicsAPI(forExecutable: executable)
@@ -1079,6 +1093,8 @@ final class WineManager {
     ///  - Carga dinámica (`.other`) → Gcenx primero, DXMT de respaldo (el gate ya existente para M-series nuevos).
     func fallbackLayers(forExecutable executable: String, effective eff: EffectiveLaunchConfig = EffectiveLaunchConfig()) -> [GameConfig.GraphicsLayer] {
         if isNWJSGame(executable) { return [.dxmt] }
+        // Moai/AKUSDL no tiene «capas Direct3D» que probar: el adaptador Wine completo es su ruta.
+        if isLegacyMoaiOpenGLGame(executable) { return [] }
         switch eff.graphicsOverride {
         case .gptk:  return [.gptk]
         case .dxmt:  return [.dxmt]
@@ -1124,17 +1140,23 @@ final class WineManager {
         }
     }
 
-    /// ¿El .exe importa alguna de estas DLL? Escanea el binario (mapeado en memoria)
-    /// buscando los nombres en la tabla de imports. Heurístico pero fiable: los nombres
-    /// de import aparecen como ASCII terminado en nulo. Comprueba minúsculas y mayúsculas.
+    /// DLLs que el PE importa de verdad, incluidas las importaciones retardadas.
+    ///
+    /// Antes se buscaba el nombre de la DLL como texto libre en todo el binario. Eso confundía
+    /// mensajes, listas de renderizadores opcionales y rutas de configuración con imports reales:
+    /// Broken Age, por ejemplo, contiene el texto `D3D9.DLL` pero su tabla PE solo importa OpenGL.
+    /// El falso positivo lo enviaba al adaptador D3D9 aunque el motor fuese Moai/OpenGL.
+    ///
+    /// La lectura estructural vive en `PEImportScanner`; las detecciones explícitamente dinámicas
+    /// continúan usando `exeContains` en su propia regla.
+    func peImportedLibraries(forExecutable executable: String) -> Set<String> {
+        PEImportScanner.importedLibraries(atPath: executable)
+    }
+
+    /// ¿El PE importa alguna de estas DLL? Solo consulta Import/Delay Import; nunca texto libre.
     private func exeImports(_ executable: String, anyOf names: [String]) -> Bool {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: executable), options: .mappedIfSafe)
-        else { return false }
-        for name in names {
-            if let lower = name.lowercased().data(using: .ascii), data.range(of: lower) != nil { return true }
-            if let upper = name.uppercased().data(using: .ascii), data.range(of: upper) != nil { return true }
-        }
-        return false
+        let imports = peImportedLibraries(forExecutable: executable)
+        return names.contains { imports.contains($0.lowercased()) }
     }
 
     @discardableResult
@@ -1414,6 +1436,20 @@ final class WineManager {
                 environment: env,
                 workingDirectory: gameWorkingDirectory(forExecutable: executable),
                 effective: eff
+            )
+        }
+        // **Moai/AKUSDL PE32**: OpenGL de compatibilidad con el Wine completo. Va antes de cualquier
+        // override gráfico porque DXMT/GPTK/Gcenx son capas Direct3D y no describen este motor.
+        // La regla se basa en firma de motor + import OpenGL real, nunca en el título.
+        if isLegacyMoaiOpenGLGame(executable),
+           let fullEngineWine = await fullEngineWineEnsured() {
+            return try await launchLegacyMoaiOpenGLGame(
+                executable: executable,
+                in: bottle,
+                arguments: allArgs,
+                steamAppId: steamAppId,
+                effective: eff,
+                wine: fullEngineWine
             )
         }
         // Capa gráfica: override por juego (Ajustes/perfil) o auto-detección por API.
@@ -1748,8 +1784,45 @@ final class WineManager {
             winePath: wine,
             prefix: bottle.prefixPath,
             arguments: [executable] + arguments,
-            environment: ["WINEPREFIX": bottle.prefixPath, "WINEDEBUG": "-all",
-                          "WINEDLLOVERRIDES": "winemenubuilder.exe=d"],
+            environment: Self.fullEngineEnvironment(prefix: bottle.prefixPath),
+            workingDirectory: gameWorkingDirectory(forExecutable: executable),
+            effective: effective
+        )
+    }
+
+    /// Lanza Moai/AKUSDL PE32 con el contexto OpenGL de compatibilidad de `wine-full`.
+    ///
+    /// El motor OpenGL unificado está parcheado para contextos 3.2 core modernos; estas builds
+    /// antiguas solicitan un contexto compatible y pueden quedarse vivas sin publicar ventana.
+    /// `wine-full` conserva esa ruta y no necesita argumentos de lanzamiento ni ajustes del usuario.
+    private func launchLegacyMoaiOpenGLGame(
+        executable: String,
+        in bottle: Bottle,
+        arguments: [String],
+        steamAppId: String?,
+        effective: EffectiveLaunchConfig,
+        wine: String
+    ) async throws -> Process {
+        log.log("Motor Moai/AKUSDL detectado: OpenGL PE32 con el Wine completo.", level: .info)
+        cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
+        try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: wine)
+        await resyncGamePrefix(gameWine: wine, prefix: bottle.prefixPath)
+        await setMacDriverRetinaMode(
+            prefix: bottle.prefixPath,
+            wine: wine,
+            enabled: effective.retina
+        )
+        var environment = Self.fullEngineEnvironment(prefix: bottle.prefixPath)
+        if let steamAppId, !steamAppId.isEmpty {
+            environment["SteamAppId"] = steamAppId
+            environment["SteamGameId"] = steamAppId
+        }
+        return try await launchWineProcess(
+            winePath: wine,
+            prefix: bottle.prefixPath,
+            arguments: [executable] + arguments,
+            environment: environment,
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: effective
         )
@@ -3723,6 +3796,21 @@ final class WineManager {
             "WINEESYNC": "1",
             "WINEFSYNC": "1",
             "WINEDLLOVERRIDES": "mscoree,mshtml=d;d3d9=n,b;d3d8=n,b;wined3d=n,b;d3dx9_43=n;d3dx9_42=n;d3dcompiler_43=n"
+        ]
+    }
+
+    /// Entorno limpio común del motor completo. Algunas rutas (D3D9/wined3d) cargan MoltenVK por
+    /// nombre mediante `dlopen`; al ejecutar con `env -i`, dyld no ve `wine-full/lib` aunque la
+    /// biblioteca ya esté empaquetada. Exponer solo ese directorio también es inocuo para OpenGL.
+    nonisolated static func fullEngineEnvironment(
+        prefix: String,
+        engineRoot: String = WineEngineLocator.fullEngineDir()
+    ) -> [String: String] {
+        [
+            "WINEPREFIX": prefix,
+            "WINEDEBUG": "-all",
+            "WINEDLLOVERRIDES": "winemenubuilder.exe=d",
+            "DYLD_FALLBACK_LIBRARY_PATH": "\(engineRoot)/lib"
         ]
     }
 
