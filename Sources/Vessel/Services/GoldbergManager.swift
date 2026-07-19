@@ -18,6 +18,11 @@ final class GoldbergManager {
     static let releaseURL = URL(string: "https://github.com/Detanup01/gbe_fork/releases/download/release-2026_05_30/emu-win-release.7z")!
 
     private let dependencyManager = DependencyManager()
+    private let cacheDirectoryOverride: String?
+
+    init(cacheDirectoryOverride: String? = nil) {
+        self.cacheDirectoryOverride = cacheDirectoryOverride
+    }
 
     /// Juegos cuyo runtime exige una vtable de ISteamClient ANTIGUA (con
     /// ISteamUnifiedMessages en su slot histórico; Valve lo movió al final como
@@ -31,7 +36,7 @@ final class GoldbergManager {
         "1296360": "SteamClient016", // Archvale — GameMaker Studio 2.3 (slot ISteamUnifiedMessages)
     ]
 
-    var cacheDir: String { "\(VesselPaths.cacheDirectory)/goldberg" }
+    var cacheDir: String { cacheDirectoryOverride ?? "\(VesselPaths.cacheDirectory)/goldberg" }
     var steamApi64Path: String { "\(cacheDir)/steam_api64.dll" }
     var steamApi32Path: String { "\(cacheDir)/steam_api.dll" }
 
@@ -87,6 +92,18 @@ final class GoldbergManager {
             writeSteamSettings(inDir: gameDir, appId: appId, accountName: accountName)
             applySteamClientVtableOverride(appId: appId, settingsDir: "\(gameDir)/steam_settings", fm: fm)
         }
+        // Java/libGDX puede llevar Steamworks4j dentro del JAR. Ese runtime extrae su propio
+        // `steam_api(64).dll` al Temp del usuario de Wine, por lo que no existe ningún DLL visible
+        // junto al exe que el recorrido anterior pueda sustituir. Vessel parchea de forma atómica
+        // el recurso embebido y prepara el directorio de extracción que Steamworks4j calcula.
+        if applyToEmbeddedSteamworksArchives(
+            gameExecutable: gameExecutable,
+            appId: appId,
+            accountName: accountName,
+            fm: fm
+        ) {
+            applied = true
+        }
         return applied
     }
 
@@ -101,6 +118,25 @@ final class GoldbergManager {
             let path = String(backup.dropLast(".vessel-orig".count))
             try? fm.removeItem(atPath: path)
             try? fm.copyItem(atPath: backup, toPath: path)
+        }
+        restoreEmbeddedSteamworksArchives(gameExecutable: gameExecutable, root: root, fm: fm)
+    }
+
+    /// Steamworks4j empaqueta la API nativa dentro de un JAR en vez de dejarla en el árbol del
+    /// juego. Se expone al diagnóstico para que un fallo de inicialización siga clasificándose como
+    /// Steamworks y nunca termine convertido en un falso problema gráfico.
+    func hasEmbeddedSteamworks(gameExecutable: String) -> Bool {
+        !embeddedSteamworksArchives(forExecutable: gameExecutable).isEmpty
+    }
+
+    /// libGDX 1.x con LWJGL 2 usa OpenGL clásico y no es consciente del escalado Retina de Wine.
+    /// Se detecta por clases y nativos embebidos, nunca por el título del juego.
+    func hasLegacyLibGDXOpenGL(gameExecutable: String) -> Bool {
+        candidateJavaArchives(forExecutable: gameExecutable).contains { jar in
+            guard let listingData = runTool("/usr/bin/unzip", arguments: ["-Z1", jar]),
+                  let listing = String(data: listingData, encoding: .utf8) else { return false }
+            return listing.contains("com/badlogic/gdx/backends/lwjgl/LwjglApplication.class")
+                && (listing.contains("lwjgl64.dll") || listing.contains("lwjgl.dll"))
         }
     }
 
@@ -123,6 +159,263 @@ final class GoldbergManager {
             if base == "steam_api64.dll" || base == "steam_api.dll" { out.append("\(root)/\(rel)") }
         }
         return out
+    }
+
+    private struct EmbeddedSteamworksArchive {
+        let path: String
+        let version: String
+        let libraries: [String]
+    }
+
+    /// Busca JARs del lanzador y de `lib/` sin recorrer árboles completos de recursos. Un paquete
+    /// Steamworks4j válido contiene tanto el bridge JNI como `steam_api(64).dll` en la raíz.
+    private func embeddedSteamworksArchives(forExecutable executable: String) -> [EmbeddedSteamworksArchive] {
+        candidateJavaArchives(forExecutable: executable).compactMap { jar in
+            guard let listingData = runTool("/usr/bin/unzip", arguments: ["-Z1", jar]),
+                  let listing = String(data: listingData, encoding: .utf8) else { return nil }
+            let entries = Set(listing.components(separatedBy: .newlines))
+            let hasBridge = entries.contains("steamworks4j64.dll") || entries.contains("steamworks4j.dll")
+            guard hasBridge else { return nil }
+            let libraries = ["steam_api64.dll", "steam_api.dll"].filter(entries.contains)
+            guard !libraries.isEmpty else { return nil }
+
+            let propertiesPath = entries.first {
+                $0.hasSuffix("/com.code-disaster.steamworks4j/steamworks4j/pom.properties")
+            }
+            let rawVersion = propertiesPath
+                .flatMap { archiveEntryData(archive: jar, entry: $0) }
+                .flatMap { String(data: $0, encoding: .utf8) }
+                .flatMap { text in
+                    text.components(separatedBy: .newlines)
+                        .first(where: { $0.hasPrefix("version=") })?
+                        .dropFirst("version=".count)
+                }
+                .map(String.init) ?? "embedded"
+            let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
+            let version = rawVersion.unicodeScalars.allSatisfy(allowed.contains) ? rawVersion : "embedded"
+            return EmbeddedSteamworksArchive(path: jar, version: version, libraries: libraries)
+        }
+    }
+
+    private func candidateJavaArchives(forExecutable executable: String) -> [String] {
+        let fm = FileManager.default
+        let gameDir = (executable as NSString).deletingLastPathComponent
+        var candidates: [String] = []
+        for directory in [gameDir, "\(gameDir)/lib"] {
+            guard let names = try? fm.contentsOfDirectory(atPath: directory) else { continue }
+            candidates += names
+                .filter { ($0 as NSString).pathExtension.lowercased() == "jar" }
+                .map { "\(directory)/\($0)" }
+        }
+        return candidates.sorted()
+    }
+
+    private func applyToEmbeddedSteamworksArchives(
+        gameExecutable: String,
+        appId: String,
+        accountName: String,
+        fm: FileManager
+    ) -> Bool {
+        let archives = embeddedSteamworksArchives(forExecutable: gameExecutable)
+        guard !archives.isEmpty else { return false }
+        var applied = false
+
+        for archive in archives {
+            let backup = "\(archive.path).vessel-orig"
+            let currentLibraries = Dictionary(uniqueKeysWithValues: archive.libraries.compactMap { name in
+                archiveEntryData(archive: archive.path, entry: name).map { (name, $0) }
+            })
+            guard currentLibraries.count == archive.libraries.count else { continue }
+
+            let replacements = Dictionary(uniqueKeysWithValues: archive.libraries.compactMap { name in
+                let source = name == "steam_api64.dll" ? steamApi64Path : steamApi32Path
+                return fm.contents(atPath: source).map { (name, $0) }
+            })
+            guard replacements.count == archive.libraries.count else { continue }
+
+            let alreadyPatched = archive.libraries.allSatisfy { currentLibraries[$0] == replacements[$0] }
+            var originalLibraries: [String: Data] = [:]
+            if alreadyPatched {
+                if fm.fileExists(atPath: backup) {
+                    for name in archive.libraries {
+                        originalLibraries[name] = archiveEntryData(archive: backup, entry: name)
+                    }
+                }
+            } else {
+                // Una API oficial de Steam es pequeña. Si aparece otro reemplazo grande que no es
+                // el de Vessel, no lo pisamos: puede pertenecer a otra herramienta del usuario.
+                guard archive.libraries.allSatisfy({ (currentLibraries[$0]?.count ?? .max) < 5_000_000 }) else {
+                    continue
+                }
+                originalLibraries = currentLibraries
+                do {
+                    if fm.fileExists(atPath: backup) { try fm.removeItem(atPath: backup) }
+                    try fm.copyItem(atPath: archive.path, toPath: backup)
+                    try patchArchiveAtomically(
+                        archive: archive.path,
+                        replacements: replacements,
+                        fileManager: fm
+                    )
+                } catch {
+                    continue
+                }
+            }
+
+            prepareSteamworksExtraction(
+                gameExecutable: gameExecutable,
+                version: archive.version,
+                replacements: replacements,
+                originals: originalLibraries,
+                appId: appId,
+                accountName: accountName,
+                fileManager: fm
+            )
+            applied = true
+        }
+        return applied
+    }
+
+    private func patchArchiveAtomically(
+        archive: String,
+        replacements: [String: Data],
+        fileManager fm: FileManager
+    ) throws {
+        let staging = fm.temporaryDirectory
+            .appendingPathComponent("Vessel-Steamworks4j-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: staging) }
+
+        let patched = staging.appendingPathComponent("patched.jar")
+        try fm.copyItem(atPath: archive, toPath: patched.path)
+        for (name, data) in replacements {
+            try data.write(to: staging.appendingPathComponent(name), options: .atomic)
+        }
+        let names = replacements.keys.sorted()
+        guard runTool(
+            "/usr/bin/zip",
+            arguments: ["-q", patched.path] + names,
+            currentDirectory: staging
+        ) != nil else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        for (name, data) in replacements {
+            guard archiveEntryData(archive: patched.path, entry: name) == data else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+        }
+        _ = try fm.replaceItemAt(URL(fileURLWithPath: archive), withItemAt: patched)
+    }
+
+    private func prepareSteamworksExtraction(
+        gameExecutable: String,
+        version: String,
+        replacements: [String: Data],
+        originals: [String: Data],
+        appId: String,
+        accountName: String,
+        fileManager fm: FileManager
+    ) {
+        for tempDir in wineUserTempDirectories(forExecutable: gameExecutable, fileManager: fm) {
+            let extraction = "\(tempDir)/steamworks4j/\(version)"
+            try? fm.createDirectory(atPath: extraction, withIntermediateDirectories: true)
+            for (name, data) in replacements {
+                let path = "\(extraction)/\(name)"
+                try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
+                if let original = originals[name] {
+                    try? original.write(
+                        to: URL(fileURLWithPath: "\(path).vessel-orig"),
+                        options: .atomic
+                    )
+                }
+                generateSteamInterfaces(
+                    fromDLL: path,
+                    intoSettingsDir: "\(extraction)/steam_settings",
+                    fm: fm
+                )
+            }
+            if !appId.isEmpty {
+                try? appId.write(
+                    toFile: "\(extraction)/steam_appid.txt",
+                    atomically: true,
+                    encoding: .utf8
+                )
+            }
+            writeSteamSettings(inDir: extraction, appId: appId, accountName: accountName)
+            applySteamClientVtableOverride(
+                appId: appId,
+                settingsDir: "\(extraction)/steam_settings",
+                fm: fm
+            )
+        }
+    }
+
+    private func restoreEmbeddedSteamworksArchives(gameExecutable: String, root: String, fm: FileManager) {
+        guard let enumerator = fm.enumerator(atPath: root) else { return }
+        var restoredJars: [String] = []
+        for case let relative as String in enumerator where relative.hasSuffix(".jar.vessel-orig") {
+            let backup = "\(root)/\(relative)"
+            let jar = String(backup.dropLast(".vessel-orig".count))
+            try? fm.removeItem(atPath: jar)
+            if (try? fm.copyItem(atPath: backup, toPath: jar)) != nil { restoredJars.append(jar) }
+        }
+        guard !restoredJars.isEmpty else { return }
+        for archive in embeddedSteamworksArchives(forExecutable: gameExecutable) {
+            for tempDir in wineUserTempDirectories(forExecutable: gameExecutable, fileManager: fm) {
+                let extraction = "\(tempDir)/steamworks4j/\(archive.version)"
+                for name in archive.libraries {
+                    try? fm.removeItem(atPath: "\(extraction)/\(name)")
+                }
+            }
+        }
+    }
+
+    private func wineUserTempDirectories(forExecutable executable: String, fileManager fm: FileManager) -> [String] {
+        let marker = "/drive_c/"
+        guard let range = executable.range(of: marker, options: .caseInsensitive) else { return [] }
+        let prefix = String(executable[..<range.lowerBound])
+        let usersRoot = "\(prefix)/drive_c/users"
+        let ignored = Set(["public", "default", "default user", "all users"])
+        var result: [String] = []
+        if let users = try? fm.contentsOfDirectory(atPath: usersRoot) {
+            for user in users where !ignored.contains(user.lowercased()) {
+                let userDir = "\(usersRoot)/\(user)"
+                var isDirectory: ObjCBool = false
+                guard fm.fileExists(atPath: userDir, isDirectory: &isDirectory), isDirectory.boolValue else {
+                    continue
+                }
+                result.append("\(userDir)/Temp")
+            }
+        }
+        if result.isEmpty {
+            result.append("\(usersRoot)/\(NSUserName())/Temp")
+        }
+        return result
+    }
+
+    private func archiveEntryData(archive: String, entry: String) -> Data? {
+        runTool("/usr/bin/unzip", arguments: ["-p", archive, entry])
+    }
+
+    private func runTool(
+        _ executable: String,
+        arguments: [String],
+        currentDirectory: URL? = nil
+    ) -> Data? {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.currentDirectoryURL = currentDirectory
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            return process.terminationStatus == 0 ? data : nil
+        } catch {
+            return nil
+        }
     }
 
     /// Reemplaza un DLL del juego por el de Goldberg. Respalda el original una sola

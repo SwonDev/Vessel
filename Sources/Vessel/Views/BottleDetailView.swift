@@ -81,6 +81,13 @@ struct BottleDetailView: View {
                     Task { await launchGame(g) }
                 }
             },
+            onReconcileRunning: { sg in
+                if let game = localBottle.games.first(where: {
+                    ($0.steamAppId ?? $0.id.uuidString) == sg.id
+                }) {
+                    await reconcileRunningGame(game)
+                }
+            },
             onUninstall: { sg in
                 gameToUninstall = localBottle.games.first(where: { ($0.steamAppId ?? $0.id.uuidString) == sg.id })
             },
@@ -576,6 +583,8 @@ struct BottleDetailView: View {
         let profile = CompatService.shared.profile(steam: game.steamAppId, title: game.name)
         var eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
         if let forcedLayer { eff.graphicsOverride = forcedLayer }
+        let trackedExecutable = exePath
+        let trackedPrefix = localBottle.prefixPath
         // Motor REAL que se usará (no `.auto`), para que el fallback recorra los 3 motores.
         let usedLayer = wineManager.resolvedGraphicsLayer(forExecutable: exePath, effective: eff)
         await GameLaunchTracker.shared.track(
@@ -587,7 +596,19 @@ struct BottleDetailView: View {
                 if cfg.steamCloudSync, !eff.useRealSteam, let appId = game.steamAppId {
                     await wineManager.syncSteamCloud(appId: appId, in: localBottle)
                 }
-            } }
+            } },
+            processFamilyIsRunning: {
+                await wineManager.isGameProcessFamilyRunning(
+                    executable: trackedExecutable,
+                    prefix: trackedPrefix
+                )
+            },
+            stopProcessFamily: {
+                await wineManager.terminateGameProcessFamily(
+                    executable: trackedExecutable,
+                    prefix: trackedPrefix
+                )
+            }
         ) {
             // Nube de Steam en Modo Vessel (opt-in): ANTES de jugar, baja la última nube del cliente.
             if cfg.steamCloudSync, !eff.useRealSteam, let appId = game.steamAppId {
@@ -608,7 +629,6 @@ struct BottleDetailView: View {
             currentLayer: usedLayer, attempt: attempt,
             fallbackLayers: wineManager.fallbackLayers(forExecutable: exePath, effective: eff),
             usesRealSteam: eff.useRealSteam,
-            usesSteamworks: wineManager.usesSteamworks(exePath),
             isRunning: { GameLaunchTracker.shared.state(trackId) == .running },
             // Al reparar con éxito, recordar la capa ganadora como override del juego → la próxima
             // vez arranca directa en el motor que funciona (el arreglo PERSISTE, no se repite el crash).
@@ -645,6 +665,44 @@ struct BottleDetailView: View {
                 return repaired
             }
         ) { next in await launchGame(game, forcedLayer: next, attempt: attempt + 1) }
+    }
+
+    /// Si Vessel se actualizó o reinició con el juego aún abierto, reconstruye «Ejecutándose» al
+    /// volver a su ficha. La detección usa el ejecutable efectivo y el prefijo; no una bandera
+    /// persistida ni un nombre global que pueda confundirse con otro juego o con Steam de macOS.
+    private func reconcileRunningGame(_ game: GameInstall) async {
+        let trackId = game.steamAppId ?? game.id.uuidString
+        var executable = game.executablePath
+        if !game.installPath.isEmpty,
+           let resolved = SteamLibraryImporter.mainGameExecutable(in: game.installPath) {
+            executable = resolved
+        }
+        let config = GameConfigStore.load(trackId)
+        let installRoot = game.installPath.isEmpty
+            ? (game.executablePath as NSString).deletingLastPathComponent
+            : game.installPath
+        executable = GameExecutableOverride.resolve(
+            configuredPath: config.executableOverride,
+            installRoot: installRoot,
+            fallback: executable
+        )
+        let trackedExecutable = executable
+        let trackedPrefix = localBottle.prefixPath
+        await GameLaunchTracker.shared.adoptRunningProcessFamily(
+            trackId,
+            processFamilyIsRunning: {
+                await wineManager.isGameProcessFamilyRunning(
+                    executable: trackedExecutable,
+                    prefix: trackedPrefix
+                )
+            },
+            stopProcessFamily: {
+                await wineManager.terminateGameProcessFamily(
+                    executable: trackedExecutable,
+                    prefix: trackedPrefix
+                )
+            }
+        )
     }
 
     private func refreshDXVKStatus() async {

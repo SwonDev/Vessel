@@ -16,6 +16,9 @@ final class GameLaunchTracker {
 
     private var states: [String: State] = [:]
     private var processes: [String: Process] = [:]
+    private var processFamilyProbes: [String: @MainActor () async -> Bool] = [:]
+    private var processFamilyStops: [String: @MainActor () async -> Void] = [:]
+    private var processFamilyWatchers: [String: Task<Void, Never>] = [:]
     private var nativeApplications: [String: NSRunningApplication] = [:]
     private var nativeWatchers: [String: Task<Void, Never>] = [:]
     /// Por id en curso: clave de estadística (`"<tienda>:<id>"`) e instante de arranque, para
@@ -33,6 +36,21 @@ final class GameLaunchTracker {
     func state(_ id: String) -> State { states[id] ?? .idle }
     func isBusy(_ id: String) -> Bool { state(id) != .idle }
 
+    /// Reconstruye el estado después de una actualización o reinicio de Vessel sin relanzar el
+    /// juego. La fuente de verdad es la familia real de procesos acotada por ejecutable y prefijo;
+    /// nunca se persiste una bandera «está abierto», que podría quedar obsoleta tras un crash.
+    func adoptRunningProcessFamily(
+        _ id: String,
+        processFamilyIsRunning: @escaping @MainActor () async -> Bool,
+        stopProcessFamily: @escaping @MainActor () async -> Void
+    ) async {
+        guard state(id) == .idle, await processFamilyIsRunning() else { return }
+        processFamilyProbes[id] = processFamilyIsRunning
+        processFamilyStops[id] = stopProcessFamily
+        states[id] = .running
+        watchDetachedProcessFamily(id)
+    }
+
     /// Lanza un juego rastreando su estado. `body` prepara y arranca el juego y devuelve su
     /// `Process`. Pone `.launching` antes, `.running` al obtener el proceso, y vuelve a `.idle`
     /// cuando el proceso termina. No relanza: registra el error. Evita doble lanzamiento.
@@ -41,6 +59,8 @@ final class GameLaunchTracker {
     /// al arrancar (para "Recientes" instantáneo) y suma la duración de la sesión al cerrar.
     func track(_ id: String, statsKey: String? = nil,
                onExit: (@MainActor () -> Void)? = nil,
+               processFamilyIsRunning: (@MainActor () async -> Bool)? = nil,
+               stopProcessFamily: (@MainActor () async -> Void)? = nil,
                _ body: () async throws -> Process) async {
         guard state(id) == .idle else { return }
         states[id] = .launching
@@ -55,13 +75,60 @@ final class GameLaunchTracker {
                 PlayStatsStore.shared.markPlayed(statsKey)
             }
             if let onExit { onExits[id] = onExit }
+            if let processFamilyIsRunning { processFamilyProbes[id] = processFamilyIsRunning }
+            if let stopProcessFamily { processFamilyStops[id] = stopProcessFamily }
             proc.terminationHandler = { _ in
-                Task { @MainActor in GameLaunchTracker.shared.finish(id) }
+                Task { @MainActor in
+                    let tracker = GameLaunchTracker.shared
+                    if tracker.processFamilyProbes[id] != nil {
+                        tracker.watchDetachedProcessFamily(id)
+                    } else {
+                        tracker.finish(id)
+                    }
+                }
             }
         } catch {
             states[id] = .idle
             lastErrors[id] = error.localizedDescription
             LogStore.shared.log("No se pudo iniciar el juego: \(error.localizedDescription)", level: .error)
+        }
+    }
+
+    /// Wine/Chromium puede delegar la ventana a procesos independientes y terminar el launcher
+    /// devuelto por `Foundation.Process`. La familia real no siempre aparece en `pgrep`/`lsof` en
+    /// el mismo instante: primero se le da una gracia breve y después se exigen varias ausencias
+    /// consecutivas para considerar que cerró. Así una transición de proceso no devuelve la UI a
+    /// «Jugar» mientras el juego sigue abierto.
+    private func watchDetachedProcessFamily(_ id: String) {
+        guard processFamilyWatchers[id] == nil else { return }
+        processFamilyWatchers[id] = Task { @MainActor [weak self] in
+            var appeared = false
+            for _ in 0..<20 {
+                guard !Task.isCancelled else { return }
+                if await self?.processFamilyProbes[id]?() == true {
+                    appeared = true
+                    break
+                }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            guard appeared else {
+                self?.finish(id)
+                return
+            }
+
+            var consecutiveAbsences = 0
+            while !Task.isCancelled, consecutiveAbsences < 3 {
+                if await self?.processFamilyProbes[id]?() == true {
+                    consecutiveAbsences = 0
+                } else {
+                    consecutiveAbsences += 1
+                }
+                if consecutiveAbsences < 3 {
+                    try? await Task.sleep(for: .milliseconds(500))
+                }
+            }
+            guard !Task.isCancelled else { return }
+            self?.finish(id)
         }
     }
 
@@ -142,6 +209,21 @@ final class GameLaunchTracker {
             }
             return
         }
+        if let stopProcessFamily = processFamilyStops[id] {
+            Task { @MainActor [weak self] in
+                await stopProcessFamily()
+                guard let self else { return }
+                if await self.processFamilyProbes[id]?() != true {
+                    self.finish(id)
+                } else {
+                    LogStore.shared.log(
+                        "El proceso del juego sigue activo después de solicitar su cierre.",
+                        level: .error
+                    )
+                }
+            }
+            return
+        }
         processes[id]?.terminate()
     }
 
@@ -152,6 +234,10 @@ final class GameLaunchTracker {
         onExits[id]?()            // p. ej. subir cloud saves tras cerrar el juego
         states[id] = .idle
         processes[id] = nil
+        processFamilyProbes[id] = nil
+        processFamilyStops[id] = nil
+        processFamilyWatchers[id]?.cancel()
+        processFamilyWatchers[id] = nil
         nativeApplications[id] = nil
         nativeWatchers[id]?.cancel()
         nativeWatchers[id] = nil

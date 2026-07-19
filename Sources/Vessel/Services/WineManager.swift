@@ -2,6 +2,7 @@ import Foundation
 import CoreGraphics
 import CryptoKit
 import AppKit
+import Darwin
 
 @MainActor
 @Observable
@@ -808,6 +809,64 @@ final class WineManager {
             || fm.fileExists(atPath: "\(dir)/package.json")
     }
 
+    /// Algunos motores cargan Direct3D desde un módulo dinámico que el `.exe` no declara. NW.js,
+    /// por ejemplo, importa `d3d9.dll` desde `nw.dll` aunque ANGLE termine renderizando por D3D11.
+    /// Si no se detecta esa dependencia transitiva, el loader rechaza `nw.dll` completo con el
+    /// engañoso `Module not found (0x7E)`. La decisión se basa en imports reales, no en títulos.
+    func needsExeAdjacentD3D9Support(_ executable: String) -> Bool {
+        if exeImports(executable, anyOf: ["d3d9.dll"]) { return true }
+        guard isNWJSGame(executable) else { return false }
+        let dir = (executable as NSString).deletingLastPathComponent
+        return exeImports("\(dir)/nw.dll", anyOf: ["d3d9.dll"])
+    }
+
+    /// Respeta el manifiesto del propio runtime. Solo completa capacidades ausentes; no duplica ni
+    /// sustituye la configuración que el desarrollador ya empaquetó en `chromium-args`.
+    private func nwjsManifestDeclares(_ argument: String, executable: String) -> Bool {
+        let dir = (executable as NSString).deletingLastPathComponent
+        let candidates = ["\(dir)/package.json", "\(dir)/package.nw/package.json"]
+        for path in candidates {
+            guard let data = FileManager.default.contents(atPath: path),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let raw = object["chromium-args"] as? String else { continue }
+            if raw.split(whereSeparator: \.isWhitespace).contains(where: {
+                $0.caseInsensitiveCompare(argument) == .orderedSame
+            }) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Ajustes internos que Vessel deduce del motor del juego. No proceden de una configuración
+    /// manual ni se guardan como argumentos del usuario: forman parte del adaptador automático del
+    /// runtime y deben conservarse en todas las rutas de lanzamiento, incluida Steam real.
+    func automaticEngineArguments(forExecutable executable: String) -> [String] {
+        var result = unrealEngineArguments(forExecutable: executable)
+        if isNWJSGame(executable),
+           !nwjsManifestDeclares("--in-process-gpu", executable: executable) {
+            // Chromium/ANGLE bajo DXMT necesita crear el dispositivo GPU en el mismo proceso para
+            // presentar una vista Metal real. Vessel lo activa al detectar la estructura de NW.js.
+            result.append("--in-process-gpu")
+        }
+        return result
+    }
+
+    /// Compone una sola orden efectiva para cualquier ruta de motor. Los valores solicitados por
+    /// el juego/perfil se preservan y los ajustes automáticos no se duplican.
+    func resolvedLaunchArguments(
+        forExecutable executable: String,
+        requested: [String],
+        effective: EffectiveLaunchConfig
+    ) -> [String] {
+        var result = requested + effective.launchArgs
+        for argument in automaticEngineArguments(forExecutable: executable)
+        where !result.contains(where: { $0.caseInsensitiveCompare(argument) == .orderedSame }) {
+            result.append(argument)
+        }
+        return result
+    }
+
     /// `true` si el juego usa el **XNA de Microsoft** y NO se lo trae consigo: entonces hay que
     /// instalarle el redistribuible, porque lo busca en el sistema.
     ///
@@ -1051,12 +1110,13 @@ final class WineManager {
             eff.dllOverrides["d3dcompiler_47"] = "n,b"
         }
         let go = eff.graphicsOverride
-        // Los de Unreal llevan siempre `-nohmd`: sin él se quedan buscando un visor de VR que aquí no
-        // existe y mueren sin abrir ventana (ver `unrealEngineArguments`). Vale para cualquier ruta.
-        var allArgs = arguments + eff.launchArgs + unrealEngineArguments(forExecutable: executable)
-        if nwjs, !allArgs.contains(where: { $0.caseInsensitiveCompare("--in-process-gpu") == .orderedSame }) {
-            allArgs.append("--in-process-gpu")
-        }
+        // Orden efectiva ÚNICA: parámetros solicitados + perfil + adaptador automático del motor.
+        // Se reutiliza sin pérdidas tanto en el modo Vessel como al necesitar Steam real.
+        var allArgs = resolvedLaunchArguments(
+            forExecutable: executable,
+            requested: arguments,
+            effective: eff
+        )
         // Estado del propio juego restaurado por nube/backup: corrige únicamente combinaciones
         // verificadas que bajo Retina crean una ventana desbordada y desalinean el ratón. Se hace
         // aquí, DESPUÉS de cualquier restauración previa y ANTES de decidir la ruta de motor; no
@@ -1104,7 +1164,13 @@ final class WineManager {
         let steamRealGlobal = UserDefaults.standard.bool(forKey: "vessel.steamRealGlobal")
         if (eff.useRealSteam || steamRealGlobal), let appId = steamAppId, !appId.isEmpty {
             log.log("Modo Steam real para este juego (cliente Steam conectado: nube/updates/DLC/logros nativos)\(steamRealGlobal && !eff.useRealSteam ? " [global]" : "").", level: .info)
-            return try await launchViaRealSteam(executable: executable, in: bottle, appId: appId, effective: eff)
+            return try await launchViaRealSteam(
+                executable: executable,
+                in: bottle,
+                appId: appId,
+                launchArguments: allArgs,
+                effective: eff
+            )
         }
         // DRM Steamworks AUTO: muchos juegos de Steam exigen que Steam esté corriendo (SteamAPI_Init)
         // y, si no, se cierran o intentan RELANZARSE por Steam (el "abre Steam y se cierra" clásico).
@@ -1225,19 +1291,30 @@ final class WineManager {
                                                         arguments: allArgs, steamAppId: steamAppId,
                                                         effective: eff, wine: fullEngineWine)
         }
-        // **Java (JVM embebida, p. ej. Wurm Unlimited)**: su render es **Vulkan vía LWJGL**, no
-        // Direct3D — su PE no importa ninguna DLL de DirectX, así que la rama `.other` lo mandaba
-        // a Gcenx, cuyo MoltenVK VIEJO (0.2.2209) lo deja colgado tras crear el VkInstance (todos
-        // los hilos de la JVM en espera, sin ventana). Con `wine-full` (winevulkan + MoltenVK
-        // nuevo) la JVM arranca y el juego abre su launcher. Verificado: Wurm Unlimited llega a
-        // su ventana de login (v1.9.1.5); con Gcenx ni ventana. Solo en AUTO, como UE4.
+        // **Java con JVM embebida**: usa el Wine completo. Los motores modernos (p. ej. Wurm)
+        // pueden renderizar por Vulkan/LWJGL y necesitan su MoltenVK reciente; libGDX 1.x usa
+        // OpenGL/LWJGL 2. Ambos quedan aislados de las capas Direct3D.
         if go == .auto, isJavaGame(executable),
            let fullEngineWine = await fullEngineWineEnsured() {
-            log.log("Juego Java (JVM embebida): render Vulkan/LWJGL con el Wine completo (MoltenVK nuevo).", level: .info)
+            let legacyLibGDX = goldbergManager.hasLegacyLibGDXOpenGL(gameExecutable: executable)
+            log.log(
+                legacyLibGDX
+                    ? "Juego Java/libGDX detectado: OpenGL/LWJGL con el Wine completo y escala nativa."
+                    : "Juego Java detectado: runtime JVM/LWJGL con el Wine completo.",
+                level: .info
+            )
             cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
             try? await terminateWineProcesses(winePath: fullEngineWine, prefix: bottle.prefixPath)
             try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: fullEngineWine)
             await resyncGamePrefix(gameWine: fullEngineWine, prefix: bottle.prefixPath)
+            // LWJGL 2 no es DPI-aware: con Retina activo una resolución de 1280×720 ocupa solo
+            // 640×360 puntos y puede desalinear entrada/ventana. Se desactiva únicamente para esta
+            // familia; los Java modernos conservan la preferencia Retina del perfil.
+            await setMacDriverRetinaMode(
+                prefix: bottle.prefixPath,
+                wine: fullEngineWine,
+                enabled: legacyLibGDX ? false : eff.retina
+            )
             var env = ["WINEPREFIX": bottle.prefixPath, "WINEDEBUG": "-all",
                        "WINEDLLOVERRIDES": "winemenubuilder.exe=d",
                        "WINEMSYNC": "1", "WINEESYNC": "1"]
@@ -1390,10 +1467,18 @@ final class WineManager {
         await resyncGamePrefix(gameWine: gameWine, prefix: bottle.prefixPath)
         // Quitar DLLs nativas del prefix para que mande el DXMT builtin del motor.
         cleanPrefixNativeGraphicsDLLs(prefixPath: bottle.prefixPath)
-        // Modo Retina: sin él, DXMT/Metal renderiza a 1× y el juego ocupa un cuarto de la
-        // pantalla (esquina superior izquierda) en pantallas Retina. Con él, resolución
-        // física completa a pantalla completa. Respeta el flag del perfil (por defecto ON).
-        await setMacDriverRetinaMode(prefix: bottle.prefixPath, wine: gameWine, enabled: eff.retina)
+        // Modo Retina: los motores Metal modernos lo necesitan para renderizar a resolución física.
+        // SDL2/OpenGL PE32 anterior a HiDPI necesita justo lo contrario: con Retina sus 1280×720
+        // acaban en una ventana de 640×360 puntos y la entrada puede quedar desalineada.
+        let legacySDL2Scale = usesLegacySDL2OpenGLScaling(executable)
+        await setMacDriverRetinaMode(
+            prefix: bottle.prefixPath,
+            wine: gameWine,
+            enabled: legacySDL2Scale ? false : eff.retina
+        )
+        if legacySDL2Scale {
+            log.log("SDL2/OpenGL de 32 bits detectado: escala nativa para alinear ventana y entrada.", level: .info)
+        }
 
         // Para juegos de Steam: `steam_appid.txt` + `SteamAppId` permiten que la
         // Steamworks API arranque en modo standalone (sin el cliente Steam abierto,
@@ -2038,6 +2123,24 @@ final class WineManager {
         return machine == 0x14c
     }
 
+    /// Los motores SDL2/OpenGL de 32 bits anteriores al soporte HiDPI interpretan las dimensiones
+    /// que Wine expone con Retina como píxeles lógicos. Una ventana interna de 1280×720 termina así
+    /// ocupando 640×360 puntos y la transformación de entrada puede no coincidir con el framebuffer.
+    /// La regla se limita a la combinación comprobable PE32 + OpenGL + SDL2; no depende del título
+    /// ni afecta a Unity/D3D11, GameMaker o a motores OpenGL modernos de 64 bits.
+    func usesLegacySDL2OpenGLScaling(_ executable: String) -> Bool {
+        guard isExecutable32Bit(executable),
+              detectGraphicsAPI(forExecutable: executable) == .opengl,
+              exeContains(executable, anyOf: ["SDL2.dll", "sdl2.dll", "SDL2.DLL"]) else {
+            return false
+        }
+        let directory = (executable as NSString).deletingLastPathComponent
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory) else {
+            return false
+        }
+        return names.contains { $0.caseInsensitiveCompare("SDL2.dll") == .orderedSame }
+    }
+
     /// Fuerza el backend de wined3d (`HKCU\Software\Wine\Direct3D` → `renderer`).
     ///  - `vulkan`: wined3d → MoltenVK → Metal (Unity 32-bit; sin él cae al GL legacy roto → negro).
     ///  - `gl`: wined3d → OpenGL de Apple (GLD → Metal). IMPRESCINDIBLE para juegos D3D11 de 32-bit
@@ -2587,6 +2690,7 @@ final class WineManager {
     /// lo que hace CrossOver con su Wine propietario); si no está disponible, cae a
     /// GPTK/D3DMetal (el modelo anterior).
     func launchViaRealSteam(executable: String, in bottle: Bottle, appId: String,
+                            launchArguments: [String],
                             effective: EffectiveLaunchConfig = EffectiveLaunchConfig()) async throws -> Process {
         // Validación local segura: JWT vigente, audiencia SteamClient y misma cuenta. La comprobación
         // remota la hará el cliente sobre CM; Steam ya no permite validarla mediante la Web API.
@@ -2645,11 +2749,10 @@ final class WineManager {
             if !connected { throw steamRealNotConnected(gameExecutable: executable, in: bottle) }
             log.log("Cliente Steam conectado; lanzando el juego con DRM real.", level: .info)
 
-            // Juego en el MISMO wineserver que el cliente → la sincronización DEBE
-            // coincidir (WINEMSYNC/ESYNC/FSYNC=0, como el cliente): mezclar esync entre
-            // procesos del mismo wineserver aborta Wine. Por eso NO se pasa `effective`
-            // a launchWineProcess (su overlay pisaría el sync); lo esencial del perfil
-            // (args y entorno extra) se aplica a mano.
+            // Juego en el MISMO wineserver que el cliente → la sincronización DEBE coincidir
+            // (WINEMSYNC/ESYNC/FSYNC=0). El perfil se pasa para conservar los ajustes detectados,
+            // pero `forceSyncOff` tiene precedencia. `forceCleanEnv` rompe la identidad heredada de
+            // Vessel sin aislar el wineserver: este depende del prefijo, que sí se conserva.
             await setMacDriverRetinaMode(prefix: bottle.prefixPath, wine: unifiedWine, enabled: effective.retina)
             // Juegos DX11 por DXMT: el `d3d11` builtin del motor ES DXMT, pero muchos juegos
             // compilan shaders con `d3dcompiler_43` (cuyo builtin de Wine importa `wined3d`,
@@ -2685,9 +2788,12 @@ final class WineManager {
             let proc = try await launchWineProcess(
                 winePath: unifiedWine,
                 prefix: bottle.prefixPath,
-                arguments: [executable] + effective.launchArgs,
+                arguments: [executable] + launchArguments,
                 environment: env,
-                workingDirectory: gameWorkingDirectory(forExecutable: executable)
+                workingDirectory: gameWorkingDirectory(forExecutable: executable),
+                effective: effective,
+                forceSyncOff: true,
+                forceCleanEnv: true
             )
             NotificationService.shared.status(nil)
             return proc
@@ -2724,7 +2830,7 @@ final class WineManager {
             let proc = try await launchWineProcess(
                 winePath: d3dmWine,
                 prefix: bottle.prefixPath,
-                arguments: [executable] + effective.launchArgs,
+                arguments: [executable] + launchArguments,
                 environment: env,
                 workingDirectory: gameWorkingDirectory(forExecutable: executable),
                 effective: effective,    // ACTIVA el env -i (contexto LIMPIO): sin `__CFBundleIdentifier` y
@@ -2780,7 +2886,7 @@ final class WineManager {
         let proc = try await launchWineProcess(
             winePath: gptkWine,
             prefix: bottle.prefixPath,
-            arguments: [executable] + effective.launchArgs,
+            arguments: [executable] + launchArguments,
             environment: env,
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: effective,
@@ -3036,17 +3142,22 @@ final class WineManager {
     /// proceso nativo con un nombre parecido— con el cliente que debe compartir wineserver con este
     /// juego. `lsof` es la fuente de verdad porque Wine reescribe el argv a una ruta de Windows y ya
     /// no deja `WINEPREFIX` visible en la línea de comandos.
-    private func isWineProcessRunning(matching pattern: String, prefix: String) -> Bool {
+    private nonisolated static func wineProcessIDs(
+        matching pattern: String,
+        prefix: String,
+        executableDirectory: String? = nil
+    ) -> [pid_t] {
         let pgrep = Process()
         pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        pgrep.arguments = ["-f", pattern]
+        pgrep.arguments = ["-f", NSRegularExpression.escapedPattern(for: pattern)]
         let pipe = Pipe()
         pgrep.standardOutput = pipe
         pgrep.standardError = FileHandle.nullDevice
-        guard (try? pgrep.run()) != nil else { return false }
+        guard (try? pgrep.run()) != nil else { return [] }
         let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         pgrep.waitUntilExit()
 
+        var result: [pid_t] = []
         for line in output.split(whereSeparator: { $0.isWhitespace }) {
             guard let pid = Int32(line) else { continue }
             let lsof = Process()
@@ -3058,9 +3169,86 @@ final class WineManager {
             guard (try? lsof.run()) != nil else { continue }
             let listing = String(data: files.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
             lsof.waitUntilExit()
-            if listing.contains(prefix) { return true }
+            guard listing.contains(prefix) else { continue }
+            if let executableDirectory, !listing.contains(executableDirectory) { continue }
+            result.append(pid)
         }
-        return false
+        return result
+    }
+
+    /// `pgrep` + `lsof` pueden tardar cientos de milisegundos con runtimes Chromium. Nunca deben
+    /// ejecutarse en el actor principal: el sondeo de vida es frecuente mientras el juego está
+    /// abierto y bloquearía animaciones, accesibilidad y entrada de la app.
+    private nonisolated static func gameWineProcessIDs(
+        matching pattern: String,
+        prefix: String,
+        executableDirectory: String
+    ) async -> [pid_t] {
+        await Task.detached(priority: .utility) {
+            wineProcessIDs(
+                matching: pattern,
+                prefix: prefix,
+                executableDirectory: executableDirectory
+            )
+        }.value
+    }
+
+    private func isWineProcessRunning(matching pattern: String, prefix: String) -> Bool {
+        !Self.wineProcessIDs(matching: pattern, prefix: prefix).isEmpty
+    }
+
+    /// Vida real de un juego Wine multiproceso, acotada por nombre de imagen Y por archivos abiertos
+    /// dentro de su prefijo. Evita confundir un launcher que terminó con el cierre del juego, y evita
+    /// a la vez atribuir procesos de otro bottle o del Steam nativo de macOS.
+    nonisolated func isGameProcessFamilyRunning(executable: String, prefix: String) async -> Bool {
+        let imageName = (executable as NSString).lastPathComponent
+        let executableDirectory = (executable as NSString).deletingLastPathComponent
+        guard !imageName.isEmpty else { return false }
+        return !(await Self.gameWineProcessIDs(
+            matching: imageName,
+            prefix: prefix,
+            executableDirectory: executableDirectory
+        )).isEmpty
+    }
+
+    /// Cierra únicamente la familia exacta del juego en su prefijo. Nunca usa `wineserver -k`, por
+    /// lo que el cliente Steam interno y sus descargas permanecen intactos.
+    nonisolated func terminateGameProcessFamily(executable: String, prefix: String) async {
+        let imageName = (executable as NSString).lastPathComponent
+        let executableDirectory = (executable as NSString).deletingLastPathComponent
+        guard !imageName.isEmpty else { return }
+        var processIDs = await Self.gameWineProcessIDs(
+            matching: imageName,
+            prefix: prefix,
+            executableDirectory: executableDirectory
+        )
+        guard !processIDs.isEmpty else { return }
+
+        for processID in processIDs { _ = Darwin.kill(processID, SIGTERM) }
+        for _ in 0..<20 {
+            try? await Task.sleep(for: .milliseconds(100))
+            processIDs = await Self.gameWineProcessIDs(
+                matching: imageName,
+                prefix: prefix,
+                executableDirectory: executableDirectory
+            )
+            if processIDs.isEmpty { return }
+        }
+        for processID in processIDs { _ = Darwin.kill(processID, SIGKILL) }
+        for _ in 0..<20 {
+            try? await Task.sleep(for: .milliseconds(100))
+            if (await Self.gameWineProcessIDs(
+                matching: imageName,
+                prefix: prefix,
+                executableDirectory: executableDirectory
+            )).isEmpty { return }
+        }
+        await MainActor.run {
+            LogStore.shared.log(
+                "No se pudo cerrar por completo la familia de procesos de \(imageName).",
+                level: .error
+            )
+        }
     }
 
     /// `true` si el ejecutable es un juego **Unity** (tiene `UnityPlayer.dll` o la
@@ -3130,6 +3318,7 @@ final class WineManager {
     /// juego falla, probar el modo Steam-real (algunos exigen el cliente Steam vivo / interfaces que
     /// la emulación no implementa: DRM, Steam Input). Búsqueda superficial y barata.
     func usesSteamworks(_ executable: String) -> Bool {
+        if goldbergManager.hasEmbeddedSteamworks(gameExecutable: executable) { return true }
         let dir = (executable as NSString).deletingLastPathComponent
         let fm = FileManager.default
         let names = ["steam_api64.dll", "steam_api.dll"]
@@ -3286,7 +3475,7 @@ final class WineManager {
         // Se copian d3d9 + su dependencia wined3d LOCALES (native) → cargan y satisfacen el import
         // (wined3d solo importa opengl32/ucrtbase, que sí resuelven como builtin). Solo si el exe
         // los importa (wined3d pesa ~31 MB): no se copian a juegos que no usan d3d9.
-        if exeImports(gameExecutable, anyOf: ["d3d9.dll"]) {
+        if needsExeAdjacentD3D9Support(gameExecutable) {
             dlls.append(contentsOf: ["d3d9.dll", "wined3d.dll"])
         }
         for dll in dlls {

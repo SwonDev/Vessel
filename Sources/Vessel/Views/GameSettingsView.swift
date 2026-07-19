@@ -26,6 +26,8 @@ struct GameConfig: Codable, Equatable {
         }
     }
     var graphicsLayer: GraphicsLayer = .auto
+    /// Campo legado conservado únicamente para decodificar configuraciones antiguas. La UI ya no
+    /// lo expone y CompatService no lo aplica: la compatibilidad se resuelve en el motor/perfil.
     var launchArguments: String = ""
     var esync: Bool = true
     var fsync: Bool = true
@@ -83,7 +85,7 @@ enum GameConfigStore {
     }
 }
 
-/// Ajustes de un juego: capa gráfica, opciones de lanzamiento, sincronización y carpeta.
+/// Ajustes de un juego: capa gráfica, sincronización y carpeta.
 /// Premium navy + Liquid Glass. Se guarda al instante y se aplica al lanzar el juego.
 struct GameSettingsView: View {
     let game: StoreGame
@@ -153,16 +155,6 @@ struct GameSettingsView: View {
                         }
                         .pickerStyle(.radioGroup).labelsHidden()
                         Text(config.graphicsLayer.detail)
-                            .font(.caption2).foregroundStyle(Theme.secondaryText)
-                    }
-
-                    section("Opciones de lanzamiento") {
-                        TextField("p. ej. -windowed -novid", text: $config.launchArguments)
-                            .textFieldStyle(.plain).foregroundStyle(.white).padding(10)
-                            // La sección ya aporta el cristal: el campo solo lleva un velo sutil
-                            // (nunca vidrio sobre vidrio, DESIGN.md §Elevation).
-                            .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
-                        Text("Argumentos que se pasan al ejecutable al iniciar.")
                             .font(.caption2).foregroundStyle(Theme.secondaryText)
                     }
 
@@ -259,7 +251,7 @@ struct GameSettingsView: View {
                                             Spacer()
                                         }
                                         .padding(10)
-                                        // Igual que el campo de argumentos: velo sutil, sin vidrio sobre vidrio.
+                                        // Velo sutil, sin vidrio sobre vidrio.
                                         .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
 
                                         HStack(spacing: 10) {
