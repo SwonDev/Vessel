@@ -1207,7 +1207,11 @@ struct GameDetailView: View {
                 if let pub = details?.publishers.first, !pub.isEmpty { detailRow("Editor", pub) }
                 if let rel = details?.releaseDate, !rel.isEmpty { detailRow("Lanzamiento", rel) }
                 if let mc = details?.metacritic { detailRow("Metacritic", "\(mc)", valueColor: metacriticColor(mc)) }
-                if let rc = details?.reviewCount, rc > 0 { detailRow("Reseñas en Steam", rc.formatted()) }
+                // «Muy positivas (16.218)» como en Steam; sin veredicto, solo el número.
+                if let rc = details?.reviewCount, rc > 0 {
+                    detailRow("Reseñas en Steam",
+                              details?.reviewSummary.map { "\($0) (\(rc.formatted()))" } ?? rc.formatted())
+                }
                 if let appId = game.steamAppId, !appId.isEmpty { detailRow("Steam AppID", appId) }
                 detailRow("Última sesión", game.lastPlayed.map { $0.formatted(date: .abbreviated, time: .omitted) } ?? "—")
                 detailRow("Tiempo de juego", playtimeText)

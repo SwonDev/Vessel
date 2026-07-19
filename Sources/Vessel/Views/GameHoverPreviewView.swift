@@ -249,6 +249,14 @@ struct GameHoverPreviewView: View {
                         .padding(.vertical, 4)
                         .background(.white.opacity(0.07), in: Capsule())
                 }
+                if let summary = details?.reviewSummary {
+                    Text(summary)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.75))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(.white.opacity(0.07), in: Capsule())
+                }
                 Spacer(minLength: 0)
                 Image(systemName: "arrow.right.circle")
                     .foregroundStyle(.white.opacity(0.54))

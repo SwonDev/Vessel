@@ -1463,11 +1463,16 @@ struct StoreLibraryView: View {
 
     /// El último juego INSTALADO que se jugó: candidato del gran acceso «Seguir jugando» del
     /// home (estilo Steam: abre la biblioteca con el botón grande de reanudar tu último juego).
-    /// Solo instalados (no se puede reanudar lo que no está) y nada en plena instalación.
+    /// Solo instalados (no se puede reanudar lo que no está), nada en plena instalación y nada
+    /// que YA esté en ejecución (su botón sería un no-op: se elige el siguiente candidato).
     private var continuePlayingGame: StoreGame? {
-        enriched.filter { $0.installed && $0.lastPlayed != nil && !isHidden($0.id) && !installingIDs.contains($0.id) }
-            .sorted { ($0.lastPlayed ?? .distantPast) > ($1.lastPlayed ?? .distantPast) }
-            .first
+        enriched.filter {
+            $0.installed && $0.lastPlayed != nil && !isHidden($0.id)
+                && !installingIDs.contains($0.id)
+                && GameLaunchTracker.shared.state(statsKey($0)) == .idle
+        }
+        .sorted { ($0.lastPlayed ?? .distantPast) > ($1.lastPlayed ?? .distantPast) }
+        .first
     }
 
     /// Gran tarjeta «Seguir jugando» sobre la estantería: hero del juego con la misma caché de

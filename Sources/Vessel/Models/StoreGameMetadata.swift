@@ -24,6 +24,8 @@ struct StoreGameMetadata: Codable, Sendable {
     var movies: [StoreGameMovie] = []
     var categories: [String] = []
     var reviewCount: Int?
+    /// Resumen del veredicto de las reseñas en español («Muy positivas», «Mixtas»…), de appreviews.
+    var reviewSummary: String?
     var achievementsTotal: Int?
     var achievementIcons: [URL] = []
     var dlcIds: [Int] = []

@@ -183,7 +183,46 @@ actor StoreGameMetadataService {
                 ])
         else { return nil }
         guard let data = await fetchJSON(url) else { return nil }
-        return parseSteamPayload(data, appId: appId)
+        var details = parseSteamPayload(data, appId: appId)
+        // Veredicto de las reseñas («Muy positivas»…), de appreviews (público, sin clave).
+        details?.reviewSummary = await fetchReviewSummary(appId: appId)
+        return details
+    }
+
+    /// Veredicto de las reseñas de Steam de `appreviews` traducido al español (la API solo lo
+    /// ofrece en inglés). `nil` si no hay reseñas o falla la petición.
+    private static func fetchReviewSummary(appId: String) async -> String? {
+        guard let url = url(
+            scheme: "https",
+            host: "store.steampowered.com",
+            path: "/appreviews/\(appId)",
+            queryItems: [
+                URLQueryItem(name: "json", value: "1"),
+                URLQueryItem(name: "language", value: "all"),
+                URLQueryItem(name: "purchase_type", value: "all"),
+                URLQueryItem(name: "num_per_page", value: "0")
+            ]),
+              let data = await fetchJSON(url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let summary = obj["query_summary"] as? [String: Any],
+              let desc = summary["review_score_desc"] as? String else { return nil }
+        return spanishReviewSummary(desc)
+    }
+
+    /// Traducción de los veredictos de reseñas de Steam al español.
+    static func spanishReviewSummary(_ english: String) -> String {
+        switch english {
+        case "Overwhelmingly Positive": return "Extremadamente positivas"
+        case "Very Positive": return "Muy positivas"
+        case "Positive": return "Positivas"
+        case "Mostly Positive": return "Mayormente positivas"
+        case "Mixed": return "Mixtas"
+        case "Mostly Negative": return "Mayormente negativas"
+        case "Negative": return "Negativas"
+        case "Very Negative": return "Muy negativas"
+        case "Overwhelmingly Negative": return "Extremadamente negativas"
+        default: return english
+        }
     }
 
     private static func fetchGogDetails(productID: String) async -> StoreGameMetadata? {
@@ -359,6 +398,7 @@ actor StoreGameMetadataService {
         if primary.movies.isEmpty { primary.movies = fallback.movies }
         if primary.categories.isEmpty { primary.categories = fallback.categories }
         if primary.reviewCount == nil { primary.reviewCount = fallback.reviewCount }
+        if primary.reviewSummary == nil { primary.reviewSummary = fallback.reviewSummary }
         return primary
     }
 
