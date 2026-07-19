@@ -1291,19 +1291,30 @@ final class WineManager {
                                                         arguments: allArgs, steamAppId: steamAppId,
                                                         effective: eff, wine: fullEngineWine)
         }
-        // **Java (JVM embebida, p. ej. Wurm Unlimited)**: su render es **Vulkan vía LWJGL**, no
-        // Direct3D — su PE no importa ninguna DLL de DirectX, así que la rama `.other` lo mandaba
-        // a Gcenx, cuyo MoltenVK VIEJO (0.2.2209) lo deja colgado tras crear el VkInstance (todos
-        // los hilos de la JVM en espera, sin ventana). Con `wine-full` (winevulkan + MoltenVK
-        // nuevo) la JVM arranca y el juego abre su launcher. Verificado: Wurm Unlimited llega a
-        // su ventana de login (v1.9.1.5); con Gcenx ni ventana. Solo en AUTO, como UE4.
+        // **Java con JVM embebida**: usa el Wine completo. Los motores modernos (p. ej. Wurm)
+        // pueden renderizar por Vulkan/LWJGL y necesitan su MoltenVK reciente; libGDX 1.x usa
+        // OpenGL/LWJGL 2. Ambos quedan aislados de las capas Direct3D.
         if go == .auto, isJavaGame(executable),
            let fullEngineWine = await fullEngineWineEnsured() {
-            log.log("Juego Java (JVM embebida): render Vulkan/LWJGL con el Wine completo (MoltenVK nuevo).", level: .info)
+            let legacyLibGDX = goldbergManager.hasLegacyLibGDXOpenGL(gameExecutable: executable)
+            log.log(
+                legacyLibGDX
+                    ? "Juego Java/libGDX detectado: OpenGL/LWJGL con el Wine completo y escala nativa."
+                    : "Juego Java detectado: runtime JVM/LWJGL con el Wine completo.",
+                level: .info
+            )
             cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
             try? await terminateWineProcesses(winePath: fullEngineWine, prefix: bottle.prefixPath)
             try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: fullEngineWine)
             await resyncGamePrefix(gameWine: fullEngineWine, prefix: bottle.prefixPath)
+            // LWJGL 2 no es DPI-aware: con Retina activo una resolución de 1280×720 ocupa solo
+            // 640×360 puntos y puede desalinear entrada/ventana. Se desactiva únicamente para esta
+            // familia; los Java modernos conservan la preferencia Retina del perfil.
+            await setMacDriverRetinaMode(
+                prefix: bottle.prefixPath,
+                wine: fullEngineWine,
+                enabled: legacyLibGDX ? false : eff.retina
+            )
             var env = ["WINEPREFIX": bottle.prefixPath, "WINEDEBUG": "-all",
                        "WINEDLLOVERRIDES": "winemenubuilder.exe=d",
                        "WINEMSYNC": "1", "WINEESYNC": "1"]
@@ -3281,6 +3292,7 @@ final class WineManager {
     /// juego falla, probar el modo Steam-real (algunos exigen el cliente Steam vivo / interfaces que
     /// la emulación no implementa: DRM, Steam Input). Búsqueda superficial y barata.
     func usesSteamworks(_ executable: String) -> Bool {
+        if goldbergManager.hasEmbeddedSteamworks(gameExecutable: executable) { return true }
         let dir = (executable as NSString).deletingLastPathComponent
         let fm = FileManager.default
         let names = ["steam_api64.dll", "steam_api.dll"]
