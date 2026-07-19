@@ -93,8 +93,31 @@ open(path, "w", encoding="utf-8").write(xml)
 print(f"==> appcast.xml actualizado con {version} (build {build})")
 PY
 
+# 6.5) Badge de descarga del README — SVG autoalojado regenerado con la versión que se publica.
+# El README nunca depende de shields.io en runtime: el SVG se descarga aquí, en la máquina
+# que publica, y queda commiteado en el repo. Reintentos por si shields está caído; si no se
+# puede regenerar, se avisa pero NO se bloquea la release (quedaría la versión anterior).
+BADGE="docs/readme-assets/badges/descargar.svg"
+BADGE_OK=0
+for attempt in 1 2 3; do
+    if curl -sfL --max-time 20 -o "$BADGE.tmp" \
+        "https://img.shields.io/badge/Descargar_Vessel-$VERSION-298CFF?style=for-the-badge&logo=apple&logoColor=white" \
+        && head -c 200 "$BADGE.tmp" | grep -q "<svg"; then
+        mv "$BADGE.tmp" "$BADGE"
+        BADGE_OK=1
+        break
+    fi
+    sleep 3
+done
+rm -f "$BADGE.tmp"
+if [ "$BADGE_OK" = 1 ]; then
+    echo "==> Badge de descarga actualizado a $VERSION"
+else
+    echo "⚠️  No se pudo regenerar el badge de descarga (shields.io caído). El README seguirá mostrando la versión anterior — regenéralo a mano después."
+fi
+
 # 7) Commit de release. El tag debe apuntar a ESTE commit, que contiene VERSION.txt y appcast.
-git add VERSION.txt appcast.xml
+git add VERSION.txt appcast.xml "$BADGE"
 git commit -q -m "release: Vessel $VERSION (build $BUILD)
 
 $NOTES"
