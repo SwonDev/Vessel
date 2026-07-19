@@ -201,12 +201,29 @@ actor StoreGameMetadataService {
                 URLQueryItem(name: "language", value: "all"),
                 URLQueryItem(name: "purchase_type", value: "all"),
                 URLQueryItem(name: "num_per_page", value: "0")
-            ]),
-              let data = await fetchJSON(url),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let summary = obj["query_summary"] as? [String: Any],
-              let desc = summary["review_score_desc"] as? String else { return nil }
-        return spanishReviewSummary(desc)
+            ]) else { return nil }
+        // Diagnóstico temporal del fallo en vivo (el endpoint funciona aislado).
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 12
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+            if !(200...299).contains(code) {
+                Task { @MainActor in LogStore.shared.log("appreviews \(appId): HTTP \(code)", level: .warn) }
+                return nil
+            }
+            guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let summary = obj["query_summary"] as? [String: Any],
+                  let desc = summary["review_score_desc"] as? String else {
+                Task { @MainActor in LogStore.shared.log("appreviews \(appId): payload inesperado (\(data.count) bytes)", level: .warn) }
+                return nil
+            }
+            return spanishReviewSummary(desc)
+        } catch {
+            Task { @MainActor in LogStore.shared.log("appreviews \(appId): error \(error.localizedDescription)", level: .warn) }
+            return nil
+        }
     }
 
     /// Traducción de los veredictos de reseñas de Steam al español.
