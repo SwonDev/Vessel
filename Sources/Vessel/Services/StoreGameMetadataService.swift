@@ -28,8 +28,11 @@ actor StoreGameMetadataService {
         let fetchedAt: Date
     }
 
+    // La v2 invalida las entradas escritas antes de que `reviewSummary` formara parte del modelo.
+    // Esas entradas son decodificables, pero el `nil` heredado impediría refrescar el veredicto
+    // durante siete días y haría que la función nueva pareciera no funcionar.
     private static let persistentCacheURL = URL(fileURLWithPath: VesselPaths.cacheDirectory)
-        .appendingPathComponent("store-metadata-v1.json")
+        .appendingPathComponent("store-metadata-v2.json")
     private static let cacheLifetime: TimeInterval = 7 * 24 * 60 * 60
     private var cache: [String: CacheEntry]
     private var inFlight: [String: Task<StoreGameMetadata?, Never>] = [:]
@@ -202,11 +205,17 @@ actor StoreGameMetadataService {
                 URLQueryItem(name: "purchase_type", value: "all"),
                 URLQueryItem(name: "num_per_page", value: "0")
             ]),
-              let data = await fetchJSON(url),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let summary = obj["query_summary"] as? [String: Any],
-              let desc = summary["review_score_desc"] as? String else { return nil }
-        return spanishReviewSummary(desc)
+              let data = await fetchJSON(url) else { return nil }
+        return parseSteamReviewSummaryPayload(data)
+    }
+
+    static func parseSteamReviewSummaryPayload(_ data: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (object["success"] as? Int) == 1,
+              let summary = object["query_summary"] as? [String: Any],
+              let description = summary["review_score_desc"] as? String,
+              !description.isEmpty else { return nil }
+        return spanishReviewSummary(description)
     }
 
     /// Traducción de los veredictos de reseñas de Steam al español.

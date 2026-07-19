@@ -52,6 +52,23 @@ struct StoreGameMetadataServiceTests {
         #expect(details.movies.first?.videoURL.absoluteString == "https://cdn.example.com/trailer.mp4")
     }
 
+    @Test("Steam parsea y traduce el veredicto público de reseñas")
+    func parsesSteamReviewSummary() throws {
+        let payload = """
+        {
+          "success": 1,
+          "query_summary": {
+            "review_score_desc": "Overwhelmingly Positive",
+            "total_reviews": 232158
+          }
+        }
+        """
+
+        #expect(StoreGameMetadataService.parseSteamReviewSummaryPayload(Data(payload.utf8))
+                == "Extremadamente positivas")
+        #expect(StoreGameMetadataService.parseSteamReviewSummaryPayload(Data("{}".utf8)) == nil)
+    }
+
     @Test("GOG normaliza URLs de imagen relativas al protocolo")
     func parsesGogScreenshots() throws {
         let payload = """
