@@ -14,15 +14,42 @@ final class LegendaryManager {
 
     // MARK: - Tipos públicos
 
+    enum EpicPlatform: String, Codable, Hashable, Sendable {
+        case windows = "Windows"
+        case mac = "Mac"
+    }
+
     struct EpicGame: Identifiable, Hashable, Codable {
         let appName: String
         let title: String
         var installed: Bool
         var coverURL: String?
         var installPath: String?     // carpeta de instalación (si está instalado)
-        var executablePath: String?  // .exe principal en macOS (ruta del prefijo)
+        var executablePath: String?  // ejecutable principal: `.exe` o binario dentro de `.app`
         var installSizeBytes: Int64? = nil
+        /// Opcionales para que las bibliotecas cacheadas por versiones anteriores sigan
+        /// decodificando. El catálogo se refresca en segundo plano y los completa enseguida.
+        var nativeMacAvailable: Bool? = nil
+        var installedPlatform: String? = nil
         var id: String { appName }
+
+        /// Mantiene la plataforma REAL de una instalación existente. Solo las instalaciones
+        /// nuevas prefieren Mac; nunca se migra a escondidas un juego Windows ya validado.
+        var effectivePlatform: EpicPlatform {
+            if installed {
+                if installedPlatform?.caseInsensitiveCompare(EpicPlatform.mac.rawValue) == .orderedSame {
+                    return .mac
+                }
+                if executablePath?.lowercased().contains(".app/contents/macos/") == true
+                    || executablePath?.lowercased().hasSuffix(".app") == true {
+                    return .mac
+                }
+                return .windows
+            }
+            return nativeMacAvailable == true ? .mac : .windows
+        }
+
+        var isNativeMacInstallation: Bool { installed && effectivePlatform == .mac }
     }
 
     struct EpicDLC: Identifiable, Hashable, Sendable {
@@ -32,6 +59,16 @@ final class LegendaryManager {
         let installed: Bool
 
         var isInstallable: Bool { appName?.isEmpty == false }
+    }
+
+    /// Contexto efímero que Epic genera para cada arranque. Incluye los argumentos de
+    /// autenticación de EOS/EGL y nunca se persiste: se solicita de nuevo justo antes de jugar.
+    struct EpicLaunchContext: Equatable, Sendable {
+        let arguments: [String]
+        let environment: [String: String]
+        let gameExecutable: String?
+        let gameDirectory: String?
+        let workingDirectory: String?
     }
 
     // MARK: - Rutas (estáticas, no aisladas al actor)
@@ -180,7 +217,8 @@ final class LegendaryManager {
 
         // Juegos instalados localmente (con su ruta de instalación y ejecutable).
         let installedResult = try await runBackground(bin, args: ["list-installed", "--json"])
-        var installed: [String: (installPath: String, executable: String, installSizeBytes: Int64?)] = [:]
+        var installed: [String: (installPath: String, executable: String,
+                                 installSizeBytes: Int64?, platform: String?)] = [:]
         if installedResult.exitCode == 0,
            let data = installedResult.stdout.data(using: .utf8),
            let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
@@ -189,7 +227,8 @@ final class LegendaryManager {
                 let rawSize = (obj["install_size"] as? NSNumber)?.int64Value
                     ?? (obj["install_size"] as? Int64)
                 installed[name] = ((obj["install_path"] as? String) ?? "",
-                                   (obj["executable"] as? String) ?? "", rawSize)
+                                   (obj["executable"] as? String) ?? "", rawSize,
+                                   obj["platform"] as? String)
             }
         }
 
@@ -215,14 +254,34 @@ final class LegendaryManager {
 
     // MARK: - Instalación
 
-    /// Instala un juego de Epic en `basePath` (dentro del bottle de Vessel), reportando el
-    /// progreso por las líneas de salida de legendary. Operación larga (sin timeout corto).
-    func installGame(appName: String, basePath: String, operationID: String? = nil,
+    /// Resuelve la plataforma justo al comenzar una instalación. Normalmente el catálogo ya trae
+    /// la respuesta; la consulta puntual cubre el primer arranque tras actualizar Vessel, cuando
+    /// la caché antigua aún no contenía `nativeMacAvailable` y el usuario instala antes de que
+    /// termine el refresco en segundo plano.
+    func preferredInstallPlatform(appName: String, nativeMacAvailable: Bool?) async -> EpicPlatform {
+        if let nativeMacAvailable { return nativeMacAvailable ? .mac : .windows }
+        guard let result = try? await runBackground(
+            Self.binaryPath,
+            args: ["info", appName, "--json", "--platform", EpicPlatform.mac.rawValue]
+        ), result.exitCode == 0,
+              let data = result.stdout.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return .windows
+        }
+        let game = (root["game"] as? [String: Any]) ?? root
+        return Self.availablePlatforms(in: game).contains(.mac) ? .mac : .windows
+    }
+
+    /// Instala un juego de Epic en `basePath`: fuera de Wine si es Mac, dentro del bottle si es
+    /// Windows. Reporta el progreso por las líneas de Legendary. Operación larga (sin timeout).
+    func installGame(appName: String, basePath: String, platform: EpicPlatform = .windows,
+                     operationID: String? = nil,
                      onProgress: @escaping @Sendable (String) -> Void) async throws {
         try FileManager.default.createDirectory(atPath: basePath, withIntermediateDirectories: true)
         let code = try await runStreaming(
             Self.binaryPath,
-            args: ["install", appName, "--base-path", basePath, "--platform", "Windows", "--yes"],
+            args: ["install", appName, "--base-path", basePath,
+                   "--platform", platform.rawValue, "--yes"],
             operationID: operationID,
             onLine: onProgress
         )
@@ -230,16 +289,18 @@ final class LegendaryManager {
             throw NSError(domain: "Vessel", code: 110, userInfo: [NSLocalizedDescriptionKey:
                 "La instalación de Epic falló (código \(code)). Revisa los logs."])
         }
-        log.log("✓ Epic: \(appName) instalado en \(basePath)", level: .info)
+        log.log("✓ Epic: \(appName) instalado para \(platform.rawValue) en \(basePath)", level: .info)
     }
 
     /// Verifica y REPARA los archivos de un juego de Epic ya instalado. `repair` es un alias de
     /// `install` en legendary: re-descarga SOLO los trozos dañados o ausentes. Mismo progreso.
-    func repairGame(appName: String, basePath: String, operationID: String? = nil,
+    func repairGame(appName: String, basePath: String, platform: EpicPlatform = .windows,
+                    operationID: String? = nil,
                     onProgress: @escaping @Sendable (String) -> Void) async throws {
         let code = try await runStreaming(
             Self.binaryPath,
-            args: ["repair", appName, "--base-path", basePath, "--platform", "Windows", "--yes"],
+            args: ["repair", appName, "--base-path", basePath,
+                   "--platform", platform.rawValue, "--yes"],
             operationID: operationID,
             onLine: onProgress
         )
@@ -251,11 +312,13 @@ final class LegendaryManager {
     }
 
     /// Aplica la actualización de un juego de Epic (`legendary update`, alias de install).
-    func updateGame(appName: String, basePath: String, operationID: String? = nil,
+    func updateGame(appName: String, basePath: String, platform: EpicPlatform = .windows,
+                    operationID: String? = nil,
                     onProgress: @escaping @Sendable (String) -> Void) async throws {
         let code = try await runStreaming(
             Self.binaryPath,
-            args: ["update", appName, "--base-path", basePath, "--platform", "Windows", "--yes"],
+            args: ["update", appName, "--base-path", basePath,
+                   "--platform", platform.rawValue, "--yes"],
             operationID: operationID,
             onLine: onProgress
         )
@@ -318,12 +381,116 @@ final class LegendaryManager {
         return updates
     }
 
+    /// Pide a Legendary la línea de lanzamiento oficial de Epic sin ejecutarla. Es la vía que
+    /// entrega `-AUTH_LOGIN`, `-AUTH_PASSWORD`, `-epicapp`, sandbox, locale y cualquier parámetro
+    /// específico del catálogo. Los secretos viven únicamente en memoria durante el arranque.
+    func launchContext(appName: String) async throws -> EpicLaunchContext {
+        let result = try await runBackground(
+            Self.binaryPath,
+            args: ["launch", appName, "--dry-run", "--json", "--no-wine"]
+        )
+        guard result.exitCode == 0,
+              let context = Self.parseLaunchContext(result.stdout) else {
+            // No incluir stdout/stderr: el JSON de Legendary puede contener el token de Epic.
+            log.log("Epic: no se pudo obtener el contexto de lanzamiento de \(appName) (código \(result.exitCode)).", level: .error)
+            throw NSError(domain: "Vessel", code: 115, userInfo: [NSLocalizedDescriptionKey:
+                "Epic Games no pudo preparar una sesión válida para este juego. Vuelve a conectar tu cuenta e inténtalo de nuevo."])
+        }
+        return context
+    }
+
+    /// Arranca directamente la build de macOS que instaló Legendary. Se devuelve el proceso real
+    /// del juego para que `GameLaunchTracker` conserve estados, tiempo jugado y cierre; no se usa
+    /// `open`, Wine ni un proceso intermediario. Los argumentos efímeros de Epic nunca se registran.
+    func launchNativeGame(context: EpicLaunchContext, fallbackExecutable: String) throws -> Process {
+        let executable = Self.resolveNativeExecutable(context: context, fallback: fallbackExecutable)
+        guard !executable.isEmpty, FileManager.default.fileExists(atPath: executable) else {
+            throw NSError(domain: "Vessel", code: 116, userInfo: [NSLocalizedDescriptionKey:
+                "La build nativa de macOS está instalada, pero no se encontró su ejecutable. Verifica los archivos del juego."])
+        }
+        if !FileManager.default.isExecutableFile(atPath: executable) {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable)
+        }
+        guard FileManager.default.isExecutableFile(atPath: executable) else {
+            throw NSError(domain: "Vessel", code: 117, userInfo: [NSLocalizedDescriptionKey:
+                "macOS no permite ejecutar la build nativa. Verifica los archivos del juego."])
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = context.arguments
+        var environment = ProcessInfo.processInfo.environment
+        for (key, value) in WineManager.userShellEnvironment { environment[key] = value }
+        // Igual que en la ruta Wine, el hijo no debe heredar la identidad XPC de Vessel. Un binario
+        // dentro de otro `.app` necesita que macOS resuelva su propio bundle, preferencias y menús.
+        environment["__CFBundleIdentifier"] = nil
+        environment["XPC_SERVICE_NAME"] = nil
+        environment["XPC_FLAGS"] = nil
+        for (key, value) in context.environment { environment[key] = value }
+        process.environment = environment
+        let requestedWorkingDirectory = context.workingDirectory ?? context.gameDirectory
+        let workingDirectory = requestedWorkingDirectory.flatMap {
+            FileManager.default.fileExists(atPath: $0) ? $0 : nil
+        } ?? (executable as NSString).deletingLastPathComponent
+        process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory, isDirectory: true)
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        log.log("Epic: build nativa de macOS iniciada (\((executable as NSString).lastPathComponent))", level: .info)
+        return process
+    }
+
+    nonisolated static func resolveNativeExecutable(context: EpicLaunchContext,
+                                                     fallback: String) -> String {
+        if !fallback.isEmpty { return fallback }
+        guard let raw = context.gameExecutable, !raw.isEmpty else { return fallback }
+        if raw.hasPrefix("/") { return raw }
+        if let directory = context.gameDirectory, !directory.isEmpty {
+            return URL(fileURLWithPath: directory, isDirectory: true)
+                .appendingPathComponent(raw).standardizedFileURL.path
+        }
+        return fallback
+    }
+
+    /// Parser separado para cubrir el contrato JSON de Legendary con pruebas sin red ni sesión.
+    nonisolated static func parseLaunchContext(_ output: String) -> EpicLaunchContext? {
+        guard let data = output.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        func strings(_ key: String) -> [String] { root[key] as? [String] ?? [] }
+
+        // Es el mismo orden que usa Legendary al ejecutar: juego → usuario → Epic/EGL.
+        let arguments = strings("game_parameters")
+            + strings("user_parameters")
+            + strings("egl_parameters")
+        let rawEnvironment = root["environment"] as? [String: String] ?? [:]
+        // Vessel controla el motor, el prefijo y su entorno base. Legendary puede aportar variables
+        // del juego, pero nunca debe poder reemplazar estas rutas/credenciales del proceso anfitrión.
+        let protected = Set(["HOME", "USER", "LOGNAME", "PATH", "SHELL", "TMPDIR",
+                             "WINEPREFIX", "WINEDLLOVERRIDES", "WINELOADER", "WINESERVER"])
+        let environment = rawEnvironment.filter { key, _ in
+            let upper = key.uppercased()
+            let sensitive = ["AUTH", "TOKEN", "PASSWORD", "SECRET", "CREDENTIAL"]
+                .contains(where: upper.contains)
+            return !protected.contains(upper) && !upper.hasPrefix("DYLD_") && !sensitive
+        }
+        return EpicLaunchContext(
+            arguments: arguments,
+            environment: environment,
+            gameExecutable: root["game_executable"] as? String,
+            gameDirectory: root["game_directory"] as? String,
+            workingDirectory: root["working_directory"] as? String
+        )
+    }
+
     /// DLC de Epic que pertenecen a la cuenta. Legendary combina entitlements y assets; los que
     /// no llevan `app_name` son licencias integradas en el juego y no requieren descarga aparte.
-    func ownedDLCs(appName: String) async -> [EpicDLC] {
+    func ownedDLCs(appName: String, platform: EpicPlatform = .windows) async -> [EpicDLC] {
         guard let result = try? await runBackground(
             Self.binaryPath,
-            args: ["info", appName, "--json", "--platform", "Windows"]
+            args: ["info", appName, "--json", "--platform", platform.rawValue]
         ), result.exitCode == 0 else { return [] }
         return Self.parseDLCInfo(result.stdout)
     }
@@ -349,12 +516,13 @@ final class LegendaryManager {
         .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
     }
 
-    func installDLC(appName: String, basePath: String, operationID: String? = nil,
+    func installDLC(appName: String, basePath: String, platform: EpicPlatform = .windows,
+                    operationID: String? = nil,
                     onProgress: @escaping @Sendable (String) -> Void) async throws {
         let code = try await runStreaming(
             Self.binaryPath,
             args: ["install", appName, "--base-path", basePath,
-                   "--platform", "Windows", "--yes", "--skip-dlcs"],
+                   "--platform", platform.rawValue, "--yes", "--skip-dlcs"],
             operationID: operationID,
             onLine: onProgress
         )
@@ -574,7 +742,8 @@ final class LegendaryManager {
     /// Parsea el array JSON de `legendary list --json`.
     /// Admite tanto `title` como `app_title` por compatibilidad entre versiones de Legendary.
     private func parseGames(from data: Data,
-                            installed: [String: (installPath: String, executable: String, installSizeBytes: Int64?)]) -> [EpicGame] {
+                            installed: [String: (installPath: String, executable: String,
+                                                installSizeBytes: Int64?, platform: String?)]) -> [EpicGame] {
         guard let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             return []
         }
@@ -595,9 +764,33 @@ final class LegendaryManager {
                             coverURL: Self.coverURL(from: obj),
                             installPath: info?.installPath,
                             executablePath: exePath,
-                            installSizeBytes: info?.installSizeBytes)
+                            installSizeBytes: info?.installSizeBytes,
+                            nativeMacAvailable: Self.availablePlatforms(in: obj).contains(.mac),
+                            installedPlatform: info?.platform)
         }
         .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    /// Legendary conserva los assets de todas las plataformas dentro de cada entrada del catálogo,
+    /// aunque la lista se solicite con `--platform Windows`. Esa lista amplia mantiene visibles los
+    /// 550+ juegos y, a la vez, permite elegir la mejor build para cada instalación nueva.
+    nonisolated static func availablePlatforms(in object: [String: Any]) -> Set<EpicPlatform> {
+        var result: Set<EpicPlatform> = []
+        if let assets = object["asset_infos"] as? [String: Any] {
+            for key in assets.keys {
+                if let platform = EpicPlatform(rawValue: key) { result.insert(platform) }
+            }
+        }
+        if let metadata = object["metadata"] as? [String: Any],
+           let attributes = metadata["customAttributes"] as? [String: Any],
+           let supported = attributes["SupportedPlatforms"] as? [String: Any],
+           let value = supported["value"] as? String {
+            for raw in value.split(separator: ",") {
+                let candidate = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let platform = EpicPlatform(rawValue: candidate) { result.insert(platform) }
+            }
+        }
+        return result
     }
 
     /// Extrae la URL de la portada vertical desde `metadata.keyImages`

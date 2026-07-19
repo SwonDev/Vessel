@@ -31,9 +31,13 @@ enum VesselPaths {
     static let cacheDirectory: String = "\(appSupport)/Cache"
     /// Juegos DRM‑free descargados por Vessel (itch.io, Humble…), un subdirectorio por juego.
     static let drmFreeDirectory: String = "\(appSupport)/DRMFree"
+    /// Builds nativas de macOS procedentes de tiendas conectadas. Se mantienen fuera de los
+    /// prefijos Wine para que nunca compartan ni hereden DLL, registro o configuración Windows.
+    static let nativeGamesDirectory: String = "\(appSupport)/NativeGames"
 
     static func ensureDirectories() {
-        let paths = [appSupport, bottlesDirectory, enginesDirectory, cacheDirectory, drmFreeDirectory]
+        let paths = [appSupport, bottlesDirectory, enginesDirectory, cacheDirectory,
+                     drmFreeDirectory, nativeGamesDirectory]
         for path in paths {
             try? FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
         }

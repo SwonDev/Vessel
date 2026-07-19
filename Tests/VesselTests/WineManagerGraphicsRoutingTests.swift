@@ -22,6 +22,15 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         return url
     }
 
+    private func makePE64(named name: String, marker: String = "") throws -> URL {
+        let url = try makePE32(named: name, marker: marker)
+        var data = try Data(contentsOf: url)
+        data[0x84] = 0x64
+        data[0x85] = 0x86
+        try data.write(to: url)
+        return url
+    }
+
     func testPE32DynamicOpenGLUsesUnifiedOpenGLLayer() throws {
         let executable = try makePE32(named: "deadcells_gl.exe", marker: "Failed to init SDL: OpenGL Error")
         defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
@@ -31,5 +40,88 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .opengl)
         XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .dxmt)
         XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [.dxmt])
+    }
+
+    func testNWJSUsesOnlyDXMTDespiteDynamicImportsOrStaleOverride() throws {
+        let executable = try makePE64(named: "Melvor Idle.exe")
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("ANGLE d3d11 dxgi".utf8).write(to: directory.appendingPathComponent("nw.dll"))
+        try FileManager.default.createDirectory(
+            at: directory.appendingPathComponent("package.nw"),
+            withIntermediateDirectories: true
+        )
+        try Data(#"{"main":"index.html"}"#.utf8)
+            .write(to: directory.appendingPathComponent("package.nw/package.json"))
+
+        let manager = WineManager()
+        var stale = EffectiveLaunchConfig()
+        stale.graphicsOverride = .gcenx
+
+        XCTAssertTrue(manager.isNWJSGame(executable.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .d3d11)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path, effective: stale), .dxmt)
+        XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path, effective: stale), [.dxmt])
+    }
+
+    func testForcedDXMTIsReportedAsDXMTForDynamic64BitGame() throws {
+        let executable = try makePE64(named: "dynamic.exe")
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+        let manager = WineManager()
+        var config = EffectiveLaunchConfig()
+        config.graphicsOverride = .dxmt
+
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .other)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path, effective: config), .dxmt)
+    }
+
+    func testEpicLaunchArgumentsAreRedacted() {
+        let arguments = [
+            "/Games/Melvor Idle.exe",
+            "-AUTH_LOGIN=unused",
+            "-AUTH_PASSWORD=super-secret-exchange-code",
+            "-epicuserid=123456789",
+            "--in-process-gpu"
+        ]
+        let redacted = WineManager.redactedArgumentsForLogging(arguments)
+        let joined = redacted.joined(separator: " ")
+
+        XCTAssertTrue(joined.contains("-AUTH_PASSWORD=<redactado>"))
+        XCTAssertTrue(joined.contains("--in-process-gpu"))
+        XCTAssertFalse(joined.contains("super-secret-exchange-code"))
+        XCTAssertFalse(joined.contains("123456789"))
+    }
+
+    func testCrashpadReportsOnlyCountNewChromiumDumps() throws {
+        let prefix = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-crashpad-test-\(UUID().uuidString)", isDirectory: true)
+        let reports = prefix.appendingPathComponent(
+            "drive_c/users/vessel/AppData/Local/Game/Crashpad/reports",
+            isDirectory: true
+        )
+        let unrelated = prefix.appendingPathComponent("drive_c/users/vessel/Desktop", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: prefix) }
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: unrelated, withIntermediateDirectories: true)
+
+        let old = reports.appendingPathComponent("old.dmp")
+        let first = reports.appendingPathComponent("first.dmp")
+        let second = reports.appendingPathComponent("second.dmp")
+        try Data().write(to: old)
+        try Data().write(to: first)
+        try Data().write(to: second)
+        try Data().write(to: unrelated.appendingPathComponent("not-crashpad.dmp"))
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-3_600)],
+            ofItemAtPath: old.path
+        )
+
+        XCTAssertEqual(
+            LaunchDiagnostics.crashpadReportCount(
+                prefix: prefix.path,
+                since: Date().addingTimeInterval(-10)
+            ),
+            2
+        )
     }
 }

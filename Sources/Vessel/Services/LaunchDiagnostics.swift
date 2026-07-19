@@ -152,6 +152,7 @@ enum LaunchDiagnostics {
         fallbackLayers: [GameConfig.GraphicsLayer] = [],
         usesRealSteam: Bool = false,
         usesSteamworks: Bool = false,
+        launchStartedAt: Date? = nil,
         isRunning: @escaping @MainActor () -> Bool = { false },
         persistWinningLayer: (@MainActor (GameConfig.GraphicsLayer) -> Void)? = nil,
         retryWithRealSteam: (@MainActor () async -> Void)? = nil,
@@ -169,6 +170,14 @@ enum LaunchDiagnostics {
             var failure: Failure? = nil
             var crashed = false
             var elapsed = 0
+            // Chromium/NW.js puede mantener el proceso y una ventana negra mientras su proceso GPU
+            // crashea y Crashpad genera varios minidumps. Sin esta señal se aprendía una capa como
+            // «ganadora» aunque el juego fuese inutilizable. Si el llamante conoce el instante real
+            // del lanzamiento contamos desde él; en flujos antiguos usamos el inventario actual como
+            // línea base para no considerar dumps históricos.
+            let crashpadBaseline = launchStartedAt == nil
+                ? crashpadReportCount(prefix: prefix, since: .distantPast)
+                : 0
             // ¿El juego llegó a ESTAR CORRIENDO de verdad? Si el tracker lo marcó `.running` en algún
             // sondeo, arrancó bien; una salida POSTERIOR sin crash es un CIERRE DEL USUARIO, no un
             // fallo de arranque. Sin esto, cerrar un juego que funciona mientras el monitor vigila se
@@ -184,6 +193,23 @@ enum LaunchDiagnostics {
                 if hasSteamInterfaceDialog() {
                     failure = Failure(category: .steam, title: "El juego necesita la API de Steam",
                                       body: "Usa Steam Input/Controller (interfaces que la emulación no provee). Activando modo Steam real.")
+                    break
+                }
+                let newCrashReports: Int
+                if let launchStartedAt {
+                    newCrashReports = crashpadReportCount(prefix: prefix, since: launchStartedAt)
+                } else {
+                    newCrashReports = max(
+                        0,
+                        crashpadReportCount(prefix: prefix, since: .distantPast) - crashpadBaseline
+                    )
+                }
+                if newCrashReports >= 2 {
+                    failure = Failure(
+                        category: .graphics,
+                        title: "El proceso gráfico se cerró repetidamente",
+                        body: "El juego conservó una ventana, pero su proceso gráfico falló varias veces. Vessel evita aprender este arranque como válido y prueba únicamente una ruta compatible."
+                    )
                     break
                 }
                 if let f = detect(prefix: prefix) { failure = f; break }
@@ -408,6 +434,33 @@ enum LaunchDiagnostics {
               let data = fm.contents(atPath: path),
               let text = String(data: data, encoding: .utf8) else { return nil }
         return text
+    }
+
+    /// Cuenta informes `.dmp` de Crashpad creados desde un instante concreto. El recorrido se limita
+    /// a los perfiles de usuario del prefijo y solo acepta rutas que contengan un directorio
+    /// `Crashpad`, para no confundir volcados legítimos de otros subsistemas con un crash de Chromium.
+    nonisolated static func crashpadReportCount(prefix: String, since: Date) -> Int {
+        let root = URL(fileURLWithPath: prefix)
+            .appendingPathComponent("drive_c/users", isDirectory: true)
+        let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles],
+            errorHandler: { _, _ in true }
+        ) else { return 0 }
+
+        var count = 0
+        while let url = enumerator.nextObject() as? URL, count < 256 {
+            guard url.pathExtension.caseInsensitiveCompare("dmp") == .orderedSame,
+                  url.pathComponents.contains(where: { $0.caseInsensitiveCompare("Crashpad") == .orderedSame }),
+                  let values = try? url.resourceValues(forKeys: Set(keys)),
+                  values.isRegularFile == true,
+                  let modified = values.contentModificationDate,
+                  modified >= since else { continue }
+            count += 1
+        }
+        return count
     }
 
     /// Extrae el primer nombre `.dll` de una línea que Wine marque realmente como ausente. No toma

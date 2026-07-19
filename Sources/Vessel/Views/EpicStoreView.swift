@@ -139,7 +139,14 @@ final class EpicStore {
     }
 
     func dlcs(for appName: String) async -> [StoreDLC] {
-        await legendary.ownedDLCs(appName: appName).map {
+        let platform: LegendaryManager.EpicPlatform
+        if case .connected(let games) = phase,
+           let game = games.first(where: { $0.appName == appName }) {
+            platform = game.effectivePlatform
+        } else {
+            platform = .windows
+        }
+        return await legendary.ownedDLCs(appName: appName, platform: platform).map {
             StoreDLC(id: $0.id, title: $0.title, coverURL: nil,
                      installID: $0.appName, owned: true,
                      installed: $0.isInstallable ? $0.installed : nil)
@@ -181,8 +188,22 @@ final class EpicStore {
     private func perform(_ operation: LibraryOperationQueue.Operation,
                          game: LegendaryManager.EpicGame) async throws {
         do {
-            let bottle = try await ensureBottle()
-            let basePath = "\(bottle.prefixPath)/drive_c/Games"
+            let platform: LegendaryManager.EpicPlatform
+            if operation.kind == .install, !game.installed {
+                platform = await legendary.preferredInstallPlatform(
+                    appName: game.appName,
+                    nativeMacAvailable: game.nativeMacAvailable
+                )
+            } else {
+                platform = game.effectivePlatform
+            }
+            let basePath: String
+            if platform == .mac {
+                basePath = "\(VesselPaths.nativeGamesDirectory)/Epic"
+            } else {
+                let bottle = try await ensureBottle()
+                basePath = "\(bottle.prefixPath)/drive_c/Games"
+            }
             let operationID = "epic:\(operation.id)"
             let progress: @Sendable (String) -> Void = { [weak self] line in
                 guard let pct = LegendaryManager.progressPercent(in: line) else { return }
@@ -198,13 +219,16 @@ final class EpicStore {
             switch operation.kind {
             case .install:
                 try await legendary.installGame(appName: game.appName, basePath: basePath,
+                                                 platform: platform,
                                                  operationID: operationID, onProgress: progress)
                 NotificationService.shared.notify(title: "Instalación completada", body: game.title)
             case .verify:
                 try await legendary.repairGame(appName: game.appName, basePath: basePath,
+                                                platform: platform,
                                                 operationID: operationID, onProgress: progress)
             case .update:
                 try await legendary.updateGame(appName: game.appName, basePath: basePath,
+                                                platform: platform,
                                                 operationID: operationID, onProgress: progress)
                 updatesAvailable.remove(game.appName)
                 NotificationService.shared.notify(title: "Actualización completada", body: game.title)
@@ -217,6 +241,7 @@ final class EpicStore {
                                   userInfo: [NSLocalizedDescriptionKey: "No se pudo identificar el contenido adicional."])
                 }
                 try await legendary.installDLC(appName: dlcAppName, basePath: basePath,
+                                                platform: platform,
                                                 operationID: operationID, onProgress: progress)
                 NotificationService.shared.notify(title: "Contenido instalado", body: operation.title)
             }
@@ -245,6 +270,10 @@ final class EpicStore {
             log.log("Epic: \(game.title) sin ejecutable conocido. Elige uno en Ajustes → Avanzado o reinstala el juego.", level: .warn)
             return
         }
+        if game.isNativeMacInstallation {
+            await playNative(game, executable: exe)
+            return
+        }
         // Resolvemos el bottle antes de track para tener la ruta del prefijo (aviso de compat).
         let bottle: Bottle
         do { bottle = try await ensureBottle() }
@@ -261,6 +290,7 @@ final class EpicStore {
         if let forcedLayer { eff.graphicsOverride = forcedLayer }
         // Motor REAL que se usará (no `.auto`), para que el fallback recorra los 3 motores.
         let usedLayer = wineManager.resolvedGraphicsLayer(forExecutable: exe, effective: eff)
+        var launchStartedAt: Date?
         // Rastrear el estado (Iniciando… → Ejecutándose) + cloud saves automáticos: al CERRAR
         // el juego, sube la partida a la nube (Epic) + copia local de Vessel. legendary resuelve la ruta.
         await GameLaunchTracker.shared.track(
@@ -273,9 +303,38 @@ final class EpicStore {
             // Cloud saves: baja lo último de la nube ANTES de jugar (no bloquea si no aplica).
             await legendary.syncSaves(appName: game.appName, direction: .download)
             await SaveBackupManager.shared.restoreIfNewer(store: .epic, id: game.appName, title: game.title, steamId: nil, prefix: prefix, installPath: gameDir)
-            return try await wineManager.launch(
-                executable: exe, in: bottle, arguments: [], effective: eff
-            )
+
+            // Epic entrega un código de intercambio efímero y de un solo uso (`-AUTH_PASSWORD`).
+            // Hay que pedirlo DESPUÉS de sincronizar partidas y preparar el prefijo, en el último
+            // instante antes de Wine. Mantenerlo durante esos pasos puede hacerlo caducar o dejarlo
+            // invalidado antes de que el juego lo canjee. Solo vive en memoria.
+            NotificationService.shared.status("Preparando sesión de Epic…")
+            do {
+                let epicContext = try await legendary.launchContext(appName: game.appName)
+                var launchEffective = eff
+                for (key, value) in epicContext.environment {
+                    launchEffective.extraEnv[key] = value
+                }
+                launchStartedAt = Date()
+                NotificationService.shared.status(nil)
+                return try await wineManager.launch(
+                    executable: exe,
+                    in: bottle,
+                    arguments: epicContext.arguments,
+                    effective: launchEffective
+                )
+            } catch {
+                NotificationService.shared.status(nil)
+                log.log(
+                    "Epic · \(game.title): no se pudo preparar la sesión de lanzamiento: \(error.localizedDescription)",
+                    level: .error
+                )
+                NotificationService.shared.alert(
+                    title: "No se pudo iniciar \(game.title)",
+                    body: error.localizedDescription
+                )
+                throw error
+            }
         }
         // Diagnóstico + fallback automático de motor: si falla el arranque de forma recuperable,
         // relanza con la otra capa (DXMT ↔ GPTK) una vez; si no, avisa con causa y acción.
@@ -283,6 +342,7 @@ final class EpicStore {
             prefix: prefix, gameId: game.appName, gameTitle: game.title,
             currentLayer: usedLayer, attempt: attempt,
             fallbackLayers: wineManager.fallbackLayers(forExecutable: exe, effective: eff),
+            launchStartedAt: launchStartedAt,
             isRunning: { GameLaunchTracker.shared.state(game.appName) == .running },
             persistWinningLayer: { winLayer in
                 var c = GameConfigStore.load(game.appName)
@@ -304,6 +364,37 @@ final class EpicStore {
                 return repaired
             }
         ) { [weak self] next in await self?.play(game, forcedLayer: next, attempt: attempt + 1) }
+    }
+
+    /// Ruta nativa de Epic: mantiene el mismo contexto oficial, feedback y estadísticas que Wine,
+    /// pero ejecuta directamente el binario del `.app`. No toca bottles, capas gráficas ni DLL.
+    private func playNative(_ game: LegendaryManager.EpicGame, executable: String) async {
+        await GameLaunchTracker.shared.track(
+            game.appName,
+            statsKey: "epic:\(game.appName)",
+            onExit: { Task { await self.legendary.syncSaves(appName: game.appName, direction: .upload) } }
+        ) {
+            await legendary.syncSaves(appName: game.appName, direction: .download)
+            NotificationService.shared.status("Preparando sesión nativa de Epic…")
+            do {
+                let context = try await legendary.launchContext(appName: game.appName)
+                let process = try legendary.launchNativeGame(
+                    context: context,
+                    fallbackExecutable: executable
+                )
+                NotificationService.shared.status(nil)
+                return process
+            } catch {
+                NotificationService.shared.status(nil)
+                log.log("Epic · \(game.title): no se pudo iniciar la build nativa: \(error.localizedDescription)",
+                        level: .error)
+                NotificationService.shared.alert(
+                    title: "No se pudo iniciar \(game.title)",
+                    body: error.localizedDescription
+                )
+                throw error
+            }
+        }
     }
 }
 // MARK: - Vista raíz

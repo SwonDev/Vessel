@@ -796,6 +796,18 @@ final class WineManager {
         return fm.fileExists(atPath: "\(dir)/client.jar")
     }
 
+    /// Detecta aplicaciones/juegos empaquetados con NW.js (Chromium + Node). Su ejecutable no suele
+    /// importar Direct3D porque ANGLE lo carga desde `nw.dll`, por lo que el análisis PE genérico los
+    /// clasificaba como `.other` y los enviaba a wined3d. La estructura del runtime es inequívoca:
+    /// `nw.dll` junto a un paquete `package.nw` o `package.json`.
+    func isNWJSGame(_ executable: String) -> Bool {
+        let dir = (executable as NSString).deletingLastPathComponent
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: "\(dir)/nw.dll") else { return false }
+        return fm.fileExists(atPath: "\(dir)/package.nw")
+            || fm.fileExists(atPath: "\(dir)/package.json")
+    }
+
     /// `true` si el juego usa el **XNA de Microsoft** y NO se lo trae consigo: entonces hay que
     /// instalarle el redistribuible, porque lo busca en el sistema.
     ///
@@ -836,6 +848,9 @@ final class WineManager {
         let dir = (executable as NSString).deletingLastPathComponent
         let fm = FileManager.default
         let exeName = ((executable as NSString).lastPathComponent as NSString).deletingPathExtension
+        // NW.js/Chromium usa ANGLE y carga DXGI/D3D11 dinámicamente desde `nw.dll`; no aparece en
+        // la tabla de imports del launcher. DXMT es su backend correcto en Apple Silicon.
+        if isNWJSGame(executable) { return .d3d11 }
         let isUnity = fm.fileExists(atPath: "\(dir)/UnityPlayer.dll")
             || fm.fileExists(atPath: "\(dir)/\(exeName)_Data")
         // Juegos Unity: por defecto renderizan en D3D11 AUNQUE incluyan la Agility SDK
@@ -926,13 +941,18 @@ final class WineManager {
     /// D3D9 se reportan como `.gcenx`: launch() los re-fuerza a su motor pase lo que pase,
     /// así que el valor solo sirve para arrancar el ciclo de fallback.
     func resolvedGraphicsLayer(forExecutable executable: String, effective eff: EffectiveLaunchConfig = EffectiveLaunchConfig()) -> GameConfig.GraphicsLayer {
+        // Chromium necesita el swapchain de DXMT en el mismo proceso; otras rutas producen una
+        // ventana negra aunque el proceso sobreviva. Es una restricción del motor, no una preferencia.
+        if isNWJSGame(executable) { return .dxmt }
         let go = eff.graphicsOverride
         if go == .gcenx { return .gcenx }
         let api = detectGraphicsAPI(forExecutable: executable)
         if go == .gptk || (go == .auto && api == .d3d12) { return .gptk }
+        if isUnity6OrNewer(executable) { return .gptk }
         if api == .d3d9 { return .gcenx }
         if api == .opengl { return .dxmt }                   // motor unificado OpenGL, también en PE32
         if isExecutable32Bit(executable) { return .gcenx }   // CrossOver; launch() lo re-fuerza
+        if go == .dxmt { return .dxmt }
         if api == .other { return .gcenx }                   // carga dinámica de D3D → Gcenx
         return .dxmt                                          // D3D11 → wine-dxmt
     }
@@ -949,6 +969,7 @@ final class WineManager {
     ///  - 32-bit no-D3D9 → CrossOver/Gcenx y, como respaldo, DXMT.
     ///  - Carga dinámica (`.other`) → Gcenx primero, DXMT de respaldo (el gate ya existente para M-series nuevos).
     func fallbackLayers(forExecutable executable: String, effective eff: EffectiveLaunchConfig = EffectiveLaunchConfig()) -> [GameConfig.GraphicsLayer] {
+        if isNWJSGame(executable) { return [.dxmt] }
         switch eff.graphicsOverride {
         case .gptk:  return [.gptk]
         case .dxmt:  return [.dxmt]
@@ -1021,10 +1042,21 @@ final class WineManager {
         if isDotNetCoreGame(executable) {
             eff.msync = false; eff.esync = false; eff.fsync = false
         }
+        let nwjs = isNWJSGame(executable)
+        if nwjs {
+            // DXMT no puede presentar el swapchain de Chromium desde su proceso GPU separado
+            // (`cross-process swapchain → headless mode`). Ejecutar la GPU dentro del proceso crea
+            // una vista Metal real. ANGLE necesita además el compilador HLSL nativo de Microsoft.
+            eff.graphicsOverride = .dxmt
+            eff.dllOverrides["d3dcompiler_47"] = "n,b"
+        }
         let go = eff.graphicsOverride
         // Los de Unreal llevan siempre `-nohmd`: sin él se quedan buscando un visor de VR que aquí no
         // existe y mueren sin abrir ventana (ver `unrealEngineArguments`). Vale para cualquier ruta.
         var allArgs = arguments + eff.launchArgs + unrealEngineArguments(forExecutable: executable)
+        if nwjs, !allArgs.contains(where: { $0.caseInsensitiveCompare("--in-process-gpu") == .orderedSame }) {
+            allArgs.append("--in-process-gpu")
+        }
         // Estado del propio juego restaurado por nube/backup: corrige únicamente combinaciones
         // verificadas que bajo Retina crean una ventana desbordada y desalinean el ratón. Se hace
         // aquí, DESPUÉS de cualquier restauración previa y ANTES de decidir la ruta de motor; no
@@ -1317,6 +1349,21 @@ final class WineManager {
         // D3D11 → wine-dxmt (DXMT→Metal). Aseguramos DXMT en el builtin del motor; si
         // no, los juegos usarían wined3d y fallarían con "InitializeEngineGraphics".
         let gameWine = resolveGameWine(for: bottle, executable: executable)
+        if nwjs {
+            let compiler = "\(bottle.prefixPath)/drive_c/windows/system32/d3dcompiler_47.dll"
+            if !FileManager.default.fileExists(atPath: compiler) {
+                log.log("NW.js/Chromium: instalando D3DCompiler 47 para ANGLE…", level: .info)
+                let installed = await applyWinetricksVerbs(
+                    ["d3dcompiler_47"],
+                    prefix: bottle.prefixPath,
+                    wine: gameWine,
+                    force: true
+                )
+                guard installed, FileManager.default.fileExists(atPath: compiler) else {
+                    throw WineError.installationFailed("no se pudo preparar D3DCompiler 47 para Chromium")
+                }
+            }
+        }
         if graphicsAPI != .opengl {
             try await ensureGameEngineDXMT(gameWine: gameWine)
         }
@@ -4252,6 +4299,25 @@ final class WineManager {
         "SDL_JOYSTICK_HIDAPI_SWITCH": "1"
     ]
 
+    /// Los launch tokens de Epic/EOS son credenciales efímeras. Deben llegar al proceso del juego,
+    /// pero nunca al log de Vessel ni a los logs de los LaunchAgents.
+    nonisolated static func isSensitiveLaunchArgument(_ argument: String) -> Bool {
+        let lower = argument.lowercased()
+        return ["auth_login", "auth_password", "auth_type", "epicusername", "epicuserid",
+                "access_token", "refresh_token", "exchange", "credential", "password="]
+            .contains(where: lower.contains)
+    }
+
+    nonisolated static func redactedArgumentsForLogging(_ arguments: [String]) -> [String] {
+        arguments.map { argument in
+            guard isSensitiveLaunchArgument(argument) else { return argument }
+            if let separator = argument.firstIndex(of: "=") {
+                return String(argument[...separator]) + "<redactado>"
+            }
+            return "<redactado>"
+        }
+    }
+
     private func launchWineProcess(
         winePath: String,
         prefix: String,
@@ -4275,6 +4341,7 @@ final class WineManager {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: winePath)
         process.arguments = arguments
+        let containsSensitiveArguments = arguments.contains(where: Self.isSensitiveLaunchArgument)
         // Directorio de trabajo = carpeta del juego (como hace Steam). CLAVE: con
         // cwd en "/" (no escribible, que es lo que hereda un proceso lanzado por la
         // app GUI) DXMT no puede crear su caché Metal y la carga de d3d11 falla
@@ -4505,10 +4572,13 @@ final class WineManager {
             let script = "cd \(shq(cwd))\nexec /usr/bin/env -i \(assignments) \(cmdline)\n"
             let cmdFile = "\(NSHomeDirectory())/Library/Application Support/Vessel/.game-launch.sh"
             try? script.write(toFile: cmdFile, atomically: true, encoding: .utf8)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cmdFile)
             let uid = getuid()
             let agentLabel = "com.swondev.vessel.gamelauncher"
             let agentPlist = "\(NSHomeDirectory())/Library/Application Support/Vessel/gamelauncher.plist"
-            let agentLog = "\(NSHomeDirectory())/Library/Logs/Vessel/game-agent.log"
+            let agentLog = containsSensitiveArguments
+                ? "/dev/null"
+                : "\(NSHomeDirectory())/Library/Logs/Vessel/game-agent.log"
             let plistXML = """
             <?xml version="1.0" encoding="UTF-8"?>
             <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -4535,6 +4605,7 @@ final class WineManager {
                 + "/bin/launchctl bootstrap gui/\(uid) '\(agentPlist)' 2>/dev/null; "
                 + "for r in 1 2 3 4 5 6; do sleep 4; /usr/bin/pgrep -f '\(exeBase)' >/dev/null 2>&1 && break; "
                 + "/bin/launchctl kickstart gui/\(uid)/\(agentLabel) 2>/dev/null; done; "
+                + "/bin/rm -f \(shq(cmdFile)); "
                 // VITAL: el bash devuelto debe VIVIR lo que viva el juego — el tracker
                 // (GameLaunchTracker) y el watchdog miden la vida del juego por ESTE proceso.
                 // Si el bash sale tras el bootstrap, el watchdog cree a los ~9 s que el juego
@@ -4602,13 +4673,16 @@ final class WineManager {
             let script = "cd \(shq(cwd))\n\(bashCmd)\n"
             let cmdFile = "\(NSHomeDirectory())/Library/Application Support/Vessel/.steam-launch.sh"
             try? script.write(toFile: cmdFile, atomically: true, encoding: .utf8)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cmdFile)
             let uid = getuid()
             let agentLabel = "com.swondev.vessel.steamlauncher"
             // ⚠️ El plist va en Application Support, NO en ~/Library/LaunchAgents: allí launchd lo
             // auto-cargaría en CADA inicio de sesión (RunAtLoad) → Steam arrancaría solo al login.
             // `bootstrap gui/<uid> <plist>` acepta cualquier ruta de plist para una carga puntual.
             let agentPlist = "\(NSHomeDirectory())/Library/Application Support/Vessel/steamlauncher.plist"
-            let agentLog = "\(NSHomeDirectory())/Library/Logs/Vessel/steam-agent.log"
+            let agentLog = containsSensitiveArguments
+                ? "/dev/null"
+                : "\(NSHomeDirectory())/Library/Logs/Vessel/steam-agent.log"
             let plistXML = """
             <?xml version="1.0" encoding="UTF-8"?>
             <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -4653,7 +4727,8 @@ final class WineManager {
                 + "sleep 2; "
                 + "/bin/launchctl bootstrap gui/\(uid) '\(agentPlist)' 2>/dev/null; "
                 + "for r in 1 2 3 4 5 6; do sleep 4; /usr/bin/pgrep -f 'steam\\.exe' >/dev/null 2>&1 && break; "
-                + "/bin/launchctl kickstart gui/\(uid)/\(agentLabel) 2>/dev/null; done"
+                + "/bin/launchctl kickstart gui/\(uid)/\(agentLabel) 2>/dev/null; done; "
+                + "/bin/rm -f \(shq(cmdFile))"
             process.executableURL = URL(fileURLWithPath: "/bin/bash")
             process.arguments = ["-c", bootCmd]
             process.environment = ["HOME": NSHomeDirectory(), "USER": NSUserName(),
@@ -4666,13 +4741,19 @@ final class WineManager {
         let logDir = "\(NSHomeDirectory())/Library/Logs/Vessel"
         try? FileManager.default.createDirectory(atPath: logDir, withIntermediateDirectories: true)
         let outPath = "\(logDir)/game-launch.log"
-        FileManager.default.createFile(atPath: outPath, contents: nil)
-        if let handle = FileHandle(forWritingAtPath: outPath) {
+        try? Data().write(to: URL(fileURLWithPath: outPath), options: .atomic)
+        if containsSensitiveArguments {
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+        } else if let handle = FileHandle(forWritingAtPath: outPath) {
             process.standardOutput = handle
             process.standardError = handle
         }
 
-        log.log("CMD: \((winePath as NSString).lastPathComponent) \(arguments.map { ($0 as NSString).lastPathComponent }.joined(separator: " "))", level: .debug)
+        let loggedArguments = Self.redactedArgumentsForLogging(arguments)
+            .map { ($0 as NSString).lastPathComponent }
+            .joined(separator: " ")
+        log.log("CMD: \((winePath as NSString).lastPathComponent) \(loggedArguments)", level: .debug)
         do {
             try process.run()
             log.log("Proceso Wine lanzado (pid=\(process.processIdentifier))", level: .info)
