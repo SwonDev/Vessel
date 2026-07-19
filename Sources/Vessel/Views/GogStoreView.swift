@@ -332,13 +332,27 @@ final class GogStore {
         if let forcedLayer { eff.graphicsOverride = forcedLayer }
         // Motor REAL que se usará (no `.auto`), para que el fallback recorra los 3 motores.
         let usedLayer = wineManager.resolvedGraphicsLayer(forExecutable: executable, effective: eff)
+        let trackedExecutable = executable
+        let trackedPrefix = prefix
         await GameLaunchTracker.shared.track(
             game.appId, statsKey: "gog:\(game.appId)",
             // Cloud saves automáticos: al CERRAR el juego, sube a la nube de GOG + copia local de Vessel.
             onExit: { Task {
                 await self.gogdl.syncSaves(appId: game.appId, installDir: dir, prefix: prefix, direction: .upload)
                 await SaveBackupManager.shared.backup(store: .gog, id: game.appId, title: game.title, steamId: nil, prefix: prefix, installPath: dir)
-            } }
+            } },
+            processFamilyIsRunning: {
+                await self.wineManager.isGameProcessFamilyRunning(
+                    executable: trackedExecutable,
+                    prefix: trackedPrefix
+                )
+            },
+            stopProcessFamily: {
+                await self.wineManager.terminateGameProcessFamily(
+                    executable: trackedExecutable,
+                    prefix: trackedPrefix
+                )
+            }
         ) {
             // Ejecutable **y argumentos**: los clásicos de GOG son DOS/ScummVM envueltos y su
             // ejecutable es `DOSBOX\dosbox.exe`, que sin `-conf …` abre un prompt de DOS vacío.

@@ -290,6 +290,8 @@ final class EpicStore {
         if let forcedLayer { eff.graphicsOverride = forcedLayer }
         // Motor REAL que se usará (no `.auto`), para que el fallback recorra los 3 motores.
         let usedLayer = wineManager.resolvedGraphicsLayer(forExecutable: exe, effective: eff)
+        let trackedExecutable = exe
+        let trackedPrefix = prefix
         var launchStartedAt: Date?
         // Rastrear el estado (Iniciando… → Ejecutándose) + cloud saves automáticos: al CERRAR
         // el juego, sube la partida a la nube (Epic) + copia local de Vessel. legendary resuelve la ruta.
@@ -298,7 +300,19 @@ final class EpicStore {
             onExit: { Task {
                 await self.legendary.syncSaves(appName: game.appName, direction: .upload)
                 await SaveBackupManager.shared.backup(store: .epic, id: game.appName, title: game.title, steamId: nil, prefix: prefix, installPath: gameDir)
-            } }
+            } },
+            processFamilyIsRunning: {
+                await self.wineManager.isGameProcessFamilyRunning(
+                    executable: trackedExecutable,
+                    prefix: trackedPrefix
+                )
+            },
+            stopProcessFamily: {
+                await self.wineManager.terminateGameProcessFamily(
+                    executable: trackedExecutable,
+                    prefix: trackedPrefix
+                )
+            }
         ) {
             // Cloud saves: baja lo último de la nube ANTES de jugar (no bloquea si no aplica).
             await legendary.syncSaves(appName: game.appName, direction: .download)

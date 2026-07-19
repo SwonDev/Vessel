@@ -817,6 +817,47 @@ final class WineManager {
             && exeContains(executable, anyOf: ["AKUSDL"])
     }
 
+    /// OGRE anterior a 1.7 carga el renderizador desde `Plugins.cfg`, no desde el ejecutable.
+    /// La presencia de ambas DLL no decide nada: solo cuenta el plugin activo y su tabla PE real.
+    /// Esta firma cubre builds PE32 con el D3D9 clásico seleccionado sin depender del título.
+    func isLegacyOgreD3D9Game(_ executable: String) -> Bool {
+        guard isExecutable32Bit(executable) else { return false }
+        let directory = (executable as NSString).deletingLastPathComponent
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory),
+              let configName = names.first(where: {
+                  $0.caseInsensitiveCompare("Plugins.cfg") == .orderedSame
+              }),
+              names.contains(where: {
+                  $0.caseInsensitiveCompare("OgreMain.dll") == .orderedSame
+              }),
+              let config = try? String(
+                  contentsOfFile: "\(directory)/\(configName)",
+                  encoding: .utf8
+              ) else { return false }
+
+        let selectedRenderers = config.split(whereSeparator: \.isNewline).compactMap { rawLine -> String? in
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty, !line.hasPrefix("#"), !line.hasPrefix(";") else { return nil }
+            let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2,
+                  parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+                    .caseInsensitiveCompare("Plugin") == .orderedSame else { return nil }
+            let normalized = parts[1]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "\\", with: "/")
+            return ((normalized as NSString).lastPathComponent as NSString)
+                .deletingPathExtension
+        }
+        guard selectedRenderers.contains(where: {
+            $0.caseInsensitiveCompare("RenderSystem_Direct3D9") == .orderedSame
+        }),
+        let pluginName = names.first(where: {
+            $0.caseInsensitiveCompare("RenderSystem_Direct3D9.dll") == .orderedSame
+        }) else { return false }
+
+        return exeImports("\(directory)/\(pluginName)", anyOf: ["d3d9.dll"])
+    }
+
     /// True si el ejecutable es un juego **Java con JVM embebida** (p. ej. Wurm Unlimited): junto
     /// al exe hay un runtime Java (`runtime/bin/java.exe`, `jre/bin/java.exe`) o un `client.jar`.
     /// Misma detección por estructura que usa el importador (`SteamLibraryImporter`).
@@ -942,6 +983,10 @@ final class WineManager {
         // NW.js/Chromium usa ANGLE y carga DXGI/D3D11 dinámicamente desde `nw.dll`; no aparece en
         // la tabla de imports del launcher. DXMT es su backend correcto en Apple Silicon.
         if isNWJSGame(executable) { return .d3d11 }
+        // OGRE clásico declara el renderizador activo en Plugins.cfg y lo carga dinámicamente.
+        // Inspeccionar solo Torchlight.exe, por ejemplo, lo deja como `.other` aunque el plugin
+        // seleccionado importe D3D9 de forma inequívoca.
+        if isLegacyOgreD3D9Game(executable) { return .d3d9 }
         let isUnity = fm.fileExists(atPath: "\(dir)/UnityPlayer.dll")
             || fm.fileExists(atPath: "\(dir)/\(exeName)_Data")
         // Juegos Unity: por defecto renderizan en D3D11 AUNQUE incluyan la Agility SDK
@@ -1776,15 +1821,40 @@ final class WineManager {
     private func launchD3D9GameWithCrossOver(executable: String, in bottle: Bottle, arguments: [String],
                                              effective: EffectiveLaunchConfig, wine: String) async throws -> Process {
         log.log("Capa gráfica: wined3d de CrossOver (juego D3D9 de 32-bit) — el único que crea el device", level: .info)
+        let legacyOgre = isLegacyOgreD3D9Game(executable)
         cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
         try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
         try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: wine)
         await resyncGamePrefix(gameWine: wine, prefix: bottle.prefixPath)
+        if legacyOgre {
+            let executableName = (executable as NSString).lastPathComponent
+            // OGRE 1.6 crea el device con wined3d/Vulkan pero entrega un framebuffer negro. Su
+            // D3D9 original renderiza correctamente sobre el backend OpenGL de Apple. La clave se
+            // limita a este ejecutable para no cambiar el renderer de ningún otro juego del bottle.
+            await setWined3dRenderer(
+                prefix: bottle.prefixPath,
+                wine: wine,
+                renderer: "gl",
+                forExecutable: executableName
+            )
+            // OGRE 1.6 no es HiDPI-aware: 800×600 físicos se convierten en 400×300 puntos y el
+            // puntero deja de coincidir con el framebuffer. A escala nativa conserva 800×600 1:1.
+            await setMacDriverRetinaMode(prefix: bottle.prefixPath, wine: wine, enabled: false)
+            log.log(
+                "OGRE D3D9 legado detectado: wined3d/OpenGL por ejecutable y escala nativa.",
+                level: .info
+            )
+        }
+        var environment = Self.fullEngineEnvironment(prefix: bottle.prefixPath)
+        if legacyOgre {
+            environment["WINEMSYNC"] = "1"
+            environment["WINEESYNC"] = "1"
+        }
         return try await launchWineProcess(
             winePath: wine,
             prefix: bottle.prefixPath,
             arguments: [executable] + arguments,
-            environment: Self.fullEngineEnvironment(prefix: bottle.prefixPath),
+            environment: environment,
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: effective
         )

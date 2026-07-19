@@ -138,6 +138,52 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [])
     }
 
+    func testLegacyOgreUsesTheRendererSelectedInPluginsConfig() throws {
+        let executable = try makePE32(named: "ogre-game.exe")
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("OGRE".utf8).write(to: directory.appendingPathComponent("OgreMain.dll"))
+        try writePE(
+            to: directory.appendingPathComponent("RenderSystem_Direct3D9.dll"),
+            is64Bit: false,
+            imports: ["d3d9.dll", "d3dx9_39.dll"],
+            marker: "OGRE D3D9 RenderSystem"
+        )
+        try writePE(
+            to: directory.appendingPathComponent("RenderSystem_GL.dll"),
+            is64Bit: false,
+            imports: ["opengl32.dll"],
+            marker: "OGRE GL RenderSystem"
+        )
+        try Data("Plugin=RenderSystem_Direct3D9\r\n#Plugin=RenderSystem_GL\r\n".utf8)
+            .write(to: directory.appendingPathComponent("Plugins.cfg"))
+        let manager = WineManager()
+
+        XCTAssertTrue(manager.isLegacyOgreD3D9Game(executable.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .d3d9)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .gcenx)
+        XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [.gcenx])
+    }
+
+    func testLegacyOgreIgnoresACommentedD3D9Plugin() throws {
+        let executable = try makePE32(named: "ogre-game.exe")
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("OGRE".utf8).write(to: directory.appendingPathComponent("OgreMain.dll"))
+        try writePE(
+            to: directory.appendingPathComponent("RenderSystem_Direct3D9.dll"),
+            is64Bit: false,
+            imports: ["d3d9.dll"],
+            marker: "OGRE D3D9 RenderSystem"
+        )
+        try Data("#Plugin=RenderSystem_Direct3D9\nPlugin=RenderSystem_GL\n".utf8)
+            .write(to: directory.appendingPathComponent("Plugins.cfg"))
+        let manager = WineManager()
+
+        XCTAssertFalse(manager.isLegacyOgreD3D9Game(executable.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .other)
+    }
+
     func testFullEngineExposesBundledMoltenVKWithoutForcingBackend() {
         let environment = WineManager.fullEngineEnvironment(
             prefix: "/tmp/vessel-bottle",
