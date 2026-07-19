@@ -204,9 +204,39 @@ actor StoreGameMetadataService {
                 URLQueryItem(name: "language", value: "all"),
                 URLQueryItem(name: "purchase_type", value: "all"),
                 URLQueryItem(name: "num_per_page", value: "0")
-            ]),
-              let data = await fetchJSON(url) else { return nil }
-        return parseSteamReviewSummaryPayload(data)
+            ]) else { return nil }
+
+        // Conserva el diagnóstico en vivo de Kimi sin perder las garantías actuales del cliente
+        // común: HTTPS tras redirecciones, límite de payload, caché y timeout acotado.
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 12
+        request.cachePolicy = .returnCacheDataElseLoad
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard data.count <= maximumPayloadBytes,
+                  let http = response as? HTTPURLResponse,
+                  http.url?.scheme?.lowercased() == "https",
+                  (200...299).contains(http.statusCode) else {
+                let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                Task { @MainActor in
+                    LogStore.shared.log("appreviews \(appId): respuesta HTTP no válida (\(code)).", level: .warn)
+                }
+                return nil
+            }
+            guard let summary = parseSteamReviewSummaryPayload(data) else {
+                Task { @MainActor in
+                    LogStore.shared.log("appreviews \(appId): payload inesperado (\(data.count) bytes).", level: .warn)
+                }
+                return nil
+            }
+            return summary
+        } catch {
+            Task { @MainActor in
+                LogStore.shared.log("appreviews \(appId): error \(error.localizedDescription)", level: .warn)
+            }
+            return nil
+        }
     }
 
     static func parseSteamReviewSummaryPayload(_ data: Data) -> String? {
