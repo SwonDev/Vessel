@@ -42,6 +42,39 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [.dxmt])
     }
 
+    func testPE32SDL2OpenGLDisablesLegacyRetinaScaling() throws {
+        let executable = try makePE32(named: "pixel-engine.exe", marker: "opengl32.dll SDL2.dll")
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("SDL2".utf8).write(to: directory.appendingPathComponent("SDL2.dll"))
+
+        let manager = WineManager()
+
+        XCTAssertTrue(manager.usesLegacySDL2OpenGLScaling(executable.path))
+    }
+
+    func testSDL2OpenGLScalingRuleDoesNotAffect64BitGames() throws {
+        let executable = try makePE64(named: "modern-engine.exe", marker: "opengl32.dll SDL2.dll")
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("SDL2".utf8).write(to: directory.appendingPathComponent("SDL2.dll"))
+
+        let manager = WineManager()
+
+        XCTAssertFalse(manager.usesLegacySDL2OpenGLScaling(executable.path))
+    }
+
+    func testUnusedSiblingSDL2DoesNotTriggerLegacyScaling() throws {
+        let executable = try makePE32(named: "unrelated-tool.exe", marker: "opengl32.dll")
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("SDL2".utf8).write(to: directory.appendingPathComponent("SDL2.dll"))
+
+        let manager = WineManager()
+
+        XCTAssertFalse(manager.usesLegacySDL2OpenGLScaling(executable.path))
+    }
+
     func testNWJSUsesOnlyDXMTDespiteDynamicImportsOrStaleOverride() throws {
         let executable = try makePE64(named: "Melvor Idle.exe")
         let directory = executable.deletingLastPathComponent()

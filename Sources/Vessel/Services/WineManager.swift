@@ -1467,10 +1467,18 @@ final class WineManager {
         await resyncGamePrefix(gameWine: gameWine, prefix: bottle.prefixPath)
         // Quitar DLLs nativas del prefix para que mande el DXMT builtin del motor.
         cleanPrefixNativeGraphicsDLLs(prefixPath: bottle.prefixPath)
-        // Modo Retina: sin él, DXMT/Metal renderiza a 1× y el juego ocupa un cuarto de la
-        // pantalla (esquina superior izquierda) en pantallas Retina. Con él, resolución
-        // física completa a pantalla completa. Respeta el flag del perfil (por defecto ON).
-        await setMacDriverRetinaMode(prefix: bottle.prefixPath, wine: gameWine, enabled: eff.retina)
+        // Modo Retina: los motores Metal modernos lo necesitan para renderizar a resolución física.
+        // SDL2/OpenGL PE32 anterior a HiDPI necesita justo lo contrario: con Retina sus 1280×720
+        // acaban en una ventana de 640×360 puntos y la entrada puede quedar desalineada.
+        let legacySDL2Scale = usesLegacySDL2OpenGLScaling(executable)
+        await setMacDriverRetinaMode(
+            prefix: bottle.prefixPath,
+            wine: gameWine,
+            enabled: legacySDL2Scale ? false : eff.retina
+        )
+        if legacySDL2Scale {
+            log.log("SDL2/OpenGL de 32 bits detectado: escala nativa para alinear ventana y entrada.", level: .info)
+        }
 
         // Para juegos de Steam: `steam_appid.txt` + `SteamAppId` permiten que la
         // Steamworks API arranque en modo standalone (sin el cliente Steam abierto,
@@ -2113,6 +2121,24 @@ final class WineManager {
         guard let pe = try? fh.read(upToCount: 6), pe.count >= 6, pe[0] == 0x50, pe[1] == 0x45 else { return false } // "PE\0\0"
         let machine = Int(pe[4]) | (Int(pe[5]) << 8)
         return machine == 0x14c
+    }
+
+    /// Los motores SDL2/OpenGL de 32 bits anteriores al soporte HiDPI interpretan las dimensiones
+    /// que Wine expone con Retina como píxeles lógicos. Una ventana interna de 1280×720 termina así
+    /// ocupando 640×360 puntos y la transformación de entrada puede no coincidir con el framebuffer.
+    /// La regla se limita a la combinación comprobable PE32 + OpenGL + SDL2; no depende del título
+    /// ni afecta a Unity/D3D11, GameMaker o a motores OpenGL modernos de 64 bits.
+    func usesLegacySDL2OpenGLScaling(_ executable: String) -> Bool {
+        guard isExecutable32Bit(executable),
+              detectGraphicsAPI(forExecutable: executable) == .opengl,
+              exeContains(executable, anyOf: ["SDL2.dll", "sdl2.dll", "SDL2.DLL"]) else {
+            return false
+        }
+        let directory = (executable as NSString).deletingLastPathComponent
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory) else {
+            return false
+        }
+        return names.contains { $0.caseInsensitiveCompare("SDL2.dll") == .orderedSame }
     }
 
     /// Fuerza el backend de wined3d (`HKCU\Software\Wine\Direct3D` → `renderer`).
