@@ -1,4 +1,6 @@
 import Foundation
+import AppKit
+import Darwin
 
 /// Rastrea el **estado de lanzamiento de cada juego** (clave = id de `StoreGame`) para dar
 /// FEEDBACK VISUAL real: `iniciando` mientras se prepara el prefijo y arranca Wine (puede
@@ -14,6 +16,8 @@ final class GameLaunchTracker {
 
     private var states: [String: State] = [:]
     private var processes: [String: Process] = [:]
+    private var nativeApplications: [String: NSRunningApplication] = [:]
+    private var nativeWatchers: [String: Task<Void, Never>] = [:]
     /// Por id en curso: clave de estadística (`"<tienda>:<id>"`) e instante de arranque, para
     /// acumular el tiempo jugado en `PlayStatsStore` al terminar el proceso.
     private var statsKeys: [String: String] = [:]
@@ -61,8 +65,83 @@ final class GameLaunchTracker {
         }
     }
 
+    /// Variante nativa para bundles `.app`. Conserva exactamente el mismo contrato visual y de
+    /// estadísticas que `Process`, pero rastrea la aplicación real registrada por LaunchServices.
+    /// Así macOS gestiona correctamente foco, Dock, menús y cierre forzado.
+    func trackNative(_ id: String, statsKey: String? = nil,
+                     onExit: (@MainActor () -> Void)? = nil,
+                     _ body: () async throws -> NSRunningApplication) async {
+        guard state(id) == .idle else { return }
+        states[id] = .launching
+        lastErrors[id] = nil
+        do {
+            let application = try await body()
+            nativeApplications[id] = application
+            states[id] = .running
+            if let statsKey {
+                statsKeys[id] = statsKey
+                startTimes[id] = Date()
+                PlayStatsStore.shared.markPlayed(statsKey)
+            }
+            if let onExit { onExits[id] = onExit }
+            nativeWatchers[id] = Task { @MainActor [weak self] in
+                while !Task.isCancelled, !application.isTerminated {
+                    try? await Task.sleep(for: .milliseconds(500))
+                }
+                guard !Task.isCancelled else { return }
+                self?.finish(id)
+            }
+        } catch {
+            states[id] = .idle
+            lastErrors[id] = error.localizedDescription
+            LogStore.shared.log("No se pudo iniciar el juego: \(error.localizedDescription)", level: .error)
+        }
+    }
+
     /// Detiene el juego en ejecución (envía terminación al proceso lanzado).
     func stop(_ id: String) {
+        if let application = nativeApplications[id] {
+            let processIdentifier = application.processIdentifier
+            _ = application.forceTerminate()
+            nativeWatchers[id]?.cancel()
+            nativeWatchers[id] = Task { @MainActor [weak self] in
+                // Algunos bundles de terceros aceptan la petición de AppKit pero no terminan.
+                // Damos margen a macOS y, solo si sigue siendo exactamente la aplicación que
+                // Vessel abrió y rastrea, cerramos su PID. Nunca buscamos procesos por nombre.
+                for _ in 0..<20 {
+                    guard !Task.isCancelled else { return }
+                    if application.isTerminated {
+                        self?.finish(id)
+                        return
+                    }
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+                guard !Task.isCancelled,
+                      let trackedApplication = self?.nativeApplications[id],
+                      trackedApplication.processIdentifier == processIdentifier,
+                      !trackedApplication.isTerminated else { return }
+                if Darwin.kill(processIdentifier, SIGKILL) != 0 {
+                    LogStore.shared.log(
+                        "No se pudo forzar el cierre del juego nativo (PID \(processIdentifier)).",
+                        level: .error
+                    )
+                }
+                for _ in 0..<20 where !trackedApplication.isTerminated {
+                    guard !Task.isCancelled else { return }
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+                guard !Task.isCancelled else { return }
+                if trackedApplication.isTerminated || Darwin.kill(processIdentifier, 0) != 0 {
+                    self?.finish(id)
+                } else {
+                    LogStore.shared.log(
+                        "El juego nativo sigue activo después de forzar su cierre (PID \(processIdentifier)).",
+                        level: .error
+                    )
+                }
+            }
+            return
+        }
         processes[id]?.terminate()
     }
 
@@ -73,6 +152,9 @@ final class GameLaunchTracker {
         onExits[id]?()            // p. ej. subir cloud saves tras cerrar el juego
         states[id] = .idle
         processes[id] = nil
+        nativeApplications[id] = nil
+        nativeWatchers[id]?.cancel()
+        nativeWatchers[id] = nil
         statsKeys[id] = nil
         startTimes[id] = nil
         onExits[id] = nil

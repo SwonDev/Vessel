@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 /// Gestiona la instalación y uso de **Legendary** (cliente CLI de Epic Games).
 ///
@@ -399,10 +400,11 @@ final class LegendaryManager {
         return context
     }
 
-    /// Arranca directamente la build de macOS que instaló Legendary. Se devuelve el proceso real
-    /// del juego para que `GameLaunchTracker` conserve estados, tiempo jugado y cierre; no se usa
-    /// `open`, Wine ni un proceso intermediario. Los argumentos efímeros de Epic nunca se registran.
-    func launchNativeGame(context: EpicLaunchContext, fallbackExecutable: String) throws -> Process {
+    /// Arranca la build de macOS mediante LaunchServices y devuelve su aplicación REAL. Esta es la
+    /// vía nativa que registra foco, Dock, menús y ciclo de vida; los argumentos efímeros de Epic
+    /// se entregan en memoria y nunca se registran.
+    func launchNativeGame(context: EpicLaunchContext,
+                          fallbackExecutable: String) async throws -> NSRunningApplication {
         let executable = Self.resolveNativeExecutable(context: context, fallback: fallbackExecutable)
         guard !executable.isEmpty, FileManager.default.fileExists(atPath: executable) else {
             throw NSError(domain: "Vessel", code: 116, userInfo: [NSLocalizedDescriptionKey:
@@ -416,9 +418,10 @@ final class LegendaryManager {
                 "macOS no permite ejecutar la build nativa. Verifica los archivos del juego."])
         }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = context.arguments
+        guard let applicationPath = Self.applicationBundlePath(containing: executable) else {
+            throw NSError(domain: "Vessel", code: 118, userInfo: [NSLocalizedDescriptionKey:
+                "La build nativa no contiene una aplicación de macOS válida. Verifica los archivos del juego."])
+        }
         var environment = ProcessInfo.processInfo.environment
         for (key, value) in WineManager.userShellEnvironment { environment[key] = value }
         // Igual que en la ruta Wine, el hijo no debe heredar la identidad XPC de Vessel. Un binario
@@ -427,18 +430,33 @@ final class LegendaryManager {
         environment["XPC_SERVICE_NAME"] = nil
         environment["XPC_FLAGS"] = nil
         for (key, value) in context.environment { environment[key] = value }
-        process.environment = environment
-        let requestedWorkingDirectory = context.workingDirectory ?? context.gameDirectory
-        let workingDirectory = requestedWorkingDirectory.flatMap {
-            FileManager.default.fileExists(atPath: $0) ? $0 : nil
-        } ?? (executable as NSString).deletingLastPathComponent
-        process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory, isDirectory: true)
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        log.log("Epic: build nativa de macOS iniciada (\((executable as NSString).lastPathComponent))", level: .info)
-        return process
+
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.arguments = context.arguments
+        configuration.environment = environment
+        configuration.activates = true
+        configuration.addsToRecentItems = false
+        configuration.createsNewApplicationInstance = true
+        configuration.allowsRunningApplicationSubstitution = false
+        let application = try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<NSRunningApplication, Error>) in
+            NSWorkspace.shared.openApplication(
+                at: URL(fileURLWithPath: applicationPath, isDirectory: true),
+                configuration: configuration
+            ) { runningApplication, error in
+                if let runningApplication {
+                    continuation.resume(returning: runningApplication)
+                } else {
+                    continuation.resume(throwing: error ?? NSError(
+                        domain: "Vessel", code: 119,
+                        userInfo: [NSLocalizedDescriptionKey: "macOS no pudo abrir la aplicación del juego."]
+                    ))
+                }
+            }
+        }
+        log.log("Epic: build nativa de macOS iniciada con LaunchServices (\((applicationPath as NSString).lastPathComponent))",
+                level: .info)
+        return application
     }
 
     nonisolated static func resolveNativeExecutable(context: EpicLaunchContext,
@@ -451,6 +469,17 @@ final class LegendaryManager {
                 .appendingPathComponent(raw).standardizedFileURL.path
         }
         return fallback
+    }
+
+    nonisolated static func applicationBundlePath(containing executable: String) -> String? {
+        var candidate = URL(fileURLWithPath: executable).standardizedFileURL
+        while candidate.path != "/" {
+            if candidate.pathExtension.caseInsensitiveCompare("app") == .orderedSame {
+                return candidate.path
+            }
+            candidate.deleteLastPathComponent()
+        }
+        return nil
     }
 
     /// Parser separado para cubrir el contrato JSON de Legendary con pruebas sin red ni sesión.

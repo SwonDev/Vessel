@@ -367,9 +367,9 @@ final class EpicStore {
     }
 
     /// Ruta nativa de Epic: mantiene el mismo contexto oficial, feedback y estadísticas que Wine,
-    /// pero ejecuta directamente el binario del `.app`. No toca bottles, capas gráficas ni DLL.
+    /// pero abre el bundle `.app` mediante LaunchServices. No toca bottles, capas gráficas ni DLL.
     private func playNative(_ game: LegendaryManager.EpicGame, executable: String) async {
-        await GameLaunchTracker.shared.track(
+        await GameLaunchTracker.shared.trackNative(
             game.appName,
             statsKey: "epic:\(game.appName)",
             onExit: { Task { await self.legendary.syncSaves(appName: game.appName, direction: .upload) } }
@@ -378,12 +378,12 @@ final class EpicStore {
             NotificationService.shared.status("Preparando sesión nativa de Epic…")
             do {
                 let context = try await legendary.launchContext(appName: game.appName)
-                let process = try legendary.launchNativeGame(
+                let application = try await legendary.launchNativeGame(
                     context: context,
                     fallbackExecutable: executable
                 )
                 NotificationService.shared.status(nil)
-                return process
+                return application
             } catch {
                 NotificationService.shared.status(nil)
                 log.log("Epic · \(game.title): no se pudo iniciar la build nativa: \(error.localizedDescription)",

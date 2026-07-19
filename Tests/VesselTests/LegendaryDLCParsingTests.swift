@@ -144,18 +144,11 @@ struct LegendaryPlatformSelectionTests {
         ) == "/Installed/Verified.app/Contents/MacOS/Verified")
     }
 
-    @Test("El lanzador devuelve y rastrea el proceso nativo real")
-    @MainActor
-    func launchesNativeProcess() throws {
-        let context = LegendaryManager.EpicLaunchContext(
-            arguments: [], environment: [:], gameExecutable: nil,
-            gameDirectory: nil, workingDirectory: "/usr/bin"
-        )
-        let process = try LegendaryManager().launchNativeGame(
-            context: context,
-            fallbackExecutable: "/usr/bin/true"
-        )
-        process.waitUntilExit()
-        #expect(process.terminationStatus == 0)
+    @Test("Localiza el bundle nativo que LaunchServices debe abrir")
+    func resolvesApplicationBundle() {
+        #expect(LegendaryManager.applicationBundlePath(
+            containing: "/Native/World Of Goo.app/Contents/MacOS/World Of Goo"
+        ) == "/Native/World Of Goo.app")
+        #expect(LegendaryManager.applicationBundlePath(containing: "/usr/bin/true") == nil)
     }
 }
