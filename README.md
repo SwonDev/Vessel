@@ -4,17 +4,17 @@
 
 <br/>
 
-<a href="https://github.com/SwonDev/Vessel/releases/latest"><img src="https://img.shields.io/badge/Descargar_Vessel-0.0.3-298CFF?style=for-the-badge&logo=apple&logoColor=white" alt="Descargar Vessel" /></a>
+<a href="https://github.com/SwonDev/Vessel/releases/latest"><img src="docs/readme-assets/badges/descargar.svg" alt="Descargar Vessel" /></a>
 &nbsp;
-<a href="#instalación-desde-el-código"><img src="https://img.shields.io/badge/Compilar_desde_el_código-0A1524?style=for-the-badge&logo=swift&logoColor=F05138" alt="Compilar" /></a>
+<a href="#instalación-desde-el-código"><img src="docs/readme-assets/badges/compilar.svg" alt="Compilar" /></a>
 
 <br/><br/>
 
-<img src="https://img.shields.io/badge/macOS-15%2B-0A1524?style=flat-square&logo=apple&logoColor=white" alt="macOS 15+" />
-<img src="https://img.shields.io/badge/Apple_Silicon-M1_→_M5-0A1524?style=flat-square&logo=apple&logoColor=white" alt="Apple Silicon" />
-<img src="https://img.shields.io/badge/Swift-6-0A1524?style=flat-square&logo=swift&logoColor=F05138" alt="Swift 6" />
-<img src="https://img.shields.io/badge/SwiftUI-0A1524?style=flat-square&logo=swift&logoColor=1575F9" alt="SwiftUI" />
-<img src="https://img.shields.io/badge/Licencia-GPL--3.0-0A1524?style=flat-square" alt="GPL-3.0" />
+<img src="docs/readme-assets/badges/macos.svg" alt="macOS 15+" />
+<img src="docs/readme-assets/badges/silicon.svg" alt="Apple Silicon" />
+<img src="docs/readme-assets/badges/swift.svg" alt="Swift 6" />
+<img src="docs/readme-assets/badges/swiftui.svg" alt="SwiftUI" />
+<img src="docs/readme-assets/badges/licencia.svg" alt="GPL-3.0" />
 
 <br/><br/>
 
