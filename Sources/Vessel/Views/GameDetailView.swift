@@ -106,6 +106,8 @@ struct GameDetailView: View {
     @State private var showsStickyActionBar = false
     /// DLCs resueltos (nombre + carátula) del juego.
     @State private var dlcs: [StoreDLC] = []
+    /// Noticias/parches recientes del juego (feed público de Steam, cacheado en disco).
+    @State private var newsItems: [SteamNewsItem] = []
     /// Estado REAL de logros (desbloqueado/bloqueado) del usuario, si hay credencial de Steam.
     @State private var achievements: SteamAchievementsService.Progress?
     /// Veredicto vivo de protección. Solo se usa para afirmar «No funciona» cuando la fuente
@@ -113,6 +115,8 @@ struct GameDetailView: View {
     @State private var drmVerdict: DRMDatabase.Verdict?
     /// Mostrar todos los logros (o solo un avance).
     @State private var showAllAchievements = false
+    /// Tamaño real de la carpeta del juego en disco (medido en segundo plano, una vez por ficha).
+    @State private var diskSize: Int64?
     /// Observa la Web API key: si el usuario la pega en Ajustes con la ficha abierta, recargamos los
     /// logros para mostrar también los bloqueados (schema) sin tener que reabrir el juego.
     @AppStorage("steam.webApiKey") private var steamApiKeyObserver = ""
@@ -612,6 +616,7 @@ struct GameDetailView: View {
                 featuresSection
                 achievementsSection
                 dlcSection
+                newsSection
                 if let verdict = drmVerdict, verdict.antiCheatBlocksMacOS {
                     blockedAntiCheatSection(verdict)
                 } else if let p = profile {
@@ -1039,6 +1044,51 @@ struct GameDetailView: View {
         return .white.opacity(0.4)
     }
 
+    /// Noticias y notas de parche recientes del juego (feed público de Steam, cacheado): la
+    /// sección «Noticias» de la ficha de Steam. Enlaces externos en el navegador. Solo se muestra
+    /// cuando hay contenido (nunca un hueco vacío).
+    @ViewBuilder private var newsSection: some View {
+        if !newsItems.isEmpty {
+            cardSection("Noticias") {
+                VStack(spacing: 4) {
+                    ForEach(newsItems) { item in
+                        Link(destination: URL(string: item.url) ?? URL(string: "https://store.steampowered.com/news/")!) {
+                            HStack(alignment: .top, spacing: 10) {
+                                Image(systemName: item.isExternal ? "arrow.up.forward.square" : "newspaper.fill")
+                                    .font(.caption).foregroundStyle(tint).padding(.top, 2)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.title)
+                                        .font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.88))
+                                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                                    Text("\(item.feedName) · \(item.date.formatted(.relative(presentation: .named).locale(Locale(identifier: "es_ES"))))")
+                                        .font(.caption2).foregroundStyle(.white.opacity(0.42))
+                                }
+                                Spacer(minLength: 0)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2.weight(.bold)).foregroundStyle(.white.opacity(0.25))
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.vertical, 5)
+                        .accessibilityLabel("Noticia: \(item.title)")
+                        .vesselHelp("Abrir la noticia en el navegador")
+                        if item.id != newsItems.last?.id { Divider().overlay(.white.opacity(0.05)) }
+                    }
+                    if let appId = game.steamAppId,
+                       let allURL = URL(string: "https://store.steampowered.com/news/app/\(appId)") {
+                        Link(destination: allURL) {
+                            Label("Ver todas las noticias en Steam", systemImage: "arrow.up.right")
+                                .font(.caption2.weight(.medium))
+                        }
+                        .buttonStyle(.plain).foregroundStyle(tint)
+                        .padding(.top, 4)
+                    }
+                }
+            }
+        }
+    }
+
     /// Contenido descargable (DLC) del juego, con carátula y nombre. Los DLC que el usuario
     /// posee se descargan junto al juego (SteamCMD), por eso es informativo.
     @ViewBuilder private var dlcSection: some View {
@@ -1161,6 +1211,13 @@ struct GameDetailView: View {
                 if let appId = game.steamAppId, !appId.isEmpty { detailRow("Steam AppID", appId) }
                 detailRow("Última sesión", game.lastPlayed.map { $0.formatted(date: .abbreviated, time: .omitted) } ?? "—")
                 detailRow("Tiempo de juego", playtimeText)
+                // Tamaño REAL en disco (calculado en segundo plano); si no está instalado o aún
+                // no se ha medido, el tamaño que reporta la tienda cuando se conoce.
+                if let size = diskSize {
+                    detailRow("Tamaño en disco", ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+                } else if let estimate = game.installSizeBytes, estimate > 0 {
+                    detailRow("Tamaño de la descarga", ByteCountFormatter.string(fromByteCount: estimate, countStyle: .file))
+                }
                 if let last = SaveBackupManager.shared.lastBackupDate(store: saveStore, id: saveId) {
                     detailRow("Copia de partida", last.formatted(date: .abbreviated, time: .shortened), valueColor: steamGreen)
                 }
@@ -1229,7 +1286,12 @@ struct GameDetailView: View {
     }
 
     @MainActor private func loadDetails() async {
-        details = nil; dlcs = []; achievements = nil; detailsLoadFailed = false
+        details = nil; dlcs = []; achievements = nil; detailsLoadFailed = false; diskSize = nil
+        if let path = game.installPath, !path.isEmpty, game.installed {
+            // Medir la carpeta en segundo plano (los árboles UE pesan decenas de GB; no bloquear).
+            let measured = await Task.detached(priority: .utility) { Self.folderSize(atPath: path) }.value
+            diskSize = measured > 0 ? measured : nil
+        }
         if let appId = game.steamAppId, !appId.isEmpty {
             await loadSteamDetails(appId)
             await loadAchievements(appId)
@@ -1328,6 +1390,7 @@ struct GameDetailView: View {
         detailsLoadFailed = false
         details = det
         await loadDLCs(det.dlcIds)
+        newsItems = await SteamNewsService.shared.news(appId: appId)
     }
 
     /// Descarga y parsea los detalles públicos de un juego de Steam (`appdetails`): descripción,
@@ -1415,6 +1478,18 @@ struct GameDetailView: View {
             .replacingOccurrences(of: "&amp;", with: "&")
             .replacingOccurrences(of: "&quot;", with: "\"")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Tamaño total de una carpeta en bytes (recorrido único, tolerante a permisos).
+    private nonisolated static func folderSize(atPath path: String) -> Int64 {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(atPath: path) else { return 0 }
+        var total: Int64 = 0
+        for case let rel as String in enumerator {
+            let full = (path as NSString).appendingPathComponent(rel)
+            if let size = try? fm.attributesOfItem(atPath: full)[.size] as? Int64 { total += size }
+        }
+        return total
     }
 
     private var backButton: some View {

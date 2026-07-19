@@ -79,12 +79,14 @@ enum StoreSortOrder: String, CaseIterable, Identifiable {
     case nombre = "Nombre"
     case recientes = "Recientes"
     case masJugado = "Más jugado"
+    case metacritic = "Metacritic"
     var id: String { rawValue }
     var symbol: String {
         switch self {
         case .nombre:    return "textformat"
         case .recientes: return "clock"
         case .masJugado: return "hourglass"
+        case .metacritic: return "star.leadinghalf.filled"
         }
     }
 }
@@ -841,6 +843,13 @@ struct StoreLibraryView: View {
             case .nombre:    return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
             case .recientes: return (a.lastPlayed ?? .distantPast) > (b.lastPlayed ?? .distantPast)
             case .masJugado: return (a.playtimeMinutes ?? 0) > (b.playtimeMinutes ?? 0)
+            case .metacritic:
+                // Puntuación de la metadata indexada (Steam también ordena por Metacritic);
+                // sin dato, al final del grupo.
+                let ma = indexedMetadata[a.id]?.metacritic ?? -1
+                let mb = indexedMetadata[b.id]?.metacritic ?? -1
+                if ma != mb { return ma > mb }
+                return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
             }
         }
         return list
@@ -1053,6 +1062,9 @@ struct StoreLibraryView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .libraryRefresh)) { _ in
             onReload()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openTransferCenter)) { _ in
+            if !activeTransfers.isEmpty { transferCenterPresented = true }
         }
     }
 

@@ -32,6 +32,18 @@ final class VesselAppDelegate: NSObject, NSApplicationDelegate, ObservableObject
         resume.target = self
         menu.addItem(resume)
 
+        // Descargas en curso (el badge del Dock lo lleva StoreLibraryView al día): línea de
+        // estado + acceso directo al centro de descargas, como en Steam.
+        if let badge = NSApp.dockTile.badgeLabel, let n = Int(badge), n > 0 {
+            menu.addItem(.separator())
+            let estado = NSMenuItem(title: "\(n) descarga\(n == 1 ? "" : "s") en curso", action: nil, keyEquivalent: "")
+            estado.isEnabled = false
+            menu.addItem(estado)
+            let ver = NSMenuItem(title: "Ver descargas", action: #selector(verDescargas), keyEquivalent: "")
+            ver.target = self
+            menu.addItem(ver)
+        }
+
         menu.addItem(.separator())
         let updates = NSMenuItem(title: "Buscar actualizaciones…", action: #selector(buscarActualizaciones), keyEquivalent: "")
         updates.target = self
@@ -49,6 +61,11 @@ final class VesselAppDelegate: NSObject, NSApplicationDelegate, ObservableObject
     @objc private func seguirJugando() {
         NSApp.activate(ignoringOtherApps: true)
         NotificationCenter.default.post(name: .libraryQuickOpen, object: nil)
+    }
+
+    @objc private func verDescargas() {
+        NSApp.activate(ignoringOtherApps: true)
+        NotificationCenter.default.post(name: .openTransferCenter, object: nil)
     }
 
     @objc private func buscarActualizaciones() {
@@ -256,6 +273,8 @@ extension Notification.Name {
     static let spotlightOpenGame = Notification.Name("vessel.spotlightOpenGame")
     /// Menú Archivo → importar un .exe de juego (lo atiende la sección DRM‑free).
     static let localImportExe = Notification.Name("vessel.localImportExe")
+    /// Menú de Dock → abrir el centro de descargas.
+    static let openTransferCenter = Notification.Name("vessel.openTransferCenter")
     static let accountProfileDidChange = Notification.Name("vessel.accountProfileDidChange")
     /// Aviso de lanzamiento visible in-app (p. ej. "el juego necesita Steam"). userInfo: title, body.
     static let launchMessage = Notification.Name("vessel.launchMessage")
