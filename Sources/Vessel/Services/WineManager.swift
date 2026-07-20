@@ -2766,6 +2766,19 @@ final class WineManager {
             requested: arguments,
             effective: eff
         )
+        // AGS 3.6/SDL2 distribuye todavía D3D9 como valor por defecto. En wine-full renderiza, pero
+        // mantiene wined3d consumiendo ~42–47 % de CPU; el OpenGL nativo del mismo runtime conserva
+        // ventana, escala e imagen con ~13–15 %. La firma exige motor + import + datos + config y la
+        // reparación solo cambia ese backend, con copia recuperable antes del primer cambio.
+        let agsRepair = AdventureGameStudioCompatibility.repairBeforeLaunch(
+            executable: executable
+        )
+        if agsRepair.didRepair {
+            log.log(
+                "Adventure Game Studio moderno autodetectado: backend D3D9 sustituido por OpenGL; copia de seguridad conservada.",
+                level: .info
+            )
+        }
         // Estado del propio juego restaurado por nube/backup: corrige únicamente combinaciones
         // verificadas que bajo Retina crean una ventana desbordada y desalinean el ratón. Se hace
         // aquí, DESPUÉS de cualquier restauración previa y ANTES de decidir la ruta de motor; no
