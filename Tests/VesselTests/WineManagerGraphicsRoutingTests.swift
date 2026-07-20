@@ -2155,6 +2155,12 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             width: 1280,
             height: 800
         ))
+        XCTAssertTrue(NotificationService.isSteamClientWindow(
+            ownerName: "wine",
+            windowName: "Steam Client Bootstrapper",
+            width: 1280,
+            height: 800
+        ))
         XCTAssertFalse(NotificationService.isSteamClientWindow(
             ownerName: "wine",
             windowName: "",

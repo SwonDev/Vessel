@@ -57,12 +57,22 @@ final class NotificationService {
     func perform(_ action: LaunchAlertAction) {
         switch action {
         case .showSteamClient:
-            guard Self.activateSteamClientWindow() else {
-                LogStore.shared.log(
-                    "No se encontró una ventana visible del cliente Steam para traerla al frente.",
-                    level: .warn
-                )
-                return
+            // La alerta de SwiftUI todavía está cerrándose cuando llega la acción. Darle un
+            // instante evita que Vessel recupere el foco justo después de activar la ventana de
+            // Steam y hace que el botón responda de forma determinista.
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(350))
+                if Self.activateSteamClientWindow() {
+                    LogStore.shared.log(
+                        "Cliente Steam traído al frente para revisar la licencia.",
+                        level: .debug
+                    )
+                } else {
+                    LogStore.shared.log(
+                        "No se encontró una ventana visible del cliente Steam para traerla al frente.",
+                        level: .warn
+                    )
+                }
             }
         }
     }
@@ -78,9 +88,9 @@ final class NotificationService {
         // Sin permiso de grabación macOS oculta el título de ventanas de otros procesos, pero
         // conserva propietario y geometría. Esta alternativa solo se usa al pulsar la acción del
         // EULA, cuando Steam ha detenido el juego antes de crear su propia ventana.
-        let permissionLimitedSteamWindow = title.isEmpty && width >= 900 && height >= 600
+        let eulaSizedWineWindow = width >= 900 && height >= 600
         return (owner.contains("wine") || owner.contains("steam"))
-            && (title.contains("steam") || permissionLimitedSteamWindow)
+            && (title.contains("steam") || eulaSizedWineWindow)
             && width >= 320
             && height >= 240
     }
@@ -107,9 +117,21 @@ final class NotificationService {
                   let application = NSRunningApplication(processIdentifier: pid)
             else { continue }
 
-            return application.activate(options: [.activateAllWindows])
+            if application.activate(options: [.activateAllWindows]) {
+                return true
+            }
         }
-        return false
+
+        // CGWindowList puede omitir por completo ventanas ajenas cuando Vessel no tiene permiso
+        // de captura. Durante ShowEula Steam aún no ha creado el proceso del juego, de modo que la
+        // única aplicación Wine regular es el cliente que el usuario acaba de pedir abrir.
+        let wineApplications = NSWorkspace.shared.runningApplications.filter { application in
+            application.activationPolicy == .regular
+                && application.localizedName?.localizedCaseInsensitiveCompare("wine") == .orderedSame
+                && !application.isTerminated
+        }
+        guard wineApplications.count == 1, let steam = wineApplications.first else { return false }
+        return steam.activate(options: [.activateAllWindows])
     }
 
     /// Estado EN VIVO no bloqueante (banner in-app): informa de fases largas como abrir Steam,
