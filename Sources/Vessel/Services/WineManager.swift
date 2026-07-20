@@ -779,6 +779,93 @@ final class WineManager {
             && exeContains(executable, anyOf: ["XAudio2Create"])
     }
 
+    /// HPL3 de Frictional: combina un contexto OpenGL implícito de compatibilidad con GLSL
+    /// moderno, VAO, bindings explícitos y primitivas/formato de textura retirados del perfil
+    /// core de macOS. La firma exige arquitectura, imports, marcadores internos y el contrato de
+    /// recursos del motor; no depende del título, AppID ni nombre del ejecutable.
+    func isLegacyHPL3OpenGLEngine(_ executable: String) -> Bool {
+        guard !isExecutable32Bit(executable) else { return false }
+        let imports = peImportedLibraries(forExecutable: executable)
+        guard [
+            "opengl32.dll", "glew32.dll", "sdl2.dll", "newton.dll",
+            "fmodex64.dll", "fmod_event64.dll"
+        ].allSatisfy(imports.contains) else { return false }
+        guard exeContains(executable, anyOf: ["-------- THE HPL ENGINE LOG ------------"]),
+              exeContains(executable, anyOf: ["HPLJobThread_"]),
+              exeContains(executable, anyOf: ["Failed to create OpenGL main thread context"]),
+              exeContains(executable, anyOf: [" Init Glew..."])
+        else { return false }
+
+        let directory = (executable as NSString).deletingLastPathComponent
+        return [
+            "hps_api.hps",
+            "materials.cfg",
+            "_shadersource/shadercache.xml"
+        ].allSatisfy {
+            FileManager.default.fileExists(
+                atPath: (directory as NSString).appendingPathComponent($0)
+            )
+        }
+    }
+
+    /// HPL3 distribuye un ejecutable oficial sin Steamworks junto al principal. El principal
+    /// muestra un diálogo de fallo de Steam API incluso con una sustitución compatible; el hermano
+    /// oficial llega al menú y a escena 3D. Solo se selecciona cuando ambos binarios tienen la misma
+    /// firma HPL3, el actual importa Steamworks, el hermano no y sus nombres comparten raíz.
+    func preferredLegacyHPL3Executable(for executable: String) -> String? {
+        guard isLegacyHPL3OpenGLEngine(executable) else { return nil }
+        let currentImports = peImportedLibraries(forExecutable: executable)
+        guard currentImports.contains("steam_api64.dll") else { return nil }
+
+        let url = URL(fileURLWithPath: executable).standardizedFileURL
+        let directory = url.deletingLastPathComponent()
+        let currentStem = Self.hpl3ExecutableStem(url)
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+
+        for candidate in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            let name = candidate.deletingPathExtension().lastPathComponent.lowercased()
+            guard candidate.pathExtension.caseInsensitiveCompare("exe") == .orderedSame,
+                  name.hasSuffix("_nosteam") || name.hasSuffix("-nosteam")
+                    || name.hasSuffix(" nosteam"),
+                  Self.hpl3ExecutableStem(candidate) == currentStem,
+                  !peImportedLibraries(forExecutable: candidate.path).contains("steam_api64.dll"),
+                  isLegacyHPL3OpenGLEngine(candidate.path)
+            else { continue }
+            return candidate.path
+        }
+        return nil
+    }
+
+    private nonisolated static func hpl3ExecutableStem(_ url: URL) -> String {
+        var stem = url.deletingPathExtension().lastPathComponent.lowercased()
+        for suffix in ["_nosteam", "-nosteam", " nosteam"] where stem.hasSuffix(suffix) {
+            stem.removeLast(suffix.count)
+            break
+        }
+        return String(stem.filter { $0.isLetter || $0.isNumber })
+    }
+
+    /// Ejecutable y prefijo que realmente deben observar/cerrar la UI y el diagnóstico. HPL3
+    /// cambia ambos durante el lanzamiento (hermano oficial + prefijo aislado); devolver el target
+    /// efectivo evita que «Detener», la detección de ventana y la recuperación tras reiniciar Vessel
+    /// sigan buscando el ejecutable principal en el prefijo base.
+    func launchTrackingTarget(
+        for executable: String,
+        basePrefix: String
+    ) -> (executable: String, prefix: String) {
+        let effectiveExecutable = preferredLegacyHPL3Executable(for: executable) ?? executable
+        guard isLegacyHPL3OpenGLEngine(effectiveExecutable) else {
+            return (effectiveExecutable, basePrefix)
+        }
+        let suffix = "__opengl-legacy"
+        let effectivePrefix = basePrefix.hasSuffix(suffix) ? basePrefix : basePrefix + suffix
+        return (effectiveExecutable, effectivePrefix)
+    }
+
     /// Runtime clásico de Nihon Falcom usado por Ys Origin: PE32, Direct3D 9 y paquetes
     /// propietarios `.nya`/`.ni`/`.na`. Estas builds dibujan a escala lógica 1×; con Retina
     /// Wine crea una superficie 2× y el juego solo rellena una esquina de la pantalla.
@@ -1875,6 +1962,20 @@ final class WineManager {
 
     @discardableResult
     func launch(executable: String, in bottle: Bottle, arguments: [String] = [], steamAppId: String? = nil, graphicsOverride: GameConfig.GraphicsLayer? = nil, effective: EffectiveLaunchConfig? = nil) async throws -> Process {
+        if let officialExecutable = preferredLegacyHPL3Executable(for: executable) {
+            log.log(
+                "HPL3 autodetectado: usando el ejecutable oficial sin Steamworks para evitar el diálogo de inicialización fallida.",
+                level: .info
+            )
+            return try await launch(
+                executable: officialExecutable,
+                in: bottle,
+                arguments: arguments,
+                steamAppId: steamAppId,
+                graphicsOverride: graphicsOverride,
+                effective: effective
+            )
+        }
         if let compatibleExecutable = preferredLegacyANGLE1Executable(for: executable) {
             dxvkManager.removeGameLocalD3D9(forExecutable: executable)
             log.log(
@@ -1950,6 +2051,18 @@ final class WineManager {
             fixKexResolution(prefix: bottle.prefixPath)
             let mode = CGDisplayCopyDisplayMode(CGMainDisplayID())
             allArgs += ["+v_width", "\(mode?.pixelWidth ?? 3024)", "+v_height", "\(mode?.pixelHeight ?? 1964)"]
+        }
+        // HPL3 necesita un perfil OpenGL core con adaptadores de compatibilidad y Retina 1×.
+        // Se resuelve antes de Steam/Goldberg: el ejecutable oficial sin Steamworks ya fue elegido
+        // arriba y no debe modificar ni depender del cliente Steam del prefijo compartido.
+        if isLegacyHPL3OpenGLEngine(executable) {
+            return try await launchLegacyHPL3OpenGLGame(
+                executable: executable,
+                in: bottle,
+                arguments: allArgs,
+                steamAppId: steamAppId,
+                effective: eff
+            )
         }
         if eff.fromProfile, let r = eff.rating {
             log.log("Perfil de compatibilidad aplicado: \(r.label)\(eff.verified ? " ✓ verificado" : " (sin verificar)")", level: .info)
@@ -3069,6 +3182,77 @@ final class WineManager {
     /// Silicon); con Vulkan va por el MoltenVK de CrossOver → Metal y renderiza.
     /// D3DMetal (GPTK) NO se usa: es de 64-bit. Se dejan los builtins de CrossOver
     /// (`cleanPrefixNativeGraphicsDLLs` quita DLLs nativas de otros motores).
+    /// Lanza HPL3 con un motor y un prefijo dedicados. El prefijo comparte únicamente juegos y
+    /// partidas con la biblioteca: el registro Retina, `drive_c/windows` y wineserver son privados.
+    /// Los adaptadores OpenGL son además opt-in por entorno, por lo que ni siquiera dentro del clon
+    /// afectan a procesos que no hayan sido detectados como HPL3.
+    private func launchLegacyHPL3OpenGLGame(
+        executable rawExecutable: String,
+        in bottle: Bottle,
+        arguments: [String],
+        steamAppId: String?,
+        effective: EffectiveLaunchConfig
+    ) async throws -> Process {
+        try await dependencyManager.ensureUnifiedEngine { message, progress in
+            Task { @MainActor in
+                LogStore.shared.log("\(message) (\(Int(progress * 100))%)", level: .info)
+            }
+        }
+        let wine = try await dependencyManager.ensureUnifiedLegacyOpenGLEngine {
+            message, progress in
+            Task { @MainActor in
+                LogStore.shared.log("\(message) (\(Int(progress * 100))%)", level: .info)
+            }
+        }
+        let prefix = await engineScopedPrefix(
+            base: bottle.prefixPath,
+            engineTag: "opengl-legacy",
+            engineWine: wine
+        )
+        let executable = scopedPath(rawExecutable, base: bottle.prefixPath, scoped: prefix)
+        let workingDirectory = scopedPath(
+            gameWorkingDirectory(forExecutable: rawExecutable),
+            base: bottle.prefixPath,
+            scoped: prefix
+        )
+
+        _ = RuntimeDependencyProvisioner.provision(executable: rawExecutable)
+        try? await terminateWineProcesses(winePath: wine, prefix: prefix)
+        try? await killOrphanWineProcesses(prefix: prefix, gameWine: wine)
+        await setMacDriverRetinaMode(prefix: prefix, wine: wine, enabled: false)
+
+        var environment = gameLaunchEnvironment(prefix: prefix)
+        environment["WINEDEBUG"] = "-all"
+        environment["VESSEL_FORCE_CORE_GL_CTX"] = "1"
+        environment["CX_FWD_COMPAT_GL_CTX"] = "1"
+        environment["WINEMSYNC"] = "0"
+        environment["WINEESYNC"] = "0"
+        environment["WINEFSYNC"] = "0"
+        let overrides = [environment["WINEDLLOVERRIDES"], "winegstreamer=d", "winemenubuilder.exe=d"]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+        environment["WINEDLLOVERRIDES"] = overrides.joined(separator: ";")
+        if let steamAppId, !steamAppId.isEmpty {
+            environment["SteamAppId"] = steamAppId
+            environment["SteamGameId"] = steamAppId
+        }
+
+        log.log(
+            "HPL3: OpenGL 4.1 core compatible, escala nativa y prefijo aislado preparados automáticamente.",
+            level: .info
+        )
+        return try await launchWineProcess(
+            winePath: wine,
+            prefix: prefix,
+            arguments: [executable] + arguments,
+            environment: environment,
+            workingDirectory: workingDirectory,
+            effective: effective,
+            forceSyncOff: true,
+            forceCleanEnv: true
+        )
+    }
+
     // MARK: - Prefijos AISLADOS por motor (nada se solapa)
 
     /// Prefijo AISLADO para un motor concreto, hermano del prefijo base (`<base>__<motor>`).
@@ -6648,7 +6832,8 @@ final class WineManager {
             var clean: [String: String] = [:]
             for k in ["HOME", "USER", "TMPDIR", "WINEPREFIX", "WINEDEBUG", "MVK_CONFIG_LOG_LEVEL",
                       "WINEDLLOVERRIDES", "DYLD_FALLBACK_LIBRARY_PATH", "SteamAppId", "SteamGameId",
-                      "WINEMSYNC", "WINEESYNC", "WINEFSYNC", "CX_FWD_COMPAT_GL_CTX", "MTL_HUD_ENABLED",
+                      "WINEMSYNC", "WINEESYNC", "WINEFSYNC", "CX_FWD_COMPAT_GL_CTX",
+                      "VESSEL_FORCE_CORE_GL_CTX", "MTL_HUD_ENABLED",
                       "ROSETTA_ADVERTISE_AVX",
                       // Render de SDL (envoltorios retro): sin esto en la lista blanca, `env -i` se
                       // las comería y DOSBox/ScummVM volverían a pasar por d3d9→wined3d.

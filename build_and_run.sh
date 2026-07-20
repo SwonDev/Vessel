@@ -60,6 +60,8 @@ fi
 [ -d "Resources/mousefix-gptk" ] && cp -R "Resources/mousefix-gptk" "$APP_BUNDLE/Contents/Resources/mousefix-gptk"
 # winemac.so parcheado (forward-compat GL, CW Hack 24834): Vessel crea el motor wine-unified-opengl con él (HoH2 y juegos OpenGL)
 [ -d "Resources/opengl-engine" ] && cp -R "Resources/opengl-engine" "$APP_BUNDLE/Contents/Resources/opengl-engine"
+# Adaptador conjunto winemac/opengl32 para HPL3 y OpenGL legado sobre core 4.1; siempre aislado
+[ -d "Resources/legacy-opengl-engine" ] && cp -R "Resources/legacy-opengl-engine" "$APP_BUNDLE/Contents/Resources/legacy-opengl-engine"
 # winemac.so con el fix de la TIENDA de Steam (CW HACK 22435): Vessel crea el motor DEDICADO wine-steam con él (Abrir Steam: cliente + biblioteca + tienda)
 [ -d "Resources/steam-engine" ] && cp -R "Resources/steam-engine" "$APP_BUNDLE/Contents/Resources/steam-engine"
 # Fix de render+conexión del cliente de Steam (win32u wow64 + bcrypt/secur32 gnutls): DependencyManager

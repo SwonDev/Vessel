@@ -332,8 +332,12 @@ final class GogStore {
         if let forcedLayer { eff.graphicsOverride = forcedLayer }
         // Motor REAL que se usará (no `.auto`), para que el fallback recorra los 3 motores.
         let usedLayer = wineManager.resolvedGraphicsLayer(forExecutable: executable, effective: eff)
-        let trackedExecutable = executable
-        let trackedPrefix = prefix
+        let trackingTarget = wineManager.launchTrackingTarget(
+            for: executable,
+            basePrefix: prefix
+        )
+        let trackedExecutable = trackingTarget.executable
+        let trackedPrefix = trackingTarget.prefix
         await GameLaunchTracker.shared.track(
             game.appId, statsKey: "gog:\(game.appId)",
             // Cloud saves automáticos: al CERRAR el juego, sube a la nube de GOG + copia local de Vessel.
@@ -372,7 +376,10 @@ final class GogStore {
             fallbackLayers: wineManager.fallbackLayers(forExecutable: executable, effective: eff),
             isRunning: { GameLaunchTracker.shared.state(game.appId) == .running },
             hasVisibleWindow: {
-                await self.wineManager.hasVisibleGameWindow(executable: executable, prefix: prefix)
+                await self.wineManager.hasVisibleGameWindow(
+                    executable: trackedExecutable,
+                    prefix: trackedPrefix
+                )
             },
             persistWinningLayer: { winLayer in
                 var c = GameConfigStore.load(game.appId)

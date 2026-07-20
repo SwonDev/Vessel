@@ -39,6 +39,14 @@ enum WineEngineLocator {
     /// `DependencyManager.ensureUnifiedOpenGLEngine` (clon COW + swap del `winemac.so` de Resources).
     static let unifiedOpenGLEngineName = "wine-unified-opengl"
 
+    /// Variante OpenGL legado/core aislada para motores que mezclan APIs de compatibilidad
+    /// (GL_QUADS, VAO 0 y formatos ALPHA/LUMINANCE) con GLSL moderno. Es un clon COW del
+    /// `wine-unified` con `winemac.so` y `opengl32.so` compilados desde la misma WineHQ 11.10.
+    /// Los adaptadores permanecen completamente inertes salvo que el lanzamiento estructural
+    /// active `VESSEL_FORCE_CORE_GL_CTX=1`, por lo que nunca se aplica a otro juego ni al cliente
+    /// de Steam. `DependencyManager.ensureUnifiedLegacyOpenGLEngine` lo crea y autorrepara.
+    static let unifiedLegacyOpenGLEngineName = "wine-unified-opengl-legacy"
+
     /// Motor D3DMetal propio: el UNIFICADO (WineHQ 11.10) **+ D3DMetal de Apple trasplantado**
     /// (D3D12→Metal) sobre el modelo de `%gs` de CrossOver (nunca mueve el GSBASE; TEB por
     /// indirección `%gs:0x30`) para que los hilos nativos de D3DMetal no crasheen bajo Rosetta,
@@ -180,11 +188,13 @@ enum WineEngineLocator {
         return false
     }
 
-    /// True si la ruta de Wine pertenece al motor unificado propio (`wine-unified`) o a su
-    /// variante OpenGL (`wine-unified-opengl`). Ambos comparten base (WineHQ 11.10 + DXMT) y el
-    /// mismo modelo de entorno (MF off, `WINEMSYNC=0`), así que para el gating de env cuentan igual.
+    /// True si la ruta de Wine pertenece al motor unificado propio (`wine-unified`) o a sus
+    /// variantes OpenGL (`wine-unified-opengl` y `wine-unified-opengl-legacy`). Comparten base
+    /// (WineHQ 11.10 + DXMT) y el mismo modelo de entorno (MF off, `WINEMSYNC=0`), así que para el
+    /// gating de entorno cuentan igual.
     static func isUnifiedEngine(_ winePath: String) -> Bool {
         winePath.contains("/\(unifiedEngineName)/") || winePath.contains("/\(unifiedOpenGLEngineName)/")
+            || winePath.contains("/\(unifiedLegacyOpenGLEngineName)/")
             // `wine-steam` (motor DEDICADO del cliente Steam) es un CLON del unificado: hereda TODO su
             // modelo de entorno del CEF (WINEMSYNC=0, DYLD, wrapper, deps, certs). Solo cambia el
             // `winemac.so` (CW HACK 22435 para la tienda). Por eso cuenta como unificado para el gating.
@@ -195,6 +205,20 @@ enum WineEngineLocator {
     static func openglGameWineBinary(enginesDirectory: String = VesselPaths.enginesDirectory) -> String? {
         guard engineHasWineBinary(unifiedOpenGLEngineName, enginesDirectory: enginesDirectory) else { return nil }
         return wineBinary(in: unifiedOpenGLEngineName, enginesDirectory: enginesDirectory)
+    }
+
+    /// Binario Wine del motor OpenGL legado/core, o `nil` si aún no se ha preparado.
+    static func legacyOpenGLGameWineBinary(
+        enginesDirectory: String = VesselPaths.enginesDirectory
+    ) -> String? {
+        guard engineHasWineBinary(
+            unifiedLegacyOpenGLEngineName,
+            enginesDirectory: enginesDirectory
+        ) else { return nil }
+        return wineBinary(
+            in: unifiedLegacyOpenGLEngineName,
+            enginesDirectory: enginesDirectory
+        )
     }
 
     /// True si la ruta de Wine pertenece al motor D3DMetal propio (`wine-d3dmetal`).
@@ -261,6 +285,7 @@ enum WineEngineLocator {
     static func isGameEngine(_ winePath: String) -> Bool {
         winePath.contains("/\(mousefixEngineName)/") || winePath.contains("/\(dxmtEngineName)/")
             || winePath.contains("/\(unifiedEngineName)/") || winePath.contains("/\(unifiedOpenGLEngineName)/")
+            || winePath.contains("/\(unifiedLegacyOpenGLEngineName)/")
     }
 
     static func portableEngineDirectory(enginesDirectory: String = VesselPaths.enginesDirectory) -> URL {

@@ -731,8 +731,12 @@ struct LocalGamesView: View {
             var eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
             if let forcedLayer { eff.graphicsOverride = forcedLayer }
             let usedLayer = wineManager.resolvedGraphicsLayer(forExecutable: exe, effective: eff)
-            let trackedExecutable = exe
-            let trackedPrefix = bottle.prefixPath
+            let trackingTarget = wineManager.launchTrackingTarget(
+                for: exe,
+                basePrefix: bottle.prefixPath
+            )
+            let trackedExecutable = trackingTarget.executable
+            let trackedPrefix = trackingTarget.prefix
             await tracker.track(
                 id, statsKey: "local:\(id)",
                 onExit: { Task { await SaveBackupManager.shared.backup(store: .local, id: id, title: game.name, steamId: nil, prefix: bottle.prefixPath, installPath: installDir) } },
@@ -762,8 +766,8 @@ struct LocalGamesView: View {
                 isRunning: { tracker.state(id) == .running },
                 hasVisibleWindow: {
                     await wineManager.hasVisibleGameWindow(
-                        executable: exe,
-                        prefix: bottle.prefixPath
+                        executable: trackedExecutable,
+                        prefix: trackedPrefix
                     )
                 },
                 persistWinningLayer: { winLayer in

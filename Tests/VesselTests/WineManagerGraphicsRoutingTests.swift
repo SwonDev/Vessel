@@ -80,6 +80,87 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertTrue(WineManager().isAlmostHumanLuaJITD3D9Engine(executable.path))
     }
 
+    func testHPL3UsesMatchingOfficialNoSteamExecutable() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-hpl3-\(UUID().uuidString)", isDirectory: true)
+        let shaderDirectory = root.appendingPathComponent("_shadersource", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: shaderDirectory, withIntermediateDirectories: true)
+        try Data("api".utf8).write(to: root.appendingPathComponent("hps_api.hps"))
+        try Data("materials".utf8).write(to: root.appendingPathComponent("materials.cfg"))
+        try Data("shaders".utf8).write(
+            to: shaderDirectory.appendingPathComponent("shadercache.xml")
+        )
+
+        let marker = """
+        -------- THE HPL ENGINE LOG ------------
+        HPLJobThread_
+        Failed to create OpenGL main thread context
+         Init Glew...
+        """
+        let engineImports = [
+            "OPENGL32.dll", "glew32.dll", "SDL2.dll", "newton.dll",
+            "fmodex64.dll", "fmod_event64.dll"
+        ]
+        let main = root.appendingPathComponent("CustomHPLGame.exe")
+        let noSteam = root.appendingPathComponent("CustomHPLGame_NoSteam.exe")
+        try writePE(
+            to: main,
+            is64Bit: true,
+            imports: engineImports + ["steam_api64.dll"],
+            marker: marker
+        )
+        try writePE(to: noSteam, is64Bit: true, imports: engineImports, marker: marker)
+
+        let manager = WineManager()
+        XCTAssertTrue(manager.isLegacyHPL3OpenGLEngine(main.path))
+        XCTAssertTrue(manager.isLegacyHPL3OpenGLEngine(noSteam.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: main.path), .opengl)
+        let preferred = try XCTUnwrap(manager.preferredLegacyHPL3Executable(for: main.path))
+        XCTAssertEqual(
+            URL(fileURLWithPath: preferred).resolvingSymlinksInPath(),
+            noSteam.resolvingSymlinksInPath()
+        )
+        XCTAssertNil(manager.preferredLegacyHPL3Executable(for: noSteam.path))
+        let tracking = manager.launchTrackingTarget(
+            for: main.path,
+            basePrefix: "/tmp/Vessel/Bottles/HPL3"
+        )
+        XCTAssertEqual(
+            URL(fileURLWithPath: tracking.executable).resolvingSymlinksInPath(),
+            noSteam.resolvingSymlinksInPath()
+        )
+        XCTAssertEqual(tracking.prefix, "/tmp/Vessel/Bottles/HPL3__opengl-legacy")
+    }
+
+    func testHPLMarkersWithoutResourceContractDoNotChangeOpenGLRouting() throws {
+        let executable = try makePE64(
+            named: "generic-opengl.exe",
+            marker: """
+            -------- THE HPL ENGINE LOG ------------
+            HPLJobThread_ Failed to create OpenGL main thread context Init Glew...
+            """,
+            imports: [
+                "OPENGL32.dll", "glew32.dll", "SDL2.dll", "newton.dll",
+                "fmodex64.dll", "fmod_event64.dll"
+            ]
+        )
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+
+        let manager = WineManager()
+        XCTAssertFalse(manager.isLegacyHPL3OpenGLEngine(executable.path))
+        XCTAssertNil(manager.preferredLegacyHPL3Executable(for: executable.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .opengl)
+    }
+
+    func testLegacyOpenGLEngineParticipatesInUnifiedEnvironmentOnlyByPath() {
+        let path = "/tmp/Vessel/Engines/wine-unified-opengl-legacy/bin/wine"
+
+        XCTAssertTrue(WineEngineLocator.isUnifiedEngine(path))
+        XCTAssertTrue(WineEngineLocator.isGameEngine(path))
+        XCTAssertFalse(WineEngineLocator.isUnifiedEngine("/tmp/Vessel/Engines/wine-full/bin/wine"))
+    }
+
     func testNihonFalcomYsOriginEngineUsesNativePointScaling() throws {
         let executable = try makePE32(
             named: "custom-falcom-engine.exe",

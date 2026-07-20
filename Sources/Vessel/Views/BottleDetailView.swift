@@ -615,8 +615,12 @@ struct BottleDetailView: View {
         let profile = CompatService.shared.profile(steam: game.steamAppId, title: game.name)
         var eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
         if let forcedLayer { eff.graphicsOverride = forcedLayer }
-        let trackedExecutable = exePath
-        let trackedPrefix = localBottle.prefixPath
+        let trackingTarget = wineManager.launchTrackingTarget(
+            for: exePath,
+            basePrefix: localBottle.prefixPath
+        )
+        let trackedExecutable = trackingTarget.executable
+        let trackedPrefix = trackingTarget.prefix
         // Motor REAL que se usará (no `.auto`), para que el fallback recorra los 3 motores.
         let usedLayer = wineManager.resolvedGraphicsLayer(forExecutable: exePath, effective: eff)
         let usesRealSteamLaunch = eff.useRealSteam
@@ -727,8 +731,12 @@ struct BottleDetailView: View {
             installRoot: installRoot,
             fallback: executable
         )
-        let trackedExecutable = executable
-        let trackedPrefix = localBottle.prefixPath
+        let trackingTarget = wineManager.launchTrackingTarget(
+            for: executable,
+            basePrefix: localBottle.prefixPath
+        )
+        let trackedExecutable = trackingTarget.executable
+        let trackedPrefix = trackingTarget.prefix
         await GameLaunchTracker.shared.adoptRunningProcessFamily(
             trackId,
             processFamilyIsRunning: {
