@@ -952,6 +952,41 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         return url
     }
 
+    private func makeRTsoftProtonExecutable(
+        imports: [String]? = nil,
+        marker: String? = nil,
+        includeTexture: Bool = true,
+        includeFont: Bool = true
+    ) throws -> URL {
+        let requiredImports = [
+            "OPENGL32.dll", "fmod.dll", "zlibwapi.dll", "DINPUT8.dll", "libcurl-x64.dll"
+        ]
+        let requiredMarkers = [
+            #"d:\projects\proton\shared\audio\audiomanagerfmodstudio.cpp"#,
+            "protoncurl-agent/1.0",
+            "proton_temp.tmp",
+            "Error initializing GL extensions. Update your GL drivers!"
+        ].joined(separator: " ")
+        let executable = try makePE64(
+            named: "rtsoft-runtime.exe",
+            marker: marker ?? requiredMarkers,
+            imports: imports ?? requiredImports
+        )
+        let root = executable.deletingLastPathComponent()
+        for library in ["fmod.dll", "zlibwapi.dll", "libcurl-x64.dll"] {
+            try Data(library.utf8).write(to: root.appendingPathComponent(library))
+        }
+        let interface = root.appendingPathComponent("interface", isDirectory: true)
+        try FileManager.default.createDirectory(at: interface, withIntermediateDirectories: true)
+        if includeTexture {
+            try Data("texture".utf8).write(to: interface.appendingPathComponent("skin.rttex"))
+        }
+        if includeFont {
+            try Data("font".utf8).write(to: interface.appendingPathComponent("ui.rtfont"))
+        }
+        return executable
+    }
+
     func testPE32DynamicOpenGLUsesUnifiedOpenGLLayer() throws {
         let executable = try makePE32(named: "deadcells_gl.exe", marker: "Failed to init SDL: OpenGL Error")
         defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
@@ -1393,6 +1428,54 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertTrue(manager.isLegacyMoaiOpenGLGame(executable.path))
         XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .gcenx)
         XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [])
+    }
+
+    func testRTsoftProtonSDKUsesItsDeterministicOpenGLRoute() throws {
+        let executable = try makeRTsoftProtonExecutable()
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+        let manager = WineManager()
+
+        XCTAssertTrue(manager.isRTsoftProtonOpenGLEngine(executable.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .opengl)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .gcenx)
+        XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [])
+    }
+
+    func testRTsoftProtonSDKRequiresEveryInternalMarker() throws {
+        let marker = [
+            #"d:\projects\proton\shared\audio\audiomanagerfmodstudio.cpp"#,
+            "protoncurl-agent/1.0",
+            "Error initializing GL extensions. Update your GL drivers!"
+        ].joined(separator: " ")
+        let executable = try makeRTsoftProtonExecutable(marker: marker)
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+
+        XCTAssertFalse(WineManager().isRTsoftProtonOpenGLEngine(executable.path))
+    }
+
+    func testRTsoftProtonSDKRequiresItsInterfaceAssets() throws {
+        let executable = try makeRTsoftProtonExecutable(includeFont: false)
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+
+        XCTAssertFalse(WineManager().isRTsoftProtonOpenGLEngine(executable.path))
+    }
+
+    func testRTsoftProtonSDKRequiresEveryImportedRuntime() throws {
+        let executable = try makeRTsoftProtonExecutable(imports: [
+            "OPENGL32.dll", "fmod.dll", "zlibwapi.dll", "DINPUT8.dll"
+        ])
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+
+        XCTAssertFalse(WineManager().isRTsoftProtonOpenGLEngine(executable.path))
+    }
+
+    func testRTsoftProtonSDKAddsWindowModeOnce() {
+        XCTAssertEqual(
+            WineManager.rtsoftProtonLaunchArguments(["-language", "es"]),
+            ["-language", "es", "-window"]
+        )
+        XCTAssertEqual(WineManager.rtsoftProtonLaunchArguments(["-WINDOW"]), ["-WINDOW"])
+        XCTAssertEqual(WineManager.rtsoftProtonLaunchArguments(["-Windowed"]), ["-Windowed"])
     }
 
     func testLegacyOgreUsesTheRendererSelectedInPluginsConfig() throws {

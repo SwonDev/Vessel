@@ -1996,6 +1996,60 @@ final class WineManager {
             && exeContains(executable, anyOf: ["AKUSDL"])
     }
 
+    /// Runtime 64-bit del Proton SDK de RTsoft (no relacionado con Valve Proton).
+    ///
+    /// Estas builds crean correctamente su contexto OpenGL con `wine-full`, pero su intento inicial
+    /// de pantalla completa a 1024×768 falla antes de que el usuario pueda cambiar la configuración.
+    /// La firma exige arquitectura, imports reales, marcadores internos del SDK, sus DLL adyacentes
+    /// y el paquete de interfaz propio; así no convierte en modo ventana cualquier juego OpenGL/FMOD.
+    func isRTsoftProtonOpenGLEngine(_ executable: String) -> Bool {
+        guard isExecutable64Bit(executable) else { return false }
+
+        let imports = peImportedLibraries(forExecutable: executable)
+        let requiredImports: Set<String> = [
+            "opengl32.dll", "fmod.dll", "zlibwapi.dll", "dinput8.dll", "libcurl-x64.dll"
+        ]
+        guard requiredImports.isSubset(of: imports),
+              exeContains(executable, anyOf: [#"d:\projects\proton\shared\audio\audiomanagerfmodstudio.cpp"#]),
+              exeContains(executable, anyOf: ["protoncurl-agent/1.0"]),
+              exeContains(executable, anyOf: ["proton_temp.tmp"]),
+              exeContains(executable, anyOf: ["Error initializing GL extensions. Update your GL drivers!"])
+        else { return false }
+
+        let fileManager = FileManager.default
+        let root = URL(fileURLWithPath: executable).deletingLastPathComponent()
+        guard let rootContents = try? fileManager.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return false }
+        let names = Set(rootContents.map { $0.lastPathComponent.lowercased() })
+        guard ["fmod.dll", "zlibwapi.dll", "libcurl-x64.dll"].allSatisfy(names.contains),
+              let interfaceDirectory = rootContents.first(where: {
+                  $0.lastPathComponent.caseInsensitiveCompare("interface") == .orderedSame
+                      && (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+              }),
+              let interfaceContents = try? fileManager.contentsOfDirectory(
+                  at: interfaceDirectory,
+                  includingPropertiesForKeys: nil,
+                  options: [.skipsHiddenFiles]
+              )
+        else { return false }
+
+        let extensions = Set(interfaceContents.map { $0.pathExtension.lowercased() })
+        return extensions.contains("rttex") && extensions.contains("rtfont")
+    }
+
+    /// El parámetro pertenece al adaptador automático del motor, no a la configuración del usuario.
+    /// Si una tienda ya lo proporciona, se conserva sin duplicarlo.
+    nonisolated static func rtsoftProtonLaunchArguments(_ arguments: [String]) -> [String] {
+        let alreadyWindowed = arguments.contains {
+            let value = $0.lowercased()
+            return value == "-window" || value == "-windowed"
+        }
+        return alreadyWindowed ? arguments : arguments + ["-window"]
+    }
+
     /// OGRE anterior a 1.7 carga el renderizador desde `Plugins.cfg`, no desde el ejecutable.
     /// La presencia de ambas DLL no decide nada: solo cuenta el plugin activo y su tabla PE real.
     /// Esta firma cubre builds PE32 con el D3D9 clásico seleccionado sin depender del título.
@@ -2591,6 +2645,7 @@ final class WineManager {
         // El enum aún no tiene una categoría «Wine completo»; `.gcenx` representa aquí la familia
         // wined3d/compatibilidad y evita que el diagnóstico crea que se lanzó por DXMT.
         if isLegacyMoaiOpenGLGame(executable) { return .gcenx }
+        if isRTsoftProtonOpenGLEngine(executable) { return .gcenx }
         if isClassicVirtoolsDirectDrawEngine(executable) { return .gcenx }
         let go = eff.graphicsOverride
         if go == .gcenx { return .gcenx }
@@ -2620,6 +2675,9 @@ final class WineManager {
         if isNWJSGame(executable) { return [.dxmt] }
         // Moai/AKUSDL no tiene «capas Direct3D» que probar: el adaptador Wine completo es su ruta.
         if isLegacyMoaiOpenGLGame(executable) { return [] }
+        // El Proton SDK de RTsoft usa OpenGL nativo de Wine y necesita su modo ventana automático;
+        // rotar traductores Direct3D no puede reparar ese arranque determinista.
+        if isRTsoftProtonOpenGLEngine(executable) { return [] }
         // Virtools DX7 depende de un modo exclusivo emulado y de su rasterizador local. Cambiar de
         // traductor no crea ese modo y solo reiniciaría un juego que ya tiene una ruta determinista.
         if isClassicVirtoolsDirectDrawEngine(executable) { return [] }
@@ -3139,6 +3197,21 @@ final class WineManager {
                 environment: env,
                 workingDirectory: gameWorkingDirectory(forExecutable: executable),
                 effective: eff
+            )
+        }
+        // **Proton SDK de RTsoft (no Valve Proton)**: el fullscreen inicial fijo de estas builds
+        // falla antes de poder guardar preferencias y el motor OpenGL unificado no expone las
+        // extensiones que esperan. La firma estructural estricta activa `wine-full`, escala nativa
+        // y modo ventana automáticamente, sin ajustes ni parámetros manuales del usuario.
+        if isRTsoftProtonOpenGLEngine(executable),
+           let fullEngineWine = await fullEngineWineEnsured() {
+            return try await launchRTsoftProtonOpenGLGame(
+                executable: executable,
+                in: bottle,
+                arguments: allArgs,
+                steamAppId: steamAppId,
+                effective: eff,
+                wine: fullEngineWine
             )
         }
         // **Moai/AKUSDL PE32**: OpenGL de compatibilidad con el Wine completo. Va antes de cualquier
@@ -3736,6 +3809,41 @@ final class WineManager {
         )
     }
 
+    /// Lanza el Proton SDK de RTsoft con la combinación validada: OpenGL de `wine-full`, escala 1×
+    /// y ventana redimensionable. El motor conserva después sus preferencias en `save.dat`.
+    private func launchRTsoftProtonOpenGLGame(
+        executable: String,
+        in bottle: Bottle,
+        arguments: [String],
+        steamAppId: String?,
+        effective: EffectiveLaunchConfig,
+        wine: String
+    ) async throws -> Process {
+        log.log(
+            "Motor RTsoft Proton SDK detectado: OpenGL compatible en ventana y escala nativa.",
+            level: .info
+        )
+        cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
+        try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: wine)
+        await resyncGamePrefix(gameWine: wine, prefix: bottle.prefixPath)
+        await setMacDriverRetinaMode(prefix: bottle.prefixPath, wine: wine, enabled: false)
+
+        var environment = Self.fullEngineEnvironment(prefix: bottle.prefixPath)
+        if let steamAppId, !steamAppId.isEmpty {
+            environment["SteamAppId"] = steamAppId
+            environment["SteamGameId"] = steamAppId
+        }
+        return try await launchWineProcess(
+            winePath: wine,
+            prefix: bottle.prefixPath,
+            arguments: [executable] + Self.rtsoftProtonLaunchArguments(arguments),
+            environment: environment,
+            workingDirectory: gameWorkingDirectory(forExecutable: executable),
+            effective: effective
+        )
+    }
+
     /// Motor completo (`wine-full`) para las rutas que lo necesitan, DESCARGÁNDOLO si falta.
     /// Tarea #47: desde la 0.0.4 `wine-full` es la build propia redistribuible de Vessel (fuentes
     /// FOSS de CrossOver 26.2.0, wine-11.0 + CW HACKs, LGPL), que se descarga de Vessel-Engines.
@@ -4298,6 +4406,22 @@ final class WineManager {
         guard let pe = try? fh.read(upToCount: 6), pe.count >= 6, pe[0] == 0x50, pe[1] == 0x45 else { return false } // "PE\0\0"
         let machine = Int(pe[4]) | (Int(pe[5]) << 8)
         return machine == 0x14c
+    }
+
+    /// `true` únicamente para un PE x86-64 (`IMAGE_FILE_MACHINE_AMD64`). Se mantiene separado del
+    /// detector de 32 bits para no alterar el enrutado histórico de ningún juego existente.
+    private func isExecutable64Bit(_ executable: String) -> Bool {
+        guard let file = FileHandle(forReadingAtPath: executable) else { return false }
+        defer { try? file.close() }
+        guard let head = try? file.read(upToCount: 0x40), head.count >= 0x40 else { return false }
+        let peOffset = Int(head[0x3c]) | (Int(head[0x3d]) << 8)
+            | (Int(head[0x3e]) << 16) | (Int(head[0x3f]) << 24)
+        guard peOffset > 0, peOffset < 0x1_000_000 else { return false }
+        try? file.seek(toOffset: UInt64(peOffset))
+        guard let pe = try? file.read(upToCount: 6), pe.count >= 6,
+              pe[0] == 0x50, pe[1] == 0x45 else { return false }
+        let machine = Int(pe[4]) | (Int(pe[5]) << 8)
+        return machine == 0x8664
     }
 
     /// Identifica directamente el payload MKXP/RGSS empaquetado con Ruby y SDL2. Este motor carga
