@@ -294,6 +294,7 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         )
         XCTAssertTrue(manager.usesLegacyD3D9NativeScaling(executable.path))
         XCTAssertFalse(SteamDRMScanner.hasSteamStub(executable.path))
+        XCTAssertTrue(manager.requiresSteamAppLaunch(executable.path))
         let trackingTarget = manager.launchTrackingTarget(
             for: executable.path,
             basePrefix: "/tmp/vessel-popcap-prefix"
@@ -340,6 +341,7 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
 
         XCTAssertFalse(manager.isClassicPopCapSteamEngine(executable.path))
         XCTAssertFalse(manager.usesLegacyD3D9NativeScaling(executable.path))
+        XCTAssertFalse(manager.requiresSteamAppLaunch(executable.path))
         XCTAssertEqual(
             manager.launchTrackingTarget(
                 for: executable.path,
@@ -347,6 +349,379 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             ).executable,
             executable.path
         )
+    }
+
+    func testLegacyValveRunMeContractRequiresSteamAppLaunch() throws {
+        let executable = try makePE32(named: "CustomClassicGame.exe")
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try writePE(
+            to: directory.appendingPathComponent("RUNME.EXE"),
+            is64Bit: false,
+            imports: [],
+            marker: #"u:\valve_main\src\utils\runme\Release\runme.pdb runme.dat CreateProcessA WaitForSingleObject"#
+        )
+        try Data("customclassicgame.exe\r\n".utf8).write(
+            to: directory.appendingPathComponent("RunMe.Dat")
+        )
+
+        XCTAssertTrue(SteamDRMScanner.hasLegacyValveRunMeBootstrap(executable.path))
+        XCTAssertFalse(SteamDRMScanner.hasSteamStub(executable.path))
+        XCTAssertTrue(WineManager().requiresSteamAppLaunch(executable.path))
+    }
+
+    func testUnrelatedRunMeFilesDoNotChangeSteamLaunchPolicy() throws {
+        let executable = try makePE32(named: "CustomClassicGame.exe")
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try writePE(
+            to: directory.appendingPathComponent("runme.exe"),
+            is64Bit: false,
+            imports: [],
+            marker: #"u:\valve_main\src\utils\runme\Release\runme.pdb runme.dat CreateProcessA WaitForSingleObject"#
+        )
+        try Data("another-game.exe\r\n".utf8).write(
+            to: directory.appendingPathComponent("runme.dat")
+        )
+
+        XCTAssertFalse(SteamDRMScanner.hasLegacyValveRunMeBootstrap(executable.path))
+        XCTAssertFalse(WineManager().requiresSteamAppLaunch(executable.path))
+    }
+
+    func testUnrealEngine1RepairsFactoryRendererAndViewportInIsolation() throws {
+        let executable = try makePE32(named: "CustomUE1Game.exe")
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for component in [
+            "Core.dll", "Core.u", "Engine.dll", "Engine.u", "Render.dll",
+            "WinDrv.dll", "OpenGlDrv.dll", "D3DDrv.dll", "SoftDrv.dll"
+        ] {
+            try Data(component.utf8).write(to: directory.appendingPathComponent(component))
+        }
+        let config = """
+        [Engine.Engine]
+        GameRenderDevice=GlideDrv.GlideRenderDevice
+        WindowedRenderDevice=SoftDrv.SoftwareRenderDevice
+        RenderDevice=GlideDrv.GlideRenderDevice
+        ViewportManager=WinDrv.WindowsClient
+        OtherPreference=KeepMe
+
+        [WinDrv.WindowsClient]
+        WindowedViewportX=640
+        WindowedViewportY=480
+        WindowedColorBits=16
+        FullscreenViewportX=640
+        FullscreenViewportY=480
+        FullscreenColorBits=16
+        UseDirectDraw=True
+        StartupFullscreen=True
+        """
+        try Data(config.utf8).write(
+            to: directory.appendingPathComponent("customue1game.INI")
+        )
+
+        let manager = WineManager()
+        XCTAssertTrue(manager.isUnrealEngine1Game(executable.path))
+        XCTAssertTrue(manager.usesLegacy32BitNativeScaling(executable.path))
+        XCTAssertTrue(manager.usesLegacyD3D9NativeScaling(executable.path))
+        let recoveryMarker = directory.appendingPathComponent("RUNNING.INI")
+        try Data().write(to: recoveryMarker)
+        XCTAssertTrue(manager.clearUnrealEngine1RecoveryMarker(executable: executable.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recoveryMarker.path))
+        let repaired = try XCTUnwrap(WineManager.repairedUnrealEngine1Config(
+            existing: config,
+            screenSize: CGSize(width: 1512, height: 982)
+        ))
+
+        XCTAssertEqual(
+            repaired.components(separatedBy: "OpenGLDrv.OpenGLRenderDevice").count - 1,
+            3
+        )
+        XCTAssertTrue(repaired.contains("WindowedViewportX=1512"))
+        XCTAssertTrue(repaired.contains("WindowedViewportY=982"))
+        XCTAssertTrue(repaired.contains("FullscreenViewportX=1512"))
+        XCTAssertTrue(repaired.contains("FullscreenViewportY=982"))
+        XCTAssertTrue(repaired.contains("WindowedColorBits=32"))
+        XCTAssertTrue(repaired.contains("FullscreenColorBits=32"))
+        XCTAssertTrue(repaired.contains("UseDirectDraw=False"))
+        XCTAssertTrue(repaired.contains("OtherPreference=KeepMe"))
+        XCTAssertTrue(repaired.contains("StartupFullscreen=True"))
+    }
+
+    func testUnrealEngine1PreservesValidPlayerDisplayPreferences() {
+        let config = """
+        [Engine.Engine]
+        GameRenderDevice=OpenGLDrv.OpenGLRenderDevice
+        WindowedRenderDevice=OpenGLDrv.OpenGLRenderDevice
+        RenderDevice=OpenGLDrv.OpenGLRenderDevice
+        ViewportManager=WinDrv.WindowsClient
+
+        [WinDrv.WindowsClient]
+        WindowedViewportX=1280
+        WindowedViewportY=720
+        WindowedColorBits=32
+        FullscreenViewportX=1280
+        FullscreenViewportY=720
+        FullscreenColorBits=32
+        UseDirectDraw=False
+        StartupFullscreen=False
+        """
+
+        XCTAssertNil(WineManager.repairedUnrealEngine1Config(
+            existing: config,
+            screenSize: CGSize(width: 1512, height: 982)
+        ))
+    }
+
+    func testUnrealEngine1RepairsSectionNamesCaseInsensitively() throws {
+        let config = """
+        [engine.engine]
+        GameRenderDevice=GlideDrv.GlideRenderDevice
+        WindowedRenderDevice=GlideDrv.GlideRenderDevice
+        RenderDevice=GlideDrv.GlideRenderDevice
+        ViewportManager=WinDrv.WindowsClient
+
+        [windrv.windowsclient]
+        WindowedViewportX=640
+        WindowedViewportY=480
+        FullscreenViewportX=640
+        FullscreenViewportY=480
+        UseDirectDraw=True
+        """
+
+        let repaired = try XCTUnwrap(WineManager.repairedUnrealEngine1Config(
+            existing: config,
+            screenSize: CGSize(width: 1512, height: 982)
+        ))
+        XCTAssertTrue(repaired.contains("GameRenderDevice=OpenGLDrv.OpenGLRenderDevice"))
+        XCTAssertTrue(repaired.contains("WindowedViewportX=1512"))
+        XCTAssertEqual(
+            repaired.lowercased().components(separatedBy: "[engine.engine]").count - 1,
+            1
+        )
+        XCTAssertEqual(
+            repaired.lowercased().components(separatedBy: "[windrv.windowsclient]").count - 1,
+            1
+        )
+    }
+
+    func testUnrealEngine1ReplacesSoftwareFallbackWithBundledOpenGLRenderer() throws {
+        let config = """
+        [Engine.Engine]
+        GameRenderDevice=SoftDrv.SoftwareRenderDevice
+        WindowedRenderDevice=SoftDrv.SoftwareRenderDevice
+        RenderDevice=SoftDrv.SoftwareRenderDevice
+        ViewportManager=WinDrv.WindowsClient
+
+        [WinDrv.WindowsClient]
+        WindowedViewportX=640
+        WindowedViewportY=480
+        WindowedColorBits=16
+        FullscreenViewportX=640
+        FullscreenViewportY=480
+        FullscreenColorBits=16
+        UseDirectDraw=False
+        """
+
+        let repaired = try XCTUnwrap(WineManager.repairedUnrealEngine1Config(
+            existing: config,
+            screenSize: CGSize(width: 1512, height: 982)
+        ))
+        XCTAssertFalse(repaired.contains("SoftDrv.SoftwareRenderDevice"))
+        XCTAssertEqual(
+            repaired.components(separatedBy: "OpenGLDrv.OpenGLRenderDevice").count - 1,
+            3
+        )
+        XCTAssertTrue(repaired.contains("FullscreenViewportX=1512"))
+        XCTAssertTrue(repaired.contains("FullscreenViewportY=982"))
+    }
+
+    func testDeusExUE1SignatureDoesNotBroadenGenericRendererInstall() throws {
+        let executable = try makePE32(named: "DeusEx.exe")
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for component in [
+            "Core.dll", "Core.u", "Engine.dll", "Engine.u", "Render.dll",
+            "WinDrv.dll", "OpenGlDrv.dll", "D3DDrv.dll", "SoftDrv.dll",
+            "DeusEx.dll", "DeusEx.u", "DeusExText.dll", "Extension.dll",
+            "Extension.u", "ConSys.dll", "ConSys.u"
+        ] {
+            try Data(component.utf8).write(to: directory.appendingPathComponent(component))
+        }
+        let config = """
+        [URL]
+        MapExt=dx
+        [Engine.Engine]
+        GameRenderDevice=GlideDrv.GlideRenderDevice
+        GameEngine=DeusEx.DeusExGameEngine
+        WindowedRenderDevice=SoftDrv.SoftwareRenderDevice
+        RenderDevice=GlideDrv.GlideRenderDevice
+        ViewportManager=WinDrv.WindowsClient
+        Root=DeusEx.DeusExRootWindow
+        [WinDrv.WindowsClient]
+        WindowedViewportX=640
+        WindowedViewportY=480
+        FullscreenViewportX=640
+        FullscreenViewportY=480
+        """
+        try Data(config.utf8).write(to: directory.appendingPathComponent("DEUSEX.INI"))
+
+        let manager = WineManager()
+        XCTAssertTrue(manager.isUnrealEngine1Game(executable.path))
+        XCTAssertTrue(manager.isDeusExUnrealEngine1Game(executable.path))
+    }
+
+    func testDeusExUE1ForcesModernOpenGLAndSafeWindowWithoutOverflow() throws {
+        let config = """
+        [FirstRun]
+        FirstRun=0
+
+        [Engine.Engine]
+        GameRenderDevice=D3DDrv.D3DRenderDevice
+        WindowedRenderDevice=D3DDrv.D3DRenderDevice
+        RenderDevice=D3DDrv.D3DRenderDevice
+        ViewportManager=WinDrv.WindowsClient
+        OtherPreference=KeepMe
+
+        [WinDrv.WindowsClient]
+        WindowedViewportX=1512
+        WindowedViewportY=982
+        WindowedColorBits=32
+        FullscreenViewportX=1512
+        FullscreenViewportY=982
+        FullscreenColorBits=32
+        UseDirectDraw=False
+        StartupFullscreen=True
+
+        [OpenGLDrv.OpenGLRenderDevice]
+        UsePalette=True
+        UseAlphaPalette=True
+        UseTrilinear=False
+        MaxAnisotropy=0
+        """
+        let safeWindow = WineManager.safeUnrealEngine1WindowSize(
+            visibleSize: CGSize(width: 1512, height: 870)
+        )
+        XCTAssertEqual(safeWindow, CGSize(width: 1440, height: 810))
+
+        let repaired = try XCTUnwrap(WineManager.repairedUnrealEngine1Config(
+            existing: config,
+            screenSize: CGSize(width: 1512, height: 982),
+            windowedSize: safeWindow,
+            forceModernOpenGL: true,
+            forceSafeWindowedMode: true
+        ))
+        XCTAssertEqual(
+            repaired.components(separatedBy: "OpenGLDrv.OpenGLRenderDevice").count - 1,
+            4
+        )
+        XCTAssertTrue(repaired.contains("WindowedViewportX=1440"))
+        XCTAssertTrue(repaired.contains("WindowedViewportY=810"))
+        XCTAssertTrue(repaired.contains("FullscreenViewportX=1512"))
+        XCTAssertTrue(repaired.contains("FullscreenViewportY=982"))
+        XCTAssertTrue(repaired.contains("StartupFullscreen=False"))
+        XCTAssertTrue(repaired.contains("FirstRun=1100"))
+        XCTAssertTrue(repaired.contains("UsePalette=False"))
+        XCTAssertTrue(repaired.contains("UseBGRATextures=True"))
+        XCTAssertTrue(repaired.contains("FrameRateLimit=60"))
+        XCTAssertTrue(repaired.contains("OtherPreference=KeepMe"))
+    }
+
+    func testDeusExRendererIsVerifiedBackedUpAndSelfRepairsAfterSteamVerify() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-deus-renderer-\(UUID().uuidString)", isDirectory: true)
+        let game = root.appendingPathComponent("System", isDirectory: true)
+        let cache = root.appendingPathComponent("Cache", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: game, withIntermediateDirectories: true)
+
+        var stock = Data([0x4D, 0x5A])
+        stock.append(Data(repeating: 0x11, count: 110_590))
+        var modern = Data([0x4D, 0x5A])
+        modern.append(Data(repeating: 0x22, count: 191_998))
+        let destination = game.appendingPathComponent("OpenGlDrv.dll")
+        let local = root.appendingPathComponent("OpenGlDrv-modern.dll")
+        try stock.write(to: destination)
+        try modern.write(to: local)
+
+        let manager = UnrealEngine1RendererManager(
+            cacheDirectory: cache.path,
+            localRendererPath: local.path,
+            rendererSHA256: UnrealEngine1RendererManager.sha256(modern),
+            stockRendererSHA256: UnrealEngine1RendererManager.sha256(stock)
+        )
+        let executable = game.appendingPathComponent("DeusEx.exe").path
+        let first = try await manager.installModernDeusExOpenGL(forExecutable: executable)
+        XCTAssertEqual(first.status, .installedPinned)
+        XCTAssertEqual(try Data(contentsOf: destination), modern)
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: destination.path + ".vessel-original")),
+            stock
+        )
+
+        let second = try await manager.installModernDeusExOpenGL(forExecutable: executable)
+        XCTAssertEqual(second.status, .alreadyPinned)
+
+        try stock.write(to: destination, options: .atomic)
+        let repaired = try await manager.installModernDeusExOpenGL(forExecutable: executable)
+        XCTAssertEqual(repaired.status, .installedPinned)
+        XCTAssertEqual(try Data(contentsOf: destination), modern)
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: destination.path + ".vessel-original")),
+            stock
+        )
+    }
+
+    func testDeusExRendererPreservesUnknownModernCustomDLL() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-deus-custom-renderer-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        var custom = Data([0x4D, 0x5A])
+        custom.append(Data(repeating: 0x33, count: 180_000))
+        let destination = root.appendingPathComponent("OpenGlDrv.dll")
+        try custom.write(to: destination)
+
+        let manager = UnrealEngine1RendererManager(
+            cacheDirectory: root.appendingPathComponent("Cache").path,
+            localRendererPath: root.appendingPathComponent("missing.dll").path,
+            rendererSHA256: String(repeating: "0", count: 64),
+            stockRendererSHA256: String(repeating: "1", count: 64)
+        )
+        let result = try await manager.installModernDeusExOpenGL(
+            forExecutable: root.appendingPathComponent("DeusEx.exe").path
+        )
+        XCTAssertEqual(result.status, .existingCustom)
+        XCTAssertEqual(try Data(contentsOf: destination), custom)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: destination.path + ".vessel-original"
+        ))
+    }
+
+    func testDeusExRendererPreservesUnknownSmallCustomDLL() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-deus-small-renderer-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        var custom = Data([0x4D, 0x5A])
+        custom.append(Data(repeating: 0x44, count: 90_000))
+        let destination = root.appendingPathComponent("OpenGlDrv.dll")
+        try custom.write(to: destination)
+
+        let manager = UnrealEngine1RendererManager(
+            cacheDirectory: root.appendingPathComponent("Cache").path,
+            localRendererPath: root.appendingPathComponent("missing.dll").path,
+            rendererSHA256: String(repeating: "0", count: 64),
+            stockRendererSHA256: String(repeating: "1", count: 64)
+        )
+        let result = try await manager.installModernDeusExOpenGL(
+            forExecutable: root.appendingPathComponent("DeusEx.exe").path
+        )
+        XCTAssertEqual(result.status, .existingCustom)
+        XCTAssertEqual(try Data(contentsOf: destination), custom)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: destination.path + ".vessel-original"
+        ))
     }
 
     func testFalcomFirstRunConfigUsesLogicalFullscreenResolution() throws {
@@ -1576,6 +1951,84 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertFalse(LaunchDiagnostics.shouldRetryWithRealSteam(nil))
         XCTAssertFalse(LaunchDiagnostics.shouldRetryWithRealSteam(genericFailure))
         XCTAssertTrue(LaunchDiagnostics.shouldRetryWithRealSteam(steamFailure))
+    }
+
+    func testSteamEULADetectionOnlyUsesLatestAppLaunch() {
+        let waiting = """
+        ExecCommandLine: "steam.exe -applaunch 6910"
+        GameAction [AppID 6910] : LaunchApp waiting for user response to ShowEula ""
+        """
+        let acceptedAndRetried = waiting + """
+        ExecCommandLine: "steam.exe -applaunch 6910"
+        GameAction [AppID 6910] : LaunchApp changed task to SynchronizingCloud
+        """
+
+        XCTAssertTrue(LaunchDiagnostics.steamEULAPromptDetected(in: waiting))
+        XCTAssertFalse(LaunchDiagnostics.steamEULAPromptDetected(in: acceptedAndRetried))
+    }
+
+    func testSteamAppLaunchAcknowledgementRequiresNewExactAppIDEntry() {
+        let baseline = Data("""
+        ExecCommandLine: "steam.exe -applaunch 6910"
+        GameAction [AppID 6910, ActionID 3] : LaunchApp changed task to Completed
+        """.utf8)
+        XCTAssertFalse(WineManager.steamAppLaunchAcknowledged(
+            in: baseline,
+            after: baseline,
+            appId: "6910"
+        ))
+
+        let unrelated = baseline + Data("""
+        ExecCommandLine: "steam.exe -applaunch 69100"
+        """.utf8)
+        XCTAssertFalse(WineManager.steamAppLaunchAcknowledged(
+            in: unrelated,
+            after: baseline,
+            appId: "6910"
+        ))
+
+        let accepted = baseline + Data("""
+        ExecCommandLine: "steam.exe -applaunch 6910"
+        """.utf8)
+        XCTAssertTrue(WineManager.steamAppLaunchAcknowledged(
+            in: accepted,
+            after: baseline,
+            appId: "6910"
+        ))
+
+        let rotated = Data("""
+        GameAction [AppID 6910, ActionID 4] : LaunchApp changed task to CreatingProcess
+        """.utf8)
+        XCTAssertTrue(WineManager.steamAppLaunchAcknowledged(
+            in: rotated,
+            after: baseline,
+            appId: "6910"
+        ))
+    }
+
+    func testStaleSteamEULALogDoesNotBlockANewLaunch() throws {
+        let prefix = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-eula-log-\(UUID().uuidString)", isDirectory: true)
+        let logs = prefix.appendingPathComponent(
+            "drive_c/Program Files (x86)/Steam/logs",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: prefix) }
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        let console = logs.appendingPathComponent("console_log.txt")
+        try Data("""
+        ExecCommandLine: "steam.exe -applaunch 6910"
+        GameAction [AppID 6910] : LaunchApp waiting for user response to ShowEula ""
+        """.utf8).write(to: console)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-60)],
+            ofItemAtPath: console.path
+        )
+
+        XCTAssertFalse(LaunchDiagnostics.hasRecentSteamEULAPrompt(
+            prefix: prefix.path,
+            since: Date()
+        ))
     }
 
     func testHeadlessProcessCannotBeLearnedAsSuccessfulEngine() {

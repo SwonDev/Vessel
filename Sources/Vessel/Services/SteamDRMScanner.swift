@@ -213,6 +213,53 @@ final class SteamDRMScanner {
     /// Sección del PE (lo que necesitamos para traducir RVA→offset de fichero).
     private struct PESection { let name: String; let vaddr: Int; let vsize: Int; let praw: Int; let sraw: Int }
 
+    /// Detecta el lanzador heredado `runme.exe` de Valve, anterior a `steam_api.dll` y a
+    /// SteamStub/CEG. Estos depots incluyen un `runme.dat` que nombra el ejecutable protegido y un
+    /// binario firmado por la ruta de compilación oficial de Valve. Ejecutar el payload directamente
+    /// muestra «Failed to find Steam» incluso con el cliente conectado: Steam debe crearlo mediante
+    /// `-applaunch` en el mismo wineserver.
+    ///
+    /// La relación se valida sin títulos ni AppID: pareja local exacta, destino coincidente y cuatro
+    /// marcadores independientes dentro del lanzador. Un fichero arbitrario llamado `runme.exe` no
+    /// basta para cambiar la política de DRM.
+    nonisolated static func hasLegacyValveRunMeBootstrap(_ exePath: String) -> Bool {
+        let executable = URL(fileURLWithPath: exePath).standardizedFileURL
+        let directory = executable.deletingLastPathComponent()
+        let fileManager = FileManager.default
+        guard let names = try? fileManager.contentsOfDirectory(atPath: directory.path),
+              let launcherName = names.first(where: {
+                  $0.caseInsensitiveCompare("runme.exe") == .orderedSame
+              }),
+              let contractName = names.first(where: {
+                  $0.caseInsensitiveCompare("runme.dat") == .orderedSame
+              }) else { return false }
+
+        let launcher = directory.appendingPathComponent(launcherName)
+        let contract = directory.appendingPathComponent(contractName)
+        guard let targetData = try? Data(contentsOf: contract), targetData.count <= 4_096,
+              let targetText = String(data: targetData, encoding: .utf8),
+              let targetLine = targetText.split(whereSeparator: \Character.isNewline).first else {
+            return false
+        }
+        let target = targetLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        guard !target.isEmpty,
+              (target as NSString).lastPathComponent
+                .caseInsensitiveCompare(executable.lastPathComponent) == .orderedSame,
+              let launcherData = try? Data(contentsOf: launcher, options: .mappedIfSafe),
+              launcherData.starts(with: [0x4d, 0x5a]) else { return false }
+
+        let markers = [
+            #"u:\valve_main\src\utils\runme\Release\runme.pdb"#,
+            "runme.dat",
+            "CreateProcessA",
+            "WaitForSingleObject"
+        ]
+        return markers.allSatisfy { marker in
+            launcherData.range(of: Data(marker.utf8)) != nil
+        }
+    }
+
     /// Detecta el wrapper **SteamStub / CEG** (el DRM de Steam) analizando el PE, SIN ejecutar nada.
     ///
     /// Método (verificado contra el código de **Steamless**, que es quien los desempaqueta):
