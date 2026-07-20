@@ -475,6 +475,41 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertTrue(manager.usesLegacyD3D9NativeScaling(executable.path))
     }
 
+    func testClickteamMultimediaFusion2UsesNativePointScaling() throws {
+        let executable = try makePE32(
+            named: "packed-runtime.exe",
+            marker: "mmfs2.dll kcmouse.mfx kcwctrl.mfx clickteam-movement-controller.mfx"
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("packed game data".utf8).write(
+            to: directory.appendingPathComponent("PACKED-RUNTIME.WGM")
+        )
+
+        let manager = WineManager()
+
+        XCTAssertTrue(manager.isClickteamMultimediaFusion2DirectDrawEngine(executable.path))
+        XCTAssertTrue(manager.usesLegacy32BitNativeScaling(executable.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .other)
+    }
+
+    func testClickteamMarkersWithoutMatchingDataContainerKeepRetina() throws {
+        let executable = try makePE32(
+            named: "unrelated-loader.exe",
+            marker: "mmfs2.dll kcmouse.mfx kcwctrl.mfx"
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("different payload".utf8).write(
+            to: directory.appendingPathComponent("other-game.wgm")
+        )
+
+        let manager = WineManager()
+
+        XCTAssertFalse(manager.isClickteamMultimediaFusion2DirectDrawEngine(executable.path))
+        XCTAssertFalse(manager.usesLegacy32BitNativeScaling(executable.path))
+    }
+
     func testLegacyANGLE1PE64SiblingDLLsRouteOpenGLESRuntimeToD3D9() throws {
         let executable = try makePE64(
             named: "custom-engine-x64.exe",

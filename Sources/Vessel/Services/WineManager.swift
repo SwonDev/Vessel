@@ -892,6 +892,42 @@ final class WineManager {
         }
     }
 
+    /// Runtime clásico de Clickteam Multimedia Fusion 2. El ejecutable distribuido es un
+    /// contenedor PE32 que extrae el runtime real (`stdrt.exe`, `mmfs2.dll` y extensiones `.mfx`)
+    /// a `%TEMP%` al arrancar, así que la tabla de imports del cargador no revela DirectDraw.
+    ///
+    /// Estas builds escalan su lienzo de 320×240 mediante múltiplos enteros. Con Retina activo,
+    /// Wine vuelve a dividir ese tamaño: el modo 3× de 960×720 termina en 480×360 puntos y la
+    /// superficie DirectDraw puede separarse de las coordenadas del ratón. La firma combina el
+    /// runtime embebido, extensiones estándar y el contenedor de datos hermano; no usa título,
+    /// nombre del ejecutable ni AppID.
+    func isClickteamMultimediaFusion2DirectDrawEngine(_ executable: String) -> Bool {
+        guard isExecutable32Bit(executable),
+              exeContains(executable, anyOf: ["mmfs2.dll"]),
+              exeContains(executable, anyOf: ["kcmouse.mfx"]),
+              exeContains(executable, anyOf: ["kcwctrl.mfx"])
+        else { return false }
+
+        let url = URL(fileURLWithPath: executable).standardizedFileURL
+        let directory = url.deletingLastPathComponent()
+        let expectedDataName = url.deletingPathExtension().lastPathComponent + ".wgm"
+        guard let siblings = try? FileManager.default.contentsOfDirectory(atPath: directory.path)
+        else { return false }
+
+        // Windows resuelve estos nombres sin distinguir mayúsculas; conserva esa semántica
+        // también si el bottle vive en un volumen de macOS sensible a mayúsculas.
+        return siblings.contains {
+            $0.caseInsensitiveCompare(expectedDataName) == .orderedSame
+        }
+    }
+
+    /// Los runtimes PE32 no conscientes de HiDPI deben trabajar 1:1 en puntos. Mantener la
+    /// decisión en una función comprobable impide ampliar la excepción a cualquier juego de
+    /// 32 bits y permite restaurar Retina explícitamente para todos los demás.
+    func usesLegacy32BitNativeScaling(_ executable: String) -> Bool {
+        isClickteamMultimediaFusion2DirectDrawEngine(executable)
+    }
+
     /// Genera la configuración oficial de primer arranque de Ys Origin o repara solamente su
     /// geometría de pantalla completa. Una ventana válida elegida por el jugador nunca se cambia.
     nonisolated static func repairedFalcomYsOriginConfig(
@@ -3330,6 +3366,21 @@ final class WineManager {
             try? await terminateWineProcesses(winePath: fullWine, prefix: bottle.prefixPath)
             try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: fullWine)
             await resyncGamePrefix(gameWine: fullWine, prefix: bottle.prefixPath)
+            // El prefijo es compartido: escribir SIEMPRE el modo evita que un juego herede la
+            // escala del anterior. Clickteam/MMF2 necesita píxeles 1:1; el resto recupera la
+            // preferencia efectiva del perfil en vez de quedarse accidentalmente con Retina off.
+            let legacyNativeScale = usesLegacy32BitNativeScaling(rawExecutable)
+            await setMacDriverRetinaMode(
+                prefix: bottle.prefixPath,
+                wine: fullWine,
+                enabled: legacyNativeScale ? false : effective.retina
+            )
+            if legacyNativeScale {
+                log.log(
+                    "Clickteam/MMF2 DirectDraw detectado: escala nativa para alinear superficie y ratón.",
+                    level: .info
+                )
+            }
             // Algunos motores D3D9 cargan Direct3D dinámicamente, por lo que llegan por esta ruta
             // genérica PE32 en vez de `launchD3D9GameWithCrossOver`. Almost Human necesita el mismo
             // override OpenGL aislado: el backend Vulkan devuelve D3DERR_INVALIDCALL al crear su
