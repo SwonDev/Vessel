@@ -68,6 +68,7 @@ parches) está disponible bajo la oferta escrita de la §4.
 | `bcrypt`/`secur32` con GnuTLS | Verificación de firmas **ECDSA** del login TLS de Steam (sin ellas el login se cuelga en "Iniciando sesión"). | `Resources/engine-steamfix/{bcrypt,secur32}.so` |
 | `win32u` `EnableMouseInPointer` | Fix del ratón en juegos Unity (6.x y anteriores). | `docs/unity6-mouse-fix/EnableMouseInPointer-9.x.patch`, `Resources/mousefix{,-gptk}/win32u.so` |
 | OpenGL *forward-compat* (motor `wine-unified-opengl`) | Aísla el fix OpenGL de *Hero of the Kingdom II* para no tocar el motor base. | `Resources/opengl-engine/winemac.so` |
+| OpenGL 4.1 core con compatibilidad HPL3 | Promueve únicamente contextos implícitos detectados, adapta extensiones GLEW, bindings GLSL, VAO 0, `GL_QUADS` y texturas ALPHA/LUMINANCE. Se distribuye como motor y prefijo aislados. | `docs/wine-patches/0005-opengl4-legacy-core-compat.patch`, `Resources/legacy-opengl-engine/{winemac,opengl32}.so` |
 | Fix **W^X / JIT** para Rosetta | Permite el JIT de Wine bajo el modelo W^X de Apple Silicon/Rosetta. | integrado en la build del motor |
 | `ddraw` `SetDisplayMode` no pierde superficies | Los juegos de DirectDraw de los 90 que cambian de modo de pantalla y nunca llaman a `Restore()` dejaban de dibujar para siempre (todo `Flip` → `DDERR_SURFACELOST`). Verificado con *War Wind* (1996). | `docs/wine-patches/0002-ddraw-no-perder-superficies-en-SetDisplayMode-propio.patch`, `Resources/engine-ddrawfix/{i386,x86_64}-windows/ddraw.dll` |
 
@@ -107,7 +108,9 @@ El motor empaqueta estas librerías en `lib/` (todas `x86_64`, con dependencias 
 
 ## 3. Cómo reconstruir el motor
 
-1. Descarga WineHQ 11.10 del *upstream* (§1) y aplica los parches de la tabla de la §1.
+1. Descarga WineHQ 11.10 del *upstream* (§1) y aplica los parches de la tabla de la §1. Para el
+   motor `wine-unified-opengl-legacy`, aplica además
+   `docs/wine-patches/0005-opengl4-legacy-core-compat.patch`.
 2. Compila para `x86_64` con `--enable-archs=i386,x86_64` e integra **DXMT** en el `d3d11`
    *builtin* (`lib/wine/x86_64-windows`).
 3. Compila las librerías de la §2 para `x86_64` (ver notas de build) y colócalas en `lib/` con

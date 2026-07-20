@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import CryptoKit
 
 /// Cliente del flujo de autenticación **oficial** de Steam (`IAuthenticationService`),
 /// el mismo que usan la app y el cliente de Steam. Soporta login por **QR** (Steam
@@ -32,7 +33,7 @@ final class SteamAuthService {
         case failed(String)
     }
 
-    private let host = "https://api.steampowered.com"
+    private let cmTransport = SteamCMAuthTransport()
 
     // MARK: - QR login
 
@@ -40,17 +41,20 @@ final class SteamAuthService {
         // platform_type=1 (EAuthTokenPlatformType_SteamClient): el refresh_token resultante lleva
         // `aud=[client,web,…]` → sirve PARA EL CLIENTE de Steam (auto-login sembrado por
         // SteamClientSeeder) Y para la web (biblioteca/logros). Con WebBrowser(=2) el aud es solo
-        // `[web]` y NO sirve al cliente de escritorio. website_id vacío (propio del cliente).
+        // `[web]` y NO sirve al cliente de escritorio. website_id `Unknown` (propio del cliente).
+        let machineName = Self.steamMachineName()
         var details = Data()
-        details.append(ProtoWriter.string(field: 1, "Vessel"))
+        details.append(ProtoWriter.string(field: 1, machineName))
         details.append(ProtoWriter.varint(field: 2, 1))           // EAuthTokenPlatformType_SteamClient
+        details.append(ProtoWriter.varint(field: 3, 20))          // EOSType.Win11
+        details.append(ProtoWriter.varint(field: 4, 1))           // EGamingDeviceType: desktop PC
         var body = Data()
-        body.append(ProtoWriter.string(field: 1, "Vessel"))
+        body.append(ProtoWriter.string(field: 1, machineName))
         body.append(ProtoWriter.varint(field: 2, 1))
         body.append(ProtoWriter.message(field: 3, details))       // device_details
-        body.append(ProtoWriter.string(field: 4, "Community"))    // website_id
+        body.append(ProtoWriter.string(field: 4, "Unknown"))      // website_id del cliente oficial
 
-        let data = try await post("IAuthenticationService/BeginAuthSessionViaQR/v1/", protobuf: body)
+        let data = try await cmTransport.request(method: "BeginAuthSessionViaQR", body: body)
         let f = ProtoReader.parse(data)
         guard let clientID = f.varint(1), let challenge = f.string(2), let requestID = f.bytes(3) else {
             throw err("Respuesta inesperada de Steam al iniciar el QR.")
@@ -65,21 +69,25 @@ final class SteamAuthService {
         guard let encrypted = rsaEncrypt(password, modHex: rsa.mod, expHex: rsa.exp) else {
             return .failed("No se pudo cifrar la contraseña.")
         }
+        let machineName = Self.steamMachineName()
         var details = Data()
-        details.append(ProtoWriter.string(field: 1, "Vessel"))
+        details.append(ProtoWriter.string(field: 1, machineName))
         details.append(ProtoWriter.varint(field: 2, 1))                           // SteamClient (ver beginQR)
+        details.append(ProtoWriter.varint(field: 3, 20))                          // EOSType.Win11
+        details.append(ProtoWriter.varint(field: 4, 1))                           // desktop PC
+        details.append(ProtoWriter.bytes(field: 6, Self.steamMachineID(accountName: accountName)))
         var body = Data()
-        body.append(ProtoWriter.string(field: 1, "Vessel"))                       // device_friendly_name
+        body.append(ProtoWriter.string(field: 1, machineName))                     // device_friendly_name
         body.append(ProtoWriter.string(field: 2, accountName))
         body.append(ProtoWriter.string(field: 3, encrypted))                      // encrypted_password
         body.append(ProtoWriter.varint(field: 4, rsa.timestamp))                  // encryption_timestamp
         body.append(ProtoWriter.varint(field: 5, rememberLogin ? 1 : 0))          // remember_login
         body.append(ProtoWriter.varint(field: 6, 1))                              // platform_type=SteamClient
         body.append(ProtoWriter.varint(field: 7, rememberLogin ? 1 : 0))          // persistence (1=persistent)
-        body.append(ProtoWriter.string(field: 8, "Community"))                    // website_id
+        body.append(ProtoWriter.string(field: 8, "Unknown"))                      // website_id cliente Steam
         body.append(ProtoWriter.message(field: 9, details))
 
-        let data = try await post("IAuthenticationService/BeginAuthSessionViaCredentials/v1/", protobuf: body)
+        let data = try await cmTransport.request(method: "BeginAuthSessionViaCredentials", body: body)
         let f = ProtoReader.parse(data)
         guard let clientID = f.varint(1), let requestID = f.bytes(2) else { return .badPassword }
         let handle = PollHandle(clientID: clientID, requestID: requestID, interval: Double(f.float(3) ?? 5))
@@ -99,10 +107,10 @@ final class SteamAuthService {
     func submitSteamGuard(handle: PollHandle, steamID: UInt64, code: String, codeType: Int) async throws {
         var body = Data()
         body.append(ProtoWriter.varint(field: 1, handle.clientID))
-        body.append(ProtoWriter.varint(field: 2, steamID))
+        body.append(ProtoWriter.fixed64(field: 2, steamID))
         body.append(ProtoWriter.string(field: 3, code))
         body.append(ProtoWriter.varint(field: 4, UInt64(codeType)))
-        _ = try await post("IAuthenticationService/UpdateAuthSessionWithSteamGuardCode/v1/", protobuf: body)
+        _ = try await cmTransport.request(method: "UpdateAuthSessionWithSteamGuardCode", body: body)
     }
 
     // MARK: - Polling (común a QR y credenciales)
@@ -111,7 +119,7 @@ final class SteamAuthService {
         var body = Data()
         body.append(ProtoWriter.varint(field: 1, handle.clientID))
         body.append(ProtoWriter.bytes(field: 2, handle.requestID))
-        let data = try await post("IAuthenticationService/PollAuthSessionStatus/v1/", protobuf: body)
+        let data = try await cmTransport.request(method: "PollAuthSessionStatus", body: body)
         let f = ProtoReader.parse(data)
         // Campos REALES de CAuthentication_PollAuthSessionStatus_Response:
         // 1=new_client_id, 2=new_challenge_url, 3=refresh_token, 4=access_token,
@@ -123,12 +131,21 @@ final class SteamAuthService {
         UserDefaults.standard.set(access, forKey: "steam.accessToken")
         UserDefaults.standard.set(account, forKey: "steam.accountName")
         UserDefaults.standard.set(refresh, forKey: "steam.refreshToken")
+        UserDefaults.standard.removeObject(forKey: Self.rejectedRefreshFingerprintKey)
+        // Solo una credencial emitida por este flujo CM real puede reemplazar deliberadamente
+        // una sesión ConnectCache que ya funcione. La huella (no el token) queda pendiente hasta
+        // que SteamClientSeeder la haya escrito con éxito en el prefijo.
+        UserDefaults.standard.set(
+            Self.refreshFingerprint(refresh),
+            forKey: Self.clientSessionSeedPendingFingerprintKey
+        )
         UserDefaults.standard.set(false, forKey: "steam.sessionNeedsReauthentication")
         // SteamID64 (claim `sub` del JWT): lo necesita SteamClientSeeder para sembrar la sesión
         // del cliente (loginusers.vdf + universo de la clave ConnectCache).
         if let sid = Self.steamID64(fromJWT: refresh) {
             UserDefaults.standard.set(String(sid), forKey: "steam.steamID64")
         }
+        await cmTransport.close()
         return Tokens(accountName: account, accessToken: access, refreshToken: refresh)
     }
 
@@ -168,7 +185,11 @@ final class SteamAuthService {
     static func currentAccessToken() async -> String {
         let access = UserDefaults.standard.string(forKey: "steam.accessToken") ?? ""
         if !access.isEmpty, !isJWTExpired(access) {
-            UserDefaults.standard.set(false, forKey: "steam.sessionNeedsReauthentication")
+            // Un access token web aún vigente no rehabilita un refresh de cliente que Steam ya
+            // rechazó sobre CM. Son credenciales distintas y la sesión de juego sigue inválida.
+            if !storedRefreshWasRejectedRemotely {
+                UserDefaults.standard.set(false, forKey: "steam.sessionNeedsReauthentication")
+            }
             return access
         }
         let refresh = UserDefaults.standard.string(forKey: "steam.refreshToken") ?? ""
@@ -208,6 +229,10 @@ final class SteamAuthService {
             UserDefaults.standard.set(true, forKey: "steam.sessionNeedsReauthentication")
             return false
         }
+        guard !storedRefreshWasRejectedRemotely else {
+            UserDefaults.standard.set(true, forKey: "steam.sessionNeedsReauthentication")
+            return false
+        }
         if storedSteamID.isEmpty {
             UserDefaults.standard.set(String(tokenSteamID), forKey: "steam.steamID64")
         }
@@ -223,6 +248,88 @@ final class SteamAuthService {
         return storedSteamID.isEmpty || storedSteamID == String(tokenSteamID)
     }
 
+    /// Registra sin secretos que el cliente Steam rechazó el refresh actual sobre CM. La huella
+    /// evita bloquear un login posterior: cuando cambia el token, la validación vuelve a empezar.
+    static func markStoredClientSessionRejectedBySteam() {
+        let defaults = UserDefaults.standard
+        let refresh = defaults.string(forKey: "steam.refreshToken") ?? ""
+        guard !refresh.isEmpty else { return }
+        defaults.set(refreshFingerprint(refresh), forKey: rejectedRefreshFingerprintKey)
+        defaults.removeObject(forKey: clientSessionSeedPendingFingerprintKey)
+        defaults.set(true, forKey: "steam.sessionNeedsReauthentication")
+    }
+
+    nonisolated static func refreshFingerprint(_ refresh: String) -> String {
+        SHA256.hash(data: Data(refresh.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static let rejectedRefreshFingerprintKey = "steam.remoteRejectedRefreshTokenSHA256"
+    private static let clientSessionSeedPendingFingerprintKey = "steam.clientSessionSeedPendingRefreshTokenSHA256"
+    private static let clientSessionSeededFingerprintKey = "steam.clientSessionSeededRefreshTokenSHA256"
+
+    /// Decide de forma pura si la credencial guardada debe escribirse en ConnectCache. Una sesión
+    /// existente solo se reemplaza tras un login CM nuevo y para esa misma huella; así un token
+    /// heredado o todavía no confirmado nunca pisa silenciosamente una sesión real funcional.
+    nonisolated static func shouldSeedStoredRefresh(
+        hasExistingClientSession: Bool,
+        storedRefresh: String,
+        pendingFingerprint: String
+    ) -> Bool {
+        guard hasExistingClientSession else { return true }
+        guard !storedRefresh.isEmpty, !pendingFingerprint.isEmpty else { return false }
+        return refreshFingerprint(storedRefresh) == pendingFingerprint
+    }
+
+    static func shouldSeedStoredRefresh(hasExistingClientSession: Bool) -> Bool {
+        let defaults = UserDefaults.standard
+        return shouldSeedStoredRefresh(
+            hasExistingClientSession: hasExistingClientSession,
+            storedRefresh: defaults.string(forKey: "steam.refreshToken") ?? "",
+            pendingFingerprint: defaults.string(forKey: clientSessionSeedPendingFingerprintKey) ?? ""
+        )
+    }
+
+    /// Registra únicamente la huella del refresh que Vessel escribió realmente en el cliente.
+    /// Permite atribuir un futuro Access Denied al token correcto sin invalidar credenciales web
+    /// cuando el ConnectCache procedía del propio Steam o de una sesión anterior distinta.
+    static func markStoredClientSessionSeeded(refreshToken: String) {
+        let defaults = UserDefaults.standard
+        let current = defaults.string(forKey: "steam.refreshToken") ?? ""
+        guard !current.isEmpty, current == refreshToken else { return }
+        let fingerprint = refreshFingerprint(refreshToken)
+        defaults.set(fingerprint, forKey: clientSessionSeededFingerprintKey)
+        if defaults.string(forKey: clientSessionSeedPendingFingerprintKey) == fingerprint {
+            defaults.removeObject(forKey: clientSessionSeedPendingFingerprintKey)
+        }
+    }
+
+    static var storedRefreshMatchesSeededClientSession: Bool {
+        let defaults = UserDefaults.standard
+        let refresh = defaults.string(forKey: "steam.refreshToken") ?? ""
+        let seeded = defaults.string(forKey: clientSessionSeededFingerprintKey) ?? ""
+        return !refresh.isEmpty && !seeded.isEmpty && refreshFingerprint(refresh) == seeded
+    }
+
+    static func clearClientSessionSeedTracking() {
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: clientSessionSeedPendingFingerprintKey)
+        defaults.removeObject(forKey: clientSessionSeededFingerprintKey)
+    }
+
+    private static var storedRefreshWasRejectedRemotely: Bool {
+        let defaults = UserDefaults.standard
+        let refresh = defaults.string(forKey: "steam.refreshToken") ?? ""
+        let rejected = defaults.string(forKey: rejectedRefreshFingerprintKey) ?? ""
+        guard !refresh.isEmpty, !rejected.isEmpty else { return false }
+        let matches = refreshFingerprint(refresh) == rejected
+        if !matches {
+            // El usuario ya obtuvo credenciales nuevas: el rechazo pertenecía exclusivamente al
+            // token anterior y no debe contaminar la sesión recién creada.
+            defaults.removeObject(forKey: rejectedRefreshFingerprintKey)
+        }
+        return matches
+    }
+
     /// Mintea un access_token nuevo a partir del refresh_token (IAuthenticationService).
     func generateAccessToken(refreshToken: String) async throws -> String? {
         var body = Data()
@@ -230,7 +337,7 @@ final class SteamAuthService {
         if let sid = UInt64(SteamAccountService.currentSteamID64) {
             body.append(ProtoWriter.fixed64(field: 2, sid))                  // steamid (fixed64)
         }
-        let data = try await post("IAuthenticationService/GenerateAccessTokenForApp/v1/", protobuf: body)
+        let data = try await cmTransport.request(method: "GenerateAccessTokenForApp", body: body)
         return ProtoReader.parse(data).string(1)                             // access_token=1
     }
 
@@ -270,7 +377,7 @@ final class SteamAuthService {
     private func getRSAKey(accountName: String) async throws -> (mod: String, exp: String, timestamp: UInt64) {
         var body = Data()
         body.append(ProtoWriter.string(field: 1, accountName))
-        let data = try await get("IAuthenticationService/GetPasswordRSAPublicKey/v1/", protobuf: body)
+        let data = try await cmTransport.request(method: "GetPasswordRSAPublicKey", body: body)
         let f = ProtoReader.parse(data)
         guard let mod = f.string(1), let exp = f.string(2) else { throw err("No se pudo obtener la clave de cifrado de Steam.") }
         return (mod, exp, f.varint(3) ?? 0)
@@ -291,31 +398,30 @@ final class SteamAuthService {
         return (enc as Data).base64EncodedString()
     }
 
-    // MARK: - HTTP
+    nonisolated static func steamMachineName(hostname: String = ProcessInfo.processInfo.hostName) -> String {
+        let digest = Insecure.SHA1.hash(data: Data(hostname.utf8))
+        let letters = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+        let suffix = digest.prefix(7).map { letters[Int($0) % letters.count] }
+        return "DESKTOP-\(String(suffix))"
+    }
 
-    private func post(_ path: String, protobuf: Data) async throws -> Data {
-        try await send(path, protobuf: protobuf, method: "POST")
-    }
-    private func get(_ path: String, protobuf: Data) async throws -> Data {
-        let b64 = protobuf.base64EncodedString().addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
-        guard let url = URL(string: "\(host)/\(path)?input_protobuf_encoded=\(b64)") else { throw err("URL inválida") }
-        var request = URLRequest(url: url)
-        request.setValue("Vessel", forHTTPHeaderField: "User-Agent")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { throw err("Steam respondió con error.") }
-        return data
-    }
-    private func send(_ path: String, protobuf: Data, method: String) async throws -> Data {
-        guard let url = URL(string: "\(host)/\(path)") else { throw err("URL inválida") }
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.setValue("Vessel", forHTTPHeaderField: "User-Agent")
-        let b64 = protobuf.base64EncodedString().addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
-        request.httpBody = "input_protobuf_encoded=\(b64)".data(using: .utf8)
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { throw err("Steam respondió con error de autenticación.") }
-        return data
+    /// Formato KeyValues binario que usa Steam para identificar de forma estable la máquina sin
+    /// revelar datos del Mac. Depende de la cuenta, igual que el cliente oficial.
+    nonisolated static func steamMachineID(accountName: String) -> Data {
+        func sha1Hex(_ value: String) -> String {
+            Insecure.SHA1.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+        }
+        func cString(_ value: String) -> Data { Data(value.utf8) + Data([0]) }
+
+        var result = Data([0])
+        result.append(cString("MessageObject"))
+        for (name, seed) in [("BB3", "BB3"), ("FF2", "FF2"), ("3B3", "3B3")] {
+            result.append(1)
+            result.append(cString(name))
+            result.append(cString(sha1Hex("SteamUser Hash \(seed) \(accountName)")))
+        }
+        result.append(contentsOf: [8, 8])
+        return result
     }
 
     private func err(_ message: String) -> NSError {

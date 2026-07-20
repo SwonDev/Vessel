@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import Vessel
 
@@ -17,5 +18,73 @@ struct DRMCompatibilityTests {
         verdict.antiCheats = []
         verdict.antiCheatStatus = "Denied"
         #expect(!verdict.antiCheatBlocksMacOS)
+    }
+
+    @Test("SteamStub con entry point en .bind exige el cliente real")
+    func detectsSteamStubBindEntryPoint() throws {
+        let executable = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Vessel-SteamStub-\(UUID().uuidString).exe")
+        defer { try? FileManager.default.removeItem(at: executable) }
+
+        var pe = Data(repeating: 0, count: 0x800)
+        pe[0] = 0x4D
+        pe[1] = 0x5A
+        pe.writeUInt32LE(0x80, at: 0x3C)              // e_lfanew
+        pe[0x80] = 0x50
+        pe[0x81] = 0x45
+        pe.writeUInt16LE(1, at: 0x86)                 // NumberOfSections
+        pe.writeUInt16LE(0xF0, at: 0x94)              // SizeOfOptionalHeader (PE32+)
+        pe.writeUInt32LE(0x2000, at: 0xA8)             // AddressOfEntryPoint
+
+        let section = 0x80 + 24 + 0xF0
+        pe.replaceSubrange(section..<(section + 5), with: Data(".bind".utf8))
+        pe.writeUInt32LE(0x200, at: section + 8)       // VirtualSize
+        pe.writeUInt32LE(0x2000, at: section + 12)     // VirtualAddress
+        pe.writeUInt32LE(0x200, at: section + 16)      // SizeOfRawData
+        pe.writeUInt32LE(0x400, at: section + 20)      // PointerToRawData
+        try pe.write(to: executable)
+
+        #expect(SteamDRMScanner.hasSteamStub(executable.path))
+    }
+
+    @Test("Una sección .bind sin confirmación no fuerza Steam real")
+    func ignoresUnconfirmedBindSection() throws {
+        let executable = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Vessel-PlainBind-\(UUID().uuidString).exe")
+        defer { try? FileManager.default.removeItem(at: executable) }
+
+        var pe = Data(repeating: 0, count: 0x800)
+        pe[0] = 0x4D
+        pe[1] = 0x5A
+        pe.writeUInt32LE(0x80, at: 0x3C)
+        pe[0x80] = 0x50
+        pe[0x81] = 0x45
+        pe.writeUInt16LE(1, at: 0x86)
+        pe.writeUInt16LE(0xF0, at: 0x94)
+        pe.writeUInt32LE(0x1000, at: 0xA8)             // Fuera de .bind, sin magic
+
+        let section = 0x80 + 24 + 0xF0
+        pe.replaceSubrange(section..<(section + 5), with: Data(".bind".utf8))
+        pe.writeUInt32LE(0x200, at: section + 8)
+        pe.writeUInt32LE(0x2000, at: section + 12)
+        pe.writeUInt32LE(0x200, at: section + 16)
+        pe.writeUInt32LE(0x400, at: section + 20)
+        try pe.write(to: executable)
+
+        #expect(!SteamDRMScanner.hasSteamStub(executable.path))
+    }
+}
+
+private extension Data {
+    mutating func writeUInt16LE(_ value: UInt16, at offset: Int) {
+        self[offset] = UInt8(truncatingIfNeeded: value)
+        self[offset + 1] = UInt8(truncatingIfNeeded: value >> 8)
+    }
+
+    mutating func writeUInt32LE(_ value: UInt32, at offset: Int) {
+        self[offset] = UInt8(truncatingIfNeeded: value)
+        self[offset + 1] = UInt8(truncatingIfNeeded: value >> 8)
+        self[offset + 2] = UInt8(truncatingIfNeeded: value >> 16)
+        self[offset + 3] = UInt8(truncatingIfNeeded: value >> 24)
     }
 }

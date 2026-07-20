@@ -1,24 +1,6 @@
 {
-  "originHash" : "9d7ebae32be4315ffacda98361780763497999e22c0fd612902224493480fcdb",
+  "originHash" : "a67a68067c2a3376c0586a845551d7159df8609a48d0eb5cff2d5ff556c5ee66",
   "pins" : [
-    {
-      "identity" : "colorfulx",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/Lakr233/ColorfulX",
-      "state" : {
-        "revision" : "bdf19698a9fdd3d2cd3ade4a9434d443b4313b36",
-        "version" : "6.1.0"
-      }
-    },
-    {
-      "identity" : "colorvector",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/Lakr233/ColorVector.git",
-      "state" : {
-        "revision" : "0cd0169f1487d7371ee3fd7fe93f1e918fd93d00",
-        "version" : "1.0.5"
-      }
-    },
     {
       "identity" : "dockprogress",
       "kind" : "remoteSourceControl",
@@ -29,30 +11,12 @@
       }
     },
     {
-      "identity" : "msdisplaylink",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/Lakr233/MSDisplayLink.git",
-      "state" : {
-        "revision" : "1ba3e769b734e456317fa7e45321fa7f53eefb67",
-        "version" : "2.1.0"
-      }
-    },
-    {
       "identity" : "sparkle",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/sparkle-project/Sparkle",
       "state" : {
         "revision" : "b6496a74a087257ef5e6da1c5b29a447a60f5bd7",
         "version" : "2.9.4"
-      }
-    },
-    {
-      "identity" : "springinterpolation",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/Lakr233/SpringInterpolation.git",
-      "state" : {
-        "revision" : "cdb556516daa9b43c16aae9436dd39e19ff930fd",
-        "version" : "1.4.0"
       }
     },
     {

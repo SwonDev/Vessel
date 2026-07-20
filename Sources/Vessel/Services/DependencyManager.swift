@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 @MainActor
 @Observable
@@ -369,6 +370,104 @@ final class DependencyManager {
         } catch {
             LogStore.shared.log("No se pudo crear el motor OpenGL: \(error.localizedDescription). Los juegos OpenGL usarán el unificado normal.", level: .warn)
             try? fm.removeItem(atPath: oglDir)
+        }
+    }
+
+    /// Crea o autorrepara el motor OpenGL legado/core. A diferencia del motor OpenGL genérico,
+    /// este reemplaza conjuntamente `winemac.so` y `opengl32.so`: ambos se compilan desde WineHQ
+    /// 11.10 y forman una unidad ABI. La ruta de juego que lo usa tiene prefijo propio, de modo que
+    /// su registro Retina y su wineserver nunca se mezclan con Steam ni con motores ya validados.
+    ///
+    /// No existe fallback silencioso: si falta un recurso, la base no coincide con Wine 11.10 o la
+    /// copia no verifica byte a byte, se lanza un error y Vessel puede mostrar un fallo real en vez
+    /// de ejecutar el juego con un motor que sabemos incompatible.
+    func ensureUnifiedLegacyOpenGLEngine(
+        progress: (@Sendable (String, Double) -> Void)? = nil
+    ) async throws -> String {
+        let fm = FileManager.default
+        let baseDirectory = "\(enginesDirectory)/\(WineEngineLocator.unifiedEngineName)"
+        let baseWine = "\(baseDirectory)/bin/wine"
+        let engineDirectory = "\(enginesDirectory)/\(WineEngineLocator.unifiedLegacyOpenGLEngineName)"
+        let engineWine = "\(engineDirectory)/bin/wine"
+        let unixDirectory = "\(engineDirectory)/lib/wine/x86_64-unix"
+        let installedWinemac = "\(unixDirectory)/winemac.so"
+        let installedOpenGL = "\(unixDirectory)/opengl32.so"
+
+        guard fm.isExecutableFile(atPath: baseWine) else {
+            throw NSError(
+                domain: "Vessel",
+                code: 81,
+                userInfo: [NSLocalizedDescriptionKey: "El motor base Wine 11.10 no está instalado."]
+            )
+        }
+
+        guard let resources = Bundle.main.resourceURL?.appendingPathComponent(
+            "legacy-opengl-engine",
+            isDirectory: true
+        ) else {
+            throw NSError(
+                domain: "Vessel",
+                code: 82,
+                userInfo: [NSLocalizedDescriptionKey: "No se encontró el adaptador OpenGL legado incluido en Vessel."]
+            )
+        }
+        let resourceWinemac = resources.appendingPathComponent("winemac.so").path
+        let resourceOpenGL = resources.appendingPathComponent("opengl32.so").path
+        guard fm.fileExists(atPath: resourceWinemac),
+              fm.fileExists(atPath: resourceOpenGL) else {
+            throw NSError(
+                domain: "Vessel",
+                code: 83,
+                userInfo: [NSLocalizedDescriptionKey: "El adaptador OpenGL legado está incompleto."]
+            )
+        }
+
+        let version = (await runCapture(executable: baseWine, arguments: ["--version"]))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard version.contains("wine-11.10") else {
+            throw NSError(
+                domain: "Vessel",
+                code: 84,
+                userInfo: [NSLocalizedDescriptionKey: "El adaptador OpenGL requiere Wine 11.10; el motor instalado reporta «\(version)»."]
+            )
+        }
+
+        let baseDate = (try? fm.attributesOfItem(atPath: baseWine))?[.modificationDate] as? Date
+        let engineDate = (try? fm.attributesOfItem(atPath: engineWine))?[.modificationDate] as? Date
+        let matchesResources = Self.filesHaveSameSHA256(resourceWinemac, installedWinemac)
+            && Self.filesHaveSameSHA256(resourceOpenGL, installedOpenGL)
+        if fm.isExecutableFile(atPath: engineWine), matchesResources,
+           let baseDate, let engineDate, engineDate >= baseDate {
+            return engineWine
+        }
+
+        progress?("Preparando motor OpenGL legado aislado…", 0.94)
+        do {
+            try? fm.removeItem(atPath: engineDirectory)
+            try fm.copyItem(atPath: baseDirectory, toPath: engineDirectory)
+            try? fm.removeItem(atPath: installedWinemac)
+            try? fm.removeItem(atPath: installedOpenGL)
+            try fm.copyItem(atPath: resourceWinemac, toPath: installedWinemac)
+            try fm.copyItem(atPath: resourceOpenGL, toPath: installedOpenGL)
+            await stripQuarantineRecursive(at: engineDirectory)
+
+            guard fm.isExecutableFile(atPath: engineWine),
+                  Self.filesHaveSameSHA256(resourceWinemac, installedWinemac),
+                  Self.filesHaveSameSHA256(resourceOpenGL, installedOpenGL) else {
+                throw NSError(
+                    domain: "Vessel",
+                    code: 85,
+                    userInfo: [NSLocalizedDescriptionKey: "La verificación del motor OpenGL legado no coincide."]
+                )
+            }
+            LogStore.shared.log(
+                "Motor '\(WineEngineLocator.unifiedLegacyOpenGLEngineName)' listo y verificado.",
+                level: .info
+            )
+            return engineWine
+        } catch {
+            try? fm.removeItem(atPath: engineDirectory)
+            throw error
         }
     }
 
@@ -1224,10 +1323,17 @@ final class DependencyManager {
 
     // MARK: - Helpers
 
+    private nonisolated static func filesHaveSameSHA256(_ first: String, _ second: String) -> Bool {
+        guard let firstData = try? Data(contentsOf: URL(fileURLWithPath: first), options: .mappedIfSafe),
+              let secondData = try? Data(contentsOf: URL(fileURLWithPath: second), options: .mappedIfSafe)
+        else { return false }
+        return SHA256.hash(data: firstData) == SHA256.hash(data: secondData)
+    }
+
     private func runCapture(executable: String, arguments: [String]) async -> String? {
         await withCheckedContinuation { cont in
             // SIEMPRE fuera del hilo principal: `waitUntilExit()` corre un runloop anidado que, en el
-            // main thread, chocaba con el ciclo de render Metal (ColorfulX) → EXC_BAD_ACCESS.
+            // main thread, puede interferir con el ciclo de render de SwiftUI → EXC_BAD_ACCESS.
             DispatchQueue.global(qos: .userInitiated).async {
                 let task = Process()
                 task.executableURL = URL(fileURLWithPath: executable)

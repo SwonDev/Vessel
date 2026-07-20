@@ -1,0 +1,901 @@
+--- a/dlls/winemac.drv/opengl.c
++++ b/dlls/winemac.drv/opengl.c
+@@ -2108,8 +2108,9 @@
+     struct macdrv_context *share_context = shared;
+     struct macdrv_context *context;
+     const int *iptr;
++    const char *force_core_context = getenv("VESSEL_FORCE_CORE_GL_CTX");
+     int major = 1, minor = 0, profile = WGL_CONTEXT_CORE_PROFILE_BIT_ARB, flags = 0;
+-    BOOL core = FALSE;
++    BOOL core = FALSE, version_specified = FALSE;
+     GLint renderer_id = 0;
+ 
+     TRACE("format %d, share_context %p, attrib_list %p\n", format, share_context, attrib_list);
+@@ -2125,10 +2126,12 @@
+         {
+             case WGL_CONTEXT_MAJOR_VERSION_ARB:
+                 major = value;
++                version_specified = TRUE;
+                 break;
+ 
+             case WGL_CONTEXT_MINOR_VERSION_ARB:
+                 minor = value;
++                version_specified = TRUE;
+                 break;
+ 
+             case WGL_CONTEXT_LAYER_PLANE_ARB:
+@@ -2158,11 +2161,32 @@
+                 RtlSetLastWin32Error(ERROR_INVALID_PARAMETER);
+                 return FALSE;
+         }
++    }
++
++    /* Some Windows OpenGL engines request only a compatibility profile and
++     * then use modern GLSL unconditionally.  Native Windows drivers commonly
++     * expose their newest compatibility context in that situation, while
++     * macOS deliberately returns OpenGL 2.1 unless a core profile is
++     * requested.  Keep the workaround opt-in so all other contexts remain
++     * unchanged, and never override an explicitly requested GL version. */
++    if (force_core_context && force_core_context[0] == '1' && !version_specified)
++    {
++        major = 4;
++        minor = 1;
++        profile = WGL_CONTEXT_CORE_PROFILE_BIT_ARB;
++        flags |= WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB;
++        TRACE("VESSEL_FORCE_CORE_GL_CTX: promoting an implicit context to OpenGL 4.1 core\n");
+     }
+ 
+     if ((major == 3 && (minor == 2 || minor == 3)) ||
+         (major == 4 && (minor == 0 || minor == 1)))
+     {
++        /* Backport of CW Hack 24834.  macOS only exposes 3.2+ core
++         * contexts as forward-compatible, but some engines omit the flag. */
++        const char *fwd_compat_context = getenv("CX_FWD_COMPAT_GL_CTX");
++        if (fwd_compat_context && fwd_compat_context[0] == '1')
++            flags |= WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB;
++
+         if (!(flags & WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB))
+         {
+             WARN("OS X only supports forward-compatible 3.2+ contexts\n");
+--- a/dlls/opengl32/unix_private.h
++++ b/dlls/opengl32/unix_private.h
+@@ -100,5 +100,17 @@
+ extern void push_default_fbo( TEB *teb );
+ extern void pop_default_fbo( TEB *teb );
+ extern void resolve_default_fbo( TEB *teb, BOOL read );
++extern void wrap_glShaderSource_legacy_bindings( const struct opengl_funcs *funcs, GLuint shader,
++                                                GLsizei count, const GLchar *const *strings,
++                                                const GLint *lengths );
++extern void apply_glsl_legacy_sampler_bindings( const struct opengl_funcs *funcs, GLuint program );
++extern void wrap_glDrawElements_legacy_quads( const struct opengl_funcs *funcs, GLenum mode,
++                                             GLsizei count, GLenum type, const void *indices );
++extern void wrap_glBindVertexArray_legacy_default( TEB *teb, const struct opengl_funcs *funcs,
++                                                  GLuint array );
++extern void wrap_glTexImage2D_legacy_formats( const struct opengl_funcs *funcs, GLenum target,
++                                             GLint level, GLint internalformat, GLsizei width,
++                                             GLsizei height, GLint border, GLenum format,
++                                             GLenum type, const void *pixels );
+ 
+ #endif /* __WINE_OPENGL32_UNIX_PRIVATE_H */
+--- a/dlls/opengl32/unix_thunks.c
++++ b/dlls/opengl32/unix_thunks.c
+@@ -755,7 +755,8 @@
+     struct glDrawElements_params *params = args;
+     const struct opengl_funcs *funcs = params->teb->glTable;
+     if (!funcs->p_glDrawElements) return STATUS_NOT_IMPLEMENTED;
+-    funcs->p_glDrawElements( params->mode, params->count, params->type, params->indices );
++    wrap_glDrawElements_legacy_quads( funcs, params->mode, params->count,
++                                     params->type, params->indices );
+     set_context_attribute( params->teb, -1 /* unsupported */, NULL, 0 );
+     return STATUS_SUCCESS;
+ }
+@@ -3064,7 +3065,9 @@
+     struct glTexImage2D_params *params = args;
+     const struct opengl_funcs *funcs = params->teb->glTable;
+     if (!funcs->p_glTexImage2D) return STATUS_NOT_IMPLEMENTED;
+-    funcs->p_glTexImage2D( params->target, params->level, params->internalformat, params->width, params->height, params->border, params->format, params->type, params->pixels );
++    wrap_glTexImage2D_legacy_formats( funcs, params->target, params->level,
++                                     params->internalformat, params->width, params->height,
++                                     params->border, params->format, params->type, params->pixels );
+     set_context_attribute( params->teb, -1 /* unsupported */, NULL, 0 );
+     return STATUS_SUCCESS;
+ }
+@@ -4238,7 +4241,7 @@
+     struct glBindVertexArray_params *params = args;
+     const struct opengl_funcs *funcs = params->teb->glTable;
+     if (!funcs->p_glBindVertexArray) return STATUS_NOT_IMPLEMENTED;
+-    funcs->p_glBindVertexArray( params->array );
++    wrap_glBindVertexArray_legacy_default( params->teb, funcs, params->array );
+     set_context_attribute( params->teb, -1 /* unsupported */, NULL, 0 );
+     return STATUS_SUCCESS;
+ }
+@@ -14612,6 +14615,7 @@
+     const struct opengl_funcs *funcs = params->teb->glTable;
+     if (!funcs->p_glLinkProgram) return STATUS_NOT_IMPLEMENTED;
+     funcs->p_glLinkProgram( params->program );
++    apply_glsl_legacy_sampler_bindings( funcs, params->program );
+     set_context_attribute( params->teb, -1 /* unsupported */, NULL, 0 );
+     return STATUS_SUCCESS;
+ }
+@@ -22493,7 +22497,8 @@
+     struct glShaderSource_params *params = args;
+     const struct opengl_funcs *funcs = params->teb->glTable;
+     if (!funcs->p_glShaderSource) return STATUS_NOT_IMPLEMENTED;
+-    funcs->p_glShaderSource( params->shader, params->count, params->string, params->length );
++    wrap_glShaderSource_legacy_bindings( funcs, params->shader, params->count,
++                                         params->string, params->length );
+     set_context_attribute( params->teb, -1 /* unsupported */, NULL, 0 );
+     return STATUS_SUCCESS;
+ }
+@@ -34885,7 +34890,8 @@
+     TEB *teb = get_teb64( params->teb );
+     const struct opengl_funcs *funcs = teb->glTable;
+     if (!funcs->p_glDrawElements) return STATUS_NOT_IMPLEMENTED;
+-    funcs->p_glDrawElements( params->mode, params->count, params->type, ULongToPtr(params->indices) );
++    wrap_glDrawElements_legacy_quads( funcs, params->mode, params->count,
++                                     params->type, ULongToPtr(params->indices) );
+     set_context_attribute( teb, -1 /* unsupported */, NULL, 0 );
+     return STATUS_SUCCESS;
+ }
+@@ -38662,7 +38668,10 @@
+     TEB *teb = get_teb64( params->teb );
+     const struct opengl_funcs *funcs = teb->glTable;
+     if (!funcs->p_glTexImage2D) return STATUS_NOT_IMPLEMENTED;
+-    funcs->p_glTexImage2D( params->target, params->level, params->internalformat, params->width, params->height, params->border, params->format, params->type, ULongToPtr(params->pixels) );
++    wrap_glTexImage2D_legacy_formats( funcs, params->target, params->level,
++                                     params->internalformat, params->width, params->height,
++                                     params->border, params->format, params->type,
++                                     ULongToPtr(params->pixels) );
+     set_context_attribute( teb, -1 /* unsupported */, NULL, 0 );
+     return STATUS_SUCCESS;
+ }
+@@ -40653,7 +40662,7 @@
+     TEB *teb = get_teb64( params->teb );
+     const struct opengl_funcs *funcs = teb->glTable;
+     if (!funcs->p_glBindVertexArray) return STATUS_NOT_IMPLEMENTED;
+-    funcs->p_glBindVertexArray( params->array );
++    wrap_glBindVertexArray_legacy_default( teb, funcs, params->array );
+     set_context_attribute( teb, -1 /* unsupported */, NULL, 0 );
+     return STATUS_SUCCESS;
+ }
+--- a/dlls/opengl32/unix_wgl.c
++++ b/dlls/opengl32/unix_wgl.c
+@@ -27,6 +27,9 @@
+ #include <stdarg.h>
+ #include <stdlib.h>
+ #include <assert.h>
++#include <ctype.h>
++#include <limits.h>
++#include <string.h>
+ 
+ #include <pthread.h>
+ 
+@@ -55,6 +58,578 @@
+ static UINT64 call_gl_debug_message_callback;
+ pthread_mutex_t wgl_lock = PTHREAD_MUTEX_INITIALIZER;
+ 
++struct glsl_sampler_binding
++{
++    char *name;
++    GLint binding;
++    GLsizei count;
++    BOOL uniform_block;
++    struct glsl_sampler_binding *next;
++};
++
++struct glsl_shader_bindings
++{
++    GLuint shader;
++    struct glsl_sampler_binding *bindings;
++    struct glsl_shader_bindings *next;
++};
++
++/* Shader objects may be attached to more than one program and may be deleted by the
++ * application before the final link.  Keep the rewritten explicit bindings for the
++ * lifetime of the process instead of attempting to infer the OpenGL reference count. */
++static struct glsl_shader_bindings *glsl_shader_bindings;
++
++static BOOL force_core_context_enabled(void)
++{
++    const char *value = getenv( "VESSEL_FORCE_CORE_GL_CTX" );
++    return value && !strcmp( value, "1" );
++}
++
++void wrap_glDrawElements_legacy_quads( const struct opengl_funcs *funcs, GLenum mode,
++                                      GLsizei count, GLenum type, const void *indices )
++{
++    SIZE_T element_size, offset;
++    GLsizei first;
++
++    if (!force_core_context_enabled() || mode != GL_QUADS || count < 0)
++    {
++        funcs->p_glDrawElements( mode, count, type, indices );
++        return;
++    }
++
++    switch (type)
++    {
++        case GL_UNSIGNED_BYTE:
++            element_size = sizeof(GLubyte);
++            break;
++        case GL_UNSIGNED_SHORT:
++            element_size = sizeof(GLushort);
++            break;
++        case GL_UNSIGNED_INT:
++            element_size = sizeof(GLuint);
++            break;
++        default:
++            funcs->p_glDrawElements( mode, count, type, indices );
++            return;
++    }
++
++    for (first = 0; first + 3 < count; first += 4)
++    {
++        offset = (SIZE_T)first * element_size;
++        funcs->p_glDrawElements( GL_TRIANGLE_FAN, 4, type,
++                                 (const void *)((UINT_PTR)indices + offset) );
++    }
++}
++
++void wrap_glTexImage2D_legacy_formats( const struct opengl_funcs *funcs, GLenum target,
++                                      GLint level, GLint internalformat, GLsizei width,
++                                      GLsizei height, GLint border, GLenum format,
++                                      GLenum type, const void *pixels )
++{
++    GLint swizzle[4];
++
++    if (!force_core_context_enabled())
++    {
++        funcs->p_glTexImage2D( target, level, internalformat, width, height,
++                              border, format, type, pixels );
++        return;
++    }
++
++    switch (internalformat)
++    {
++        case GL_ALPHA:
++            internalformat = GL_R8;
++            if (format == GL_ALPHA) format = GL_RED;
++            swizzle[0] = GL_ONE;
++            swizzle[1] = GL_ONE;
++            swizzle[2] = GL_ONE;
++            swizzle[3] = GL_RED;
++            break;
++        case GL_LUMINANCE:
++            internalformat = GL_R8;
++            if (format == GL_LUMINANCE) format = GL_RED;
++            swizzle[0] = GL_RED;
++            swizzle[1] = GL_RED;
++            swizzle[2] = GL_RED;
++            swizzle[3] = GL_ONE;
++            break;
++        case GL_LUMINANCE_ALPHA:
++            internalformat = GL_RG8;
++            if (format == GL_LUMINANCE_ALPHA) format = GL_RG;
++            swizzle[0] = GL_RED;
++            swizzle[1] = GL_RED;
++            swizzle[2] = GL_RED;
++            swizzle[3] = GL_GREEN;
++            break;
++        case GL_INTENSITY:
++            internalformat = GL_R8;
++            if (format == GL_INTENSITY) format = GL_RED;
++            swizzle[0] = GL_RED;
++            swizzle[1] = GL_RED;
++            swizzle[2] = GL_RED;
++            swizzle[3] = GL_RED;
++            break;
++        default:
++            funcs->p_glTexImage2D( target, level, internalformat, width, height,
++                                  border, format, type, pixels );
++            return;
++    }
++
++    funcs->p_glTexImage2D( target, level, internalformat, width, height,
++                          border, format, type, pixels );
++    if (funcs->p_glTexParameteriv)
++        funcs->p_glTexParameteriv( target, GL_TEXTURE_SWIZZLE_RGBA, swizzle );
++}
++
++static void free_sampler_bindings( struct glsl_sampler_binding *bindings )
++{
++    while (bindings)
++    {
++        struct glsl_sampler_binding *next = bindings->next;
++        free( bindings->name );
++        free( bindings );
++        bindings = next;
++    }
++}
++
++static struct glsl_sampler_binding *copy_sampler_binding( const char *name, size_t name_length,
++                                                         GLint binding, GLsizei count,
++                                                         BOOL uniform_block )
++{
++    struct glsl_sampler_binding *entry;
++
++    if (!(entry = calloc( 1, sizeof(*entry) ))) return NULL;
++    if (!(entry->name = malloc( name_length + 1 )))
++    {
++        free( entry );
++        return NULL;
++    }
++
++    memcpy( entry->name, name, name_length );
++    entry->name[name_length] = 0;
++    entry->binding = binding;
++    entry->count = count;
++    entry->uniform_block = uniform_block;
++    return entry;
++}
++
++static void add_sampler_binding( struct glsl_sampler_binding **bindings, const char *name,
++                                 size_t name_length, GLint binding, GLsizei count,
++                                 BOOL uniform_block )
++{
++    struct glsl_sampler_binding *entry;
++
++    for (entry = *bindings; entry; entry = entry->next)
++    {
++        if (entry->uniform_block == uniform_block && strlen( entry->name ) == name_length &&
++            !memcmp( entry->name, name, name_length ))
++        {
++            entry->binding = binding;
++            entry->count = count;
++            return;
++        }
++    }
++
++    if (!(entry = copy_sampler_binding( name, name_length, binding, count, uniform_block ))) return;
++    entry->next = *bindings;
++    *bindings = entry;
++}
++
++static void remember_shader_bindings( GLuint shader, struct glsl_sampler_binding *bindings )
++{
++    struct glsl_shader_bindings *entry, **cursor;
++
++    pthread_mutex_lock( &wgl_lock );
++    for (cursor = &glsl_shader_bindings; (entry = *cursor); cursor = &entry->next)
++    {
++        if (entry->shader != shader) continue;
++        free_sampler_bindings( entry->bindings );
++        entry->bindings = bindings;
++        pthread_mutex_unlock( &wgl_lock );
++        return;
++    }
++
++    if ((entry = calloc( 1, sizeof(*entry) )))
++    {
++        entry->shader = shader;
++        entry->bindings = bindings;
++        entry->next = glsl_shader_bindings;
++        glsl_shader_bindings = entry;
++        bindings = NULL;
++    }
++    pthread_mutex_unlock( &wgl_lock );
++    free_sampler_bindings( bindings );
++}
++
++static char *join_shader_source( GLsizei count, const GLchar *const *strings,
++                                 const GLint *lengths, GLint *joined_length )
++{
++    size_t total = 0, offset = 0;
++    char *joined;
++    GLsizei i;
++
++    if (count <= 0 || !strings) return NULL;
++    for (i = 0; i < count; ++i)
++    {
++        size_t length;
++
++        if (!strings[i]) continue;
++        length = lengths && lengths[i] >= 0 ? lengths[i] : strlen( strings[i] );
++        if (length > INT_MAX || total > INT_MAX - length) return NULL;
++        total += length;
++    }
++
++    if (!(joined = malloc( total + 1 ))) return NULL;
++    for (i = 0; i < count; ++i)
++    {
++        size_t length;
++
++        if (!strings[i]) continue;
++        length = lengths && lengths[i] >= 0 ? lengths[i] : strlen( strings[i] );
++        memcpy( joined + offset, strings[i], length );
++        offset += length;
++    }
++    joined[offset] = 0;
++    *joined_length = total;
++    return joined;
++}
++
++static const char *skip_glsl_space( const char *cursor )
++{
++    while (*cursor && isspace( (unsigned char)*cursor )) ++cursor;
++    return cursor;
++}
++
++static BOOL glsl_identifier_char( char value )
++{
++    return isalnum( (unsigned char)value ) || value == '_';
++}
++
++static BOOL glsl_keyword( const char *cursor, const char *keyword, const char **end )
++{
++    size_t length = strlen( keyword );
++
++    if (strncmp( cursor, keyword, length )) return FALSE;
++    if (glsl_identifier_char( cursor[length] )) return FALSE;
++    *end = cursor + length;
++    return TRUE;
++}
++
++static BOOL glsl_sampler_type( const char *start, size_t length )
++{
++    static const char sampler[] = "sampler";
++    size_t i;
++
++    if (length < sizeof(sampler) - 1) return FALSE;
++    for (i = 0; i + sizeof(sampler) - 1 <= length; ++i)
++        if (!memcmp( start + i, sampler, sizeof(sampler) - 1 )) return TRUE;
++    return FALSE;
++}
++
++static void neutralize_core_extension_directives( char *source )
++{
++    static const char *extensions[] =
++    {
++        "GL_ARB_draw_instanced",
++        "GL_ARB_shading_language_420pack",
++        "GL_ARB_uniform_buffer_object",
++    };
++    char *line = source;
++
++    while (*line)
++    {
++        char *line_end = strchr( line, '\n' );
++        char *directive = strstr( line, "#extension" );
++        unsigned int i;
++
++        if (!line_end) line_end = line + strlen( line );
++        if (directive && directive < line_end)
++        {
++            for (i = 0; i < ARRAY_SIZE(extensions); ++i)
++            {
++                char *extension = strstr( directive, extensions[i] );
++                char *cursor;
++
++                if (!extension || extension >= line_end) continue;
++                for (cursor = line; cursor < line_end; ++cursor) *cursor = ' ';
++                break;
++            }
++        }
++        line = *line_end ? line_end + 1 : line_end;
++    }
++}
++
++static struct glsl_sampler_binding *rewrite_sampler_bindings( char *source )
++{
++    struct glsl_sampler_binding *bindings = NULL;
++    char *layout = source;
++
++    while ((layout = strstr( layout, "layout" )))
++    {
++        const char *cursor, *type_start, *name_start;
++        char *layout_end, *clear;
++        unsigned long parsed_binding, parsed_count = 1;
++        size_t type_length, name_length;
++        char *number_end;
++
++        if ((layout > source && glsl_identifier_char( layout[-1] )) ||
++            glsl_identifier_char( layout[6] ))
++        {
++            layout += 6;
++            continue;
++        }
++
++        cursor = skip_glsl_space( layout + 6 );
++        if (*cursor++ != '(') { layout += 6; continue; }
++        cursor = skip_glsl_space( cursor );
++        if (!glsl_keyword( cursor, "binding", &cursor )) { layout += 6; continue; }
++        cursor = skip_glsl_space( cursor );
++        if (*cursor++ != '=') { layout += 6; continue; }
++        cursor = skip_glsl_space( cursor );
++        parsed_binding = strtoul( cursor, &number_end, 10 );
++        if (number_end == cursor || parsed_binding > INT_MAX) { layout += 6; continue; }
++        cursor = skip_glsl_space( number_end );
++        if (*cursor++ != ')') { layout += 6; continue; }
++        layout_end = (char *)cursor;
++
++        cursor = skip_glsl_space( cursor );
++        if (!glsl_keyword( cursor, "uniform", &cursor )) { layout += 6; continue; }
++        cursor = skip_glsl_space( cursor );
++        type_start = cursor;
++        while (glsl_identifier_char( *cursor )) ++cursor;
++        type_length = cursor - type_start;
++        if (!glsl_sampler_type( type_start, type_length )) { layout += 6; continue; }
++
++        cursor = skip_glsl_space( cursor );
++        name_start = cursor;
++        while (glsl_identifier_char( *cursor )) ++cursor;
++        name_length = cursor - name_start;
++        if (!name_length) { layout += 6; continue; }
++
++        cursor = skip_glsl_space( cursor );
++        if (*cursor == '[')
++        {
++            cursor = skip_glsl_space( cursor + 1 );
++            parsed_count = strtoul( cursor, &number_end, 10 );
++            if (number_end == cursor || !parsed_count || parsed_count > INT_MAX) parsed_count = 1;
++        }
++
++        add_sampler_binding( &bindings, name_start, name_length, parsed_binding, parsed_count, FALSE );
++        for (clear = layout; clear < layout_end; ++clear)
++            if (*clear != '\n') *clear = ' ';
++        layout = layout_end;
++    }
++    return bindings;
++}
++
++static struct glsl_sampler_binding *rewrite_uniform_block_bindings( char *source )
++{
++    struct glsl_sampler_binding *bindings = NULL;
++    char *layout = source;
++
++    while ((layout = strstr( layout, "layout" )))
++    {
++        const char *cursor, *qualifiers, *binding, *name_start;
++        char *layout_end, *number_end, *clear;
++        unsigned long parsed_binding;
++        size_t name_length;
++        const char *replacement = NULL;
++        size_t replacement_length = 0;
++
++        if ((layout > source && glsl_identifier_char( layout[-1] )) ||
++            glsl_identifier_char( layout[6] ))
++        {
++            layout += 6;
++            continue;
++        }
++
++        cursor = skip_glsl_space( layout + 6 );
++        if (*cursor++ != '(') { layout += 6; continue; }
++        qualifiers = cursor;
++        if (!(layout_end = strchr( cursor, ')' ))) { layout += 6; continue; }
++
++        binding = strstr( qualifiers, "binding" );
++        if (!binding || binding >= layout_end ||
++            (binding > qualifiers && glsl_identifier_char( binding[-1] )) ||
++            glsl_identifier_char( binding[7] ))
++        {
++            layout = layout_end + 1;
++            continue;
++        }
++
++        cursor = skip_glsl_space( binding + 7 );
++        if (*cursor++ != '=') { layout = layout_end + 1; continue; }
++        cursor = skip_glsl_space( cursor );
++        parsed_binding = strtoul( cursor, &number_end, 10 );
++        if (number_end == cursor || parsed_binding > INT_MAX || number_end > layout_end)
++        {
++            layout = layout_end + 1;
++            continue;
++        }
++
++        cursor = skip_glsl_space( layout_end + 1 );
++        if (!glsl_keyword( cursor, "uniform", &cursor ))
++        {
++            layout = layout_end + 1;
++            continue;
++        }
++        cursor = skip_glsl_space( cursor );
++        name_start = cursor;
++        while (glsl_identifier_char( *cursor )) ++cursor;
++        name_length = cursor - name_start;
++        if (!name_length || *skip_glsl_space( cursor ) != '{')
++        {
++            layout = layout_end + 1;
++            continue;
++        }
++
++        if ((cursor = strstr( qualifiers, "std140" )) && cursor < layout_end)
++        {
++            replacement = "layout(std140)";
++            replacement_length = strlen( replacement );
++        }
++        else if ((cursor = strstr( qualifiers, "std430" )) && cursor < layout_end)
++        {
++            replacement = "layout(std430)";
++            replacement_length = strlen( replacement );
++        }
++
++        add_sampler_binding( &bindings, name_start, name_length, parsed_binding, 1, TRUE );
++        for (clear = layout; clear <= layout_end; ++clear)
++            if (*clear != '\n') *clear = ' ';
++        if (replacement && replacement_length <= (size_t)(layout_end + 1 - layout))
++            memcpy( layout, replacement, replacement_length );
++        layout = layout_end + 1;
++    }
++    return bindings;
++}
++
++void wrap_glShaderSource_legacy_bindings( const struct opengl_funcs *funcs, GLuint shader,
++                                          GLsizei count, const GLchar *const *strings,
++                                          const GLint *lengths )
++{
++    struct glsl_sampler_binding *bindings, *uniform_blocks, *tail;
++    const GLchar *rewritten_string;
++    GLint rewritten_length;
++    char *rewritten;
++
++    if (!force_core_context_enabled() ||
++        !(rewritten = join_shader_source( count, strings, lengths, &rewritten_length )))
++    {
++        funcs->p_glShaderSource( shader, count, strings, lengths );
++        return;
++    }
++
++    neutralize_core_extension_directives( rewritten );
++    bindings = rewrite_sampler_bindings( rewritten );
++    uniform_blocks = rewrite_uniform_block_bindings( rewritten );
++    if (bindings)
++    {
++        for (tail = bindings; tail->next; tail = tail->next) {}
++        tail->next = uniform_blocks;
++    }
++    else bindings = uniform_blocks;
++    rewritten_string = rewritten;
++    funcs->p_glShaderSource( shader, 1, &rewritten_string, &rewritten_length );
++    remember_shader_bindings( shader, bindings );
++    free( rewritten );
++}
++
++static void merge_sampler_binding( struct glsl_sampler_binding **bindings,
++                                   const struct glsl_sampler_binding *candidate )
++{
++    struct glsl_sampler_binding *entry;
++
++    for (entry = *bindings; entry; entry = entry->next)
++    {
++        if (entry->uniform_block != candidate->uniform_block ||
++            strcmp( entry->name, candidate->name )) continue;
++        if (entry->binding != candidate->binding || entry->count != candidate->count)
++            WARN( "Conflicting opt-in GLSL binding for %s; keeping %d\n",
++                  entry->name, entry->binding );
++        return;
++    }
++
++    if (!(entry = copy_sampler_binding( candidate->name, strlen( candidate->name ),
++                                        candidate->binding, candidate->count,
++                                        candidate->uniform_block ))) return;
++    entry->next = *bindings;
++    *bindings = entry;
++}
++
++void apply_glsl_legacy_sampler_bindings( const struct opengl_funcs *funcs, GLuint program )
++{
++    struct glsl_sampler_binding *bindings = NULL, *binding;
++    struct glsl_shader_bindings *record;
++    GLsizei shader_count = 0, attached_count = 0, i;
++    GLint link_status = GL_FALSE;
++    GLuint *shaders;
++
++    if (!force_core_context_enabled() || !funcs->p_glGetProgramiv ||
++        !funcs->p_glGetAttachedShaders) return;
++
++    funcs->p_glGetProgramiv( program, GL_LINK_STATUS, &link_status );
++    if (!link_status) return;
++    funcs->p_glGetProgramiv( program, GL_ATTACHED_SHADERS, &shader_count );
++    if (shader_count <= 0 || !(shaders = calloc( shader_count, sizeof(*shaders) ))) return;
++    funcs->p_glGetAttachedShaders( program, shader_count, &attached_count, shaders );
++
++    pthread_mutex_lock( &wgl_lock );
++    for (i = 0; i < attached_count; ++i)
++    {
++        for (record = glsl_shader_bindings; record; record = record->next)
++        {
++            if (record->shader != shaders[i]) continue;
++            for (binding = record->bindings; binding; binding = binding->next)
++                merge_sampler_binding( &bindings, binding );
++            break;
++        }
++    }
++    pthread_mutex_unlock( &wgl_lock );
++    free( shaders );
++
++    for (binding = bindings; binding; binding = binding->next)
++    {
++        GLint location;
++        GLint *values;
++
++        if (binding->uniform_block)
++        {
++            GLuint index;
++
++            if (!funcs->p_glGetUniformBlockIndex || !funcs->p_glUniformBlockBinding) continue;
++            index = funcs->p_glGetUniformBlockIndex( program, binding->name );
++            if (index == GL_INVALID_INDEX) continue;
++            funcs->p_glUniformBlockBinding( program, index, binding->binding );
++            TRACE( "Applied opt-in GLSL uniform block binding %s=%d to program %u\n",
++                   binding->name, binding->binding, program );
++            continue;
++        }
++
++        if (!funcs->p_glGetUniformLocation) continue;
++        location = funcs->p_glGetUniformLocation( program, binding->name );
++
++        if (location < 0) continue;
++        if (!(values = malloc( binding->count * sizeof(*values) ))) continue;
++        for (i = 0; i < binding->count; ++i) values[i] = binding->binding + i;
++
++        if (funcs->p_glProgramUniform1iv)
++            funcs->p_glProgramUniform1iv( program, location, binding->count, values );
++        else if (funcs->p_glGetIntegerv && funcs->p_glUseProgram && funcs->p_glUniform1iv)
++        {
++            GLint current_program;
++            funcs->p_glGetIntegerv( GL_CURRENT_PROGRAM, &current_program );
++            funcs->p_glUseProgram( program );
++            funcs->p_glUniform1iv( location, binding->count, values );
++            funcs->p_glUseProgram( current_program );
++        }
++        TRACE( "Applied opt-in GLSL sampler binding %s=%d (%d element(s)) to program %u\n",
++               binding->name, binding->binding, binding->count, program );
++        free( values );
++    }
++    free_sampler_bindings( bindings );
++}
++
+ /* context state management */
+ 
+ struct pixel_mode_state
+@@ -147,6 +722,8 @@
+     struct hint_state hint;                     /* GL_HINT_BIT */
+     GLuint draw_fbo;                            /* currently bound draw FBO name */
+     GLuint read_fbo;                            /* currently bound read FBO name */
++    GLuint legacy_default_vao;                  /* private VAO backing compatibility name 0 */
++    GLuint legacy_vao_binding;                  /* application-visible VAO binding */
+     GLboolean has_viewport;                     /* whether viewport has been initialized */
+ };
+ 
+@@ -218,6 +795,34 @@
+     if (draw) *draw = context->base.draw;
+     if (read) *read = context->base.read;
+     return context;
++}
++
++static void bind_legacy_default_vertex_array( struct context *ctx,
++                                              const struct opengl_funcs *funcs )
++{
++    if (!force_core_context_enabled() || !funcs->p_glGenVertexArrays ||
++        !funcs->p_glBindVertexArray)
++        return;
++
++    if (!ctx->legacy_default_vao)
++        funcs->p_glGenVertexArrays( 1, &ctx->legacy_default_vao );
++    if (!ctx->legacy_vao_binding)
++        funcs->p_glBindVertexArray( ctx->legacy_default_vao );
++}
++
++void wrap_glBindVertexArray_legacy_default( TEB *teb, const struct opengl_funcs *funcs,
++                                           GLuint array )
++{
++    struct context *ctx = get_current_context( teb, NULL, NULL );
++
++    if (!ctx || !force_core_context_enabled() || !ctx->legacy_default_vao)
++    {
++        funcs->p_glBindVertexArray( array );
++        return;
++    }
++
++    ctx->legacy_vao_binding = array;
++    funcs->p_glBindVertexArray( array ? array : ctx->legacy_default_vao );
+ }
+ 
+ struct context_attribute_desc
+@@ -727,6 +1332,43 @@
+     return (GLubyte *)ret;
+ }
+ 
++/* Build the legacy space-separated extension string from the extension array
++ * already discovered with glGetStringi().  Core profiles intentionally reject
++ * glGetString(GL_EXTENSIONS), but some older Windows loaders still depend on
++ * that form even when they otherwise support modern OpenGL. */
++static GLubyte *build_legacy_extension_string( struct context *ctx )
++{
++    static const char promoted_extensions[] =
++        "GL_ARB_draw_instanced GL_ARB_framebuffer_object GL_ARB_uniform_buffer_object "
++        "GL_ARB_map_buffer_range GL_ARB_vertex_array_object ";
++    struct opengl_client_context *client = opengl_client_context_from_client( ctx->base.client_context );
++    enum opengl_extension ext;
++    size_t i, size = sizeof(promoted_extensions);
++    char *ret, *p;
++
++    for (i = 0; i < client->extension_count; i++)
++    {
++        ext = client->extension_array[i];
++        if (ext >= WGL_FIRST_EXTENSION) continue;
++        size += all_extensions[ext].len + 1;
++    }
++
++    if (!(p = ret = malloc( size ))) return NULL;
++
++    for (i = 0; i < client->extension_count; i++)
++    {
++        ext = client->extension_array[i];
++        if (ext >= WGL_FIRST_EXTENSION) continue;
++        memcpy( p, all_extensions[ext].name, all_extensions[ext].len );
++        p += all_extensions[ext].len;
++        *p++ = ' ';
++    }
++    memcpy( p, promoted_extensions, sizeof(promoted_extensions) - 1 );
++    p += sizeof(promoted_extensions) - 1;
++    *p = 0;
++    return (GLubyte *)ret;
++}
++
+ static void set_gl_error( TEB *teb, GLenum error )
+ {
+     const struct opengl_funcs *funcs = teb->glTable;
+@@ -784,6 +1426,13 @@
+ 
+     switch (pname)
+     {
++    case GL_VERTEX_ARRAY_BINDING:
++        if (force_core_context_enabled() && ctx->legacy_default_vao)
++        {
++            *data = ctx->legacy_vao_binding;
++            return TRUE;
++        }
++        break;
+     case GL_DRAW_FRAMEBUFFER_BINDING:
+         *data = ctx->draw_fbo;
+         return TRUE;
+@@ -818,8 +1467,25 @@
+     const struct opengl_funcs *funcs = teb->glTable;
+     const GLubyte *ret;
+ 
+-    if ((ret = p_glGetString( name )))
++    ret = p_glGetString( name );
++    if (name == GL_EXTENSIONS)
+     {
++        const char *force_core_context = getenv( "VESSEL_FORCE_CORE_GL_CTX" );
++        struct context *ctx = get_current_context( teb, NULL, NULL );
++
++        if (ctx && force_core_context && force_core_context[0] == '1')
++        {
++            GLubyte **extensions = &ctx->extensions;
++            if (*extensions || (*extensions = build_legacy_extension_string( ctx )))
++            {
++                TRACE( "Synthesized the legacy extension string for an opt-in core context\n" );
++                return *extensions;
++            }
++        }
++    }
++
++    if (ret)
++    {
+         if (name == GL_VENDOR && funcs->p_wglQueryCurrentRendererStringWINE)
+         {
+             const char *vendor = funcs->p_wglQueryCurrentRendererStringWINE( WGL_RENDERER_VENDOR_ID_WINE );
+@@ -1075,7 +1741,11 @@
+     teb->glTable = (void *)funcs;
+     pop_default_fbo( teb );
+ 
+-    if (client->major_version) return; /* already synced */
++    if (client->major_version)
++    {
++        bind_legacy_default_vertex_array( ctx, funcs );
++        return; /* already synced */
++    }
+ 
+     version = (const char *)funcs->p_glGetString( GL_VERSION );
+     if (version) rest = parse_gl_version( version, &client->major_version, &client->minor_version );
+@@ -1137,6 +1807,7 @@
+ 
+     ctx->color_buffer.draw_buffers[0] = ctx->base.draw->doublebuffer ? GL_BACK : GL_FRONT;
+     ctx->pixel_mode.read_buffer = ctx->base.draw->doublebuffer ? GL_BACK : GL_FRONT;
++    bind_legacy_default_vertex_array( ctx, funcs );
+ }
+ 
+ static void free_context( struct context *ctx )

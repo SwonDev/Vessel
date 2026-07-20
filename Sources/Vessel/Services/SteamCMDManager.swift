@@ -134,6 +134,8 @@ final class SteamCMDManager {
                     onProgress(pct, message)
                 } else if l.contains("fully installed") {
                     onProgress(100, "Instalación completada")
+                } else if l.contains("already up to date") {
+                    onProgress(100, "Ya está actualizado")
                 } else if l.contains("validating") {
                     onProgress(0, "Verificando…")
                 }
@@ -142,9 +144,7 @@ final class SteamCMDManager {
             processRegistry.cancel(executionID)
         }
         guard !Task.isCancelled else { return false }
-        if output.lowercased().contains("fully installed") || code == 0 {
-            success = output.lowercased().contains("fully installed")
-        }
+        success = Self.appUpdateSucceeded(in: output, exitCode: code)
         return success
     }
 
@@ -359,6 +359,19 @@ final class SteamCMDManager {
             return err.trimmingCharacters(in: .whitespaces)
         }
         return "No se pudo completar la operación de SteamCMD."
+    }
+
+    /// SteamCMD puede devolver código 0 incluso ante algunos errores de contenido, por lo que el
+    /// estado de salida no basta. Aceptamos únicamente sus dos confirmaciones finales reales:
+    /// descarga/verificación completada o aplicación que ya estaba al día. Esta segunda respuesta
+    /// es normal al reintentar una actualización y antes se convertía falsamente en fallo.
+    nonisolated static func appUpdateSucceeded(in output: String, exitCode: Int32) -> Bool {
+        guard exitCode == 0 else { return false }
+        return output.split(whereSeparator: \.isNewline).reversed().contains { rawLine in
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard line.contains("success! app '") else { return false }
+            return line.contains("fully installed") || line.contains("already up to date")
+        }
     }
 
     nonisolated static func sizeOnDisk(in manifest: String) -> Int64? {

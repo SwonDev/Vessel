@@ -110,6 +110,29 @@ enum RuntimeDependencyProvisioner {
     /// estático para cubrir cargas dinámicas (`LoadLibrary`) que no aparecen en la tabla PE.
     nonisolated static func repairPlan(executable: String, missingLibrary: String? = nil) -> RepairPlan {
         let snapshot = scan(executable: executable, extraMarker: missingLibrary)
+        return makeRepairPlan(
+            executable: executable,
+            missingLibrary: missingLibrary,
+            snapshot: snapshot
+        )
+    }
+
+    /// Preflight para ejecutables que Steam debe autorizar. Solo inspecciona el PE principal y sus
+    /// DLL/config adyacentes: un depot puede incluir otra edición, un editor o herramientas .NET en
+    /// subcarpetas, y sus runtimes no deben contaminar el prefijo compartido del juego seleccionado.
+    nonisolated static func protectedSteamPreflightPlan(executable: String) -> RepairPlan {
+        makeRepairPlan(
+            executable: executable,
+            missingLibrary: nil,
+            snapshot: scan(executable: executable, includeNestedFiles: false)
+        )
+    }
+
+    private nonisolated static func makeRepairPlan(
+        executable: String,
+        missingLibrary: String?,
+        snapshot: ScanSnapshot
+    ) -> RepairPlan {
         var dependencies = Dependency.allCases.filter { dependency in
             dependency.markers.contains(where: snapshot.contains)
         }
@@ -129,6 +152,16 @@ enum RuntimeDependencyProvisioner {
         ]
         for (verb, markers) in visualCppRules where markers.contains(where: snapshot.contains) {
             verbs.append(verb)
+        }
+
+        // Ruby 2.x para Windows inspecciona internamente la implementación de `_isatty` de UCRT.
+        // El `ucrtbase.dll` builtin de Wine expone la API, pero no el layout privado que espera
+        // ese runtime y Ruby termina con «unexpected ucrtbase.dll». La combinación de la DLL Ruby,
+        // imports UCRT y ese diagnóstico embebido identifica el caso sin depender del juego.
+        if snapshot.contains("ruby"),
+           snapshot.contains("api-ms-win-crt"),
+           snapshot.contains("unexpected ucrtbase.dll") {
+            verbs.append("ucrtbase2019")
         }
 
         // .NET moderno se identifica por runtimeconfig; .NET Framework por CLR/config. Elegimos una
@@ -167,8 +200,18 @@ enum RuntimeDependencyProvisioner {
             verbs.append(executableIs32Bit(executable) ? "xact" : "xact_x64")
         }
         if snapshot.contains("openal32.dll"), !snapshot.containsFile(named: "openal32.dll") { verbs.append("openal") }
+        // Un instalador `PhysX_*.exe` junto al juego NO es el runtime: Steam puede abrirlo con UI
+        // y dejar al usuario bloqueado en el contrato de licencia. Solo una DLL de runtime local
+        // distinta de `PhysXLoader.dll` demuestra que el motor empaqueta PhysX de forma autónoma.
+        // `PhysXLoader.dll` es precisamente el cargador de las DLL que instala el redistribuible.
+        let hasLocalPhysXRuntime = snapshot.files.contains { file in
+            let name = file.lastPathComponent.lowercased()
+            return file.pathExtension.caseInsensitiveCompare("dll") == .orderedSame
+                && name.hasPrefix("physx")
+                && name != "physxloader.dll"
+        }
         if (snapshot.contains("physxloader.dll") || snapshot.contains("physx3"))
-            && !snapshot.files.contains(where: { $0.lastPathComponent.lowercased().hasPrefix("physx") }) {
+            && !hasLocalPhysXRuntime {
             verbs.append("physx")
         }
         if snapshot.contains("gdiplus.dll"), !snapshot.containsFile(named: "gdiplus.dll") { verbs.append("gdiplus") }
@@ -220,8 +263,8 @@ enum RuntimeDependencyProvisioner {
     /// solo versiones observadas evita inyectar DLL ajenos en juegos que no los necesitan.
     @discardableResult
     @MainActor
-    static func provision(executable: String) -> [Dependency] {
-        let snapshot = scan(executable: executable)
+    static func provision(executable: String, includeNestedFiles: Bool = true) -> [Dependency] {
+        let snapshot = scan(executable: executable, includeNestedFiles: includeNestedFiles)
         let dependencies = Dependency.allCases.filter { dependency in
             dependency.markers.contains(where: snapshot.contains)
         }
@@ -255,10 +298,17 @@ enum RuntimeDependencyProvisioner {
 
     // MARK: - Escaneo acotado
 
-    private nonisolated static func scan(executable: String, extraMarker: String? = nil) -> ScanSnapshot {
+    private nonisolated static func scan(
+        executable: String,
+        extraMarker: String? = nil,
+        includeNestedFiles: Bool = true
+    ) -> ScanSnapshot {
         let executableURL = URL(fileURLWithPath: executable).standardizedFileURL
         let root = executableURL.deletingLastPathComponent()
         let allowedExtensions = Set(["exe", "dll", "config", "json"])
+        let adjacentExtensions = includeNestedFiles
+            ? allowedExtensions
+            : Set(["dll", "config", "json"])
         let excludedDirectories = Set(["_commonredist", "redist", "redistributables", "installers",
                                        "support", "directxredist", "dotnetredist", "content", "assets",
                                        "streamingassets", "modtools", "tools", "localization", "languages"])
@@ -276,7 +326,7 @@ enum RuntimeDependencyProvisioner {
             for url in rootItems {
                 let values = try? url.resourceValues(forKeys: Set(keys))
                 guard values?.isRegularFile == true, values?.isSymbolicLink != true,
-                      allowedExtensions.contains(url.pathExtension.lowercased()),
+                      adjacentExtensions.contains(url.pathExtension.lowercased()),
                       url.standardizedFileURL != executableURL else { continue }
                 let standardized = url.standardizedFileURL
                 candidates.append((standardized, values?.fileSize ?? 0, 1))
@@ -284,7 +334,7 @@ enum RuntimeDependencyProvisioner {
             }
         }
 
-        if let enumerator = FileManager.default.enumerator(
+        if includeNestedFiles, let enumerator = FileManager.default.enumerator(
             at: root,
             includingPropertiesForKeys: keys,
             options: [.skipsHiddenFiles],
@@ -426,7 +476,7 @@ enum RuntimeDependencyProvisioner {
     private nonisolated static func makeSearchIndex(files: [URL], extraMarker: String?) -> Data {
         var output: [UInt8] = []
         output.reserveCapacity(32 * 1_024)
-        for file in files {
+        for (index, file) in files.enumerated() {
             appendSearchText(file.lastPathComponent, to: &output)
             guard let data = try? Data(contentsOf: file, options: .mappedIfSafe) else { continue }
             let fileExtension = file.pathExtension.lowercased()
@@ -437,15 +487,19 @@ enum RuntimeDependencyProvisioner {
 
             // Para binarios PE se lee la tabla de imports (incluidos delay-load) en vez de barrer
             // decenas de MB por cada juego. Es la fuente exacta de los DLL que el loader necesita.
-            for importedLibrary in peImportedLibraries(in: data) {
+            let importedLibraries = peImportedLibraries(in: data)
+            for importedLibrary in importedLibraries {
                 appendSearchText(importedLibrary, to: &output)
             }
 
-            // Ensamblados gestionados y ejecutables pequeños pueden llevar versiones/runtime en sus
-            // metadatos. El límite conserva esa evidencia sin volver al escaneo masivo anterior.
+            // Los ensamblados gestionados llevan versiones/runtime en sus metadatos. El ejecutable
+            // principal pequeño también puede cargar DLL dinámicamente, pero no se barren strings
+            // arbitrarios de DLL nativas adyacentes: `steam_api.dll`, por ejemplo, contiene el texto
+            // `mscoree.dll` sin importarlo y provocaba una instalación falsa de .NET 4.8.
             let name = file.lastPathComponent.lowercased()
-            if data.count <= 1 * 1_024 * 1_024
-                || name.contains("xna") || name.contains("monogame") || name == "fna.dll" {
+            let managedPE = importedLibraries.contains { $0.caseInsensitiveCompare("mscoree.dll") == .orderedSame }
+            if managedPE || name.contains("xna") || name.contains("monogame") || name == "fna.dll"
+                || (index == 0 && data.count <= 1 * 1_024 * 1_024) {
                 appendPrintableASCII(from: data.prefix(4 * 1_024 * 1_024), to: &output)
             }
         }

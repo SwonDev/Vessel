@@ -88,6 +88,7 @@ final class SteamClientSeeder {
         // 6) Registro: AutoLoginUser = login (idempotente).
         await setAutoLoginUser(account, in: bottle, wine: wine)
 
+        SteamAuthService.markStoredClientSessionSeeded(refreshToken: refreshToken)
         log.log("Sesión de Steam sembrada para «\(account)» (auto-login por JWT, sin CEF). Clave ConnectCache \(cacheKey).", level: .info)
         return true
     }

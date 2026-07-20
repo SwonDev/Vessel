@@ -381,6 +381,15 @@ struct StoreLibraryView: View {
             .filter { installingIDs.contains($0.id) }
             .map(enrichedGame)
     }
+    /// Una operación fallida permanece en Descargas para informar y permitir reintentar, pero ya
+    /// no está transfiriendo archivos y no debe ocultar Jugar, bloquear atajos ni dejar el progreso
+    /// del Dock girando indefinidamente.
+    private func transferBlocksInteraction(_ gameID: String) -> Bool {
+        installingIDs.contains(gameID) && transferPhaseFor(gameID) != .failed
+    }
+    private var blockingTransferIDs: Set<String> {
+        Set(installingIDs.filter(transferBlocksInteraction))
+    }
     private var activeTransfers: [LibraryTransferItem] {
         LibraryTransferSnapshot.items(
             games: activeTransferGames,
@@ -458,7 +467,7 @@ struct StoreLibraryView: View {
     /// Doble clic en la lista, como Steam: ejecuta la acción primaria sin añadir ningún control.
     /// Un juego que ya está arrancando o ejecutándose se ignora para evitar cierres accidentales.
     private func performDoubleClickAction(for game: StoreGame) {
-        guard !installingIDs.contains(game.id),
+        guard !transferBlocksInteraction(game.id),
               GameLaunchTracker.shared.state(game.id) == .idle else { return }
         if game.installed { onPlay(game) } else { onInstall(game) }
     }
@@ -721,7 +730,7 @@ struct StoreLibraryView: View {
 
         let launchState = GameLaunchTracker.shared.state(game.id)
         let primary: (String?, (() -> Void)?)
-        if installingIDs.contains(game.id) || launchState == .launching {
+        if transferBlocksInteraction(game.id) || launchState == .launching {
             primary = (nil, nil)
         } else if launchState == .running {
             primary = ("Detener \(game.title)", { GameLaunchTracker.shared.stop(game.id) })
@@ -1261,9 +1270,9 @@ struct StoreLibraryView: View {
     /// Progreso AGREGADO (0–1) de las instalaciones/actualizaciones en curso, para el icono del
     /// Dock. `-1` = nada en curso; `0.03` = hay instalación(es) sin % conocido (indeterminado).
     private var dockProgressSnapshot: Double {
-        let known = installingIDs.compactMap { percentFor($0) }
+        let known = blockingTransferIDs.compactMap { percentFor($0) }
         if !known.isEmpty { return known.reduce(0, +) / Double(known.count) }
-        return installingIDs.isEmpty ? -1 : 0.03
+        return blockingTransferIDs.isEmpty ? -1 : 0.03
     }
 
     /// Refleja `dockProgressSnapshot` en el icono del Dock (barra de progreso estilo Mythic) y el
@@ -1284,7 +1293,7 @@ struct StoreLibraryView: View {
             GameDetailView(
                 game: game, tint: tint, store: store,
                 artworkTransitionNamespace: reduceMotion ? nil : gameDetailTransitionNamespace,
-                installing: installingIDs.contains(game.id),
+                installing: transferBlocksInteraction(game.id),
                 progress: progressFor(game.id),
                 percent: percentFor(game.id),
                 isFavorite: isFav(game.id),
@@ -1472,7 +1481,7 @@ struct StoreLibraryView: View {
     private var continuePlayingGame: StoreGame? {
         enriched.filter {
             $0.installed && $0.lastPlayed != nil && !isHidden($0.id)
-                && !installingIDs.contains($0.id)
+                && !transferBlocksInteraction($0.id)
                 && GameLaunchTracker.shared.state(statsKey($0)) == .idle
         }
         .sorted { ($0.lastPlayed ?? .distantPast) > ($1.lastPlayed ?? .distantPast) }
@@ -1657,7 +1666,7 @@ struct StoreLibraryView: View {
                     }
                 }
 
-                let availableUpdates = enriched.filter { $0.updateAvailable && !installingIDs.contains($0.id) }
+                let availableUpdates = enriched.filter { $0.updateAvailable && !transferBlocksInteraction($0.id) }
                 if let onUpdateAll, !availableUpdates.isEmpty {
                     Button {
                         onUpdateAll(availableUpdates)
@@ -2091,7 +2100,7 @@ struct StoreLibraryView: View {
         Button { openGame(game) } label: { Label("Ver detalles", systemImage: "info.circle") }
         if game.installed {
             Button { onPlay(game) } label: { Label("Jugar", systemImage: "play.fill") }
-            if !installingIDs.contains(game.id) {
+            if !transferBlocksInteraction(game.id) {
                 Button { onUpdate(game) } label: {
                     Label(game.updateAvailable ? "Actualizar (disponible)" : "Actualizar",
                           systemImage: "arrow.triangle.2.circlepath")
@@ -2109,7 +2118,7 @@ struct StoreLibraryView: View {
                 }
             }
             Button(role: .destructive) { requestUninstall(game) } label: { Label("Desinstalar", systemImage: "trash") }
-        } else if !installingIDs.contains(game.id) {
+        } else if !transferBlocksInteraction(game.id) {
             Button { onInstall(game) } label: { Label("Instalar", systemImage: "arrow.down.circle") }
         }
         Divider()
@@ -2233,7 +2242,7 @@ struct StoreLibraryView: View {
                         artworkTransitionNamespace: reduceMotion ? nil : gameDetailTransitionNamespace,
                         isFavorite: isFav(game.id),
                         isHidden: isHidden(game.id),
-                        installing: installingIDs.contains(game.id),
+                        installing: transferBlocksInteraction(game.id),
                         progress: progressFor(game.id),
                         percent: percentFor(game.id),
                         onInstall: { onInstall(game) },

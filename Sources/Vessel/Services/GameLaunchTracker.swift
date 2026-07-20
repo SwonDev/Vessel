@@ -103,7 +103,11 @@ final class GameLaunchTracker {
         guard processFamilyWatchers[id] == nil else { return }
         processFamilyWatchers[id] = Task { @MainActor [weak self] in
             var appeared = false
-            for _ in 0..<20 {
+            // Los launchers con JVM embebida pueden cerrar el proceso anfitrión antes de que Wine
+            // publique el proceso Windows definitivo. Dos segundos no bastan en prefijos grandes
+            // después de un `wineboot`; diez segundos siguen siendo una gracia acotada y evitan
+            // devolver la UI a «Jugar» o disparar el fallback mientras el menú ya está arrancando.
+            for _ in 0..<100 {
                 guard !Task.isCancelled else { return }
                 if await self?.processFamilyProbes[id]?() == true {
                     appeared = true

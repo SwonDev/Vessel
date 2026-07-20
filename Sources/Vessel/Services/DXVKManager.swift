@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Gestiona la instalación y registro de DXVK en un bottle.
@@ -21,6 +22,7 @@ final class DXVKManager {
         case downloadFailed(String)
         case extractionFailed(String)
         case invalidArchive
+        case checksumMismatch(String)
         case wineUnavailable
 
         var errorDescription: String? {
@@ -28,6 +30,8 @@ final class DXVKManager {
             case .downloadFailed(let msg): return "Descarga de DXVK falló: \(msg)"
             case .extractionFailed(let msg): return "Extracción de DXVK falló: \(msg)"
             case .invalidArchive: return "El archivo de DXVK no contiene las DLLs esperadas."
+            case .checksumMismatch(let asset):
+                return "La verificación de integridad de \(asset) falló."
             case .wineUnavailable: return "No se encontró el binario de Wine para registrar las DLLs."
             }
         }
@@ -41,10 +45,25 @@ final class DXVKManager {
     static let pinnedDownloadURL = URL(string: "https://github.com/doitsujin/dxvk/releases/download/v1.10.3/dxvk-1.10.3.tar.gz")!
     static let pinnedAssetName = "dxvk-1.10.3.tar.gz"
 
-    private let cacheDirectory: String
+    /// Variante x86 aislada para Chowdren/SDL2 D3D9. Mantiene la base DXVK 1.10.3, pero no solicita
+    /// geometría/cull distance a MoltenVK y compila los samplers de esta familia 2D únicamente como
+    /// color. Nunca se instala globalmente: un juego 3D puede necesitar comparación de profundidad.
+    static let chowdrenVersion = "1.10.3-vessel.1"
+    static let chowdrenAssetName = "d3d9-chowdren-x32-1.10.3-vessel.1.dll"
+    static let chowdrenDownloadURL = URL(
+        string: "https://github.com/SwonDev/Vessel/releases/download/runtime-dxvk-chowdren-1.10.3-vessel.1/\(chowdrenAssetName)"
+    )!
+    static let chowdrenSHA256 = "75956ab4e7ca36dcbcd29866a225c5e879dba916460cc674e4fd1d874c6d0351"
 
-    init(cacheDirectory: String = VesselPaths.cacheDirectory) {
+    private let cacheDirectory: String
+    private let chowdrenLocalSourcePath: String?
+
+    init(
+        cacheDirectory: String = VesselPaths.cacheDirectory,
+        chowdrenLocalSourcePath: String? = nil
+    ) {
         self.cacheDirectory = "\(cacheDirectory)/dxvk"
+        self.chowdrenLocalSourcePath = chowdrenLocalSourcePath
         try? FileManager.default.createDirectory(
             atPath: self.cacheDirectory,
             withIntermediateDirectories: true
@@ -106,6 +125,183 @@ final class DXVKManager {
         progress("Registrando overrides de DLL…", 0.85)
         try await registerDllOverrides(in: bottle)
         progress("✓ DXVK \(Self.pinnedVersion) instalado", 1.0)
+    }
+
+    /// Instala únicamente `d3d9.dll` junto al ejecutable indicado.
+    ///
+    /// Esta variante se usa para motores D3D9 que necesitan DXVK pero comparten el bottle con
+    /// otros juegos. No modifica `system32`, `syswow64` ni el registro del prefijo, de modo que
+    /// el backend queda aislado al proceso cuyo ejecutable vive en ese directorio.
+    @discardableResult
+    func installGameLocalD3D9(
+        forExecutable executable: String,
+        is64Bit: Bool,
+        progress: @escaping @Sendable (String, Double) -> Void = { _, _ in }
+    ) async throws -> String {
+        try FileManager.default.createDirectory(atPath: cacheDirectory, withIntermediateDirectories: true)
+
+        let extractedRoot: String
+        if let cached = cachedExtractedRootForPinnedVersion() {
+            progress("DXVK \(Self.pinnedVersion) preparado", 0.4)
+            extractedRoot = cached
+        } else {
+            let archivePath: String
+            if let cached = cachedPinnedArchivePath() {
+                archivePath = cached
+            } else {
+                archivePath = try await downloadPinnedRelease(progress: progress)
+            }
+            extractedRoot = try await extractArchive(at: archivePath, progress: progress)
+        }
+
+        let architecture = is64Bit ? "x64" : "x32"
+        let source = "\(extractedRoot)/\(architecture)/d3d9.dll"
+        guard FileManager.default.fileExists(atPath: source),
+              ((try? FileManager.default.attributesOfItem(atPath: source)[.size] as? UInt64) ?? 0) > 0 else {
+            throw DXVKError.invalidArchive
+        }
+
+        let destination = try installGameLocalD3D9(
+            source: source,
+            forExecutable: executable,
+            markerValue: Self.pinnedVersion
+        )
+        progress("DXVK D3D9 aislado preparado", 1.0)
+        return destination
+    }
+
+    /// Instala la variante DXVK que usa el runtime Chowdren/SDL2 D3D9. La descarga es inmutable y
+    /// se verifica por SHA-256 antes de tocar el juego; una caché dañada se descarta y se repara.
+    @discardableResult
+    func installGameLocalChowdrenD3D9(
+        forExecutable executable: String,
+        progress: @escaping @Sendable (String, Double) -> Void = { _, _ in }
+    ) async throws -> String {
+        try FileManager.default.createDirectory(atPath: cacheDirectory, withIntermediateDirectories: true)
+        let source: String
+        if let chowdrenLocalSourcePath {
+            source = chowdrenLocalSourcePath
+        } else {
+            source = try await ensureChowdrenD3D9(progress: progress)
+        }
+        guard FileManager.default.fileExists(atPath: source),
+              ((try? FileManager.default.attributesOfItem(atPath: source)[.size] as? UInt64) ?? 0) > 0 else {
+            throw DXVKError.invalidArchive
+        }
+
+        let destination = try installGameLocalD3D9(
+            source: source,
+            forExecutable: executable,
+            markerValue: Self.chowdrenVersion
+        )
+        progress("Backend gráfico Chowdren preparado", 1.0)
+        return destination
+    }
+
+    /// Retira una copia local administrada por Vessel y restaura la DLL original, si existía.
+    /// Devuelve `true` cuando se ha restaurado un archivo que no debe eliminar el saneado genérico.
+    @discardableResult
+    func removeGameLocalD3D9(forExecutable executable: String) -> Bool {
+        let directory = (executable as NSString).deletingLastPathComponent
+        let destination = "\(directory)/d3d9.dll"
+        let marker = destination + ".vessel-dxvk"
+        let backup = destination + ".vessel-original"
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: marker) else { return false }
+
+        try? fm.removeItem(atPath: destination)
+        try? fm.removeItem(atPath: marker)
+        guard fm.fileExists(atPath: backup) else { return false }
+        do {
+            try fm.moveItem(atPath: backup, toPath: destination)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func cachedPinnedArchivePath() -> String? {
+        let path = "\(cacheDirectory)/\(Self.pinnedAssetName)"
+        return FileManager.default.fileExists(atPath: path) ? path : nil
+    }
+
+    private func ensureChowdrenD3D9(
+        progress: @escaping @Sendable (String, Double) -> Void
+    ) async throws -> String {
+        let destination = "\(cacheDirectory)/\(Self.chowdrenAssetName)"
+        let fm = FileManager.default
+        if fm.fileExists(atPath: destination) {
+            if try Self.sha256(atPath: destination) == Self.chowdrenSHA256 {
+                progress("Backend Chowdren verificado", 0.8)
+                return destination
+            }
+            try? fm.removeItem(atPath: destination)
+        }
+
+        progress("Descargando backend gráfico Chowdren…", 0.25)
+        let (temporary, response) = try await URLSession.shared.download(from: Self.chowdrenDownloadURL)
+        defer { try? fm.removeItem(at: temporary) }
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw DXVKError.downloadFailed("HTTP \(http.statusCode) descargando \(Self.chowdrenAssetName)")
+        }
+        guard try Self.sha256(atPath: temporary.path) == Self.chowdrenSHA256 else {
+            throw DXVKError.checksumMismatch(Self.chowdrenAssetName)
+        }
+        try? fm.removeItem(atPath: destination)
+        try fm.moveItem(at: temporary, to: URL(fileURLWithPath: destination))
+        progress("Backend Chowdren verificado", 0.8)
+        return destination
+    }
+
+    private func installGameLocalD3D9(
+        source: String,
+        forExecutable executable: String,
+        markerValue: String
+    ) throws -> String {
+        let gameDirectory = (executable as NSString).deletingLastPathComponent
+        let destination = "\(gameDirectory)/d3d9.dll"
+        let marker = destination + ".vessel-dxvk"
+        let backup = destination + ".vessel-original"
+        let fm = FileManager.default
+
+        // Conservar cualquier DLL original del juego. En relanzamientos, el marcador identifica
+        // de forma inequívoca la copia administrada por Vessel y evita encadenar respaldos.
+        if fm.fileExists(atPath: destination) {
+            if !fm.fileExists(atPath: marker), !fm.fileExists(atPath: backup) {
+                try fm.moveItem(atPath: destination, toPath: backup)
+            } else {
+                try fm.removeItem(atPath: destination)
+            }
+        }
+        try fm.copyItem(atPath: source, toPath: destination)
+        try markerValue.write(toFile: marker, atomically: true, encoding: .utf8)
+        return destination
+    }
+
+    private nonisolated static func sha256(atPath path: String) throws -> String {
+        let data = try Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe)
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Localiza solo una extracción de la versión pinneada; nunca reutiliza accidentalmente una
+    /// carpeta de DXVK 2.x/3.x que pueda requerir capacidades Vulkan distintas.
+    private func cachedExtractedRootForPinnedVersion() -> String? {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(atPath: cacheDirectory) else { return nil }
+        for entry in entries.sorted() where entry.hasPrefix("extracted") {
+            let base = "\(cacheDirectory)/\(entry)"
+            let nested = "\(base)/dxvk-\(Self.pinnedVersion)"
+            if fm.fileExists(atPath: "\(nested)/x32/d3d9.dll"),
+               fm.fileExists(atPath: "\(nested)/x64/d3d9.dll") {
+                return nested
+            }
+            if entry == "extracted-\(Self.pinnedVersion)",
+               fm.fileExists(atPath: "\(base)/x32/d3d9.dll"),
+               fm.fileExists(atPath: "\(base)/x64/d3d9.dll") {
+                return base
+            }
+        }
+        return nil
     }
 
     // MARK: - Descarga

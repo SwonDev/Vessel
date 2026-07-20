@@ -1,9 +1,10 @@
 import Foundation
 
-@MainActor
-@Observable
-final class SteamLibraryImporter {
-    struct ImportedGame: Identifiable, Hashable {
+/// Analizador de disco sin estado. No está aislado al actor principal porque recorrer los árboles
+/// de instalación puede tardar varios segundos; sus resultados son valores inmutables y se aplican
+/// después a la UI desde `BottleDetailView`.
+final class SteamLibraryImporter: Sendable {
+    struct ImportedGame: Identifiable, Hashable, Sendable {
         let id: String
         let appId: String
         let name: String
@@ -157,6 +158,122 @@ final class SteamLibraryImporter {
         return false
     }
 
+    /// Confirma una variante *standalone* oficial incluida junto al ejecutable protegido.
+    ///
+    /// Algunos juegos distribuyen dos árboles paralelos dentro del mismo depot, por ejemplo
+    /// `_windows/win64/Game.exe` y `_windowsnosteam/win64/Game.exe`. El primero puede estar envuelto
+    /// con SteamStub/CEG mientras que el segundo es el binario oficial sin DRM que el propio estudio
+    /// usa para otras tiendas. Preferirlo evita abrir Steam real (y sus conflictos de sesión) sin
+    /// recurrir a parches, argumentos ni reglas por AppID.
+    ///
+    /// El nombre de carpeta por sí solo no basta: exigimos un ejecutable espejo con el mismo sufijo
+    /// de ruta y SteamStub confirmado, y que la variante candidata no lo tenga. Así no premiamos
+    /// carpetas arbitrarias llamadas `nosteam` ni copias de terceros.
+    private static func isConfirmedOfficialStandaloneVariant(
+        relativePath: String,
+        executable: String,
+        candidates: [(rel: String, full: String)]
+    ) -> Bool {
+        let components = relativePath.split(separator: "/").map(String.init)
+        guard let markerIndex = components.indices.first(where: { index in
+            normalizedName(components[index]).contains("nosteam")
+        }) else { return false }
+
+        let marker = normalizedName(components[markerIndex])
+        let protectedMarker = marker.replacingOccurrences(of: "nosteam", with: "")
+        guard !protectedMarker.isEmpty,
+              !SteamDRMScanner.hasSteamStub(executable) else { return false }
+
+        let suffix = components.dropFirst(markerIndex + 1)
+        return candidates.contains { candidate in
+            let peer = candidate.rel.split(separator: "/").map(String.init)
+            guard peer.indices.contains(markerIndex),
+                  peer.dropFirst(markerIndex + 1).elementsEqual(suffix) else { return false }
+            let peerMarker = normalizedName(peer[markerIndex])
+            return peerMarker == protectedMarker
+                && SteamDRMScanner.hasSteamStub(candidate.full)
+        }
+    }
+
+    /// Descubre el payload que un launcher oficial declara mediante un INI adyacente.
+    ///
+    /// Algunos depots conservan una edición antigua en la raíz y añaden una edición moderna en un
+    /// subdirectorio. El botón de Steam apunta a `*_launcher.exe`, mientras que su INI contiene una
+    /// relación inequívoca `ApplicationPath=<juego>.exe`. La heurística por profundidad no puede
+    /// conocer esa relación y terminaba escogiendo el ejecutable antiguo de la raíz. Seguirla evita
+    /// mostrar el launcher y permite que Vessel analice y prepare el motor del payload real.
+    ///
+    /// La evidencia se acota deliberadamente: INI pequeño, clave exacta, launcher hermano cuyo
+    /// nombre comparte el stem del INI, destino `.exe` existente dentro del árbol y candidato ya
+    /// validado por el escaneo. No se confía en nombres de juegos, AppID ni argumentos manuales.
+    private static func launcherConfiguredPayloads(
+        in root: String,
+        candidates: [(rel: String, full: String)]
+    ) -> Set<String> {
+        let fm = FileManager.default
+        let standardizedRoot = URL(fileURLWithPath: root).standardizedFileURL.path
+        let candidatePaths = candidates.map { URL(fileURLWithPath: $0.full).standardizedFileURL.path }
+        var payloads: Set<String> = []
+
+        let launchersByDirectory = Dictionary(grouping: candidatePaths.filter { path in
+            let stem = (((path as NSString).lastPathComponent as NSString).deletingPathExtension)
+            return normalizedName(stem).contains("launcher")
+        }) { (path: String) in
+            (path as NSString).deletingLastPathComponent
+        }
+
+        guard let enumerator = fm.enumerator(
+            at: URL(fileURLWithPath: root),
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else { return payloads }
+
+        for case let url as URL in enumerator {
+            guard url.pathExtension.caseInsensitiveCompare("ini") == .orderedSame,
+                  let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+                  values.isRegularFile == true,
+                  (values.fileSize ?? 0) <= 64 * 1024,
+                  let contents = try? String(contentsOf: url, encoding: .utf8) else { continue }
+
+            let iniStem = normalizedName(url.deletingPathExtension().lastPathComponent)
+            guard !iniStem.isEmpty else { continue }
+            let directory = url.deletingLastPathComponent().standardizedFileURL.path
+            guard launchersByDirectory[directory]?.contains(where: { launcher in
+                let launcherStem = normalizedName(
+                    ((((launcher as NSString).lastPathComponent) as NSString).deletingPathExtension)
+                )
+                return launcherStem.contains(iniStem)
+            }) == true else { continue }
+
+            guard let applicationPath = contents
+                .split(whereSeparator: \.isNewline)
+                .compactMap({ line -> String? in
+                    let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                    guard parts.count == 2,
+                          parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+                            .caseInsensitiveCompare("ApplicationPath") == .orderedSame else { return nil }
+                    return parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+                })
+                .first,
+                  !applicationPath.isEmpty,
+                  (applicationPath as NSString).pathExtension.caseInsensitiveCompare("exe") == .orderedSame
+            else { continue }
+
+            let relative = applicationPath.replacingOccurrences(of: "\\", with: "/")
+            let resolved = URL(fileURLWithPath: relative, relativeTo: url.deletingLastPathComponent())
+                .standardizedFileURL.path
+            guard resolved.hasPrefix(standardizedRoot + "/"),
+                  let candidate = candidatePaths.first(where: {
+                      $0.caseInsensitiveCompare(resolved) == .orderedSame
+                  }),
+                  !normalizedName((candidate as NSString).lastPathComponent).contains("launcher")
+            else { continue }
+            payloads.insert(candidate)
+        }
+        return payloads
+    }
+
     static func mainGameExecutable(in dir: String) -> String? {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(atPath: dir) else { return nil }
@@ -165,9 +282,18 @@ final class SteamLibraryImporter {
         var exes: [(rel: String, full: String)] = []
         for case let path as String in enumerator where path.lowercased().hasSuffix(".exe") {
             let lower = path.lowercased()
+            let executableStem = ((((lower as NSString).lastPathComponent) as NSString)
+                .deletingPathExtension)
             if lower.contains("redist") || lower.contains("vcredist") || lower.contains("crashpad")
                 || lower.contains("unitycrash") || lower.contains("crashhandler") || lower.contains("dxsetup")
                 || lower.contains("dotnet") || lower.contains("directx") || lower.contains("uninstall") {
+                continue
+            }
+            // Paneles auxiliares de configuración: no son el juego. Algunos depots antiguos los
+            // dejan en la raíz junto al ejecutable real y, por tener un nombre más corto, ganaban
+            // el desempate (Ys Origin: `config.exe` frente a `yso_win.exe`). Si el depot solo trae
+            // uno de estos paneles, la instalación está incompleta y tampoco debe marcarse jugable.
+            if ["config", "configuration", "configure", "settings", "setup"].contains(executableStem) {
                 continue
             }
             // **Ejecutables de MS-DOS**: fuera. Wine no corre binarios de 16 bits en un macOS de 64,
@@ -179,6 +305,7 @@ final class SteamLibraryImporter {
             exes.append((lower, "\(dir)/\(path)"))
         }
         guard !exes.isEmpty else { return nil }
+        let configuredLauncherPayloads = launcherConfiguredPayloads(in: dir, candidates: exes)
 
         func score(_ rel: String, _ full: String) -> Int {
             var s = 0
@@ -255,6 +382,19 @@ final class SteamLibraryImporter {
             let vulkanDirectory = rendererDirectory.contains("vulkan")
                 || rendererDirectory.hasSuffix("vk")
             if vulkanDirectory, isConfirmedVulkanVariant(full) { s += 260 }
+            // Si el depot incluye una edición oficial paralela sin SteamStub, esa es la ruta más
+            // autónoma y segura. La evidencia estructural supera preferencias de profundidad/64-bit.
+            if isConfirmedOfficialStandaloneVariant(
+                relativePath: rel,
+                executable: full,
+                candidates: exes
+            ) { s += 700 }
+            // Un launcher oficial ha declarado explícitamente este ejecutable como su payload.
+            // La relación tiene más peso que raíz/profundidad, pero menos que una variante oficial
+            // standalone confirmada frente a SteamStub.
+            if configuredLauncherPayloads.contains(
+                URL(fileURLWithPath: full).standardizedFileURL.path
+            ) { s += 450 }
             // Preferir la variante de **64 bits** (carpeta x64/win64/bin64/…): es la que los juegos
             // con doble build (p. ej. Grim Dawn: `Grim Dawn.exe` 32-bit arriba + `x64/Grim Dawn.exe`
             // 64-bit) lanzan por defecto, y la que va por DXMT→Metal (mejor que el 32-bit por

@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-struct Bottle: Identifiable, Codable, Hashable {
+struct Bottle: Identifiable, Codable, Hashable, Sendable {
     var id: UUID
     var name: String
     var windowsVersion: String
@@ -64,7 +64,7 @@ struct Bottle: Identifiable, Codable, Hashable {
     }
 }
 
-struct GameInstall: Identifiable, Codable, Hashable {
+struct GameInstall: Identifiable, Codable, Hashable, Sendable {
     var id: UUID
     var name: String
     var executablePath: String
