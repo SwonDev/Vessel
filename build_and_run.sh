@@ -14,10 +14,16 @@ BUILD_NUMBER=$(cut -f2 VERSION.txt 2>/dev/null | tr -d '[:space:]')
 VERSION="${VERSION:-0.0.1}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
 
-echo "==> Building $APP_NAME (release)..."
-swift build -c release
+SWIFT_BUILD_ARGS=(-c release)
+if [ -n "${VESSEL_SCRATCH_PATH:-}" ]; then
+    SWIFT_BUILD_ARGS+=(--scratch-path "$VESSEL_SCRATCH_PATH")
+fi
 
-BIN_PATH=$(swift build -c release --show-bin-path)/$APP_NAME
+echo "==> Building $APP_NAME (release)..."
+swift build "${SWIFT_BUILD_ARGS[@]}"
+
+BIN_DIR=$(swift build "${SWIFT_BUILD_ARGS[@]}" --show-bin-path)
+BIN_PATH="$BIN_DIR/$APP_NAME"
 echo "==> Binary: $BIN_PATH"
 
 rm -rf "$APP_BUNDLE"
@@ -29,7 +35,7 @@ cp "$BIN_PATH" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
 # Sparkle.framework (auto-update firmado EdDSA): SwiftPM lo deja junto al binario tras compilar.
 # Se embebe en Contents/Frameworks; el ejecutable lo encuentra por el rpath @executable_path/../Frameworks.
-SPARKLE_FW="$(swift build -c release --show-bin-path)/Sparkle.framework"
+SPARKLE_FW="$BIN_DIR/Sparkle.framework"
 if [ -d "$SPARKLE_FW" ]; then
     cp -R "$SPARKLE_FW" "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
 fi
@@ -168,9 +174,11 @@ codesign --force --deep --sign - "$APP_BUNDLE"
 # Instalar SIEMPRE la última versión en /Applications, para que Spotlight,
 # Launchpad y el Dock abran esta build (no una copia vieja).
 echo "==> Instalando en /Applications/$APP_NAME.app..."
-osascript -e "quit app \"$APP_NAME\"" 2>/dev/null || true
-pkill -x "$APP_NAME" 2>/dev/null || true
-sleep 1
+if [ "${VESSEL_SKIP_APP_QUIT:-0}" != "1" ]; then
+    osascript -e "quit app \"$APP_NAME\"" 2>/dev/null || true
+    pkill -x "$APP_NAME" 2>/dev/null || true
+    sleep 1
+fi
 rm -rf "/Applications/$APP_NAME.app"
 cp -R "$APP_BUNDLE" "/Applications/$APP_NAME.app"
 codesign --force --deep --sign - "/Applications/$APP_NAME.app"
