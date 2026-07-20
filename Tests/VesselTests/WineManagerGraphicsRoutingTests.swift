@@ -80,6 +80,91 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertTrue(WineManager().isAlmostHumanLuaJITD3D9Engine(executable.path))
     }
 
+    func testNihonFalcomYsOriginEngineUsesNativePointScaling() throws {
+        let executable = try makePE32(
+            named: "custom-falcom-engine.exe",
+            marker: #"SOFTWARE\Falcom\YSO_WIN Release\data.nya failed: Subsys D3D::Initialize"#,
+            imports: ["d3d9.dll", "d3dx9_43.dll", "dsound.dll", "dinput8.dll"]
+        )
+        let directory = executable.deletingLastPathComponent()
+        let release = directory.appendingPathComponent("release", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: release, withIntermediateDirectories: true)
+        for package in ["data.nya", "data.ni", "data.na"] {
+            try Data(package.utf8).write(to: release.appendingPathComponent(package))
+        }
+
+        let manager = WineManager()
+        XCTAssertTrue(manager.isNihonFalcomYsOriginD3D9Engine(executable.path))
+        XCTAssertTrue(manager.usesLegacyD3D9NativeScaling(executable.path))
+        XCTAssertTrue(manager.usesFullCompatibilityEngineForD3D9(executable.path))
+    }
+
+    func testFalcomMarkersWithoutResourceTrioDoNotChangeD3D9Scaling() throws {
+        let executable = try makePE32(
+            named: "generic-d3d9.exe",
+            marker: #"SOFTWARE\Falcom\YSO_WIN Release\data.nya failed: Subsys D3D::Initialize"#,
+            imports: ["d3d9.dll", "d3dx9_43.dll", "dsound.dll", "dinput8.dll"]
+        )
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+
+        let manager = WineManager()
+        XCTAssertFalse(manager.isNihonFalcomYsOriginD3D9Engine(executable.path))
+        XCTAssertFalse(manager.usesLegacyD3D9NativeScaling(executable.path))
+    }
+
+    func testFalcomFirstRunConfigUsesLogicalFullscreenResolution() throws {
+        let config = try XCTUnwrap(WineManager.repairedFalcomYsOriginConfig(
+            existing: nil,
+            screenSize: CGSize(width: 1512, height: 982)
+        ))
+
+        XCTAssertTrue(config.contains("BackBufferWidth=1512"))
+        XCTAssertTrue(config.contains("BackBufferHeight=982"))
+        XCTAssertTrue(config.contains("Windowed=0"))
+        XCTAssertTrue(config.contains(#"Assign{KEY_ACTION}="Z""#))
+    }
+
+    func testFalcomFullscreenRepairPreservesUnrelatedPreferences() throws {
+        let existing = """
+        IniVersion=0x100
+        [game]
+        Language=3
+        [graphics]
+        BackBufferWidth=960
+        BackBufferHeight=600
+        Windowed=0
+        WaitVSync=0
+        [sound]
+        BgmVolume=321
+        """
+        let repaired = try XCTUnwrap(WineManager.repairedFalcomYsOriginConfig(
+            existing: existing,
+            screenSize: CGSize(width: 1512, height: 982)
+        ))
+
+        XCTAssertTrue(repaired.contains("BackBufferWidth=1512"))
+        XCTAssertTrue(repaired.contains("BackBufferHeight=982"))
+        XCTAssertTrue(repaired.contains("Windowed=0"))
+        XCTAssertTrue(repaired.contains("Language=3"))
+        XCTAssertTrue(repaired.contains("WaitVSync=0"))
+        XCTAssertTrue(repaired.contains("BgmVolume=321"))
+    }
+
+    func testFalcomValidWindowedPreferenceIsNotOverridden() {
+        let existing = """
+        [graphics]
+        BackBufferWidth=1280
+        BackBufferHeight=800
+        Windowed=1
+        """
+
+        XCTAssertNil(WineManager.repairedFalcomYsOriginConfig(
+            existing: existing,
+            screenSize: CGSize(width: 1512, height: 982)
+        ))
+    }
+
     func testGenericTopLevelX64DirectoryStillUsesGameRoot() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("vessel-root-working-dir-\(UUID().uuidString)", isDirectory: true)

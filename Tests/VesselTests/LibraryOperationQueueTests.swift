@@ -58,6 +58,32 @@ struct LibraryOperationQueueTests {
         #expect(restored.kind(for: "persistente") == .install)
     }
 
+    @Test("Volver a encolar una operación fallida la reintenta")
+    @MainActor
+    func enqueueRetriesFailedOperation() async {
+        let suffix = UUID().uuidString
+        let defaultsKey = "vessel.operationQueue.tests-\(suffix)"
+        UserDefaults.standard.removeObject(forKey: defaultsKey)
+        defer { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+
+        let recorder = OperationRecorder()
+        let queue = LibraryOperationQueue(
+            storageKey: "tests-\(suffix)",
+            activityStore: nil
+        )
+        queue.enqueue(gameID: "juego", title: "Juego", kind: .update) { _ in
+            throw NSError(domain: "VesselTests", code: 1)
+        }
+        await waitUntil { queue.phase(for: "juego") == .failed }
+
+        queue.enqueue(gameID: "juego", title: "Juego", kind: .update) { operation in
+            recorder.values.append(operation.id)
+        }
+
+        await waitUntil { !queue.hasItems }
+        #expect(recorder.values == ["juego"])
+    }
+
     @MainActor
     private func waitUntil(
         timeout: Duration = .seconds(2),

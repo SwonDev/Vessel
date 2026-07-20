@@ -92,6 +92,27 @@ final class ExecutableResolverTests: XCTestCase {
         XCTAssertEqual((exe as NSString?)?.lastPathComponent, "tiny.exe")
     }
 
+    /// Los paneles de configuración no son payloads jugables aunque estén en la raíz. Regresión
+    /// real de Ys Origin: `config.exe` era más corto que `yso_win.exe`, ganaba el desempate y el
+    /// botón Jugar abría siempre los ajustes con `-c`.
+    func testIgnoresAuxiliaryConfigExecutable() throws {
+        let dir = tempDir("Ys Origin")
+        try makeTree(dir, files: ["config.exe", "yso_win.exe"], dirs: [])
+        defer { try? FileManager.default.removeItem(atPath: (dir as NSString).deletingLastPathComponent) }
+
+        let exe = SteamLibraryImporter.mainGameExecutable(in: dir)
+        XCTAssertEqual((exe as NSString?)?.lastPathComponent, "yso_win.exe")
+    }
+
+    /// Un depot parcial que solo contenga el configurador no debe aparecer como juego instalado.
+    func testRejectsInstallContainingOnlyConfigExecutable() throws {
+        let dir = tempDir("Partial Game")
+        try makeTree(dir, files: ["config.exe"], dirs: [])
+        defer { try? FileManager.default.removeItem(atPath: (dir as NSString).deletingLastPathComponent) }
+
+        XCTAssertNil(SteamLibraryImporter.mainGameExecutable(in: dir))
+    }
+
     /// Cuando el juego ofrece un renderer OpenGL real junto al ejecutable base, debe preferirse la
     /// variante explícita. Regresión de Dead Cells: el empate elegía `deadcells.exe` por ser más corto
     /// y ocultaba `deadcells_gl.exe`, que es la ruta compatible con el motor OpenGL de Vessel.

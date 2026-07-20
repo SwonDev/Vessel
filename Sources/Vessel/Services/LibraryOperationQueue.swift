@@ -147,7 +147,20 @@ final class LibraryOperationQueue {
     ) {
         // Un juego solo puede tener una operación viva. Un doble clic o "Actualizar todo" no debe
         // reiniciar una descarga, reemplazar una verificación activa ni duplicar trabajo.
-        if items.contains(where: { $0.id == gameID }) {
+        if let index = items.firstIndex(where: { $0.id == gameID }) {
+            // Un fallo persistido no está vivo: volver a pulsar Instalar/Actualizar es una petición
+            // explícita de reintento. Reconectamos el ejecutor actual y lo devolvemos a la cola en
+            // vez de ignorar silenciosamente el clic (el centro de descargas conserva el mismo ítem).
+            if items[index].phase == .failed {
+                executors[gameID] = executor
+                items[index].operation.title = title
+                items[index].operation.kind = kind
+                items[index].operation.targetID = targetID
+                items[index].phase = .queued
+                items[index].message = "En cola para reintentar…"
+                items[index].fractionCompleted = nil
+                persist()
+            }
             startIfNeeded()
             return
         }

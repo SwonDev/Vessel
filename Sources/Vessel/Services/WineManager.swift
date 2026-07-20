@@ -779,6 +779,242 @@ final class WineManager {
             && exeContains(executable, anyOf: ["XAudio2Create"])
     }
 
+    /// Runtime clásico de Nihon Falcom usado por Ys Origin: PE32, Direct3D 9 y paquetes
+    /// propietarios `.nya`/`.ni`/`.na`. Estas builds dibujan a escala lógica 1×; con Retina
+    /// Wine crea una superficie 2× y el juego solo rellena una esquina de la pantalla.
+    ///
+    /// La firma combina imports PE, nombres internos del subsistema y los tres contenedores de
+    /// recursos. No depende del nombre del ejecutable ni del AppID y evita aplicar esta política
+    /// a cualquier juego japonés o D3D9 genérico.
+    func isNihonFalcomYsOriginD3D9Engine(_ executable: String) -> Bool {
+        guard isExecutable32Bit(executable) else { return false }
+        let imports = peImportedLibraries(forExecutable: executable)
+        guard ["d3d9.dll", "d3dx9_43.dll", "dsound.dll", "dinput8.dll"]
+            .allSatisfy(imports.contains) else { return false }
+        guard exeContains(executable, anyOf: [#"SOFTWARE\Falcom\YSO_WIN"#]),
+              exeContains(executable, anyOf: [#"Release\data.nya"#]),
+              exeContains(executable, anyOf: ["failed: Subsys D3D::Initialize"])
+        else { return false }
+
+        let directory = (executable as NSString).deletingLastPathComponent
+        let release = (directory as NSString).appendingPathComponent("release")
+        return ["data.nya", "data.ni", "data.na"].allSatisfy {
+            FileManager.default.fileExists(
+                atPath: (release as NSString).appendingPathComponent($0)
+            )
+        }
+    }
+
+    /// Genera la configuración oficial de primer arranque de Ys Origin o repara solamente su
+    /// geometría de pantalla completa. Una ventana válida elegida por el jugador nunca se cambia.
+    nonisolated static func repairedFalcomYsOriginConfig(
+        existing: String?,
+        screenSize: CGSize
+    ) -> String? {
+        let width = max(960, Int(screenSize.width.rounded(.down)))
+        let height = max(600, Int(screenSize.height.rounded(.down)))
+        guard let existing, !existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return """
+            IniVersion=0x100
+
+            [kernel]
+            ClampInternalFrameRateMin=5
+            ClampInternalFrameRateMax=10000
+            AccessArchiveViaMemoryMappedFile=1
+            HighResoText=1
+            EnglishRoonic=0
+
+            [game]
+            BloodyEffectLevel=2
+            Language=1
+
+            [graphics]
+            Device=0
+            Adapter=0
+            BackBufferWidth=\(width)
+            BackBufferHeight=\(height)
+            BackBufferFormat32=1
+            StretchAspect=0
+            RefreshRate=0
+            MultiSampleType=0
+            TextureFilter=2
+            Anisotropy=2
+            Windowed=0
+            WaitVSync=1
+            ForceSoftwareVP=0
+            DisablePixelShader=0
+            TripleBuffer=0
+            LowResoTexture=0
+            CompressedTexture=1
+            OtherLightWeightMode=0
+            ShowFPS=0
+            Mipmap=1
+            GammaEnable=1
+            MaskOfEyes=0
+            WaterCaustics=0
+            DisableQPC=0
+            GammaValue=1.00000000
+            DisableMovies=0
+            WaterEffectLevel=0
+            ShadowEffectLevel=2
+            GlareEffectLevel=2
+
+            [sound]
+            Device=0
+            PlayBgm=1
+            PlayEffect=1
+            Reverb=0
+            ForceSoftwareSoundBuffer=0
+            BgmVolume=512
+            EffectVolume=512
+
+            [input]
+            MouseButtonAlwaysOkCancel=1
+            PadAnalog=0
+            DashControl=1
+            AtkBtnMagic=0
+            AlwaysDashOK=0
+            ForceFeedback=1
+            GamePad=1
+            GamePadID=1
+            FileIndex=0
+            Assign{KEY_ACTION}="Z"
+            Assign{KEY_JUMP}="X"
+            Assign{KEY_SHOT}="C"
+            Assign{KEY_USE}="V"
+            Assign{KEY_MENU}="Space"
+            Assign{KEY_WALK}="L-Shift"
+            Assign{KEY_SWORD_REVD}="S"
+            Assign{KEY_SWORD_REVU}="D"
+            Assign{KEY_SWORD0}="1"
+            Assign{KEY_SWORD1}="2"
+            Assign{KEY_SWORD2}="3"
+            Assign{KEY_UP}="Numpad8"
+            Assign{KEY_DOWN}="Numpad2"
+            Assign{KEY_LEFT}="Numpad4"
+            Assign{KEY_RIGHT}="Numpad6"
+            Assign{KEY_UPLEFT}="Numpad7"
+            Assign{KEY_UPRIGHT}="Numpad9"
+            Assign{KEY_DOWNLEFT}="Numpad1"
+            Assign{KEY_DOWNRIGHT}="Numpad3"
+            Assign{MOUSE_DIR}="L-Button"
+            Assign{PAD_ACTION}="Button1"
+            Assign{PAD_JUMP}="Button2"
+            Assign{PAD_SHOT}="Button3"
+            Assign{PAD_USE}="Button4"
+            Assign{PAD_MENU}="Button10"
+            Assign{PAD_WALK}="Button9"
+            Assign{PAD_SWORD_REVD}="Button5"
+            Assign{PAD_SWORD_REVU}="Button8"
+            Assign{MOUSE_ACTION}="---"
+            Assign{MOUSE_JUMP}="R-Button"
+            Assign{MOUSE_SHOT}="---"
+            Assign{MOUSE_USE}="M-Button"
+            Assign{MOUSE_MENU}="---"
+            Assign{MOUSE_WALK}="---"
+            DeadZone=0.34999999
+            RunWalkThreshold=0.50000000
+            MouseSensitivity=1.00000000
+            DoubleClickFrame=12
+            """ + "\n"
+        }
+
+        func value(_ key: String) -> Int? {
+            let escaped = NSRegularExpression.escapedPattern(for: key)
+            let pattern = #"(?mi)^\s*"# + escaped + #"\s*=\s*(\d+)\s*$"#
+            guard let expression = try? NSRegularExpression(pattern: pattern),
+                  let match = expression.firstMatch(
+                      in: existing,
+                      range: NSRange(existing.startIndex..<existing.endIndex, in: existing)
+                  ),
+                  let range = Range(match.range(at: 1), in: existing)
+            else { return nil }
+            return Int(existing[range])
+        }
+
+        let currentWidth = value("BackBufferWidth")
+        let currentHeight = value("BackBufferHeight")
+        let windowed = value("Windowed")
+        let missingGeometry = currentWidth == nil || currentHeight == nil || windowed == nil
+        let oversized = (currentWidth ?? 0) > width || (currentHeight ?? 0) > height
+        let fullscreenMismatch = windowed == 0
+            && (currentWidth != width || currentHeight != height)
+        guard missingGeometry || oversized || fullscreenMismatch else { return nil }
+
+        func setGraphicsValue(_ source: String, key: String, value: Int) -> String {
+            let escaped = NSRegularExpression.escapedPattern(for: key)
+            let linePattern = #"(?mi)^\s*"# + escaped + #"\s*=.*$"#
+            if let range = source.range(of: linePattern, options: .regularExpression) {
+                var result = source
+                result.replaceSubrange(range, with: "\(key)=\(value)")
+                return result
+            }
+
+            let sectionPattern = #"(?ms)^\[graphics\]\s*$.*?(?=^\[|\z)"#
+            guard let sectionRange = source.range(of: sectionPattern, options: .regularExpression)
+            else {
+                return source + (source.hasSuffix("\n") ? "" : "\n")
+                    + "\n[graphics]\n\(key)=\(value)\n"
+            }
+            var section = String(source[sectionRange])
+            section += (section.hasSuffix("\n") ? "" : "\n") + "\(key)=\(value)\n"
+            var result = source
+            result.replaceSubrange(sectionRange, with: section)
+            return result
+        }
+
+        var repaired = setGraphicsValue(existing, key: "BackBufferWidth", value: width)
+        repaired = setGraphicsValue(repaired, key: "BackBufferHeight", value: height)
+        if windowed == nil {
+            repaired = setGraphicsValue(repaired, key: "Windowed", value: 0)
+        }
+        return repaired
+    }
+
+    /// Prepara el archivo que el propio runtime sincroniza con Steam Cloud. Se escribe antes del
+    /// arranque, únicamente para esta firma estructural y conservando audio, controles e idioma.
+    private func ensureFalcomYsOriginDisplaySettings(prefix: String, executable: String) {
+        guard isNihonFalcomYsOriginD3D9Engine(executable) else { return }
+        let mode = CGDisplayCopyDisplayMode(CGMainDisplayID())
+        let screen = CGSize(width: mode?.width ?? 1512, height: mode?.height ?? 982)
+        let fileManager = FileManager.default
+        let usersDirectory = "\(prefix)/drive_c/users"
+        let users = ((try? fileManager.contentsOfDirectory(atPath: usersDirectory)) ?? []).sorted()
+        var paths = users.compactMap { user -> String? in
+            let path = "\(usersDirectory)/\(user)/Saved Games/FALCOM/yso_win/yso_win.ini"
+            return fileManager.fileExists(atPath: path) ? path : nil
+        }
+        if paths.isEmpty {
+            let preferred = users.contains("crossover") ? "crossover" : users.first
+            guard let preferred else { return }
+            paths = ["\(usersDirectory)/\(preferred)/Saved Games/FALCOM/yso_win/yso_win.ini"]
+        }
+
+        for path in paths {
+            let existing = try? String(contentsOfFile: path, encoding: .utf8)
+            guard let repaired = Self.repairedFalcomYsOriginConfig(
+                existing: existing,
+                screenSize: screen
+            ) else { continue }
+            do {
+                try fileManager.createDirectory(
+                    atPath: (path as NSString).deletingLastPathComponent,
+                    withIntermediateDirectories: true
+                )
+                try repaired.write(toFile: path, atomically: true, encoding: .utf8)
+                log.log(
+                    "Motor Falcom: pantalla completa ajustada automáticamente a \(Int(screen.width))×\(Int(screen.height)).",
+                    level: .info
+                )
+            } catch {
+                log.log(
+                    "No se pudo preparar la resolución del motor Falcom: \(error.localizedDescription)",
+                    level: .warn
+                )
+            }
+        }
+    }
+
     /// Runtime Chowdren compilado a C++ con SDL2 embebido y el renderer D3D9 de Windows.
     ///
     /// No basta con detectar SDL2+D3D9: miles de juegos comparten esa combinación. Chowdren deja
@@ -1443,6 +1679,7 @@ final class WineManager {
         isLegacyOgreD3D9Game(executable)
             || isLegacyANGLE1D3D9Game(executable)
             || isFrozenbyteStorm3DD3D9Engine(executable)
+            || isNihonFalcomYsOriginD3D9Engine(executable)
     }
 
     /// El new-WoW64 no crea dispositivos D3D9 de 32 bits y ANGLE 1.x no consigue inicializar EGL
@@ -2452,6 +2689,10 @@ final class WineManager {
                 level: .info
             )
         }
+        ensureFalcomYsOriginDisplaySettings(
+            prefix: bottle.prefixPath,
+            executable: executable
+        )
         // Se escribe SIEMPRE: el prefijo es compartido y no puede heredar Retina on/off del juego
         // anterior. OGRE 1.6 y ANGLE 1.x no son HiDPI-aware; el resto respeta la configuración.
         await setMacDriverRetinaMode(
@@ -3902,6 +4143,10 @@ final class WineManager {
             // Un intento anterior por DXMT puede haber dejado DLLs locales que ganarían al backend
             // elegido automáticamente por cxcompatdb. Se retiran antes de que Steam cree el proceso.
             cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
+            ensureFalcomYsOriginDisplaySettings(
+                prefix: bottle.prefixPath,
+                executable: executable
+            )
             await setMacDriverRetinaMode(
                 prefix: bottle.prefixPath,
                 wine: fullWine,
@@ -3958,6 +4203,10 @@ final class WineManager {
                     level: .info
                 )
             }
+            ensureFalcomYsOriginDisplaySettings(
+                prefix: bottle.prefixPath,
+                executable: executable
+            )
             await setMacDriverRetinaMode(
                 prefix: bottle.prefixPath,
                 wine: fullWine,

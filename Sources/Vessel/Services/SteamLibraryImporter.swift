@@ -281,9 +281,18 @@ final class SteamLibraryImporter {
         var exes: [(rel: String, full: String)] = []
         for case let path as String in enumerator where path.lowercased().hasSuffix(".exe") {
             let lower = path.lowercased()
+            let executableStem = ((((lower as NSString).lastPathComponent) as NSString)
+                .deletingPathExtension)
             if lower.contains("redist") || lower.contains("vcredist") || lower.contains("crashpad")
                 || lower.contains("unitycrash") || lower.contains("crashhandler") || lower.contains("dxsetup")
                 || lower.contains("dotnet") || lower.contains("directx") || lower.contains("uninstall") {
+                continue
+            }
+            // Paneles auxiliares de configuración: no son el juego. Algunos depots antiguos los
+            // dejan en la raíz junto al ejecutable real y, por tener un nombre más corto, ganaban
+            // el desempate (Ys Origin: `config.exe` frente a `yso_win.exe`). Si el depot solo trae
+            // uno de estos paneles, la instalación está incompleta y tampoco debe marcarse jugable.
+            if ["config", "configuration", "configure", "settings", "setup"].contains(executableStem) {
                 continue
             }
             // **Ejecutables de MS-DOS**: fuera. Wine no corre binarios de 16 bits en un macOS de 64,

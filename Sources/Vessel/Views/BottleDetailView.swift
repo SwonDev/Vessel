@@ -526,8 +526,38 @@ struct BottleDetailView: View {
     /// Escanea el Steam del bottle y añade a la lista los juegos instalados que aún
     /// no estén. Hace que aparezcan automáticamente con su botón "Jugar" (wine-dxmt).
     private func autoImportGames() async {
-        let found = importer.scanBottleGames(bottle: localBottle)
         var changed = false
+
+        // Las instalaciones hechas por SteamCMD guardan su manifiesto dentro de
+        // `<juego>/steamapps`, no necesariamente en el `steamapps` del cliente. Por eso un juego
+        // ya registrado debe poder autorreparar su ejecutable directamente desde `installPath`,
+        // aunque el escaneo de manifiestos no lo devuelva. Esto migra datos de versiones antiguas
+        // que eligieron un panel auxiliar (Ys Origin: `config.exe`) sin reinstalar ni cambiar de
+        // vista, y también mantiene la garantía si el estudio reorganiza el depot en una update.
+        for game in localBottle.games {
+            guard let appId = game.steamAppId, !appId.isEmpty else { continue }
+            let installPath = game.installPath.isEmpty
+                ? (game.executablePath as NSString).deletingLastPathComponent
+                : game.installPath
+            guard !installPath.isEmpty,
+                  FileManager.default.fileExists(atPath: installPath),
+                  let resolved = SteamLibraryImporter.mainGameExecutable(in: installPath)
+            else { continue }
+            if store.fixGameExecutable(
+                steamAppId: appId,
+                executablePath: resolved,
+                installPath: installPath,
+                in: localBottle.id
+            ) {
+                log.log(
+                    "Auto-reparado el ejecutable registrado de \(game.name) → \((resolved as NSString).lastPathComponent)",
+                    level: .info
+                )
+                changed = true
+            }
+        }
+
+        let found = importer.scanBottleGames(bottle: localBottle)
         for g in found {
             let existing = localBottle.games.first { $0.steamAppId == g.appId || $0.executablePath == g.executablePath }
             if existing == nil {
