@@ -1114,6 +1114,11 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertTrue(manager.isClassicVirtoolsDirectDrawEngine(executable.path))
         XCTAssertTrue(SteamDRMScanner.hasSteamStub(executable.path))
         XCTAssertTrue(manager.usesProtectedDirectLaunchWithConnectedSteam(executable.path))
+        XCTAssertFalse(WineManager.requiresOfficialSteamAppLaunch(
+            builtInProtection: manager.requiresSteamAppLaunch(executable.path),
+            thirdPartyProtection: nil,
+            directLaunchException: manager.usesProtectedDirectLaunchWithConnectedSteam(executable.path)
+        ))
         XCTAssertEqual(
             manager.classicVirtoolsSaveFolderName(executable.path),
             "Classic Adventure Saves"

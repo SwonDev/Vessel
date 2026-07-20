@@ -109,9 +109,19 @@ struct DRMCompatibilityTests {
         try Data("steamworks".utf8).write(to: root.appendingPathComponent("steam_api64.dll"))
 
         let report = DRMAnalyzer.analyze(folder: root.path, executable: executable.path)
+        let manager = WineManager()
         #expect(report.protections.contains(.enigma))
         #expect(report.social.contains(.steamworks))
-        #expect(WineManager().officialSteamClientProtection(executable.path) == .enigma)
+        #expect(manager.officialSteamClientProtection(executable.path) == .enigma)
+        #expect(WineManager.requiresOfficialSteamAppLaunch(
+            builtInProtection: manager.requiresSteamAppLaunch(executable.path),
+            thirdPartyProtection: .enigma,
+            directLaunchException: manager.usesProtectedDirectLaunchWithConnectedSteam(executable.path)
+        ))
+        #expect(WineManager.shouldUseFullWineForSteamAppLaunch(
+            required: true,
+            graphicsAPI: manager.detectGraphicsAPI(forExecutable: executable.path)
+        ))
     }
 
     @Test("Una mención a Enigma dentro de un PE normal no fuerza Steam")
@@ -126,8 +136,45 @@ struct DRMCompatibilityTests {
         try Data("steamworks".utf8).write(to: root.appendingPathComponent("steam_api64.dll"))
 
         let report = DRMAnalyzer.analyze(folder: root.path, executable: executable.path)
+        let manager = WineManager()
         #expect(!report.protections.contains(.enigma))
-        #expect(WineManager().officialSteamClientProtection(executable.path) == nil)
+        #expect(manager.officialSteamClientProtection(executable.path) == nil)
+        #expect(!WineManager.requiresOfficialSteamAppLaunch(
+            builtInProtection: manager.requiresSteamAppLaunch(executable.path),
+            thirdPartyProtection: nil,
+            directLaunchException: manager.usesProtectedDirectLaunchWithConnectedSteam(executable.path)
+        ))
+    }
+
+    @Test("Enigma con Steamworks y D3D12 delega el AppID sin abandonar D3DMetal")
+    @MainActor
+    func keepsD3D12ProtectedSteamLaunchOnD3DMetal() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Vessel-Enigma-D3D12-\(UUID().uuidString)", isDirectory: true)
+        let executable = root.appendingPathComponent("ProtectedGame.exe")
+        let agility = root.appendingPathComponent("D3D12", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: agility, withIntermediateDirectories: true)
+        try enigmaFixture(opaqueSections: true).write(to: executable)
+        try Data("steamworks".utf8).write(to: root.appendingPathComponent("steam_api64.dll"))
+        try Data("agility".utf8).write(to: agility.appendingPathComponent("D3D12Core.dll"))
+
+        let manager = WineManager()
+        let protection = manager.officialSteamClientProtection(executable.path)
+        let graphicsAPI = manager.detectGraphicsAPI(forExecutable: executable.path)
+        let requiresAppLaunch = WineManager.requiresOfficialSteamAppLaunch(
+            builtInProtection: manager.requiresSteamAppLaunch(executable.path),
+            thirdPartyProtection: protection,
+            directLaunchException: manager.usesProtectedDirectLaunchWithConnectedSteam(executable.path)
+        )
+
+        #expect(protection == .enigma)
+        #expect(requiresAppLaunch)
+        #expect(graphicsAPI == .d3d12)
+        #expect(!WineManager.shouldUseFullWineForSteamAppLaunch(
+            required: requiresAppLaunch,
+            graphicsAPI: graphicsAPI
+        ))
     }
 }
 

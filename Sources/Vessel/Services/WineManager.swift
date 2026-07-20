@@ -953,6 +953,27 @@ final class WineManager {
             && isClassicVirtoolsDirectDrawEngine(executable)
     }
 
+    /// Decide si el cliente oficial debe crear el proceso por AppID. Abrir Steam no basta para
+    /// protecciones que validan su cadena de arranque: SteamStub y los protectores de terceros
+    /// ligados a Steamworks necesitan `-applaunch`. La única excepción comprobada sigue siendo
+    /// Virtools clásico, que se autoriza con el cliente conectado y después se ejecuta directamente.
+    static func requiresOfficialSteamAppLaunch(
+        builtInProtection: Bool,
+        thirdPartyProtection: DRMAnalyzer.Protection?,
+        directLaunchException: Bool
+    ) -> Bool {
+        (builtInProtection || thirdPartyProtection != nil) && !directLaunchException
+    }
+
+    /// Los AppID protegidos D3D12 deben conservar D3DMetal. El motor completo sigue siendo la ruta
+    /// compartida para el resto de APIs, pero no puede adelantar a la rama D3D12 especializada.
+    static func shouldUseFullWineForSteamAppLaunch(
+        required: Bool,
+        graphicsAPI: GameGraphicsAPI
+    ) -> Bool {
+        required && graphicsAPI != .d3d12
+    }
+
     /// Unreal Engine 1 clásico: ejecutable PE32, núcleo modular en `System`, paquetes `.u` y
     /// renderizadores intercambiables declarados en el INI hermano. La combinación distingue esta
     /// generación de UE4/UE5 (que viven en `Binaries/Win*`) y no depende del título ni del AppID.
@@ -2940,6 +2961,11 @@ final class WineManager {
         let protectedSteamAppLaunch = requiresSteamAppLaunch(executable)
         let protectedDirectLaunch = usesProtectedDirectLaunchWithConnectedSteam(executable)
         let protectedByThirdParty = officialSteamClientProtection(executable)
+        let officialSteamAppLaunchRequired = Self.requiresOfficialSteamAppLaunch(
+            builtInProtection: protectedSteamAppLaunch,
+            thirdPartyProtection: protectedByThirdParty,
+            directLaunchException: protectedDirectLaunch
+        )
         let steamShimBootstrapper = steamShimBootstrapper(forPayload: executable)
         // Los juegos protegidos se delegan a Steam, que ejecuta sus `installscript.vdf` antes del
         // juego. Algunos redistribuibles antiguos (sobre todo PhysX) abren asistentes interactivos
@@ -2999,7 +3025,7 @@ final class WineManager {
                 appId: appId,
                 launchArguments: allArgs,
                 effective: eff,
-                steamAppLaunchRequired: protectedSteamAppLaunch && !protectedDirectLaunch
+                steamAppLaunchRequired: officialSteamAppLaunchRequired
                     || steamShimBootstrapper != nil
             )
         }
@@ -5414,7 +5440,10 @@ final class WineManager {
         //      cliente Steam en el MISMO wineserver de GPTK para el DRM. Se salta la rama unificada.
         let graphicsAPI = detectGraphicsAPI(forExecutable: executable)
         ensureFrozenbyteDisplaySettings(prefix: bottle.prefixPath, executable: executable)
-        if steamAppLaunchRequired, let fullWine = await fullEngineWineEnsured() {
+        if Self.shouldUseFullWineForSteamAppLaunch(
+            required: steamAppLaunchRequired,
+            graphicsAPI: graphicsAPI
+        ), let fullWine = await fullEngineWineEnsured() {
             // SteamStub/CEG no debe cruzar motores: `-applaunch` solo llega al cliente que comparte
             // wineserver y wineloader con la orden. Un Steam conectado en wine-full no recibe una
             // segunda instancia enviada desde wine-unified aunque ambos apunten al mismo prefijo.
@@ -5422,7 +5451,7 @@ final class WineManager {
             try await prepareRealSteamClient(in: bottle, wine: fullWine, gameExecutable: executable)
             ensureSteamConfig(in: bottle)
             log.log(
-                "SteamStub/CEG: preparando cliente y juego en el motor completo compartido…",
+                "Protección Steam: preparando cliente y juego en el motor completo compartido…",
                 level: .info
             )
             let connected = await ensureSteamConnected(
@@ -5697,7 +5726,7 @@ final class WineManager {
             env["SteamGameId"] = appId
             for (k, v) in effective.extraEnv { env[k] = v }
             if steamAppLaunchRequired {
-                log.log("SteamStub/CEG: delegando el arranque D3D12 al cliente por AppID.", level: .info)
+                log.log("Protección Steam D3D12: delegando el arranque al cliente por AppID.", level: .info)
                 NotificationService.shared.status("Steam conectado. Autorizando y lanzando el juego…")
                 let process = try await launchThroughConnectedSteamClient(
                     executable: executable,
