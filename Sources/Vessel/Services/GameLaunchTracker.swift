@@ -10,7 +10,21 @@ import Darwin
 @Observable
 final class GameLaunchTracker {
     static let shared = GameLaunchTracker()
-    private init() {}
+
+    private let markPlayed: @MainActor (String) -> Void
+    private let addSession: @MainActor (String, Int) -> Void
+
+    init(
+        markPlayed: @escaping @MainActor (String) -> Void = {
+            PlayStatsStore.shared.markPlayed($0)
+        },
+        addSession: @escaping @MainActor (String, Int) -> Void = {
+            PlayStatsStore.shared.addSession($0, seconds: $1)
+        }
+    ) {
+        self.markPlayed = markPlayed
+        self.addSession = addSession
+    }
 
     enum State: Equatable { case idle, launching, running }
 
@@ -25,6 +39,7 @@ final class GameLaunchTracker {
     /// acumular el tiempo jugado en `PlayStatsStore` al terminar el proceso.
     private var statsKeys: [String: String] = [:]
     private var startTimes: [String: Date] = [:]
+    private var statsActivationWatchers: [String: Task<Void, Never>] = [:]
     /// Último error REAL de `launch()` por id (si lanzó una excepción antes de arrancar). Antes se
     /// tragaba solo en el log; ahora `LaunchDiagnostics` lo incluye en el aviso final para que el
     /// usuario vea la causa raíz (fallo de motor/disco/permisos) en vez de un mensaje genérico.
@@ -69,21 +84,24 @@ final class GameLaunchTracker {
             let proc = try await body()
             processes[id] = proc
             states[id] = .running
-            if let statsKey {
-                statsKeys[id] = statsKey
-                startTimes[id] = Date()
-                PlayStatsStore.shared.markPlayed(statsKey)
-            }
-            if let onExit { onExits[id] = onExit }
             if let processFamilyIsRunning { processFamilyProbes[id] = processFamilyIsRunning }
             if let stopProcessFamily { processFamilyStops[id] = stopProcessFamily }
-            proc.terminationHandler = { _ in
-                Task { @MainActor in
-                    let tracker = GameLaunchTracker.shared
-                    if tracker.processFamilyProbes[id] != nil {
-                        tracker.watchDetachedProcessFamily(id)
+            if let statsKey {
+                statsKeys[id] = statsKey
+                if processFamilyIsRunning == nil {
+                    beginStats(id)
+                } else {
+                    waitForVerifiedGameplay(id)
+                }
+            }
+            if let onExit { onExits[id] = onExit }
+            proc.terminationHandler = { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if self.processFamilyProbes[id] != nil {
+                        self.watchDetachedProcessFamily(id)
                     } else {
-                        tracker.finish(id)
+                        self.finish(id)
                     }
                 }
             }
@@ -102,13 +120,20 @@ final class GameLaunchTracker {
     private func watchDetachedProcessFamily(_ id: String) {
         guard processFamilyWatchers[id] == nil else { return }
         processFamilyWatchers[id] = Task { @MainActor [weak self] in
-            var appeared = false
+            // El observador de estadísticas puede haber verificado ya la familia real mientras
+            // el launcher seguía vivo. Reutilizar esa evidencia evita esperar diez segundos si
+            // el juego fue muy breve o se cerró justo antes de terminar el intermediario.
+            var appeared = self?.startTimes[id] != nil
             // Los launchers con JVM embebida pueden cerrar el proceso anfitrión antes de que Wine
             // publique el proceso Windows definitivo. Dos segundos no bastan en prefijos grandes
             // después de un `wineboot`; diez segundos siguen siendo una gracia acotada y evitan
             // devolver la UI a «Jugar» o disparar el fallback mientras el menú ya está arrancando.
-            for _ in 0..<100 {
+            for _ in 0..<100 where !appeared {
                 guard !Task.isCancelled else { return }
+                if self?.startTimes[id] != nil {
+                    appeared = true
+                    break
+                }
                 if await self?.processFamilyProbes[id]?() == true {
                     appeared = true
                     break
@@ -136,6 +161,30 @@ final class GameLaunchTracker {
         }
     }
 
+    /// Los launchers de Wine y el cliente interno de Steam pueden devolver un `Process` válido
+    /// aunque el ejecutable del juego todavía no exista (por ejemplo mientras espera un EULA).
+    /// Las estadísticas solo empiezan cuando la familia exacta de proceso del juego aparece.
+    private func waitForVerifiedGameplay(_ id: String) {
+        guard statsActivationWatchers[id] == nil else { return }
+        statsActivationWatchers[id] = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.state(id) != .idle else { return }
+                if await self.processFamilyProbes[id]?() == true {
+                    self.beginStats(id)
+                    self.statsActivationWatchers[id] = nil
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+    }
+
+    private func beginStats(_ id: String) {
+        guard startTimes[id] == nil, let key = statsKeys[id] else { return }
+        startTimes[id] = Date()
+        markPlayed(key)
+    }
+
     /// Variante nativa para bundles `.app`. Conserva exactamente el mismo contrato visual y de
     /// estadísticas que `Process`, pero rastrea la aplicación real registrada por LaunchServices.
     /// Así macOS gestiona correctamente foco, Dock, menús y cierre forzado.
@@ -151,8 +200,7 @@ final class GameLaunchTracker {
             states[id] = .running
             if let statsKey {
                 statsKeys[id] = statsKey
-                startTimes[id] = Date()
-                PlayStatsStore.shared.markPlayed(statsKey)
+                beginStats(id)
             }
             if let onExit { onExits[id] = onExit }
             nativeWatchers[id] = Task { @MainActor [weak self] in
@@ -233,7 +281,7 @@ final class GameLaunchTracker {
 
     private func finish(_ id: String) {
         if let key = statsKeys[id], let start = startTimes[id] {
-            PlayStatsStore.shared.addSession(key, seconds: Int(Date().timeIntervalSince(start)))
+            addSession(key, Int(Date().timeIntervalSince(start)))
         }
         onExits[id]?()            // p. ej. subir cloud saves tras cerrar el juego
         states[id] = .idle
@@ -245,6 +293,8 @@ final class GameLaunchTracker {
         nativeApplications[id] = nil
         nativeWatchers[id]?.cancel()
         nativeWatchers[id] = nil
+        statsActivationWatchers[id]?.cancel()
+        statsActivationWatchers[id] = nil
         statsKeys[id] = nil
         startTimes[id] = nil
         onExits[id] = nil
