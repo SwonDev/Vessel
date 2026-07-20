@@ -922,6 +922,16 @@ final class WineManager {
             || isClassicPopCapSteamEngine(executable)
     }
 
+    /// Algunos payloads protegidos pueden iniciarse directamente una vez que el cliente oficial ya
+    /// está conectado en el mismo wineserver. Virtools clásico necesita precisamente esa variante:
+    /// `-applaunch` selecciona el splash del depot y pierde el escritorio virtual, mientras el
+    /// payload autorizado por el cliente vivo sí entra en CKEngine. La combinación SteamStub + firma
+    /// Virtools mantiene esta excepción tan estrecha como el comportamiento comprobado.
+    func usesProtectedDirectLaunchWithConnectedSteam(_ executable: String) -> Bool {
+        SteamDRMScanner.hasSteamStub(executable)
+            && isClassicVirtoolsDirectDrawEngine(executable)
+    }
+
     /// Unreal Engine 1 clásico: ejecutable PE32, núcleo modular en `System`, paquetes `.u` y
     /// renderizadores intercambiables declarados en el INI hermano. La combinación distingue esta
     /// generación de UE4/UE5 (que viven en `Binaries/Win*`) y no depende del título ni del AppID.
@@ -1447,12 +1457,179 @@ final class WineManager {
         }
     }
 
+    /// Runtime Virtools clásico con rasterizador DirectX 7 cargado dinámicamente. El ejecutable no
+    /// importa `ddraw.dll`: delega el render a `CKDX7Rasterizer.dll`, por lo que una detección basada
+    /// solo en la tabla PE lo clasifica como `.other` y lo lanza contra el modo de pantalla real.
+    /// En macOS ese `ChangeDisplaySettings(800×600)` devuelve `BADMODE`; el mismo runtime funciona
+    /// dentro de un escritorio virtual que emule el modo exclusivo.
+    ///
+    /// La firma combina el núcleo Virtools, sus marcadores internos, el rasterizador, el loader y
+    /// ambos tipos de contenido compilado. No depende del título, del AppID ni del nombre del exe.
+    func isClassicVirtoolsDirectDrawEngine(_ executable: String) -> Bool {
+        guard isExecutable32Bit(executable) else { return false }
+        let imports = peImportedLibraries(forExecutable: executable)
+        guard imports.contains("ck2.dll"), imports.contains("vxmath.dll"),
+              exeContains(executable, anyOf: ["SetVirtoolsVersion"]),
+              exeContains(executable, anyOf: ["CKRenderContext"]),
+              exeContains(executable, anyOf: ["Vx3D_D3DR"]),
+              exeContains(executable, anyOf: ["Creating full-screen render context"])
+        else { return false }
+
+        let fileManager = FileManager.default
+        let root = URL(fileURLWithPath: executable).deletingLastPathComponent()
+        func names(in directory: URL) -> Set<String> {
+            Set(((try? fileManager.contentsOfDirectory(atPath: directory.path)) ?? [])
+                .map { $0.lowercased() })
+        }
+
+        let rootNames = names(in: root)
+        let dllNames = names(in: root.appendingPathComponent("Dlls", isDirectory: true))
+        let cmoNames = names(in: root.appendingPathComponent("Cmo", isDirectory: true))
+        guard rootNames.contains("ck2.dll"), rootNames.contains("vxmath.dll"),
+              dllNames.contains("ckdx7rasterizer.dll"),
+              dllNames.contains("virtoolsloaderr.dll"),
+              cmoNames.contains(where: { $0.hasSuffix(".cmo") })
+        else { return false }
+
+        guard let enumerator = fileManager.enumerator(
+            at: root.appendingPathComponent("Data", isDirectory: true),
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return false }
+        var inspected = 0
+        for case let url as URL in enumerator {
+            inspected += 1
+            if inspected > 10_000 { break }
+            if url.pathExtension.caseInsensitiveCompare("nmo") == .orderedSame { return true }
+        }
+        return false
+    }
+
+    /// Extrae el directorio de partidas que el propio runtime entrega a SHGetFolderPath. Se exige
+    /// una cadena ASCII terminada en ` Saves` y delimitada por NUL; así se puede preparar el primer
+    /// arranque sin codificar un nombre de juego ni asumir el usuario del prefijo.
+    func classicVirtoolsSaveFolderName(_ executable: String) -> String? {
+        guard isClassicVirtoolsDirectDrawEngine(executable),
+              let data = try? Data(
+                  contentsOf: URL(fileURLWithPath: executable),
+                  options: .mappedIfSafe
+              )
+        else { return nil }
+        let contents = String(decoding: data, as: UTF8.self)
+        let pattern = #"(?:^|\x00)([A-Za-z0-9][A-Za-z0-9 ._'-]{1,63} Saves)\x00"#
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.firstMatch(
+                  in: contents,
+                  range: NSRange(contents.startIndex..., in: contents)
+              ),
+              let range = Range(match.range(at: 1), in: contents)
+        else { return nil }
+        return String(contents[range])
+    }
+
+    /// Contrato binario del `Config.dat` de esta generación: siete UInt32 little-endian. Solo se
+    /// cambia `bpp` de 16 a 32; volumen, música, subtítulos, detalle y FSAA permanecen intactos.
+    /// Si aún no existe se genera el mismo estado por defecto del runtime, ya corregido a 32 bits.
+    nonisolated static func repairedClassicVirtoolsConfig(existing: Data?) -> Data? {
+        func uint32(_ data: Data, at offset: Int) -> UInt32 {
+            (0..<4).reduce(0) { value, index in
+                value | (UInt32(data[offset + index]) << UInt32(index * 8))
+            }
+        }
+        func writeUInt32(_ value: UInt32, to data: inout Data, at offset: Int) {
+            for index in 0..<4 {
+                data[offset + index] = UInt8((value >> UInt32(index * 8)) & 0xff)
+            }
+        }
+
+        guard let existing else {
+            var created = Data(repeating: 0, count: 28)
+            for (index, value) in [
+                UInt32(0x5359_4232), 10, 5, 1, 32, 1, 0
+            ].enumerated() {
+                writeUInt32(value, to: &created, at: index * 4)
+            }
+            return created
+        }
+        guard existing.count == 28,
+              uint32(existing, at: 0) == 0x5359_4232,
+              uint32(existing, at: 16) == 16
+        else { return nil }
+        var repaired = existing
+        writeUInt32(32, to: &repaired, at: 16)
+        return repaired
+    }
+
+    /// Prepara o repara el vídeo del runtime antes de arrancar. Se conservan copias recuperables de
+    /// configuraciones existentes y se prioriza el usuario `crossover`, que es el perfil efectivo
+    /// del Wine completo; otros nombres siguen funcionando al reparar cualquier config ya creada.
+    private func ensureClassicVirtoolsDisplaySettings(prefix: String, executable: String) {
+        guard let saveFolder = classicVirtoolsSaveFolderName(executable),
+              exeContains(executable, anyOf: ["No 'Config.dat' file. Creating the default one."]),
+              exeContains(executable, anyOf: ["Wrong 'Config.dat' file version."])
+        else { return }
+
+        let fileManager = FileManager.default
+        let usersDirectory = "\(prefix)/drive_c/users"
+        let users = ((try? fileManager.contentsOfDirectory(atPath: usersDirectory)) ?? [])
+            .filter { $0.caseInsensitiveCompare("Public") != .orderedSame }
+            .sorted()
+        var paths = users.map {
+            "\(usersDirectory)/\($0)/Documents/\(saveFolder)/Config.dat"
+        }.filter(fileManager.fileExists)
+        if paths.isEmpty {
+            let preferred = users.first(where: {
+                $0.caseInsensitiveCompare("crossover") == .orderedSame
+            }) ?? users.first
+            guard let preferred else { return }
+            paths = ["\(usersDirectory)/\(preferred)/Documents/\(saveFolder)/Config.dat"]
+        }
+
+        for path in paths {
+            let existing = try? Data(contentsOf: URL(fileURLWithPath: path))
+            guard let repaired = Self.repairedClassicVirtoolsConfig(existing: existing) else {
+                continue
+            }
+            let backup = path + ".vessel-16bpp-backup"
+            if existing != nil, !fileManager.fileExists(atPath: backup) {
+                do {
+                    try fileManager.copyItem(atPath: path, toPath: backup)
+                } catch {
+                    log.log(
+                        "Virtools: no se tocó Config.dat porque no se pudo crear una copia recuperable.",
+                        level: .warn
+                    )
+                    continue
+                }
+            }
+            do {
+                try fileManager.createDirectory(
+                    atPath: (path as NSString).deletingLastPathComponent,
+                    withIntermediateDirectories: true
+                )
+                try repaired.write(to: URL(fileURLWithPath: path), options: .atomic)
+                log.log(
+                    existing == nil
+                        ? "Virtools clásico: vídeo inicial preparado automáticamente a 32 bits."
+                        : "Virtools clásico: vídeo de 16 bits autorreparado a 32 bits; copia conservada.",
+                    level: .info
+                )
+            } catch {
+                log.log(
+                    "No se pudo preparar el vídeo del runtime Virtools: \(error.localizedDescription)",
+                    level: .warn
+                )
+            }
+        }
+    }
+
     /// Los runtimes PE32 no conscientes de HiDPI deben trabajar 1:1 en puntos. Mantener la
     /// decisión en una función comprobable impide ampliar la excepción a cualquier juego de
     /// 32 bits y permite restaurar Retina explícitamente para todos los demás.
     func usesLegacy32BitNativeScaling(_ executable: String) -> Bool {
         isClickteamMultimediaFusion2DirectDrawEngine(executable)
             || isUnrealEngine1Game(executable)
+            || isClassicVirtoolsDirectDrawEngine(executable)
     }
 
     /// Genera la configuración oficial de primer arranque de Ys Origin o repara solamente su
@@ -2414,6 +2591,7 @@ final class WineManager {
         // El enum aún no tiene una categoría «Wine completo»; `.gcenx` representa aquí la familia
         // wined3d/compatibilidad y evita que el diagnóstico crea que se lanzó por DXMT.
         if isLegacyMoaiOpenGLGame(executable) { return .gcenx }
+        if isClassicVirtoolsDirectDrawEngine(executable) { return .gcenx }
         let go = eff.graphicsOverride
         if go == .gcenx { return .gcenx }
         let api = detectGraphicsAPI(forExecutable: executable)
@@ -2442,6 +2620,9 @@ final class WineManager {
         if isNWJSGame(executable) { return [.dxmt] }
         // Moai/AKUSDL no tiene «capas Direct3D» que probar: el adaptador Wine completo es su ruta.
         if isLegacyMoaiOpenGLGame(executable) { return [] }
+        // Virtools DX7 depende de un modo exclusivo emulado y de su rasterizador local. Cambiar de
+        // traductor no crea ese modo y solo reiniciaría un juego que ya tiene una ruta determinista.
+        if isClassicVirtoolsDirectDrawEngine(executable) { return [] }
         switch eff.graphicsOverride {
         case .gptk:  return [.gptk]
         case .dxmt:  return [.dxmt]
@@ -2665,13 +2846,14 @@ final class WineManager {
         let steamNetworkingRequiresRealClient = requiresRealSteamNetworking(executable)
         let classicPopCapRequiresRealClient = isClassicPopCapSteamEngine(executable)
         let protectedSteamAppLaunch = requiresSteamAppLaunch(executable)
+        let protectedDirectLaunch = usesProtectedDirectLaunchWithConnectedSteam(executable)
         let steamShimBootstrapper = steamShimBootstrapper(forPayload: executable)
         // Los juegos protegidos se delegan a Steam, que ejecuta sus `installscript.vdf` antes del
         // juego. Algunos redistribuibles antiguos (sobre todo PhysX) abren asistentes interactivos
         // aunque el flujo se haya iniciado desde Vessel. Preparar por evidencia los runtimes antes
         // de abrir Steam convierte el primer arranque en un proceso completamente desatendido y,
         // además, deja satisfechas las claves de detección que usa el propio installscript.
-        if steamStubRequiresRealClient {
+        if steamStubRequiresRealClient, !protectedDirectLaunch {
             _ = RuntimeDependencyProvisioner.provision(
                 executable: executable,
                 includeNestedFiles: false
@@ -2721,7 +2903,7 @@ final class WineManager {
                 appId: appId,
                 launchArguments: allArgs,
                 effective: eff,
-                steamAppLaunchRequired: protectedSteamAppLaunch
+                steamAppLaunchRequired: protectedSteamAppLaunch && !protectedDirectLaunch
                     || steamShimBootstrapper != nil
             )
         }
@@ -2773,6 +2955,19 @@ final class WineManager {
             }
             return try await launchRetroWrapper(executable: executable, in: bottle,
                                                 arguments: allArgs, effective: eff)
+        }
+        // **Virtools clásico / DirectX 7**: el rasterizador se carga desde una DLL y el exe no
+        // revela DirectDraw en sus imports. Necesita su modo exclusivo 800×600 emulado, escala 1×
+        // y vídeo de 32 bits; se resuelve antes de la regla DirectDraw genérica de 640×480×8.
+        if isClassicVirtoolsDirectDrawEngine(executable),
+           let fullEngineWine = await fullEngineWineEnsured() {
+            return try await launchClassicVirtoolsDirectDrawGame(
+                executable: executable,
+                in: bottle,
+                arguments: allArgs,
+                effective: eff,
+                wine: fullEngineWine
+            )
         }
         // **DirectDraw de la era VGA (256 colores)**: escritorio virtual + Wine de CrossOver. Va
         // aquí, antes de la detección de API, porque estos juegos no son "D3D9" ni nada moderno:
@@ -3260,6 +3455,53 @@ final class WineManager {
             environment: env,
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: effective
+        )
+    }
+
+    /// Lanza Virtools clásico con el modo 800×600 que su rasterizador DirectX 7 espera. El escritorio
+    /// virtual evita pedir a macOS un modo exclusivo inexistente (`BADMODE`) y mantiene framebuffer,
+    /// ventana y coordenadas de entrada en la misma escala. La configuración binaria se prepara antes
+    /// de abrir Wine para que el primer arranque no caiga silenciosamente en color de 16 bits.
+    private func launchClassicVirtoolsDirectDrawGame(
+        executable: String,
+        in bottle: Bottle,
+        arguments: [String],
+        effective: EffectiveLaunchConfig,
+        wine: String
+    ) async throws -> Process {
+        log.log(
+            "Virtools clásico (DirectX 7): escritorio virtual 800×600, escala nativa y vídeo de 32 bits.",
+            level: .info
+        )
+        cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
+        try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: wine)
+        await resyncGamePrefix(gameWine: wine, prefix: bottle.prefixPath)
+        await setMacDriverRetinaMode(
+            prefix: bottle.prefixPath,
+            wine: wine,
+            enabled: false
+        )
+        ensureClassicVirtoolsDisplaySettings(
+            prefix: bottle.prefixPath,
+            executable: executable
+        )
+        return try await launchWineProcess(
+            winePath: wine,
+            prefix: bottle.prefixPath,
+            arguments: ["explorer", "/desktop=VesselVirtools,800x600", executable] + arguments,
+            environment: [
+                "WINEPREFIX": bottle.prefixPath,
+                "WINEDEBUG": "-all",
+                "WINEDLLOVERRIDES": "winemenubuilder.exe=d",
+                "WINEMSYNC": "1",
+                "WINEESYNC": "1",
+                "WINEFSYNC": "1"
+            ],
+            workingDirectory: gameWorkingDirectory(forExecutable: executable),
+            effective: effective,
+            forceSyncOn: true,
+            forceCleanEnv: true
         )
     }
 
@@ -4936,6 +5178,72 @@ final class WineManager {
         goldbergManager.restoreGame(gameExecutable: executable)
         let gameDir = (executable as NSString).deletingLastPathComponent
         try? appId.write(toFile: "\(gameDir)/steam_appid.txt", atomically: true, encoding: .utf8)
+
+        // SteamStub + Virtools clásico: el cliente interno sigue siendo obligatorio para autorizar
+        // el ejecutable, pero `-applaunch` abre el splash raíz y no puede transportar el escritorio
+        // virtual. Con Steam ya conectado, lanzar el payload directamente en el MISMO wineserver
+        // conserva el DRM real y permite crear el modo exclusivo emulado de 800×600.
+        if usesProtectedDirectLaunchWithConnectedSteam(executable) {
+            guard let fullWine = await fullEngineWineEnsured() else {
+                throw WineError.launchFailed("No se encontró el motor completo para el runtime Virtools protegido.")
+            }
+            try await prepareRealSteamClient(
+                in: bottle,
+                wine: fullWine,
+                gameExecutable: executable
+            )
+            ensureSteamConfig(in: bottle)
+            log.log(
+                "Virtools protegido: preparando el cliente Steam interno en el wineserver compartido…",
+                level: .info
+            )
+            let connected = await ensureSteamConnected(
+                in: bottle,
+                clientWine: fullWine,
+                timeoutSeconds: 120,
+                background: true
+            )
+            if !connected {
+                if SteamAuthService.storedSessionNeedsReauthentication {
+                    throw steamRealReauthenticationRequired(gameExecutable: executable)
+                }
+                throw steamRealNotConnected(gameExecutable: executable, in: bottle)
+            }
+
+            cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
+            await setMacDriverRetinaMode(
+                prefix: bottle.prefixPath,
+                wine: fullWine,
+                enabled: false
+            )
+            ensureClassicVirtoolsDisplaySettings(
+                prefix: bottle.prefixPath,
+                executable: executable
+            )
+            var environment = steamClientEnvironment(
+                prefix: bottle.prefixPath,
+                wine: fullWine
+            )
+            environment["SteamAppId"] = appId
+            environment["SteamGameId"] = appId
+            for (key, value) in effective.extraEnv { environment[key] = value }
+            log.log(
+                "Cliente Steam conectado; lanzando Virtools autorizado en escritorio virtual 800×600.",
+                level: .info
+            )
+            return try await launchWineProcess(
+                winePath: fullWine,
+                prefix: bottle.prefixPath,
+                arguments: [
+                    "explorer", "/desktop=VesselVirtools,800x600", executable
+                ] + launchArguments,
+                environment: environment,
+                workingDirectory: gameWorkingDirectory(forExecutable: executable),
+                effective: effective,
+                forceSyncOn: true,
+                forceCleanEnv: true
+            )
+        }
 
         // 2) Motor según la API gráfica del juego:
         //    · D3D11 (Unity/Unreal/…) → motor UNIFICADO (DXMT→Metal); cliente y juego en su

@@ -195,7 +195,7 @@ final class SteamLibraryImporter: Sendable {
         }
     }
 
-    /// Descubre el payload que un launcher oficial declara mediante un INI adyacente.
+    /// Descubre el payload que un launcher oficial declara mediante una configuración verificable.
     ///
     /// Algunos depots conservan una edición antigua en la raíz y añaden una edición moderna en un
     /// subdirectorio. El botón de Steam apunta a `*_launcher.exe`, mientras que su INI contiene una
@@ -203,9 +203,12 @@ final class SteamLibraryImporter: Sendable {
     /// conocer esa relación y terminaba escogiendo el ejecutable antiguo de la raíz. Seguirla evita
     /// mostrar el launcher y permite que Vessel analice y prepare el motor del payload real.
     ///
-    /// La evidencia se acota deliberadamente: INI pequeño, clave exacta, launcher hermano cuyo
-    /// nombre comparte el stem del INI, destino `.exe` existente dentro del árbol y candidato ya
-    /// validado por el escaneo. No se confía en nombres de juegos, AppID ni argumentos manuales.
+    /// La evidencia se acota deliberadamente: fichero pequeño, relación exacta, launcher binario
+    /// verificable, destino `.exe` existente dentro del árbol y candidato ya validado por el
+    /// escaneo. Además del INI moderno se reconoce el splash clásico de DotEmu: su
+    /// `splash/config.txt` declara `exe <payload>` y una o más imágenes reales, mientras el launcher
+    /// raíz contiene las firmas `DotEmu`, `SDL.dll` y la ruta del propio config. No se confía en
+    /// nombres de juegos, AppID ni argumentos manuales.
     private static func launcherConfiguredPayloads(
         in root: String,
         candidates: [(rel: String, full: String)]
@@ -222,6 +225,72 @@ final class SteamLibraryImporter: Sendable {
             (path as NSString).deletingLastPathComponent
         }
 
+        func binaryContains(_ path: String, markers: [String]) -> Bool {
+            guard let data = try? Data(
+                contentsOf: URL(fileURLWithPath: path),
+                options: .mappedIfSafe
+            ) else { return false }
+            return markers.allSatisfy { marker in
+                data.range(of: Data(marker.utf8)) != nil
+            }
+        }
+
+        func dotEmuPayload(from url: URL, contents: String) -> String? {
+            let splashDirectory = url.deletingLastPathComponent().standardizedFileURL
+            guard url.lastPathComponent.caseInsensitiveCompare("config.txt") == .orderedSame,
+                  splashDirectory.lastPathComponent.caseInsensitiveCompare("splash") == .orderedSame
+            else { return nil }
+
+            let entries = contents.split(whereSeparator: \.isNewline).compactMap { line -> (String, String)? in
+                let fields = line.split(
+                    maxSplits: 1,
+                    omittingEmptySubsequences: true,
+                    whereSeparator: \.isWhitespace
+                )
+                guard fields.count == 2 else { return nil }
+                return (
+                    String(fields[0]).lowercased(),
+                    String(fields[1]).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+                )
+            }
+            guard let payloadValue = entries.first(where: { $0.0 == "exe" })?.1,
+                  !payloadValue.isEmpty,
+                  (payloadValue as NSString).pathExtension.caseInsensitiveCompare("exe") == .orderedSame
+            else { return nil }
+
+            let images = entries.filter { $0.0 == "img" }.map(\.1)
+            guard !images.isEmpty,
+                  images.allSatisfy({ image in
+                      let resolved = URL(fileURLWithPath: image, relativeTo: splashDirectory)
+                          .standardizedFileURL.path
+                      return resolved.hasPrefix(splashDirectory.path + "/")
+                          && fm.fileExists(atPath: resolved)
+                  })
+            else { return nil }
+
+            let gameRoot = splashDirectory.deletingLastPathComponent().standardizedFileURL
+            guard gameRoot.path == standardizedRoot,
+                  candidatePaths.contains(where: { launcher in
+                      let launcherURL = URL(fileURLWithPath: launcher).standardizedFileURL
+                      return launcherURL.deletingLastPathComponent() == gameRoot
+                          && binaryContains(
+                              launcher,
+                              markers: ["DotEmu", "SDL.dll", #"splash\config.txt"#]
+                          )
+                  })
+            else { return nil }
+
+            let relative = payloadValue.replacingOccurrences(of: "\\", with: "/")
+            let resolved = URL(fileURLWithPath: relative, relativeTo: gameRoot)
+                .standardizedFileURL.path
+            guard resolved.hasPrefix(standardizedRoot + "/"),
+                  let candidate = candidatePaths.first(where: {
+                      $0.caseInsensitiveCompare(resolved) == .orderedSame
+                  })
+            else { return nil }
+            return candidate
+        }
+
         guard let enumerator = fm.enumerator(
             at: URL(fileURLWithPath: root),
             includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
@@ -229,11 +298,19 @@ final class SteamLibraryImporter: Sendable {
         ) else { return payloads }
 
         for case let url as URL in enumerator {
-            guard url.pathExtension.caseInsensitiveCompare("ini") == .orderedSame,
+            let isINI = url.pathExtension.caseInsensitiveCompare("ini") == .orderedSame
+            let isText = url.pathExtension.caseInsensitiveCompare("txt") == .orderedSame
+            guard isINI || isText,
                   let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
                   values.isRegularFile == true,
                   (values.fileSize ?? 0) <= 64 * 1024,
                   let contents = try? String(contentsOf: url, encoding: .utf8) else { continue }
+
+            if isText, let payload = dotEmuPayload(from: url, contents: contents) {
+                payloads.insert(payload)
+                continue
+            }
+            guard isINI else { continue }
 
             let iniStem = normalizedName(url.deletingPathExtension().lastPathComponent)
             guard !iniStem.isEmpty else { continue }

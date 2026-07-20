@@ -1040,6 +1040,91 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertFalse(manager.usesLegacy32BitNativeScaling(executable.path))
     }
 
+    func testClassicVirtoolsDX7EngineUsesIsolatedVirtualDesktopRoute() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-virtools-\(UUID().uuidString)", isDirectory: true)
+        let dlls = root.appendingPathComponent("Dlls", isDirectory: true)
+        let cmo = root.appendingPathComponent("Cmo", isDirectory: true)
+        let data = root.appendingPathComponent("Data/Animations", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for directory in [root, dlls, cmo, data] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+
+        let executable = root.appendingPathComponent("payload.exe")
+        try writePE(
+            to: executable,
+            is64Bit: false,
+            imports: ["CK2.dll", "VxMath.dll", "USER32.dll"],
+            marker: "SetVirtoolsVersion CKRenderContext Vx3D_D3DR "
+                + "Creating full-screen render context\0Classic Adventure Saves\0"
+        )
+        // El payload real puede conservar SteamStub: OEP dentro de `.bind`. El perfil Virtools
+        // debe mantener el cliente oficial conectado pero lanzar este payload directamente para
+        // poder envolverlo en el escritorio virtual.
+        var protectedPayload = try Data(contentsOf: executable)
+        writeUInt32(0x1000, to: &protectedPayload, at: 0xa8)
+        protectedPayload.replaceSubrange(0x178..<0x180, with: Data(".bind\0\0\0".utf8))
+        try protectedPayload.write(to: executable)
+        for file in ["CK2.dll", "VxMath.dll"] {
+            try Data(file.utf8).write(to: root.appendingPathComponent(file))
+        }
+        for file in ["CKDX7Rasterizer.dll", "VirtoolsLoaderR.dll"] {
+            try Data(file.utf8).write(to: dlls.appendingPathComponent(file))
+        }
+        try Data("scene".utf8).write(to: cmo.appendingPathComponent("Main.cmo"))
+        try Data("animation".utf8).write(to: data.appendingPathComponent("Walk.nmo"))
+
+        let manager = WineManager()
+        XCTAssertTrue(manager.isClassicVirtoolsDirectDrawEngine(executable.path))
+        XCTAssertTrue(SteamDRMScanner.hasSteamStub(executable.path))
+        XCTAssertTrue(manager.usesProtectedDirectLaunchWithConnectedSteam(executable.path))
+        XCTAssertEqual(
+            manager.classicVirtoolsSaveFolderName(executable.path),
+            "Classic Adventure Saves"
+        )
+        XCTAssertTrue(manager.usesLegacy32BitNativeScaling(executable.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .other)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .gcenx)
+        XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [])
+    }
+
+    func testVirtoolsMarkersWithoutCompiledContentKeepGenericRouting() throws {
+        let executable = try makePE32(
+            named: "unrelated-runtime.exe",
+            marker: "SetVirtoolsVersion CKRenderContext Vx3D_D3DR Creating full-screen render context",
+            imports: ["CK2.dll", "VxMath.dll"]
+        )
+        let root = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("core".utf8).write(to: root.appendingPathComponent("CK2.dll"))
+        try Data("math".utf8).write(to: root.appendingPathComponent("VxMath.dll"))
+
+        let manager = WineManager()
+        XCTAssertFalse(manager.isClassicVirtoolsDirectDrawEngine(executable.path))
+        XCTAssertFalse(manager.usesLegacy32BitNativeScaling(executable.path))
+    }
+
+    func testClassicVirtoolsConfigOnlyRepairsColorDepth() throws {
+        let created = try XCTUnwrap(
+            WineManager.repairedClassicVirtoolsConfig(existing: nil)
+        )
+        XCTAssertEqual(created.count, 28)
+        XCTAssertEqual(Array(created[16..<20]), [32, 0, 0, 0])
+
+        var legacy = created
+        legacy.replaceSubrange(4..<8, with: Data([7, 0, 0, 0]))
+        legacy.replaceSubrange(16..<20, with: Data([16, 0, 0, 0]))
+        let repaired = try XCTUnwrap(
+            WineManager.repairedClassicVirtoolsConfig(existing: legacy)
+        )
+
+        XCTAssertEqual(Array(repaired[4..<8]), [7, 0, 0, 0])
+        XCTAssertEqual(Array(repaired[16..<20]), [32, 0, 0, 0])
+        XCTAssertNil(WineManager.repairedClassicVirtoolsConfig(existing: repaired))
+        XCTAssertNil(WineManager.repairedClassicVirtoolsConfig(existing: Data(repeating: 0, count: 28)))
+    }
+
     func testLegacyANGLE1PE64SiblingDLLsRouteOpenGLESRuntimeToD3D9() throws {
         let executable = try makePE64(
             named: "custom-engine-x64.exe",
