@@ -2147,11 +2147,19 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             width: 1280,
             height: 800
         ))
-        XCTAssertFalse(NotificationService.isSteamClientWindow(
+        // macOS puede ocultar el título sin permiso de captura; la ventana grande del único
+        // proceso Wine sigue siendo identificable durante el EULA (el juego aún no existe).
+        XCTAssertTrue(NotificationService.isSteamClientWindow(
             ownerName: "wine",
             windowName: "",
             width: 1280,
             height: 800
+        ))
+        XCTAssertFalse(NotificationService.isSteamClientWindow(
+            ownerName: "wine",
+            windowName: "",
+            width: 480,
+            height: 320
         ))
         XCTAssertFalse(NotificationService.isSteamClientWindow(
             ownerName: "KunitsuGamiDemo",

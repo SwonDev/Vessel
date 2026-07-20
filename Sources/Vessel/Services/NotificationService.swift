@@ -75,8 +75,12 @@ final class NotificationService {
     ) -> Bool {
         let owner = ownerName.lowercased()
         let title = windowName.lowercased()
+        // Sin permiso de grabación macOS oculta el título de ventanas de otros procesos, pero
+        // conserva propietario y geometría. Esta alternativa solo se usa al pulsar la acción del
+        // EULA, cuando Steam ha detenido el juego antes de crear su propia ventana.
+        let permissionLimitedSteamWindow = title.isEmpty && width >= 900 && height >= 600
         return (owner.contains("wine") || owner.contains("steam"))
-            && title.contains("steam")
+            && (title.contains("steam") || permissionLimitedSteamWindow)
             && width >= 320
             && height >= 240
     }
