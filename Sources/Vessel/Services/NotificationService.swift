@@ -117,7 +117,7 @@ final class NotificationService {
                   let application = NSRunningApplication(processIdentifier: pid)
             else { continue }
 
-            if application.activate(options: [.activateAllWindows]) {
+            if yieldAndActivate(application) {
                 return true
             }
         }
@@ -131,7 +131,15 @@ final class NotificationService {
                 && !application.isTerminated
         }
         guard wineApplications.count == 1, let steam = wineApplications.first else { return false }
-        return steam.activate(options: [.activateAllWindows])
+        return yieldAndActivate(steam)
+    }
+
+    /// En macOS moderno una aplicación activa debe ceder explícitamente el foco antes de que otra
+    /// pueda solicitarlo. Sin este paso AppKit devuelve `false` para Wine aunque sea una aplicación
+    /// regular y tenga una ventana visible.
+    private static func yieldAndActivate(_ application: NSRunningApplication) -> Bool {
+        NSApp.yieldActivation(to: application)
+        return application.activate(options: [.activateAllWindows])
     }
 
     /// Estado EN VIVO no bloqueante (banner in-app): informa de fases largas como abrir Steam,
