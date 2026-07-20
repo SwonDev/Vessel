@@ -118,9 +118,10 @@ fi
 
 # 7) Commit de release. El tag debe apuntar a ESTE commit, que contiene VERSION.txt y appcast.
 git add VERSION.txt appcast.xml "$BADGE"
-git commit -q -m "release: Vessel $VERSION (build $BUILD)
-
-$NOTES"
+git commit -q \
+    -m "release: Vessel $VERSION (build $BUILD)" \
+    -m "$NOTES" \
+    -m "Co-Authored-By: Claude <noreply@anthropic.com>"
 
 # 8) Publicar primero el asset y después main. Así el feed nunca anuncia una URL inexistente.
 # Si la release ya existe, se conserva su tag y solo se reemplaza el asset.
