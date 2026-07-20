@@ -795,6 +795,7 @@ struct BottleDetailView: View {
             || UserDefaults.standard.bool(forKey: "vessel.steamRealGlobal")
             || wineManager.requiresSteamAppLaunch(exePath)
             || wineManager.officialSteamClientProtection(exePath) != nil
+        var launchStartedAt: Date?
         await GameLaunchTracker.shared.track(
             trackId, statsKey: "steam:\(trackId)",
             // Copia de partida automática: al CERRAR el juego, respalda la partida (seguro, solo copia).
@@ -824,6 +825,7 @@ struct BottleDetailView: View {
             }
             // Restaura la copia ANTES de jugar SOLO si es más nueva que la partida local.
             await SaveBackupManager.shared.restoreIfNewer(store: .steam, id: trackId, title: game.name, steamId: game.steamAppId, prefix: localBottle.prefixPath, installPath: game.installPath)
+            launchStartedAt = Date()
             let proc = try await wineManager.launch(
                 executable: exePath, in: localBottle,
                 arguments: [], steamAppId: game.steamAppId, effective: eff)
@@ -837,6 +839,7 @@ struct BottleDetailView: View {
             currentLayer: usedLayer, attempt: attempt,
             fallbackLayers: wineManager.fallbackLayers(forExecutable: exePath, effective: eff),
             usesRealSteam: usesRealSteamLaunch,
+            launchStartedAt: launchStartedAt,
             isRunning: { GameLaunchTracker.shared.state(trackId) == .running },
             hasVisibleWindow: {
                 await wineManager.hasVisibleGameWindow(

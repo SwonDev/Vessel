@@ -236,7 +236,7 @@ enum LaunchDiagnostics {
                     failure = Failure(
                         category: .steam,
                         title: "Steam necesita que revises una licencia",
-                        body: "Steam ha abierto el acuerdo de licencia de este juego. Revísalo y elige «Aceptar» o «Cancelar» en Steam; después vuelve a pulsar Jugar. Vessel nunca aceptará condiciones legales por ti."
+                        body: "Steam ha abierto el acuerdo de licencia de este juego. Pulsa «Abrir Steam», revísalo y elige «Aceptar» o «Cancelar»; después vuelve a pulsar Jugar. Vessel nunca aceptará condiciones legales por ti."
                     )
                     break
                 }
@@ -286,7 +286,9 @@ enum LaunchDiagnostics {
                         ?? "El juego se cerró al arrancar. Steam corre en segundo plano para el DRM (no tienes que abrir nada): vuelve a pulsar Jugar. Si es la primera vez, inicia sesión en Steam desde Vessel (botón de Steam, arriba) una sola vez."
                     NotificationService.shared.alert(
                         title: title,
-                        body: body
+                        body: body,
+                        actionTitle: waitingForSteamEULA ? "Abrir Steam" : nil,
+                        action: waitingForSteamEULA ? .showSteamClient : nil
                     )
                     if waitingForSteamEULA {
                         GameLaunchTracker.shared.stop(gameId)

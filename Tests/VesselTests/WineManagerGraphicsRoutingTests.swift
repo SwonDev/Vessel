@@ -2140,6 +2140,33 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertFalse(LaunchDiagnostics.steamEULAPromptDetected(in: acceptedAndRetried))
     }
 
+    func testSteamAlertOnlyFocusesARealClientWindow() {
+        XCTAssertTrue(NotificationService.isSteamClientWindow(
+            ownerName: "wine",
+            windowName: "Steam",
+            width: 1280,
+            height: 800
+        ))
+        XCTAssertFalse(NotificationService.isSteamClientWindow(
+            ownerName: "wine",
+            windowName: "",
+            width: 1280,
+            height: 800
+        ))
+        XCTAssertFalse(NotificationService.isSteamClientWindow(
+            ownerName: "KunitsuGamiDemo",
+            windowName: "Steamworks",
+            width: 1280,
+            height: 800
+        ))
+        XCTAssertFalse(NotificationService.isSteamClientWindow(
+            ownerName: "wine",
+            windowName: "Steam",
+            width: 1,
+            height: 1
+        ))
+    }
+
     func testSteamAppLaunchAcknowledgementRequiresNewExactAppIDEntry() {
         let baseline = Data("""
         ExecCommandLine: "steam.exe -applaunch 6910"

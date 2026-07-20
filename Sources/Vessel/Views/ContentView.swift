@@ -21,6 +21,8 @@ struct ContentView: View {
     @State private var showingLaunchAlert = false
     @State private var launchAlertTitle = ""
     @State private var launchAlertBody = ""
+    @State private var launchAlertActionTitle: String?
+    @State private var launchAlertAction: NotificationService.LaunchAlertAction?
     /// Estado EN VIVO no bloqueante (abrir Steam, esperar login…): banner inferior con spinner.
     @State private var launchStatus: String?
 
@@ -118,6 +120,9 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .launchMessage)) { note in
             launchAlertTitle = note.userInfo?["title"] as? String ?? "Vessel"
             launchAlertBody = note.userInfo?["body"] as? String ?? ""
+            launchAlertActionTitle = note.userInfo?["actionTitle"] as? String
+            launchAlertAction = (note.userInfo?["action"] as? String)
+                .flatMap(NotificationService.LaunchAlertAction.init(rawValue:))
             showingLaunchAlert = true
             launchStatus = nil   // un aviso terminal oculta el banner de progreso
         }
@@ -127,7 +132,14 @@ struct ContentView: View {
             }
         }
         .alert(launchAlertTitle, isPresented: $showingLaunchAlert) {
-            Button("Entendido", role: .cancel) { }
+            if let launchAlertActionTitle, let launchAlertAction {
+                Button(launchAlertActionTitle) {
+                    NotificationService.shared.perform(launchAlertAction)
+                }
+                Button("Ahora no", role: .cancel) { }
+            } else {
+                Button("Entendido", role: .cancel) { }
+            }
         } message: {
             Text(launchAlertBody)
         }
