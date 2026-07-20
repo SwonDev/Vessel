@@ -779,6 +779,65 @@ final class WineManager {
             && exeContains(executable, anyOf: ["XAudio2Create"])
     }
 
+    /// Runtime propietario clásico de Playdead: PE32 D3D9/D3DX9, entrada DirectInput/XInput,
+    /// audio Wwise y dos paquetes de datos hermanos (`*_boot.pkg` + `*_runtime.pkg`). Su
+    /// compositor de baja resolución no completa el framebuffer con wined3d/Vulkan en MoltenVK;
+    /// wined3d/OpenGL sí renderiza la escena completa. Además trabaja en píxeles lógicos 1×, por
+    /// lo que Retina duplica la superficie y deja el contenido encajonado en una esquina.
+    ///
+    /// La firma no usa título, AppID ni nombre del ejecutable. Combina imports, marcadores internos,
+    /// contrato de paquetes y las claves de configuración propias del runtime para no ampliar la
+    /// excepción a otros D3D9 de 32 bits.
+    func isPlaydeadLegacyD3D9Engine(_ executable: String) -> Bool {
+        guard isExecutable32Bit(executable) else { return false }
+        let imports = peImportedLibraries(forExecutable: executable)
+        guard ["d3d9.dll", "d3dx9_43.dll", "dinput8.dll", "xinput1_3.dll"]
+            .allSatisfy(imports.contains) else { return false }
+        guard exeContains(executable, anyOf: ["GetBackBufferSize():vector2i"]),
+              exeContains(
+                executable,
+                anyOf: ["Background and foreground rendered in low resolution"]
+              ),
+              exeContains(
+                executable,
+                anyOf: ["AKSound::AKSound(): Could not create the Sound Engine."]
+              ),
+              exeContains(executable, anyOf: ["Custom backbuffer size: %s, %s"])
+        else { return false }
+
+        let directory = URL(fileURLWithPath: executable)
+            .standardizedFileURL
+            .deletingLastPathComponent()
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return false }
+
+        let names = entries.map { $0.lastPathComponent.lowercased() }
+        let bootSuffix = "_boot.pkg"
+        let runtimeSuffix = "_runtime.pkg"
+        let bootStems = Set(names.compactMap { name -> String? in
+            guard name.hasSuffix(bootSuffix) else { return nil }
+            let stem = String(name.dropLast(bootSuffix.count))
+            return stem.isEmpty ? nil : stem
+        })
+        let runtimeStems = Set(names.compactMap { name -> String? in
+            guard name.hasSuffix(runtimeSuffix) else { return nil }
+            let stem = String(name.dropLast(runtimeSuffix.count))
+            return stem.isEmpty ? nil : stem
+        })
+        guard !bootStems.isDisjoint(with: runtimeStems),
+              let settingsURL = entries.first(where: {
+                $0.lastPathComponent.caseInsensitiveCompare("settings.txt") == .orderedSame
+              }),
+              let settings = try? String(contentsOf: settingsURL, encoding: .utf8).lowercased()
+        else { return false }
+
+        return ["backbufferheight", "windowedmode", "use8bitrender"]
+            .allSatisfy(settings.contains)
+    }
+
     /// HPL3 de Frictional: combina un contexto OpenGL implícito de compatibilidad con GLSL
     /// moderno, VAO, bindings explícitos y primitivas/formato de textura retirados del perfil
     /// core de macOS. La firma exige arquitectura, imports, marcadores internos y el contrato de
@@ -1803,6 +1862,7 @@ final class WineManager {
             || isLegacyANGLE1D3D9Game(executable)
             || isFrozenbyteStorm3DD3D9Engine(executable)
             || isNihonFalcomYsOriginD3D9Engine(executable)
+            || isPlaydeadLegacyD3D9Engine(executable)
     }
 
     /// El new-WoW64 no crea dispositivos D3D9 de 32 bits y ANGLE 1.x no consigue inicializar EGL
@@ -2838,6 +2898,11 @@ final class WineManager {
                 level: .info
             )
         }
+        await configurePlaydeadLegacyD3D9Renderer(
+            prefix: bottle.prefixPath,
+            wine: wine,
+            executable: executable
+        )
         ensureFalcomYsOriginDisplaySettings(
             prefix: bottle.prefixPath,
             executable: executable
@@ -3399,6 +3464,11 @@ final class WineManager {
                     level: .info
                 )
             }
+            await configurePlaydeadLegacyD3D9Renderer(
+                prefix: bottle.prefixPath,
+                wine: fullWine,
+                executable: rawExecutable
+            )
             return try await launchWineProcess(
                 winePath: fullWine,
                 prefix: bottle.prefixPath,
@@ -3724,6 +3794,26 @@ final class WineManager {
             prefix: prefix,
             environment: Self.wineControlEnvironment(prefix: prefix, wine: wine),
             allowNonZeroExit: true
+        )
+    }
+
+    /// Aísla el backend OpenGL en el ejecutable Playdead detectado. El renderer global del bottle
+    /// permanece intacto para que los juegos ya validados sigan usando Vulkan cuando corresponda.
+    private func configurePlaydeadLegacyD3D9Renderer(
+        prefix: String,
+        wine: String,
+        executable: String
+    ) async {
+        guard isPlaydeadLegacyD3D9Engine(executable) else { return }
+        await setWined3dRenderer(
+            prefix: prefix,
+            wine: wine,
+            renderer: "gl",
+            forExecutable: (executable as NSString).lastPathComponent
+        )
+        log.log(
+            "Motor Playdead D3D9 detectado: wined3d/OpenGL aislado y escala nativa.",
+            level: .info
         )
     }
 
@@ -4378,6 +4468,11 @@ final class WineManager {
             // Un intento anterior por DXMT puede haber dejado DLLs locales que ganarían al backend
             // elegido automáticamente por cxcompatdb. Se retiran antes de que Steam cree el proceso.
             cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
+            await configurePlaydeadLegacyD3D9Renderer(
+                prefix: bottle.prefixPath,
+                wine: fullWine,
+                executable: executable
+            )
             ensureFalcomYsOriginDisplaySettings(
                 prefix: bottle.prefixPath,
                 executable: executable
@@ -4438,6 +4533,11 @@ final class WineManager {
                     level: .info
                 )
             }
+            await configurePlaydeadLegacyD3D9Renderer(
+                prefix: bottle.prefixPath,
+                wine: fullWine,
+                executable: executable
+            )
             ensureFalcomYsOriginDisplaySettings(
                 prefix: bottle.prefixPath,
                 executable: executable
@@ -4755,7 +4855,9 @@ final class WineManager {
             .joined(separator: " ")
         let imageName = (executable as NSString).lastPathComponent
         let pattern = Self.steamProtectedProcessPattern(imageName)
-        let pgrep = "/usr/bin/pgrep -f \(shq(pattern))"
+        // Windows no distingue mayúsculas en nombres de imagen. Steam puede analizar `limbo.exe`
+        // y crear `Limbo.exe`; el supervisor debe considerar ambos el mismo proceso.
+        let pgrep = Self.caseInsensitivePgrepShellCommand(matchingPattern: pattern)
         let steamDirectory = (bottle.steamPath as NSString).deletingLastPathComponent
         let script = """
         cd \(shq(steamDirectory)) || exit 70
@@ -5051,6 +5153,12 @@ final class WineManager {
         ["-nP", "-a", "-p", String(processID), "-Fn"]
     }
 
+    /// Argumentos comunes para localizar una imagen Wine. `-i` conserva la semántica de nombres
+    /// de Windows aunque el argv que publica Wine use otra capitalización que el fichero analizado.
+    nonisolated static func pgrepProcessLookupArguments(matching pattern: String) -> [String] {
+        ["-i", "-f", NSRegularExpression.escapedPattern(for: pattern)]
+    }
+
     private nonisolated static func wineProcessIDs(
         matching pattern: String,
         prefix: String,
@@ -5058,7 +5166,7 @@ final class WineManager {
     ) -> [pid_t] {
         let pgrep = Process()
         pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        pgrep.arguments = ["-f", NSRegularExpression.escapedPattern(for: pattern)]
+        pgrep.arguments = pgrepProcessLookupArguments(matching: pattern)
         let pipe = Pipe()
         pgrep.standardOutput = pipe
         pgrep.standardError = FileHandle.nullDevice
@@ -6589,6 +6697,13 @@ final class WineManager {
         return selfExcludingEscapedPattern(escaped)
     }
 
+    /// Comando equivalente para los supervisores bash. Centralizarlo impide que una de las rutas
+    /// de lanzamiento vuelva accidentalmente al comportamiento sensible a mayúsculas de macOS.
+    nonisolated static func caseInsensitivePgrepShellCommand(matchingPattern pattern: String) -> String {
+        let quoted = "'" + pattern.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        return "/usr/bin/pgrep -i -f \(quoted)"
+    }
+
     /// Los AppID con varias arquitecturas pueden analizar una build y arrancar otra según la
     /// configuración oficial de Steam. El supervisor debe reconocer ambas sin confundirse con su
     /// propia orden `pgrep`.
@@ -6958,7 +7073,9 @@ final class WineManager {
             let exeBase = arguments.first(where: { $0.lowercased().hasSuffix(".exe") })
                 .map { (($0 as NSString).lastPathComponent as NSString).deletingPathExtension } ?? "wine"
             let processPattern = Self.selfExcludingProcessPattern(exeBase)
-            let pgrepGame = "/usr/bin/pgrep -f \(shq(processPattern))"
+            let pgrepGame = Self.caseInsensitivePgrepShellCommand(
+                matchingPattern: processPattern
+            )
             let bootCmd =
                 "/bin/launchctl bootout gui/\(uid)/\(agentLabel) 2>/dev/null; sleep 1; "
                 + "/bin/launchctl bootstrap gui/\(uid) '\(agentPlist)' 2>/dev/null; "
@@ -7089,7 +7206,9 @@ final class WineManager {
                 let executableName = arguments.first(where: { $0.lowercased().hasSuffix(".exe") })
                     .map { ($0 as NSString).lastPathComponent } ?? "wine"
                 let processPattern = Self.selfExcludingProcessPattern(executableName)
-                let pgrepGame = "/usr/bin/pgrep -f \(shq(processPattern))"
+                let pgrepGame = Self.caseInsensitivePgrepShellCommand(
+                    matchingPattern: processPattern
+                )
                 bootCmd =
                     "/bin/launchctl bootout gui/\(uid)/\(agentLabel) 2>/dev/null; sleep 1; "
                     + "/bin/launchctl bootstrap gui/\(uid) '\(agentPlist)' 2>/dev/null; "

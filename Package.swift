@@ -19,8 +19,6 @@ let package = Package(
         // Progreso en el icono del Dock (mismo que usa Mythic) — ver descargas/instalaciones sin
         // tener la app delante.
         .package(url: "https://github.com/sindresorhus/DockProgress", from: "5.0.0"),
-        // Gradientes animados con Metal (mismo que usa Mythic) — vida premium sutil en el fondo.
-        .package(url: "https://github.com/Lakr233/ColorfulX", from: "6.0.0"),
         // Auto-actualización nativa de macOS con firma EdDSA + delta updates (el mismo framework
         // que usa CrossOver). Sustituye el Updater casero sin firma. El framework se embebe en
         // Contents/Frameworks vía build_and_run.sh y se firma ad-hoc con el resto del bundle.
@@ -33,7 +31,6 @@ let package = Package(
                 .product(name: "Yams", package: "Yams"),
                 .product(name: "Shimmer", package: "SwiftUI-Shimmer"),
                 .product(name: "DockProgress", package: "DockProgress"),
-                .product(name: "ColorfulX", package: "ColorfulX"),
                 .product(name: "Sparkle", package: "Sparkle")
             ],
             path: "Sources/Vessel",

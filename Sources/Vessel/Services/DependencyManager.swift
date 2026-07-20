@@ -1333,7 +1333,7 @@ final class DependencyManager {
     private func runCapture(executable: String, arguments: [String]) async -> String? {
         await withCheckedContinuation { cont in
             // SIEMPRE fuera del hilo principal: `waitUntilExit()` corre un runloop anidado que, en el
-            // main thread, chocaba con el ciclo de render Metal (ColorfulX) → EXC_BAD_ACCESS.
+            // main thread, puede interferir con el ciclo de render de SwiftUI → EXC_BAD_ACCESS.
             DispatchQueue.global(qos: .userInitiated).async {
                 let task = Process()
                 task.executableURL = URL(fileURLWithPath: executable)

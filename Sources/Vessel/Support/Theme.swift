@@ -1,5 +1,4 @@
 import SwiftUI
-import ColorfulX
 
 /// **Sistema de diseño central de Vessel.** Toda la estética premium vive aquí
 /// (paleta, radios, materiales, Liquid Glass, botones, elevación en hover), no dispersa
@@ -66,11 +65,52 @@ enum Theme {
     }
 }
 
+/// Resplandor ambiental nativo y estático. Mantiene profundidad cromática sin una capa Metal propia
+/// ni una animación decorativa permanente que consuma recursos mientras el usuario juega.
+private struct VesselAmbientGlow: View {
+    let tint: Color
+
+    var body: some View {
+        GeometryReader { proxy in
+            let width = max(1, proxy.size.width)
+            let height = max(1, proxy.size.height)
+
+            ZStack {
+                RadialGradient(
+                    colors: [tint.opacity(0.62), tint.opacity(0.12), .clear],
+                    center: .center,
+                    startRadius: 0,
+                    endRadius: max(width, height) * 0.58
+                )
+                .frame(width: width * 1.18, height: height * 1.42)
+                .offset(
+                    x: -width * 0.20,
+                    y: height * 0.12
+                )
+
+                RadialGradient(
+                    colors: [Theme.navyTop.opacity(0.52), .clear],
+                    center: .center,
+                    startRadius: 0,
+                    endRadius: max(width, height) * 0.46
+                )
+                .frame(width: width, height: height * 1.16)
+                .offset(
+                    x: width * 0.18,
+                    y: -height * 0.14
+                )
+            }
+            .opacity(0.11)
+            .blendMode(.plusLighter)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 // MARK: - Fondo de la app (navy oceánico)
 
 private struct VesselBackground: ViewModifier {
     var tint: Color = Theme.accent
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     func body(content: Content) -> some View {
@@ -78,16 +118,10 @@ private struct VesselBackground: ViewModifier {
             ZStack {
                 LinearGradient(colors: [Theme.navyTop, Theme.navyDeep],
                                startPoint: .top, endPoint: .bottom)
-                // Vida premium: gradiente animado con Metal (ColorfulX) MUY sutil, con el color de la
-                // tienda. Aditivo y a baja opacidad → el fondo "respira" sin distraer. Se desactiva
-                // con reduce-motion.
-                if !reduceMotion && !reduceTransparency {
-                    ColorfulView(
-                        color: .constant([tint.opacity(0.85), Theme.navyDeep, tint.opacity(0.35), Theme.navyTop]),
-                        speed: .constant(0.28)
-                    )
-                    .opacity(0.11)
-                    .blendMode(.plusLighter)
+                // Profundidad premium: resplandor nativo muy sutil con el color de la tienda. Es
+                // estático para no gastar CPU/GPU cuando Vessel queda detrás de un juego.
+                if !reduceTransparency {
+                    VesselAmbientGlow(tint: tint)
                 }
                 // Resplandor superior con el color de la sección (branding por tienda).
                 RadialGradient(colors: [tint.opacity(reduceTransparency ? 0.08 : 0.16), .clear],

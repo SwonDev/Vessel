@@ -194,6 +194,66 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertFalse(manager.usesLegacyD3D9NativeScaling(executable.path))
     }
 
+    func testPlaydeadLegacyD3D9EngineUsesOpenGLCompatibleNativeScaling() throws {
+        let executable = try makePE32(
+            named: "custom-playdead-runtime.exe",
+            marker: """
+            GetBackBufferSize():vector2i
+            Background and foreground rendered in low resolution
+            AKSound::AKSound(): Could not create the Sound Engine.
+            Custom backbuffer size: %s, %s
+            """,
+            imports: ["d3d9.dll", "d3dx9_43.dll", "dinput8.dll", "xinput1_3.dll"]
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("boot".utf8).write(to: directory.appendingPathComponent("CUSTOM_BOOT.PKG"))
+        try Data("runtime".utf8).write(
+            to: directory.appendingPathComponent("custom_runtime.pkg")
+        )
+        try Data("""
+        backbufferheight = 720
+        windowedmode = false
+        use8bitrender = false
+        """.utf8).write(to: directory.appendingPathComponent("SETTINGS.TXT"))
+
+        let manager = WineManager()
+
+        XCTAssertTrue(manager.isPlaydeadLegacyD3D9Engine(executable.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .d3d9)
+        XCTAssertTrue(manager.usesLegacyD3D9NativeScaling(executable.path))
+        XCTAssertTrue(manager.usesFullCompatibilityEngineForD3D9(executable.path))
+    }
+
+    func testPlaydeadMarkersWithoutMatchingPackagePairKeepDefaultD3D9Policy() throws {
+        let executable = try makePE32(
+            named: "generic-d3d9-runtime.exe",
+            marker: """
+            GetBackBufferSize():vector2i
+            Background and foreground rendered in low resolution
+            AKSound::AKSound(): Could not create the Sound Engine.
+            Custom backbuffer size: %s, %s
+            """,
+            imports: ["d3d9.dll", "d3dx9_43.dll", "dinput8.dll", "xinput1_3.dll"]
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("boot".utf8).write(to: directory.appendingPathComponent("alpha_boot.pkg"))
+        try Data("runtime".utf8).write(
+            to: directory.appendingPathComponent("beta_runtime.pkg")
+        )
+        try Data("""
+        backbufferheight = 720
+        windowedmode = false
+        use8bitrender = false
+        """.utf8).write(to: directory.appendingPathComponent("settings.txt"))
+
+        let manager = WineManager()
+
+        XCTAssertFalse(manager.isPlaydeadLegacyD3D9Engine(executable.path))
+        XCTAssertFalse(manager.usesLegacyD3D9NativeScaling(executable.path))
+    }
+
     func testFalcomFirstRunConfigUsesLogicalFullscreenResolution() throws {
         let config = try XCTUnwrap(WineManager.repairedFalcomYsOriginConfig(
             existing: nil,
@@ -1271,6 +1331,29 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
 
         let realProcess = #"/wine64-preloader Z:\\Games\\Hades\\x64Vk\\Hades.exe"#
         let watcher = "while /usr/bin/pgrep -f '\(pattern)' >/dev/null; do sleep 5; done"
+
+        XCTAssertNotNil(regex.firstMatch(
+            in: realProcess,
+            range: NSRange(realProcess.startIndex..., in: realProcess)
+        ))
+        XCTAssertNil(regex.firstMatch(
+            in: watcher,
+            range: NSRange(watcher.startIndex..., in: watcher)
+        ))
+    }
+
+    func testWindowsProcessLookupIgnoresExecutableCapitalization() throws {
+        XCTAssertEqual(
+            WineManager.pgrepProcessLookupArguments(matching: "limbo.exe"),
+            ["-i", "-f", "limbo\\.exe"]
+        )
+
+        let pattern = WineManager.steamProtectedProcessPattern("limbo.exe")
+        let pgrep = WineManager.caseInsensitivePgrepShellCommand(matchingPattern: pattern)
+        XCTAssertEqual(pgrep, "/usr/bin/pgrep -i -f '\(pattern)'")
+        let regex = try NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        let realProcess = #"/wine-preloader C:\Games\LIMBO\Limbo.exe"#
+        let watcher = "while \(pgrep) >/dev/null; do sleep 2; done"
 
         XCTAssertNotNil(regex.firstMatch(
             in: realProcess,
