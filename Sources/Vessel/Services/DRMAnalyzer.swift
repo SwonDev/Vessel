@@ -115,11 +115,22 @@ enum DRMAnalyzer {
         let ga = "\((executable as NSString).deletingLastPathComponent)/GameAssembly.dll"
         if FileManager.default.fileExists(atPath: ga) { pes.append(ga) }
         for pe in pes {
-            let sections = Set(peSectionNames(pe))
+            let sectionNames = peSectionNames(pe)
+            let sections = Set(sectionNames)
             let leaf = (pe as NSString).lastPathComponent
             if !sections.isDisjoint(with: [".vmp0", ".vmp1", ".vmp2"]) { add(&r, .vmProtect, leaf) }
             if !sections.isDisjoint(with: [".themida", ".winlice", ".vlizer"]) { add(&r, .themida, leaf) }
             if !sections.isDisjoint(with: [".enigma1", ".enigma2"]) { add(&r, .enigma, leaf) }
+            // Builds recientes de Enigma pueden borrar los nombres de casi toda la tabla de
+            // secciones: Kunitsu-Gami conserva 11 secciones, pero solo `.rsrc` tiene nombre. En
+            // ese layout la firma ASCII del propio protector sigue presente. Exigimos AMBAS
+            // señales para no confundir una mención documental a Enigma dentro de un PE normal.
+            let namedSections = sectionNames.filter { !$0.isEmpty }
+            let opaqueSectionLayout = sectionNames.count >= 6
+                && namedSections.count <= max(1, sectionNames.count / 4)
+            if opaqueSectionLayout, containsASCII(pe, "Enigma Protector") {
+                add(&r, .enigma, leaf)
+            }
             if !sections.isDisjoint(with: [".securom", ".dsstext", ".cms_t", ".cms_d"]) { add(&r, .secuROM, leaf) }
             if sections.contains("stxt371") || sections.contains("stxt774") { add(&r, .safeDisc, leaf) }
             if !sections.isDisjoint(with: [".brick", ".sforce", ".sforce3"]) { add(&r, .starForce, leaf) }

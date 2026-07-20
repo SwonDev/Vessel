@@ -922,6 +922,27 @@ final class WineManager {
             || isClassicPopCapSteamEngine(executable)
     }
 
+    /// Protecciones de espacio de usuario que deben conservar el `steam_api` original y hablar con
+    /// el cliente oficial conectado. Sustituirlo por Goldberg altera una DLL que estos protectores
+    /// pueden verificar antes de crear la primera ventana. La regla solo se activa si el mismo árbol
+    /// contiene Steamworks; una build DRM-free de otra tienda con el mismo protector no abrirá Steam.
+    func officialSteamClientProtection(_ executable: String) -> DRMAnalyzer.Protection? {
+        let components = (executable as NSString).pathComponents
+        let installRoot: String
+        if let commonIndex = components.firstIndex(where: { $0.lowercased() == "common" }),
+           commonIndex + 1 < components.count {
+            installRoot = NSString.path(withComponents: Array(components[0...(commonIndex + 1)]))
+        } else {
+            installRoot = (executable as NSString).deletingLastPathComponent
+        }
+        let report = DRMAnalyzer.analyze(folder: installRoot, executable: executable)
+        guard report.social.contains(.steamworks) else { return nil }
+        let clientBound: Set<DRMAnalyzer.Protection> = [
+            .denuvo, .vmProtect, .themida, .enigma
+        ]
+        return report.protections.first { clientBound.contains($0) }
+    }
+
     /// Algunos payloads protegidos pueden iniciarse directamente una vez que el cliente oficial ya
     /// está conectado en el mismo wineserver. Virtools clásico necesita precisamente esa variante:
     /// `-applaunch` selecciona el splash del depot y pierde el escritorio virtual, mientras el
@@ -2918,6 +2939,7 @@ final class WineManager {
         let classicPopCapRequiresRealClient = isClassicPopCapSteamEngine(executable)
         let protectedSteamAppLaunch = requiresSteamAppLaunch(executable)
         let protectedDirectLaunch = usesProtectedDirectLaunchWithConnectedSteam(executable)
+        let protectedByThirdParty = officialSteamClientProtection(executable)
         let steamShimBootstrapper = steamShimBootstrapper(forPayload: executable)
         // Los juegos protegidos se delegan a Steam, que ejecuta sus `installscript.vdf` antes del
         // juego. Algunos redistribuibles antiguos (sobre todo PhysX) abren asistentes interactivos
@@ -2951,6 +2973,7 @@ final class WineManager {
             }
         }
         if (eff.useRealSteam || steamRealGlobal || protectedSteamAppLaunch
+                || protectedByThirdParty != nil
                 || steamNetworkingRequiresRealClient),
            let appId = steamAppId, !appId.isEmpty {
             let reason: String
@@ -2960,6 +2983,8 @@ final class WineManager {
                 reason = " [lanzador heredado de Valve autodetectado]"
             } else if classicPopCapRequiresRealClient {
                 reason = " [API Steam heredada de PopCap autodetectada]"
+            } else if let protectedByThirdParty {
+                reason = " [\(protectedByThirdParty.label) autodetectado]"
             } else if steamNetworkingRequiresRealClient {
                 reason = " [red, lobbies y servidores Steam autodetectados]"
             } else if steamRealGlobal && !eff.useRealSteam {
@@ -4880,8 +4905,10 @@ final class WineManager {
             log.log("Preparando el motor D3DMetal propio (WineHQ 11.10) para juego D3D12…", level: .info)
             d3d12Wine = w
         } else {
-            if preferGPTK {
+            if unity6NeedsAppleD3D11 {
                 log.log("Unity 6.x (D3D11) → GPTK/D3DMetal (gptk-mythic): usa el d3d11 REAL de Apple, no DXMT (que cuelga la init).", level: .info)
+            } else if forceGPTK {
+                log.log("Preparando GPTK/D3DMetal para juego D3D12 (ruta validada desde Vessel)…", level: .info)
             } else {
                 log.log("Preparando GPTK/D3DMetal para juego D3D12…", level: .info)
             }
@@ -4913,12 +4940,9 @@ final class WineManager {
             if fm.fileExists(atPath: p) { try? fm.removeItem(atPath: p) }
         }
 
-        // 3) DRM: se DEJA el steam_api64.dll ORIGINAL del juego. Reemplazarlo por un
-        //    emulador (Goldberg) dispara los anti-tamper de terceros —p.ej. CodeFusion
-        //    en FF Tactics, que detecta la emulación y bloquea—. Solo escribimos
-        //    steam_appid.txt para que la Steamworks API arranque en modo standalone en
-        //    juegos sin DRM estricto. (GoldbergManager queda como infraestructura
-        //    para juegos que sí lo admitan, pero NO se aplica automáticamente.)
+        // 3) Steamworks: la política ya se resolvió antes de entrar aquí. Los juegos sin protección
+        //    adicional conservan Goldberg; Denuvo/VMProtect/Themida/Enigma se desvían previamente al
+        //    cliente oficial con su DLL original. Aquí solo se fija el AppID para el runtime elegido.
         if let appId = steamAppId, !appId.isEmpty {
             try? appId.write(toFile: "\(gameDir)/steam_appid.txt", atomically: true, encoding: .utf8)
         }
@@ -4948,7 +4972,7 @@ final class WineManager {
         // igual que el resto de paths Unity — el fullscreen EXCLUSIVO revienta el swapchain y el
         // multihilo casca en Unity 6 + EOS (Dragon Is Dead). Para D3D12 no-Unity (FFT), vacío.
         let unityArgs = preferGPTK ? unityLaunchArguments(forExecutable: executable, singleThreaded: true) : []
-        let engineLbl = useD3DMetalEngine ? "motor D3DMetal Vessel (WineHQ 11.10)" : "GPTK/D3DMetal + Goldberg"
+        let engineLbl = useD3DMetalEngine ? "motor D3DMetal Vessel (WineHQ 11.10)" : "GPTK/D3DMetal"
         log.log("Lanzando juego D3D12 con \(engineLbl): \((executable as NSString).lastPathComponent)", level: .info)
         return try await launchWineProcess(
             winePath: d3d12Wine,
