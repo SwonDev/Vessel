@@ -6,6 +6,29 @@
     <description>Actualizaciones de Vessel — la mejor app para jugar a Steam en Mac Silicon.</description>
     <language>es</language>
     <item>
+      <title>Versión 0.0.9</title>
+      <sparkle:version>9</sparkle:version>
+      <sparkle:shortVersionString>0.0.9</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[ Compatibilidad automática para HPL3, Falcom, Playdead, Clickteam, OGRE, Flash, Moai,
+Storm3D, Almost Human, Chowdren y otros runtimes propietarios.
+
+Añade perfiles gráficos aislados, dependencias autorreparables y seguimiento robusto de
+procesos Windows y Steam, sin parámetros manuales.
+
+Corrige las actualizaciones ya al día y elimina el bloqueo al devolver Vessel al primer plano.
+LIMBO, Amnesia: Rebirth, Ys Origin y otros casos se validaron en uso real.
+
+Integra los badges autoalojados de Kimi y mantiene la ficha reactiva tras instalar o cerrar.
+La versión fusionada supera 243 pruebas sin fallos. ]]></description>
+      <pubDate>Mon, 20 Jul 2026 13:32:28 +0100</pubDate>
+      <enclosure
+        url="https://github.com/SwonDev/Vessel/releases/download/v0.0.9/Vessel-0.0.9.zip"
+        sparkle:edSignature="vLdHMC6vLBmERolsLaO+HUD/Vnslu6eI/nGryjtvi2M+ROpoDy16lpdeeD7MPnrTLCkwxLHqx+RjqjwuCMKDAQ=="
+        length="23589457"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>Versión 0.0.8</title>
       <sparkle:version>8</sparkle:version>
       <sparkle:shortVersionString>0.0.8</sparkle:shortVersionString>
