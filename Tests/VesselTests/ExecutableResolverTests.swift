@@ -26,6 +26,27 @@ final class ExecutableResolverTests: XCTestCase {
         return base
     }
 
+    private func steamStubFixture() -> Data {
+        var pe = Data(repeating: 0, count: 0x800)
+        pe[0] = 0x4D
+        pe[1] = 0x5A
+        pe[0x3C] = 0x80                              // e_lfanew
+        pe[0x80] = 0x50
+        pe[0x81] = 0x45
+        pe[0x86] = 1                                 // NumberOfSections
+        pe[0x94] = 0xF0                              // SizeOfOptionalHeader (PE32+)
+        pe[0xA8] = 0x00                              // AddressOfEntryPoint = 0x2000
+        pe[0xA9] = 0x20
+
+        let section = 0x80 + 24 + 0xF0
+        pe.replaceSubrange(section..<(section + 5), with: Data(".bind".utf8))
+        pe[section + 9] = 0x02                       // VirtualSize = 0x200
+        pe[section + 13] = 0x20                      // VirtualAddress = 0x2000
+        pe[section + 17] = 0x02                      // SizeOfRawData = 0x200
+        pe[section + 21] = 0x04                      // PointerToRawData = 0x400
+        return pe
+    }
+
     /// Caso MMO: cliente Unity en la raíz (con su `_Data`) + servidor headless en `server/`.
     /// El nombre del exe ("ancientkingdoms") NO coincide literalmente con la carpeta
     /// ("Ancient Kingdoms") por el espacio → la normalización debe igualarlos.
@@ -115,6 +136,83 @@ final class ExecutableResolverTests: XCTestCase {
 
         let exe = SteamLibraryImporter.mainGameExecutable(in: dir)
         XCTAssertEqual(exe, "\(dir)/x64Vk/Hades.exe")
+    }
+
+    /// Un depot puede traer el mismo motor en dos árboles: uno envuelto con SteamStub y otro
+    /// standalone oficial. Vessel debe escoger este último automáticamente para no abrir Steam.
+    func testPrefersMirroredOfficialNoSteamVariantOverSteamStub() throws {
+        let dir = tempDir("Proprietary Engine")
+        try makeTree(dir,
+            files: [
+                "_windows/win64/Proprietary.exe",
+                "_windowsnosteam/win64/Proprietary.exe"
+            ],
+            dirs: []
+        )
+        try steamStubFixture().write(
+            to: URL(fileURLWithPath: "\(dir)/_windows/win64/Proprietary.exe")
+        )
+        defer { try? FileManager.default.removeItem(atPath: (dir as NSString).deletingLastPathComponent) }
+
+        let exe = SteamLibraryImporter.mainGameExecutable(in: dir)
+        XCTAssertEqual(exe, "\(dir)/_windowsnosteam/win64/Proprietary.exe")
+        XCTAssertFalse(SteamDRMScanner.hasSteamStub(exe ?? ""))
+    }
+
+    /// Una carpeta llamada `nosteam` sin un ejecutable espejo protegido no demuestra que sea una
+    /// edición oficial y no debe alterar la heurística general.
+    func testDoesNotTrustStandaloneFolderNameWithoutProtectedMirror() throws {
+        let dir = tempDir("Stable Game")
+        try makeTree(dir,
+            files: [
+                "_windows/win64/StableGame.exe",
+                "_windowsnosteam/win64/StableGame.exe"
+            ],
+            dirs: []
+        )
+        defer { try? FileManager.default.removeItem(atPath: (dir as NSString).deletingLastPathComponent) }
+
+        let exe = SteamLibraryImporter.mainGameExecutable(in: dir)
+        XCTAssertEqual(exe, "\(dir)/_windows/win64/StableGame.exe")
+    }
+
+    /// Un launcher oficial puede declarar su payload en un INI. Esa relación explícita debe ganar
+    /// a una edición antigua de la raíz para que «Jugar» abra el juego moderno directamente.
+    func testPrefersPayloadDeclaredByAdjacentLauncherINI() throws {
+        let dir = tempDir("Trine")
+        try makeTree(dir,
+            files: [
+                "trine.exe",
+                "_enchanted_edition_/trine1_launcher.exe",
+                "_enchanted_edition_/trine1_game.exe",
+                "_enchanted_edition_/trine1.ini"
+            ],
+            dirs: []
+        )
+        try Data("ApplicationPath=trine1_game.exe\n".utf8).write(
+            to: URL(fileURLWithPath: "\(dir)/_enchanted_edition_/trine1.ini")
+        )
+        defer { try? FileManager.default.removeItem(atPath: (dir as NSString).deletingLastPathComponent) }
+
+        let exe = SteamLibraryImporter.mainGameExecutable(in: dir)
+        XCTAssertEqual(exe, "\(dir)/_enchanted_edition_/trine1_game.exe")
+    }
+
+    /// Una clave `ApplicationPath` aislada no basta: sin un launcher hermano verificable se conserva
+    /// la heurística normal y ningún fichero INI arbitrario puede secuestrar la selección.
+    func testDoesNotTrustApplicationPathWithoutAdjacentLauncher() throws {
+        let dir = tempDir("Stable Game")
+        try makeTree(dir,
+            files: ["stablegame.exe", "alternate/other.exe", "alternate/settings.ini"],
+            dirs: []
+        )
+        try Data("ApplicationPath=other.exe\n".utf8).write(
+            to: URL(fileURLWithPath: "\(dir)/alternate/settings.ini")
+        )
+        defer { try? FileManager.default.removeItem(atPath: (dir as NSString).deletingLastPathComponent) }
+
+        let exe = SteamLibraryImporter.mainGameExecutable(in: dir)
+        XCTAssertEqual(exe, "\(dir)/stablegame.exe")
     }
 
     /// Normalización de nombres: ignora espacios y símbolos.

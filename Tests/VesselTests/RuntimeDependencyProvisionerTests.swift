@@ -88,6 +88,52 @@ final class RuntimeDependencyProvisionerTests: XCTestCase {
         XCTAssertEqual(plan.winetricksVerbs, ["xact"])
     }
 
+    func testPhysXInstallerExecutableDoesNotMasqueradeAsInstalledRuntime() throws {
+        let executable = try writePE32Executable(named: "game.exe", markers: "PhysXLoader.dll")
+        try Data("redistributable".utf8).write(
+            to: temporaryDirectory.appendingPathComponent("PhysX_9.09_SystemSoftware.exe")
+        )
+
+        let missingPlan = RuntimeDependencyProvisioner.repairPlan(executable: executable.path)
+        XCTAssertTrue(missingPlan.dependencies.contains(.physX))
+        XCTAssertTrue(missingPlan.winetricksVerbs.contains("physx"))
+
+        try Data("local runtime".utf8).write(
+            to: temporaryDirectory.appendingPathComponent("PhysX3Common_x86.dll")
+        )
+        let bundledPlan = RuntimeDependencyProvisioner.repairPlan(executable: executable.path)
+        XCTAssertFalse(bundledPlan.winetricksVerbs.contains("physx"))
+    }
+
+    func testProtectedSteamPreflightIgnoresOtherEditionAndEditorRuntimes() throws {
+        let executable = try writePE32Executable(
+            named: "classic.exe",
+            markers: "PhysXLoader.dll d3dx9_38.dll"
+        )
+        let otherEdition = temporaryDirectory
+            .appendingPathComponent("_enchanted_edition_", isDirectory: true)
+        try FileManager.default.createDirectory(at: otherEdition, withIntermediateDirectories: true)
+        try Data("local modern runtime".utf8).write(
+            to: otherEdition.appendingPathComponent("PhysX3Common_x64.dll")
+        )
+        try Data("Microsoft.WindowsDesktop.App \"version\": \"8.0.1\"".utf8).write(
+            to: otherEdition.appendingPathComponent("editor.runtimeconfig.json")
+        )
+        // Texto incidental de una DLL nativa adyacente: no es un import CLR y no exige .NET.
+        try Data("mscoree.dll v4.0.30319".utf8).write(
+            to: temporaryDirectory.appendingPathComponent("steam_api.dll")
+        )
+
+        let plan = RuntimeDependencyProvisioner.protectedSteamPreflightPlan(
+            executable: executable.path
+        )
+
+        XCTAssertTrue(plan.winetricksVerbs.contains("physx"))
+        XCTAssertTrue(plan.winetricksVerbs.contains("d3dx9_38"))
+        XCTAssertFalse(plan.dependencies.contains(.dotNet))
+        XCTAssertFalse(plan.winetricksVerbs.contains("dotnetdesktop8"))
+    }
+
     func testReadsImportsFromLargePEWithoutScanningTheWholeBinary() throws {
         let executable = try writePE32ExecutableWithImport(named: "large.exe", library: "MSVCP120.dll")
 
@@ -153,6 +199,18 @@ final class RuntimeDependencyProvisionerTests: XCTestCase {
 
         XCTAssertTrue(plan.dependencies.isEmpty)
         XCTAssertTrue(plan.winetricksVerbs.isEmpty)
+    }
+
+    func testRubyUCRTLayoutFailureAddsNativeUCRT2019Repair() throws {
+        let executable = try writeExecutable(
+            named: "mkxp.exe",
+            markers: "x64-vcruntime140-ruby250.dll api-ms-win-crt-runtime-l1-1-0.dll unexpected ucrtbase.dll"
+        )
+
+        let plan = RuntimeDependencyProvisioner.repairPlan(executable: executable.path)
+
+        XCTAssertTrue(plan.dependencies.contains(.visualCpp))
+        XCTAssertEqual(plan.winetricksVerbs, ["vcrun2022", "ucrtbase2019"])
     }
 
     func testExtractsOnlyDLLFromActualMissingLibraryLine() {

@@ -1,9 +1,166 @@
 import Foundation
+import CoreGraphics
 import XCTest
 @testable import Vessel
 
 @MainActor
 final class WineManagerGraphicsRoutingTests: XCTestCase {
+    func testKleiDataBundleEngineKeepsBin64WorkingDirectory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-klei-working-dir-\(UUID().uuidString)", isDirectory: true)
+        let executableDirectory = root.appendingPathComponent("bin64", isDirectory: true)
+        let bundles = root.appendingPathComponent("data/databundles", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: executableDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: bundles, withIntermediateDirectories: true)
+        for file in ["hashes.txt", "shaders.zip", "scripts.zip"] {
+            try Data(file.utf8).write(to: bundles.appendingPathComponent(file))
+        }
+        let executable = executableDirectory.appendingPathComponent("custom-klei-engine.exe")
+        try writePE(
+            to: executable,
+            is64Bit: true,
+            imports: ["libEGL.dll", "libGLESv2.dll"],
+            marker: "DataBundleFileHashes Mounting file system databundles/shaders.zip"
+        )
+
+        XCTAssertEqual(
+            WineManager().gameWorkingDirectory(forExecutable: executable.path),
+            executableDirectory.path
+        )
+    }
+
+    func testShiningRockDualRendererEngineIsDetectedStructurally() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-shining-rock-\(UUID().uuidString)", isDirectory: true)
+        let dataDirectory = root.appendingPathComponent("WinData", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
+
+        let executable = root.appendingPathComponent("Application-steam-x32.exe")
+        try writePE(to: executable, is64Bit: false, imports: ["steam_api.dll"], marker: "")
+        for name in [
+            "Runtime-steam-x32.dll",
+            "VideoDX9-steam-x32.dll",
+            "VideoDX11-steam-x32.dll"
+        ] {
+            try Data(name.utf8).write(to: root.appendingPathComponent(name))
+        }
+        try Data("package-0".utf8).write(to: dataDirectory.appendingPathComponent("data0.pkg"))
+        try Data("package-1".utf8).write(to: dataDirectory.appendingPathComponent("data1.pkg"))
+
+        XCTAssertTrue(WineManager().isShiningRockDualRendererEngine(executable.path))
+    }
+
+    func testShiningRockInitialDisplayFitsVisibleMacArea() {
+        XCTAssertEqual(
+            WineManager.shiningRockDisplaySize(for: CGSize(width: 1512, height: 870)),
+            CGSize(width: 1280, height: 800)
+        )
+        XCTAssertEqual(
+            WineManager.shiningRockDisplaySize(for: CGSize(width: 1366, height: 768)),
+            CGSize(width: 1120, height: 704)
+        )
+    }
+
+    func testAlmostHumanLuaJITD3D9EngineIsDetectedStructurally() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-almost-human-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let executable = root.appendingPathComponent("custom-dungeon-engine.exe")
+        try writePE(
+            to: executable,
+            is64Bit: false,
+            imports: ["d3d9.dll"],
+            marker: "Direct3DCreate9 LuaJIT 2.0.0-beta9 shaders/d3d9/mesh.hlsl XAudio2Create"
+        )
+        try Data("FreeImage".utf8).write(to: root.appendingPathComponent("FreeImage.dll"))
+
+        XCTAssertTrue(WineManager().isAlmostHumanLuaJITD3D9Engine(executable.path))
+    }
+
+    func testGenericTopLevelX64DirectoryStillUsesGameRoot() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-root-working-dir-\(UUID().uuidString)", isDirectory: true)
+        let executableDirectory = root.appendingPathComponent("x64", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: executableDirectory, withIntermediateDirectories: true)
+        let executable = executableDirectory.appendingPathComponent("generic-engine.exe")
+        try writePE(to: executable, is64Bit: true, imports: ["d3d11.dll"], marker: "")
+
+        XCTAssertEqual(
+            WineManager().gameWorkingDirectory(forExecutable: executable.path),
+            root.path
+        )
+    }
+
+    func testWineProcessLookupDisablesLsofNameResolution() {
+        XCTAssertEqual(
+            WineManager.lsofProcessLookupArguments(processID: 42),
+            ["-nP", "-a", "-p", "42", "-Fn"]
+        )
+    }
+
+    func testWineChildEnvironmentNeverInheritsDevelopmentCredentials() {
+        let input = [
+            "HOME": "/Users/example",
+            "PATH": "/usr/bin:/bin",
+            "LANG": "es_ES.UTF-8",
+            "GITHUB_PERSONAL_ACCESS_TOKEN": "placeholder-secret",
+            "OPENAI_API_KEY": "placeholder-secret",
+            "AWS_SESSION_TOKEN": "placeholder-secret",
+            "SSH_AUTH_SOCK": "/private/tmp/agent.sock"
+        ]
+
+        let sanitized = WineManager.sanitizedInheritedEnvironment(input)
+
+        XCTAssertEqual(sanitized["HOME"], "/Users/example")
+        XCTAssertEqual(sanitized["PATH"], "/usr/bin:/bin")
+        XCTAssertEqual(sanitized["LANG"], "es_ES.UTF-8")
+        XCTAssertNil(sanitized["GITHUB_PERSONAL_ACCESS_TOKEN"])
+        XCTAssertNil(sanitized["OPENAI_API_KEY"])
+        XCTAssertNil(sanitized["AWS_SESSION_TOKEN"])
+        XCTAssertNil(sanitized["SSH_AUTH_SOCK"])
+    }
+
+    func testFullEngineControlCommandsMatchSteamSynchronization() {
+        let environment = WineManager.wineControlEnvironment(
+            prefix: "/tmp/vessel-prefix",
+            wine: "/tmp/Vessel/Engines/wine-full/bin/wine"
+        )
+
+        XCTAssertEqual(environment["WINEPREFIX"], "/tmp/vessel-prefix")
+        XCTAssertEqual(environment["WINEMSYNC"], "1")
+        XCTAssertEqual(environment["WINEESYNC"], "1")
+        XCTAssertEqual(environment["WINEFSYNC"], "1")
+    }
+
+    func testOtherEngineControlCommandsKeepTheirLaunchSynchronizationUndecided() {
+        let environment = WineManager.wineControlEnvironment(
+            prefix: "/tmp/vessel-prefix",
+            wine: "/tmp/Vessel/Engines/wine-unified/bin/wine"
+        )
+
+        XCTAssertNil(environment["WINEMSYNC"])
+        XCTAssertNil(environment["WINEESYNC"])
+        XCTAssertNil(environment["WINEFSYNC"])
+    }
+
+    func testLaunchAgentKeepsItsPrivateCommandAcrossRecoveryKickstarts() {
+        let script = WineManager.selfRemovingLaunchAgentScript(
+            commandFile: "/tmp/Vessel's private launch.sh",
+            workingDirectory: "/tmp/Game Folder",
+            command: "exec /usr/bin/env -i WINEPREFIX='/tmp/prefix' wine game.exe"
+        )
+
+        XCTAssertTrue(script.hasPrefix(
+            "(/bin/sleep 90; /bin/rm -f '/tmp/Vessel'\\''s private launch.sh') >/dev/null 2>&1 &\n"
+        ))
+        XCTAssertTrue(script.contains("cd '/tmp/Game Folder'\n"))
+        XCTAssertTrue(script.hasSuffix("wine game.exe\n"))
+    }
+
     private func writeUInt16(_ value: UInt16, to data: inout Data, at offset: Int) {
         data[offset] = UInt8(value & 0xff)
         data[offset + 1] = UInt8((value >> 8) & 0xff)
@@ -124,6 +281,290 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .dxmt)
     }
 
+    func testLegacyANGLE1SiblingDLLsRouteOpenGLESRuntimeToD3D9() throws {
+        let executable = try makePE32(
+            named: "custom-engine.exe",
+            imports: ["libEGL.dll", "libGLESv2.dll"]
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try writePE(
+            to: directory.appendingPathComponent("libEGL.dll"),
+            is64Bit: false,
+            imports: ["d3d9.dll", "libGLESv2.dll"],
+            marker: "ANGLE"
+        )
+        try writePE(
+            to: directory.appendingPathComponent("libGLESv2.dll"),
+            is64Bit: false,
+            imports: ["d3d9.dll"],
+            marker: "OpenGL ES 2.0 (ANGLE 1.0.0.2245) Direct3D9Ex"
+        )
+
+        let manager = WineManager()
+
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .d3d9)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .gcenx)
+        XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [.gcenx])
+        XCTAssertTrue(manager.usesLegacyD3D9NativeScaling(executable.path))
+    }
+
+    func testLegacyANGLE1PE64SiblingDLLsRouteOpenGLESRuntimeToD3D9() throws {
+        let executable = try makePE64(
+            named: "custom-engine-x64.exe",
+            imports: ["libEGL.dll", "libGLESv2.dll"]
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try writePE(
+            to: directory.appendingPathComponent("libEGL.dll"),
+            is64Bit: true,
+            imports: ["d3d9.dll", "libGLESv2.dll"],
+            marker: "1.4 (ANGLE 1.0.0.2249)"
+        )
+        try writePE(
+            to: directory.appendingPathComponent("libGLESv2.dll"),
+            is64Bit: true,
+            imports: ["d3d9.dll"],
+            marker: "OpenGL ES 2.0 (ANGLE 1.0.0.2249) Direct3DCreate9Ex"
+        )
+
+        let manager = WineManager()
+
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .d3d9)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .gcenx)
+        XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [.gcenx])
+        XCTAssertTrue(manager.usesLegacyD3D9NativeScaling(executable.path))
+        XCTAssertTrue(manager.usesFullCompatibilityEngineForD3D9(executable.path))
+        XCTAssertTrue(manager.usesIsolatedDXVKForLegacyANGLE64(executable.path))
+    }
+
+    func testLegacyANGLE1PE64PrefersMatchingOfficialPE32Sibling() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-angle-architectures-\(UUID().uuidString)", isDirectory: true)
+        let bin64 = root.appendingPathComponent("bin64", isDirectory: true)
+        let bin32 = root.appendingPathComponent("bin", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: bin64, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: bin32, withIntermediateDirectories: true)
+
+        let executable64 = bin64.appendingPathComponent("custom-engine_x64.exe")
+        let executable32 = bin32.appendingPathComponent("custom-engine.exe")
+        try writePE(to: executable64, is64Bit: true, imports: ["libEGL.dll", "libGLESv2.dll"], marker: "")
+        try writePE(to: executable32, is64Bit: false, imports: ["libEGL.dll", "libGLESv2.dll"], marker: "")
+        for (directory, is64Bit) in [(bin64, true), (bin32, false)] {
+            try writePE(
+                to: directory.appendingPathComponent("libEGL.dll"),
+                is64Bit: is64Bit,
+                imports: ["d3d9.dll", "libGLESv2.dll"],
+                marker: "ANGLE"
+            )
+            try writePE(
+                to: directory.appendingPathComponent("libGLESv2.dll"),
+                is64Bit: is64Bit,
+                imports: ["d3d9.dll"],
+                marker: "OpenGL ES 2.0 (ANGLE 1.0.0.2249)"
+            )
+        }
+
+        let preferred = try XCTUnwrap(
+            WineManager().preferredLegacyANGLE1Executable(for: executable64.path)
+        )
+        XCTAssertTrue(
+            FileManager.default.contentsEqual(atPath: preferred, andPath: executable32.path)
+        )
+    }
+
+    func testSteamNetworkingStackRequiresRealSteamClient() throws {
+        let executable = try makePE32(
+            named: "online-engine.exe",
+            marker: "SteamNetworking006 SteamMatchMaking009 SteamGameServer014",
+            imports: ["steam_api.dll"]
+        )
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+
+        XCTAssertTrue(WineManager().requiresRealSteamNetworking(executable.path))
+    }
+
+    func testPeerToPeerLobbyWithoutDedicatedServerRequiresRealSteamClient() throws {
+        let executable = try makePE64(
+            named: "peer-to-peer-engine.exe",
+            marker: "SteamNetworking006 SteamMatchMaking009",
+            imports: ["steam_api64.dll"]
+        )
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+
+        XCTAssertTrue(WineManager().requiresRealSteamNetworking(executable.path))
+    }
+
+    func testSteamNetworkingWithoutMatchmakingDoesNotRequireRealSteamClient() throws {
+        let executable = try makePE64(
+            named: "telemetry-engine.exe",
+            marker: "SteamNetworking006 SteamUserStats012",
+            imports: ["steam_api64.dll"]
+        )
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+
+        XCTAssertFalse(WineManager().requiresRealSteamNetworking(executable.path))
+    }
+
+    func testSteamAchievementsAloneDoNotRequireRealSteamClient() throws {
+        let executable = try makePE32(
+            named: "single-player-engine.exe",
+            marker: "SteamUserStats012 SteamUser021",
+            imports: ["steam_api.dll"]
+        )
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+
+        XCTAssertFalse(WineManager().requiresRealSteamNetworking(executable.path))
+    }
+
+    func testModernPE64D3D9KeepsGcenxCompatibilityEngine() throws {
+        let executable = try makePE64(named: "modern-d3d9-x64.exe", imports: ["d3d9.dll"])
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+
+        let manager = WineManager()
+
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .d3d9)
+        XCTAssertFalse(manager.usesLegacyD3D9NativeScaling(executable.path))
+        XCTAssertFalse(manager.usesFullCompatibilityEngineForD3D9(executable.path))
+        XCTAssertFalse(manager.usesIsolatedDXVKForLegacyANGLE64(executable.path))
+    }
+
+    func testChowdrenSDL2D3D9UsesOnlyItsStructuralRuntimeSignature() throws {
+        let executable = try makePE32(
+            named: "converted-runtime.exe",
+            marker: "CHOWDREN_SDL_DEBUG CHOWDREN_SDL_LOG SDL_CreateRenderer SDL_Direct3D9GetAdapterIndex",
+            imports: ["d3d9.dll", "steam_api.dll"]
+        )
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+
+        let manager = WineManager()
+
+        XCTAssertTrue(manager.isChowdrenSDL2D3D9Engine(executable.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .d3d9)
+        XCTAssertTrue(manager.usesFullCompatibilityEngineForD3D9(executable.path))
+        XCTAssertFalse(manager.usesIsolatedDXVKForLegacyANGLE64(executable.path))
+    }
+
+    func testGenericSDL2D3D9DoesNotInheritChowdrenBackend() throws {
+        let executable = try makePE32(
+            named: "generic-sdl-game.exe",
+            marker: "SDL_CreateRenderer SDL_Direct3D9GetAdapterIndex",
+            imports: ["d3d9.dll"]
+        )
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+
+        XCTAssertFalse(WineManager().isChowdrenSDL2D3D9Engine(executable.path))
+    }
+
+    func testChowdrenMarkersWithoutD3D9ImportDoNotSelectD3D9Backend() throws {
+        let executable = try makePE32(
+            named: "chowdren-opengl.exe",
+            marker: "CHOWDREN_SDL_DEBUG CHOWDREN_SDL_LOG SDL_CreateRenderer SDL_Direct3D9GetAdapterIndex",
+            imports: ["opengl32.dll"]
+        )
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+
+        XCTAssertFalse(WineManager().isChowdrenSDL2D3D9Engine(executable.path))
+    }
+
+    func testFrozenbyteStorm3DD3D9UsesNativePointScaling() throws {
+        let executable = try makePE64(
+            named: "custom-frozen-engine.exe",
+            marker: "IStorm3D_Scene fb::animation::AnimationComponent "
+                + "#define FB_LUA_EXPRESSION_STRING_COUNT",
+            imports: ["d3d9.dll", "lua_x64.dll"]
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for package in ["shader1.fbq", "script1.fbq", "model1.fbq"] {
+            try Data(package.utf8).write(to: directory.appendingPathComponent(package))
+        }
+
+        let manager = WineManager()
+
+        XCTAssertTrue(manager.isFrozenbyteStorm3DD3D9Engine(executable.path))
+        XCTAssertTrue(manager.usesLegacyD3D9NativeScaling(executable.path))
+        XCTAssertFalse(manager.usesFullCompatibilityEngineForD3D9(executable.path))
+    }
+
+    func testFrozenbyteOptionsFolderComesFromPackagedManifest() throws {
+        let executable = try makePE64(
+            named: "custom-frozen-engine.exe",
+            marker: "IStorm3D_Scene fb::animation::AnimationComponent",
+            imports: ["d3d9.dll"]
+        )
+        let directory = executable.deletingLastPathComponent()
+        let config = directory.appendingPathComponent("config", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: config, withIntermediateDirectories: true)
+        try Data("Options are stored in %APPDATA%\\CustomFrozen\\\r\n".utf8)
+            .write(to: config.appendingPathComponent("readme_info.txt"))
+
+        XCTAssertEqual(
+            WineManager().frozenbyteOptionsFolderName(forExecutable: executable.path),
+            "CustomFrozen"
+        )
+    }
+
+    func testFrozenbyteFirstRunOptionsUseNativeBorderlessResolution() throws {
+        let repaired = try XCTUnwrap(WineManager.repairedFrozenbyteDisplayOptions(
+            existing: nil,
+            screenSize: CGSize(width: 1512, height: 982)
+        ))
+
+        XCTAssertTrue(repaired.contains("\"ScreenWidth\", 1512"))
+        XCTAssertTrue(repaired.contains("\"ScreenHeight\", 982"))
+        XCTAssertTrue(repaired.contains("\"Windowed\", true"))
+        XCTAssertTrue(repaired.contains("\"MaximizeWindow\", true"))
+        XCTAssertTrue(repaired.contains("\"WindowTitleBar\", false"))
+    }
+
+    func testFrozenbyteMaximizedViewportRepairPreservesOtherPreferences() throws {
+        let existing = """
+        setOption(audioModule, "MasterVolume", 0.35)
+        setOption(renderingModule, "ScreenWidth", 1280)
+        setOption(renderingModule, "ScreenHeight", 720)
+        setOption(renderingModule, "Windowed", true)
+        setOption(renderingModule, "MaximizeWindow", true)
+        setOption(renderingModule, "WindowTitleBar", false)
+        """
+        let repaired = try XCTUnwrap(WineManager.repairedFrozenbyteDisplayOptions(
+            existing: existing,
+            screenSize: CGSize(width: 1512, height: 982)
+        ))
+
+        XCTAssertTrue(repaired.contains("\"MasterVolume\", 0.35"))
+        XCTAssertTrue(repaired.contains("\"ScreenWidth\", 1512"))
+        XCTAssertTrue(repaired.contains("\"ScreenHeight\", 982"))
+        XCTAssertTrue(repaired.contains("\"Windowed\", true"))
+    }
+
+    func testFrozenbyteUserWindowPreferenceIsNotOverridden() {
+        let existing = """
+        setOption(renderingModule, "ScreenWidth", 1280)
+        setOption(renderingModule, "ScreenHeight", 720)
+        setOption(renderingModule, "Windowed", false)
+        setOption(renderingModule, "MaximizeWindow", false)
+        """
+
+        XCTAssertNil(WineManager.repairedFrozenbyteDisplayOptions(
+            existing: existing,
+            screenSize: CGSize(width: 1512, height: 982)
+        ))
+    }
+
+    func testModernDirectD3D9DoesNotInheritLegacyNativeScaling() throws {
+        let executable = try makePE32(
+            named: "modern-d3d9.exe",
+            imports: ["d3d9.dll"]
+        )
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+
+        XCTAssertFalse(WineManager().usesLegacyD3D9NativeScaling(executable.path))
+    }
+
     func testMoaiAKUSDLPE32UsesOnlyTheFullCompatibilityEngine() throws {
         let executable = try makePE32(
             named: "moai-game.exe",
@@ -198,6 +639,44 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertNil(environment["CX_GRAPHICS_BACKEND"])
     }
 
+    func testFullEngineCleanEnvironmentPreservesIsolatedGraphicsRuntimeOnly() {
+        let environment = [
+            "HOME": "/Users/example",
+            "WINEPREFIX": "/tmp/vessel-bottle",
+            "DYLD_FALLBACK_LIBRARY_PATH": "/tmp/moltenvk:/tmp/wine-full/lib",
+            "DYLD_LIBRARY_PATH": "/tmp/moltenvk",
+            "VK_ICD_FILENAMES": "/tmp/moltenvk/MoltenVK_icd.json",
+            "VK_DRIVER_FILES": "/tmp/moltenvk/MoltenVK_icd.json",
+            "DXVK_LOG_LEVEL": "info",
+            "DXVK_LOG_PATH": "/tmp/game",
+            "MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS": "1",
+            "GITHUB_PERSONAL_ACCESS_TOKEN": "placeholder-secret",
+            "OPENAI_API_KEY": "placeholder-secret"
+        ]
+
+        let clean = WineManager.fullEngineCleanEnvironment(from: environment)
+
+        XCTAssertEqual(clean["DYLD_LIBRARY_PATH"], "/tmp/moltenvk")
+        XCTAssertEqual(clean["VK_ICD_FILENAMES"], "/tmp/moltenvk/MoltenVK_icd.json")
+        XCTAssertEqual(clean["VK_DRIVER_FILES"], "/tmp/moltenvk/MoltenVK_icd.json")
+        XCTAssertEqual(clean["DXVK_LOG_LEVEL"], "info")
+        XCTAssertEqual(clean["DXVK_LOG_PATH"], "/tmp/game")
+        XCTAssertEqual(clean["MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS"], "1")
+        XCTAssertNil(clean["GITHUB_PERSONAL_ACCESS_TOKEN"])
+        XCTAssertNil(clean["OPENAI_API_KEY"])
+    }
+
+    func testFullEngineUsesIndependentLaunchAgentsForSteamAndGames() {
+        XCTAssertEqual(
+            WineManager.fullEngineLaunchAgentLabel(arguments: ["/tmp/prefix/drive_c/Steam/steam.exe"]),
+            "com.swondev.vessel.steamlauncher"
+        )
+        XCTAssertEqual(
+            WineManager.fullEngineLaunchAgentLabel(arguments: ["/tmp/games/online-engine.exe"]),
+            "com.swondev.vessel.fullgamelauncher"
+        )
+    }
+
     func testPE32SDL2OpenGLDisablesLegacyRetinaScaling() throws {
         let executable = try makePE32(
             named: "pixel-engine.exe",
@@ -226,6 +705,126 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         let manager = WineManager()
 
         XCTAssertFalse(manager.usesLegacySDL2OpenGLScaling(executable.path))
+    }
+
+    func testContentDrivenSDL2FMODStudioEngineDisablesRetinaAt64Bit() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-content-fmod-\(UUID().uuidString)", isDirectory: true)
+        let executableDirectory = root.appendingPathComponent(
+            "_windowsnosteam/win64",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: executableDirectory, withIntermediateDirectories: true)
+        let executable = executableDirectory.appendingPathComponent("proprietary-engine.exe")
+        try writePE(
+            to: executable,
+            is64Bit: true,
+            imports: ["opengl32.dll", "SDL2.dll", "fmod64.dll", "fmodstudio64.dll"],
+            marker: "SDL2 content engine"
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("SDL2".utf8).write(to: executable.deletingLastPathComponent().appendingPathComponent("SDL2.dll"))
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("audio", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("shared/options", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try Data("{}".utf8).write(to: root.appendingPathComponent("audio/base.app.load_order.json"))
+        try Data("{}".utf8).write(to: root.appendingPathComponent("shared/options/options.value_definitions.json"))
+
+        let manager = WineManager()
+
+        XCTAssertTrue(manager.usesLegacySDL2OpenGLScaling(executable.path))
+    }
+
+    func testMKXPRGSS64BitUsesOpenGLAndNativeScaling() throws {
+        let executable = try makePE64(
+            named: "runtime.exe",
+            marker: "MKXP\0RGSS_VERSION\0$RGSS_SCRIPTS"
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("SDL2".utf8).write(to: directory.appendingPathComponent("SDL2.dll"))
+        try Data("Ruby 2.5 runtime".utf8)
+            .write(to: directory.appendingPathComponent("x64-vcruntime140-ruby250.dll"))
+
+        let manager = WineManager()
+
+        XCTAssertTrue(manager.isMKXPRGSSGame(executable.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .opengl)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .dxmt)
+        XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [.dxmt])
+        XCTAssertTrue(manager.usesLegacySDL2OpenGLScaling(executable.path))
+    }
+
+    func testSteamShimMKXPBootstrapperIsDetectedAndKeepsOpenGLRouting() throws {
+        let executable = try makePE64(
+            named: "oneshot.exe",
+            marker: "MKXP\0RGSS_VERSION\0$RGSS_SCRIPTS"
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("SDL2".utf8).write(to: directory.appendingPathComponent("SDL2.dll"))
+        try Data("Ruby 2.5 runtime".utf8)
+            .write(to: directory.appendingPathComponent("x64-vcruntime140-ruby250.dll"))
+        let shim = directory.appendingPathComponent("steamshim.exe")
+        try writePE(
+            to: shim,
+            is64Bit: true,
+            imports: ["steam_api64.dll"],
+            marker: "STEAMSHIM_READHANDLE\0STEAMSHIM_WRITEHANDLE\0SteamAPI_Init"
+        )
+
+        let manager = WineManager()
+
+        XCTAssertTrue(manager.isSteamShimBootstrapper(shim.path))
+        XCTAssertEqual(manager.steamShimBootstrapper(forPayload: executable.path), shim.path)
+        XCTAssertEqual(manager.steamShimPayload(forBootstrapper: shim.path), executable.path)
+        XCTAssertTrue(manager.isMKXPRGSSGame(shim.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: shim.path), .opengl)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: shim.path), .dxmt)
+        XCTAssertEqual(manager.fallbackLayers(forExecutable: shim.path), [.dxmt])
+        XCTAssertTrue(manager.usesLegacySDL2OpenGLScaling(shim.path))
+    }
+
+    func testSteamShimNameAndImportWithoutIPCHandlesIsRejected() throws {
+        let shim = try makePE64(
+            named: "steamshim.exe",
+            marker: "SteamAPI_Init",
+            imports: ["steam_api64.dll"]
+        )
+        let directory = shim.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let manager = WineManager()
+
+        XCTAssertFalse(manager.isSteamShimBootstrapper(shim.path))
+        XCTAssertNil(manager.steamShimPayload(forBootstrapper: shim.path))
+    }
+
+    func testNativeUCRTRejectsWineBuiltinAndGlobalOverrideIsDetectedSeparately() throws {
+        let prefix = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Vessel-UCRT-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: prefix) }
+        let system32 = prefix.appendingPathComponent("drive_c/windows/system32", isDirectory: true)
+        try FileManager.default.createDirectory(at: system32, withIntermediateDirectories: true)
+        let ucrt = system32.appendingPathComponent("ucrtbase.dll")
+        try Data("Wine builtin DLL".utf8).write(to: ucrt)
+        let manager = WineManager()
+
+        XCTAssertFalse(manager.hasNativeUCRT2019(in: prefix.path))
+        XCTAssertFalse(manager.hasGlobalUCRTOverride(in: prefix.path))
+
+        try Data("Microsoft Corporation Universal CRT".utf8).write(to: ucrt)
+
+        try #"[Software\\Wine\\DllOverrides] "ucrtbase"="native,builtin""#
+            .write(to: prefix.appendingPathComponent("user.reg"), atomically: true, encoding: .utf8)
+
+        XCTAssertTrue(manager.hasNativeUCRT2019(in: prefix.path))
+        XCTAssertTrue(manager.hasGlobalUCRTOverride(in: prefix.path))
     }
 
     func testUnusedSiblingSDL2DoesNotTriggerLegacyScaling() throws {
@@ -309,6 +908,97 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         })
     }
 
+    func testZomboidJavaEngineUsesOfficialNoSteamModeAutomatically() throws {
+        let executable = try makePE64(named: "ProjectZomboid64.exe", imports: ["steam_api64.dll"])
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(
+            at: directory.appendingPathComponent("jre/bin"),
+            withIntermediateDirectories: true
+        )
+        try Data("java".utf8).write(to: directory.appendingPathComponent("jre/bin/java.exe"))
+        let manifest: [String: Any] = [
+            "mainClass": "zombie/gameStates/MainScreenState",
+            "classpath": [".", "lwjgl.jar", "lwjgl-opengl.jar"],
+            "vmArgs": ["-Djava.awt.headless=true", "-Dzomboid.steam=1"]
+        ]
+        try JSONSerialization.data(withJSONObject: manifest)
+            .write(to: directory.appendingPathComponent("ProjectZomboid64.json"))
+
+        let manager = WineManager()
+        XCTAssertTrue(manager.isJavaGame(executable.path))
+        XCTAssertTrue(manager.isZomboidJavaEngine(executable.path))
+        XCTAssertNil(manager.processTrackingDirectory(forExecutable: executable.path))
+        XCTAssertEqual(manager.automaticEngineArguments(forExecutable: executable.path), ["-nosteam"])
+        XCTAssertEqual(
+            manager.resolvedLaunchArguments(
+                forExecutable: executable.path,
+                requested: [],
+                effective: EffectiveLaunchConfig()
+            ),
+            ["-nosteam"]
+        )
+    }
+
+    func testUnrelatedJavaLWJGLGameDoesNotReceiveNoSteamArgument() throws {
+        let executable = try makePE64(named: "JavaGame.exe")
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(
+            at: directory.appendingPathComponent("jre/bin"),
+            withIntermediateDirectories: true
+        )
+        try Data("java".utf8).write(to: directory.appendingPathComponent("jre/bin/java.exe"))
+        let manifest: [String: Any] = [
+            "mainClass": "com.example.Main",
+            "classpath": ["lwjgl-opengl.jar"],
+            "vmArgs": ["-Dzomboid.steam=1"]
+        ]
+        try JSONSerialization.data(withJSONObject: manifest)
+            .write(to: directory.appendingPathComponent("JavaGame.json"))
+
+        let manager = WineManager()
+        XCTAssertTrue(manager.isJavaGame(executable.path))
+        XCTAssertFalse(manager.isZomboidJavaEngine(executable.path))
+        XCTAssertEqual(
+            manager.processTrackingDirectory(forExecutable: executable.path),
+            directory.path
+        )
+        XCTAssertFalse(manager.automaticEngineArguments(forExecutable: executable.path).contains("-nosteam"))
+    }
+
+    func testElevatedWineWindowCountsAsUsableForItsExactGameProcess() {
+        let ownerPID: pid_t = 12_345
+        let window: [String: Any] = [
+            kCGWindowOwnerPID as String: ownerPID,
+            kCGWindowLayer as String: 21,
+            kCGWindowAlpha as String: 1.0,
+            kCGWindowBounds as String: ["Width": 1512.0, "Height": 982.0]
+        ]
+
+        XCTAssertTrue(WineManager.isUsableGameWindow(window, ownedBy: [ownerPID]))
+        XCTAssertFalse(WineManager.isUsableGameWindow(window, ownedBy: [54_321]))
+    }
+
+    func testInvisibleOrTinyWineSurfaceDoesNotCountAsUsable() {
+        let ownerPID: pid_t = 12_345
+        let invisible: [String: Any] = [
+            kCGWindowOwnerPID as String: ownerPID,
+            kCGWindowLayer as String: 21,
+            kCGWindowAlpha as String: 0.0,
+            kCGWindowBounds as String: ["Width": 1512.0, "Height": 982.0]
+        ]
+        let tiny: [String: Any] = [
+            kCGWindowOwnerPID as String: ownerPID,
+            kCGWindowLayer as String: 0,
+            kCGWindowAlpha as String: 1.0,
+            kCGWindowBounds as String: ["Width": 120.0, "Height": 80.0]
+        ]
+
+        XCTAssertFalse(WineManager.isUsableGameWindow(invisible, ownedBy: [ownerPID]))
+        XCTAssertFalse(WineManager.isUsableGameWindow(tiny, ownedBy: [ownerPID]))
+    }
+
     func testForcedDXMTIsReportedAsDXMTForDynamic64BitGame() throws {
         let executable = try makePE64(named: "dynamic.exe")
         defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
@@ -389,6 +1079,40 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             in: watcher,
             range: NSRange(watcher.startIndex..., in: watcher)
         ))
+    }
+
+    func testSteamProtectedProcessPatternTracksEitherOfficialArchitecture() throws {
+        let pattern = WineManager.steamProtectedProcessPattern("Application-steam-x32.exe")
+        let regex = try NSRegularExpression(pattern: pattern)
+        let process32 = #"C:\Games\Application-steam-x32.exe"#
+        let process64 = #"C:\Games\Application-steam-x64.exe"#
+        let watcher = "while /usr/bin/pgrep -f '\(pattern)' >/dev/null; do sleep 2; done"
+
+        for process in [process32, process64] {
+            XCTAssertNotNil(regex.firstMatch(
+                in: process,
+                range: NSRange(process.startIndex..., in: process)
+            ))
+        }
+        XCTAssertNil(regex.firstMatch(
+            in: watcher,
+            range: NSRange(watcher.startIndex..., in: watcher)
+        ))
+    }
+
+    func testProcessFamilyImageNamesIncludesBothOfficialArchitectures() {
+        XCTAssertEqual(
+            WineManager.processFamilyImageNames("Application-steam-x32.exe"),
+            ["Application-steam-x32.exe", "Application-steam-x64.exe"]
+        )
+        XCTAssertEqual(
+            WineManager.processFamilyImageNames("Application-steam-x64.exe"),
+            ["Application-steam-x64.exe", "Application-steam-x32.exe"]
+        )
+        XCTAssertEqual(
+            WineManager.processFamilyImageNames("Banished.exe"),
+            ["Banished.exe"]
+        )
     }
 
     func testManagedRuntimeOnlyReenablesMSCoree() {
@@ -488,6 +1212,32 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             requiresVisibleWindow: true,
             everVisible: true
         ))
+    }
+
+    func testDetachedGameFamilyMayAppearAfterSlowLauncherHandoff() async throws {
+        let id = "slow-launcher-\(UUID().uuidString)"
+        let tracker = GameLaunchTracker.shared
+        let appearsAt = Date().addingTimeInterval(2.5)
+        var stopped = false
+
+        await tracker.track(
+            id,
+            processFamilyIsRunning: { !stopped && Date() >= appearsAt },
+            stopProcessFamily: { stopped = true }
+        ) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+            process.arguments = ["0.1"]
+            try process.run()
+            return process
+        }
+
+        try await Task.sleep(for: .seconds(3))
+        XCTAssertEqual(tracker.state(id), .running)
+
+        tracker.stop(id)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(tracker.state(id), .idle)
     }
 
     func testLegacyManualLaunchArgumentsNeverBecomeACompatibilityRequirement() {

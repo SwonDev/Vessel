@@ -196,6 +196,8 @@ struct BottleDetailView: View {
             UserDefaults.standard.removeObject(forKey: "steam.accessToken")
             UserDefaults.standard.removeObject(forKey: "steam.refreshToken")
             UserDefaults.standard.removeObject(forKey: "steam.sessionNeedsReauthentication")
+            UserDefaults.standard.removeObject(forKey: "steam.remoteRejectedRefreshTokenSHA256")
+            SteamAuthService.clearClientSessionSeedTracking()
             ownedGames = []
             statusMessage = "Sesión cerrada. Abre el menú «…» → Iniciar sesión para volver a entrar."
             NotificationCenter.default.post(name: .accountProfileDidChange, object: StoreKind.steam)
@@ -587,6 +589,9 @@ struct BottleDetailView: View {
         let trackedPrefix = localBottle.prefixPath
         // Motor REAL que se usará (no `.auto`), para que el fallback recorra los 3 motores.
         let usedLayer = wineManager.resolvedGraphicsLayer(forExecutable: exePath, effective: eff)
+        let usesRealSteamLaunch = eff.useRealSteam
+            || UserDefaults.standard.bool(forKey: "vessel.steamRealGlobal")
+            || SteamDRMScanner.hasSteamStub(exePath)
         await GameLaunchTracker.shared.track(
             trackId, statsKey: "steam:\(trackId)",
             // Copia de partida automática: al CERRAR el juego, respalda la partida (seguro, solo copia).
@@ -628,7 +633,7 @@ struct BottleDetailView: View {
             prefix: localBottle.prefixPath, gameId: trackId, gameTitle: game.name,
             currentLayer: usedLayer, attempt: attempt,
             fallbackLayers: wineManager.fallbackLayers(forExecutable: exePath, effective: eff),
-            usesRealSteam: eff.useRealSteam,
+            usesRealSteam: usesRealSteamLaunch,
             isRunning: { GameLaunchTracker.shared.state(trackId) == .running },
             hasVisibleWindow: {
                 await wineManager.hasVisibleGameWindow(

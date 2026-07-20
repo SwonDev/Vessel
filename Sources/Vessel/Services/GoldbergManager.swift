@@ -62,6 +62,11 @@ final class GoldbergManager {
     func applyToGame(gameExecutable: String, appId: String, accountName: String = "Vessel") -> Bool {
         let fm = FileManager.default
         let root = Self.installRoot(forExecutable: gameExecutable)
+        let buildID = Self.installedBuildID(
+            forExecutable: gameExecutable,
+            appId: appId,
+            fileManager: fm
+        )
         var applied = false
         // Buscar TODOS los `steam_api(64).dll` del juego, RECURSIVAMENTE: los juegos Unity los
         // colocan en `<Juego>_Data/Plugins/x86_64/`, NO en la carpeta del exe (bug real: Core
@@ -78,7 +83,12 @@ final class GoldbergManager {
             if !appId.isEmpty {
                 try? appId.write(toFile: "\(dir)/steam_appid.txt", atomically: true, encoding: .utf8)
             }
-            writeSteamSettings(inDir: dir, appId: appId, accountName: accountName)
+            writeSteamSettings(
+                inDir: dir,
+                appId: appId,
+                accountName: accountName,
+                buildID: buildID
+            )
             applySteamClientVtableOverride(appId: appId, settingsDir: "\(dir)/steam_settings", fm: fm)
         }
         // Fallback defensivo: si no se halló ningún DLL, aplicar en la carpeta del exe (como antes).
@@ -89,7 +99,12 @@ final class GoldbergManager {
             if replaceDLL(at: "\(gameDir)/steam_api64.dll", with: steamApi64Path, fm: fm) { applied = true }
             if replaceDLL(at: "\(gameDir)/steam_api.dll", with: steamApi32Path, fm: fm) { applied = true }
             if !appId.isEmpty { try? appId.write(toFile: "\(gameDir)/steam_appid.txt", atomically: true, encoding: .utf8) }
-            writeSteamSettings(inDir: gameDir, appId: appId, accountName: accountName)
+            writeSteamSettings(
+                inDir: gameDir,
+                appId: appId,
+                accountName: accountName,
+                buildID: buildID
+            )
             applySteamClientVtableOverride(appId: appId, settingsDir: "\(gameDir)/steam_settings", fm: fm)
         }
         // Java/libGDX puede llevar Steamworks4j dentro del JAR. Ese runtime extrae su propio
@@ -100,6 +115,7 @@ final class GoldbergManager {
             gameExecutable: gameExecutable,
             appId: appId,
             accountName: accountName,
+            buildID: buildID,
             fm: fm
         ) {
             applied = true
@@ -148,6 +164,62 @@ final class GoldbergManager {
             return NSString.path(withComponents: Array(comps[0...(i + 1)]))
         }
         return (exe as NSString).deletingLastPathComponent
+    }
+
+    /// Recupera el BuildID de la instalación real de Steam. Algunos motores usan
+    /// `ISteamApps::GetAppBuildId` para seleccionar sus paquetes de datos, por lo que el valor
+    /// ficticio del emulador puede dejar recursos válidos sin montar. Admite tanto el layout
+    /// estándar (`steamapps/appmanifest_*.acf`) como instalaciones autocontenidas que conservan
+    /// el manifiesto dentro de la raíz del juego.
+    static func installedBuildID(
+        forExecutable executable: String,
+        appId: String,
+        fileManager fm: FileManager = .default
+    ) -> String? {
+        guard !appId.isEmpty,
+              appId.unicodeScalars.allSatisfy(CharacterSet.decimalDigits.contains) else {
+            return nil
+        }
+
+        let manifestName = "appmanifest_\(appId).acf"
+        var directory = URL(fileURLWithPath: installRoot(forExecutable: executable), isDirectory: true)
+        var visited = Set<String>()
+
+        for _ in 0..<8 {
+            let candidates = [
+                directory.appendingPathComponent(manifestName),
+                directory.appendingPathComponent("steamapps", isDirectory: true)
+                    .appendingPathComponent(manifestName),
+            ]
+            for candidate in candidates where visited.insert(candidate.path).inserted {
+                guard fm.fileExists(atPath: candidate.path),
+                      let manifest = try? String(contentsOf: candidate, encoding: .utf8),
+                      let buildID = buildID(fromSteamManifest: manifest) else {
+                    continue
+                }
+                return buildID
+            }
+
+            let parent = directory.deletingLastPathComponent()
+            guard parent.path != directory.path else { break }
+            directory = parent
+        }
+        return nil
+    }
+
+    private static func buildID(fromSteamManifest manifest: String) -> String? {
+        let pattern = #"(?im)^\s*"buildid"\s*"([0-9]+)"\s*$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(
+                in: manifest,
+                range: NSRange(manifest.startIndex..., in: manifest)
+              ),
+              let range = Range(match.range(at: 1), in: manifest) else {
+            return nil
+        }
+        let buildID = String(manifest[range])
+        guard let numericBuildID = UInt32(buildID), numericBuildID > 0 else { return nil }
+        return String(numericBuildID)
     }
 
     /// Localiza todos los `steam_api(64).dll` del árbol del juego (no los respaldos `.vessel-orig`).
@@ -214,6 +286,7 @@ final class GoldbergManager {
         gameExecutable: String,
         appId: String,
         accountName: String,
+        buildID: String?,
         fm: FileManager
     ) -> Bool {
         let archives = embeddedSteamworksArchives(forExecutable: gameExecutable)
@@ -268,6 +341,7 @@ final class GoldbergManager {
                 originals: originalLibraries,
                 appId: appId,
                 accountName: accountName,
+                buildID: buildID,
                 fileManager: fm
             )
             applied = true
@@ -313,6 +387,7 @@ final class GoldbergManager {
         originals: [String: Data],
         appId: String,
         accountName: String,
+        buildID: String?,
         fileManager fm: FileManager
     ) {
         for tempDir in wineUserTempDirectories(forExecutable: gameExecutable, fileManager: fm) {
@@ -340,7 +415,12 @@ final class GoldbergManager {
                     encoding: .utf8
                 )
             }
-            writeSteamSettings(inDir: extraction, appId: appId, accountName: accountName)
+            writeSteamSettings(
+                inDir: extraction,
+                appId: appId,
+                accountName: accountName,
+                buildID: buildID
+            )
             applySteamClientVtableOverride(
                 appId: appId,
                 settingsDir: "\(extraction)/steam_settings",
@@ -496,7 +576,12 @@ final class GoldbergManager {
 
     /// Escribe `steam_settings/` junto al exe con un usuario por defecto (+ desactiva los diálogos
     /// de warning de gbe_fork, que son modales y bloquean el hilo del juego).
-    private func writeSteamSettings(inDir dir: String, appId: String, accountName: String) {
+    private func writeSteamSettings(
+        inDir dir: String,
+        appId: String,
+        accountName: String,
+        buildID: String?
+    ) {
         let settingsDir = "\(dir)/steam_settings"
         try? FileManager.default.createDirectory(atPath: settingsDir, withIntermediateDirectories: true)
         let userIni = """
@@ -519,6 +604,59 @@ final class GoldbergManager {
         offline=1
         """
         try? mainIni.write(toFile: "\(settingsDir)/configs.main.ini", atomically: true, encoding: .utf8)
+        if let buildID {
+            writeBranchesSettings(in: settingsDir, buildID: buildID)
+        }
+    }
+
+    /// gbe_fork moderno obtiene `GetAppBuildId()` de la rama seleccionada en `branches.json`.
+    /// La antigua clave `build_id` de `configs.app.ini` está deprecada y se ignora. Se conserva
+    /// cualquier rama ya configurada y solo se crea o actualiza la rama pública instalada.
+    private func writeBranchesSettings(in settingsDir: String, buildID: String) {
+        guard let numericBuildID = UInt32(buildID), numericBuildID > 0 else { return }
+        let fm = FileManager.default
+        let branchesURL = URL(fileURLWithPath: settingsDir, isDirectory: true)
+            .appendingPathComponent("branches.json")
+
+        var branches: [[String: Any]] = []
+        if let data = try? Data(contentsOf: branchesURL),
+           let decoded = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            branches = decoded
+        }
+
+        if let index = branches.firstIndex(where: {
+            ($0["name"] as? String)?.caseInsensitiveCompare("public") == .orderedSame
+        }) {
+            branches[index]["build_id"] = Int(numericBuildID)
+        } else {
+            branches.append([
+                "name": "public",
+                "description": "",
+                "protected": false,
+                "build_id": Int(numericBuildID),
+            ])
+        }
+
+        if let data = try? JSONSerialization.data(
+            withJSONObject: branches,
+            options: [.prettyPrinted, .sortedKeys]
+        ) {
+            try? data.write(to: branchesURL, options: .atomic)
+        }
+
+        // Limpiar solo el archivo mínimo que escribió la primera implementación de Vessel. No se
+        // toca ningún `configs.app.ini` con ajustes adicionales del usuario.
+        let legacyConfig = "\(settingsDir)/configs.app.ini"
+        if let contents = try? String(contentsOfFile: legacyConfig, encoding: .utf8) {
+            let meaningfulLines = contents.components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            if meaningfulLines.count == 2,
+               meaningfulLines[0].caseInsensitiveCompare("[app::general]") == .orderedSame,
+               meaningfulLines[1].lowercased().hasPrefix("build_id=") {
+                try? fm.removeItem(atPath: legacyConfig)
+            }
+        }
     }
 
     /// Fuerza la versión de vtable de ISteamClient que gbe_fork expone, para juegos con

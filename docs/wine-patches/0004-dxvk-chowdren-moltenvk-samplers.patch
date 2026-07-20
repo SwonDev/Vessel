@@ -1,0 +1,71 @@
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 734a7a0..59d0ae2 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -3894,3 +3894,3 @@ namespace dxvk {
+     // Geometry shaders are used for some meta ops
+-    enabled.core.features.geometryShader = VK_TRUE;
++    enabled.core.features.geometryShader = VK_FALSE;
+     enabled.core.features.robustBufferAccess = VK_TRUE;
+@@ -3923,3 +3923,3 @@ namespace dxvk {
+     enabled.core.features.shaderClipDistance = VK_TRUE;
+-    enabled.core.features.shaderCullDistance = VK_TRUE;
++    enabled.core.features.shaderCullDistance = VK_FALSE;
+ 
+diff --git a/src/d3d9/d3d9_include.h b/src/d3d9/d3d9_include.h
+index 8762265..9d971e7 100644
+--- a/src/d3d9/d3d9_include.h
++++ b/src/d3d9/d3d9_include.h
+@@ -81,2 +81,3 @@
+ #ifndef _MSC_VER
++#ifndef __MINGW32__
+ typedef struct _D3DDEVINFO_RESOURCEMANAGER
+@@ -85,2 +86,3 @@ typedef struct _D3DDEVINFO_RESOURCEMANAGER
+ } D3DDEVINFO_RESOURCEMANAGER, * LPD3DDEVINFO_RESOURCEMANAGER;
++#endif
+ 
+diff --git a/src/dxso/dxso_compiler.cpp b/src/dxso/dxso_compiler.cpp
+index b68608a..43da1a2 100644
+--- a/src/dxso/dxso_compiler.cpp
++++ b/src/dxso/dxso_compiler.cpp
+@@ -827,7 +827,2 @@ namespace dxvk {
+       DclSampler(idx, binding, samplerType, false, implicit);
+-
+-      if (samplerType != SamplerTypeTexture3D) {
+-        // We could also be depth compared!
+-        DclSampler(idx, binding, samplerType, true, implicit);
+-      }
+     }
+@@ -3058,31 +3053,3 @@ void DxsoCompiler::emitControlFlowGenericLoop(
+     auto SampleType = [&](DxsoSamplerType samplerType) {
+-      // Only do the check for depth comp. samplers
+-      // if we aren't a 3D texture
+-      if (samplerType != SamplerTypeTexture3D) {
+-        uint32_t colorLabel  = m_module.allocateId();
+-        uint32_t depthLabel  = m_module.allocateId();
+-        uint32_t endLabel    = m_module.allocateId();
+-
+-        uint32_t typeId = m_module.defIntType(32, 0);
+-        uint32_t offset  = m_module.consti32(m_programInfo.type() == DxsoProgramTypes::VertexShader ? samplerIdx + 17 : samplerIdx);
+-        uint32_t bitCnt  = m_module.consti32(1);
+-        uint32_t isDepth = m_module.opBitFieldUExtract(typeId, m_depthSpecConstant, offset, bitCnt);
+-        isDepth = m_module.opIEqual(m_module.defBoolType(), isDepth, m_module.constu32(1));
+-
+-        m_module.opSelectionMerge(endLabel, spv::SelectionControlMaskNone);
+-        m_module.opBranchConditional(isDepth, depthLabel, colorLabel);
+-
+-        m_module.opLabel(colorLabel);
+-        SampleImage(texcoordVar, sampler.color[samplerType], false, samplerType, sampler.boundConst);
+-        m_module.opBranch(endLabel);
+-
+-        m_module.opLabel(depthLabel);
+-        // No spec constant as if we are unbound we always fall down the color path.
+-        SampleImage(texcoordVar, sampler.depth[samplerType], true, samplerType, 0);
+-        m_module.opBranch(endLabel);
+-
+-        m_module.opLabel(endLabel);
+-      }
+-      else
+-        SampleImage(texcoordVar, sampler.color[samplerType], false, samplerType, sampler.boundConst);
++      SampleImage(texcoordVar, sampler.color[samplerType], false, samplerType, sampler.boundConst);
+     };
