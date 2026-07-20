@@ -30,6 +30,7 @@ final class WineManager {
 
     private let dependencyManager = DependencyManager()
     private let dxvkManager = DXVKManager()
+    private let unrealEngine1RendererManager = UnrealEngine1RendererManager()
     private let moltenVKManager = MoltenVKManager()
     private let dxmtManager = DXMTManager()
     private let gptkManager = GPTKManager()
@@ -838,6 +839,474 @@ final class WineManager {
             .allSatisfy(settings.contains)
     }
 
+    /// Framework clásico SexyApp de PopCap distribuido mediante la API de Steam anterior a
+    /// `steam_api.dll`. El juego carga `steam.dll` dinámicamente y necesita que el cliente lo
+    /// arranque por AppID; ejecutarlo directamente muestra «Unable to load Steam.dll» antes de
+    /// crear la superficie DirectDraw/D3D8.
+    ///
+    /// La firma no depende del título ni del AppID. Combina RTTI de SexyApp, el contrato DRM/IPC
+    /// de PopCap, símbolos de la API Steam heredada y el layout firmado por `partner.xml`.
+    func classicPopCapSteamProductName(_ executable: String) -> String? {
+        guard isExecutable32Bit(executable),
+              exeContains(executable, anyOf: ["?AVSexyAppBase@Sexy@@"]),
+              exeContains(executable, anyOf: ["PopCapDRM_EnableLocking"]),
+              exeContains(executable, anyOf: ["PopCapDrm_IPC_Response"]),
+              exeContains(executable, anyOf: ["SteamStartup"]),
+              exeContains(executable, anyOf: ["SteamBlockingCall"]),
+              exeContains(executable, anyOf: ["SteamIsAppSubscribed"]),
+              exeContains(executable, anyOf: ["Unable to load Steam.dll"]),
+              exeContains(executable, anyOf: ["!popcapdrmprotect!"])
+        else { return nil }
+
+        let root = URL(fileURLWithPath: executable)
+            .standardizedFileURL
+            .deletingLastPathComponent()
+        let fm = FileManager.default
+        guard let rootEntries = try? fm.contentsOfDirectory(atPath: root.path) else {
+            return nil
+        }
+        let rootNames = Set(rootEntries.map { $0.lowercased() })
+        let requiredFiles = ["main.pak", "bass.dll", "j2k-codec.dll"]
+        guard requiredFiles.allSatisfy({ rootNames.contains($0.lowercased()) }) else {
+            return nil
+        }
+
+        let properties = root.appendingPathComponent("properties", isDirectory: true)
+        guard let partnerName = (try? fm.contentsOfDirectory(atPath: properties.path))?
+            .first(where: { $0.caseInsensitiveCompare("partner.xml") == .orderedSame }),
+              let partnerXML = try? String(
+                contentsOf: properties.appendingPathComponent(partnerName),
+                encoding: .utf8
+              )
+        else { return nil }
+
+        let partner = partnerXML.lowercased()
+        guard [
+            "<string id=\"partnername\">steam</string>",
+            "<boolean id=\"noreg\">true</boolean>",
+            "<boolean id=\"defaultwindowed\">",
+            "<integer id=\"steamid\">",
+            "<string id=\"prodname\">"
+        ].allSatisfy(partner.contains) else { return nil }
+
+        let pattern = #"(?is)<string\s+id\s*=\s*[\"']prodname[\"']\s*>\s*([^<]+?)\s*</string\s*>"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(
+                in: partnerXML,
+                range: NSRange(partnerXML.startIndex..., in: partnerXML)
+              ),
+              let valueRange = Range(match.range(at: 1), in: partnerXML)
+        else { return nil }
+
+        let productName = partnerXML[valueRange]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let forbidden = CharacterSet(charactersIn: "/\\:")
+        guard !productName.isEmpty,
+              productName != ".",
+              productName != "..",
+              productName.rangeOfCharacter(from: forbidden) == nil
+        else { return nil }
+        return productName
+    }
+
+    func isClassicPopCapSteamEngine(_ executable: String) -> Bool {
+        classicPopCapSteamProductName(executable) != nil
+    }
+
+    /// Los ejecutables que deben ser creados por el cliente oficial de Steam no pueden lanzarse
+    /// directamente ni repararse sustituyendo `steam_api`. La política se concentra aquí para que
+    /// la UI, el seguimiento y la ruta de motor compartan exactamente la misma autodetección.
+    func requiresSteamAppLaunch(_ executable: String) -> Bool {
+        SteamDRMScanner.hasSteamStub(executable)
+            || SteamDRMScanner.hasLegacyValveRunMeBootstrap(executable)
+            || isClassicPopCapSteamEngine(executable)
+    }
+
+    /// Algunos payloads protegidos pueden iniciarse directamente una vez que el cliente oficial ya
+    /// está conectado en el mismo wineserver. Virtools clásico necesita precisamente esa variante:
+    /// `-applaunch` selecciona el splash del depot y pierde el escritorio virtual, mientras el
+    /// payload autorizado por el cliente vivo sí entra en CKEngine. La combinación SteamStub + firma
+    /// Virtools mantiene esta excepción tan estrecha como el comportamiento comprobado.
+    func usesProtectedDirectLaunchWithConnectedSteam(_ executable: String) -> Bool {
+        SteamDRMScanner.hasSteamStub(executable)
+            && isClassicVirtoolsDirectDrawEngine(executable)
+    }
+
+    /// Unreal Engine 1 clásico: ejecutable PE32, núcleo modular en `System`, paquetes `.u` y
+    /// renderizadores intercambiables declarados en el INI hermano. La combinación distingue esta
+    /// generación de UE4/UE5 (que viven en `Binaries/Win*`) y no depende del título ni del AppID.
+    func isUnrealEngine1Game(_ executable: String) -> Bool {
+        guard isExecutable32Bit(executable) else { return false }
+        let url = URL(fileURLWithPath: executable).standardizedFileURL
+        let directory = url.deletingLastPathComponent()
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: directory.path)
+        else { return false }
+        let names = Set(entries.map { $0.lowercased() })
+        let required = [
+            "core.dll", "core.u", "engine.dll", "engine.u", "render.dll",
+            "windrv.dll", "opengldrv.dll", "d3ddrv.dll", "softdrv.dll"
+        ]
+        guard required.allSatisfy(names.contains) else { return false }
+
+        let stem = url.deletingPathExtension().lastPathComponent
+        guard let iniName = entries.first(where: {
+            $0.caseInsensitiveCompare("\(stem).ini") == .orderedSame
+        }), let config = try? String(
+            contentsOf: directory.appendingPathComponent(iniName),
+            encoding: .utf8
+        ) else { return false }
+        let lower = config.lowercased()
+        return [
+            "[engine.engine]", "gamerenderdevice=", "windowedrenderdevice=",
+            "viewportmanager=windrv.windowsclient", "[windrv.windowsclient]"
+        ].allSatisfy(lower.contains)
+    }
+
+    /// El renderizador moderno fijado por Vessel mantiene el ABI concreto de Deus Ex 1.112fm;
+    /// no debe copiarse a ciegas sobre Unreal Tournament, Rune u otros juegos de la misma
+    /// generación. Esta segunda firma combina módulos y contrato INI propios de Ion Storm.
+    func isDeusExUnrealEngine1Game(_ executable: String) -> Bool {
+        guard isUnrealEngine1Game(executable) else { return false }
+        let url = URL(fileURLWithPath: executable).standardizedFileURL
+        let directory = url.deletingLastPathComponent()
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: directory.path)
+        else { return false }
+        let names = Set(entries.map { $0.lowercased() })
+        guard [
+            "deusex.dll", "deusex.u", "deusextext.dll", "extension.dll",
+            "extension.u", "consys.dll", "consys.u"
+        ].allSatisfy(names.contains) else { return false }
+
+        let stem = url.deletingPathExtension().lastPathComponent
+        guard let iniName = entries.first(where: {
+            $0.caseInsensitiveCompare("\(stem).ini") == .orderedSame
+        }), let config = try? String(
+            contentsOf: directory.appendingPathComponent(iniName),
+            encoding: .utf8
+        ) else { return false }
+        let lower = config.lowercased()
+        return lower.contains("gameengine=deusex.deusexgameengine")
+            && lower.contains("mapext=dx")
+            && lower.contains("root=deusex.deusexrootwindow")
+    }
+
+    /// Repara solo valores de vídeo incompatibles o imposibles de un INI de Unreal Engine 1.
+    /// Una configuración OpenGL/D3D válida elegida por el jugador se conserva en la ruta genérica.
+    /// Los defaults Glide/Metal/SGL se migran al OpenGL incluido; los títulos con un backend moderno
+    /// gestionado pueden forzarlo de forma explícita. Las geometrías ausentes, de fábrica o mayores
+    /// que la pantalla se ajustan a puntos lógicos para alinear lienzo y ratón.
+    nonisolated static func repairedUnrealEngine1Config(
+        existing: String,
+        screenSize: CGSize,
+        windowedSize: CGSize? = nil,
+        forceModernOpenGL: Bool = false,
+        forceSafeWindowedMode: Bool = false
+    ) -> String? {
+        let lower = existing.lowercased()
+        guard lower.contains("[engine.engine]"),
+              lower.contains("[windrv.windowsclient]") else { return nil }
+        let fullscreenWidth = max(800, Int(screenSize.width.rounded(.down)))
+        let fullscreenHeight = max(600, Int(screenSize.height.rounded(.down)))
+        let requestedWindow = windowedSize ?? screenSize
+        let windowedWidth = max(800, min(
+            fullscreenWidth,
+            Int(requestedWindow.width.rounded(.down))
+        ))
+        let windowedHeight = max(600, min(
+            fullscreenHeight,
+            Int(requestedWindow.height.rounded(.down))
+        ))
+
+        func sectionRange(_ section: String, in source: String) -> Range<String.Index>? {
+            let escaped = NSRegularExpression.escapedPattern(for: section)
+            return source.range(
+                of: #"(?ims)^\["# + escaped + #"\]\s*$.*?(?=^\[|\z)"#,
+                options: .regularExpression
+            )
+        }
+
+        func value(_ key: String, section: String) -> String? {
+            guard let range = sectionRange(section, in: existing) else { return nil }
+            let block = String(existing[range])
+            let escaped = NSRegularExpression.escapedPattern(for: key)
+            let pattern = #"(?mi)^[\t ]*"# + escaped + #"[\t ]*=[\t ]*([^\r\n]*)"#
+            guard let expression = try? NSRegularExpression(pattern: pattern),
+                  let match = expression.firstMatch(
+                      in: block,
+                      range: NSRange(block.startIndex..., in: block)
+                  ),
+                  let matchRange = Range(match.range(at: 1), in: block) else { return nil }
+            return block[matchRange].trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        func setting(_ source: String, section: String, key: String, value: String) -> String {
+            guard let range = sectionRange(section, in: source) else { return source }
+            var block = String(source[range])
+            let escaped = NSRegularExpression.escapedPattern(for: key)
+            let pattern = #"(?mi)^[\t ]*"# + escaped + #"[\t ]*=[^\r\n]*"#
+            if let lineRange = block.range(of: pattern, options: .regularExpression) {
+                block.replaceSubrange(lineRange, with: "\(key)=\(value)")
+            } else {
+                block += (block.hasSuffix("\n") ? "" : "\n") + "\(key)=\(value)\n"
+            }
+            var result = source
+            result.replaceSubrange(range, with: block)
+            return result
+        }
+
+        func settingEnsuringSection(
+            _ source: String,
+            section: String,
+            key: String,
+            value: String
+        ) -> String {
+            if sectionRange(section, in: source) != nil {
+                return setting(source, section: section, key: key, value: value)
+            }
+            let newline = source.contains("\r\n") ? "\r\n" : "\n"
+            let separator = source.hasSuffix(newline) ? newline : newline + newline
+            return source + separator + "[\(section)]\(newline)\(key)=\(value)\(newline)"
+        }
+
+        let rendererKeys = ["GameRenderDevice", "WindowedRenderDevice", "RenderDevice"]
+        let renderers = rendererKeys.compactMap { value($0, section: "Engine.Engine") }
+        // SoftwareRenderDevice evita el crash, pero dibuja toda la escena 3D en CPU y el propio
+        // motor vuelve a 640×480/16-bit. No es una preferencia gráfica utilizable cuando el depot
+        // incluye OpenGLDrv; se trata igual que los backends históricos que Wine no puede presentar.
+        let unsupportedRenderers = ["glidedrv.", "metaldrv.", "sgldrv.", "softdrv."]
+        let rendererNeedsRepair = forceModernOpenGL
+            || renderers.count != rendererKeys.count
+            || renderers.contains { renderer in
+                unsupportedRenderers.contains { renderer.lowercased().contains($0) }
+            }
+
+        let viewportKeys = [
+            "WindowedViewportX", "WindowedViewportY",
+            "FullscreenViewportX", "FullscreenViewportY"
+        ]
+        let viewports = viewportKeys.map { value($0, section: "WinDrv.WindowsClient").flatMap(Int.init) }
+        let missingGeometry = viewports.contains(where: { $0 == nil })
+        let oversized = (viewports[0] ?? 0) > windowedWidth
+            || (viewports[1] ?? 0) > windowedHeight
+            || (viewports[2] ?? 0) > fullscreenWidth
+            || (viewports[3] ?? 0) > fullscreenHeight
+        let factoryGeometry = viewports[0] == 640 && viewports[1] == 480
+            && viewports[2] == 640 && viewports[3] == 480
+        let forcedGeometryMismatch = forceSafeWindowedMode
+            && (viewports[0] != windowedWidth || viewports[1] != windowedHeight
+                || viewports[2] != fullscreenWidth || viewports[3] != fullscreenHeight)
+        let geometryNeedsRepair = missingGeometry || oversized
+            || (rendererNeedsRepair && factoryGeometry) || forcedGeometryMismatch
+        let fullscreenNeedsRepair = forceSafeWindowedMode
+            && value("StartupFullscreen", section: "WinDrv.WindowsClient")?.lowercased() != "false"
+        let firstRunVersion = value("FirstRun", section: "FirstRun").flatMap(Int.init)
+        let firstRunNeedsRepair = forceSafeWindowedMode
+            && (firstRunVersion ?? 0) <= 0
+        let modernSettings: [(String, String)] = [
+            ("UsePalette", "False"),
+            ("UseAlphaPalette", "False"),
+            ("UseBGRATextures", "True"),
+            ("UseMultiTexture", "True"),
+            ("UseTrilinear", "True"),
+            ("MaxAnisotropy", "8"),
+            ("UseAA", "False"),
+            ("SwapInterval", "1"),
+            ("FrameRateLimit", "60"),
+            ("UseVertexProgram", "False"),
+            ("UseFragmentProgram", "False")
+        ]
+        let modernSettingsNeedRepair = forceModernOpenGL && modernSettings.contains {
+            value($0.0, section: "OpenGLDrv.OpenGLRenderDevice")?.lowercased()
+                != $0.1.lowercased()
+        }
+        guard rendererNeedsRepair || geometryNeedsRepair || fullscreenNeedsRepair
+                || firstRunNeedsRepair || modernSettingsNeedRepair else { return nil }
+
+        var repaired = existing
+        if rendererNeedsRepair {
+            for key in rendererKeys {
+                repaired = setting(
+                    repaired,
+                    section: "Engine.Engine",
+                    key: key,
+                    value: "OpenGLDrv.OpenGLRenderDevice"
+                )
+            }
+            repaired = setting(
+                repaired,
+                section: "WinDrv.WindowsClient",
+                key: "UseDirectDraw",
+                value: "False"
+            )
+            for key in ["WindowedColorBits", "FullscreenColorBits"] {
+                repaired = setting(
+                    repaired,
+                    section: "WinDrv.WindowsClient",
+                    key: key,
+                    value: "32"
+                )
+            }
+        }
+        if geometryNeedsRepair {
+            for (key, value) in [
+                ("WindowedViewportX", windowedWidth),
+                ("WindowedViewportY", windowedHeight),
+                ("FullscreenViewportX", fullscreenWidth),
+                ("FullscreenViewportY", fullscreenHeight)
+            ] {
+                repaired = setting(
+                    repaired,
+                    section: "WinDrv.WindowsClient",
+                    key: key,
+                    value: String(value)
+                )
+            }
+        }
+        if forceSafeWindowedMode {
+            repaired = setting(
+                repaired,
+                section: "WinDrv.WindowsClient",
+                key: "StartupFullscreen",
+                value: "False"
+            )
+        }
+        if forceModernOpenGL {
+            for (key, value) in modernSettings {
+                repaired = settingEnsuringSection(
+                    repaired,
+                    section: "OpenGLDrv.OpenGLRenderDevice",
+                    key: key,
+                    value: value
+                )
+            }
+        }
+        if firstRunNeedsRepair {
+            // La distribución de Steam conserva el marcador de instalación a cero y abre un
+            // asistente interactivo aunque el INI ya sea utilizable. 1100 es el marcador de la
+            // configuración final de Deus Ex GOTY y no afecta a las preferencias posteriores.
+            repaired = settingEnsuringSection(
+                repaired,
+                section: "FirstRun",
+                key: "FirstRun",
+                value: "1100"
+            )
+        }
+        return repaired == existing ? nil : repaired
+    }
+
+    /// Deja margen para la barra de título y el Dock. UE1 no ajusta su superficie al cambiar el
+    /// frame en macOS, por lo que una ventana igual al `visibleFrame` termina desbordándose y
+    /// desplaza el mapa de clics. El redondeo a decenas evita modos fraccionarios poco fiables.
+    nonisolated static func safeUnrealEngine1WindowSize(visibleSize: CGSize) -> CGSize {
+        let widthMargin = min(72.0, max(40.0, visibleSize.width * 0.05))
+        let heightMargin = min(60.0, max(48.0, visibleSize.height * 0.07))
+        let width = max(800.0, ((visibleSize.width - widthMargin) / 10.0).rounded(.down) * 10.0)
+        let height = max(600.0, ((visibleSize.height - heightMargin) / 10.0).rounded(.down) * 10.0)
+        return CGSize(width: width, height: height)
+    }
+
+    /// UE1 crea `Running.ini` al arrancar y solo lo elimina durante un cierre limpio. «Detener» en
+    /// Vessel finaliza el proceso deliberadamente, de modo que el marcador sobreviviría y abriría
+    /// el asistente interactivo Recovery Mode en la siguiente sesión. Vessel ya diagnostica el
+    /// arranque y conserva copias de seguridad, por lo que retirar exclusivamente este fichero vacío
+    /// antes de jugar recupera el flujo automático sin tocar partidas ni preferencias.
+    @discardableResult
+    func clearUnrealEngine1RecoveryMarker(executable: String) -> Bool {
+        guard isUnrealEngine1Game(executable) else { return false }
+        let directory = URL(fileURLWithPath: executable).standardizedFileURL
+            .deletingLastPathComponent()
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: directory.path),
+              let markerName = entries.first(where: {
+                  $0.caseInsensitiveCompare("Running.ini") == .orderedSame
+              }) else { return false }
+        do {
+            try FileManager.default.removeItem(
+                at: directory.appendingPathComponent(markerName)
+            )
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func ensureUnrealEngine1DisplaySettings(executable: String) async throws {
+        guard isUnrealEngine1Game(executable) else { return }
+        if clearUnrealEngine1RecoveryMarker(executable: executable) {
+            log.log(
+                "Unreal Engine 1: marcador de cierre forzado retirado; Recovery Mode omitido automáticamente.",
+                level: .info
+            )
+        }
+        let isDeusEx = isDeusExUnrealEngine1Game(executable)
+        if isDeusEx {
+            do {
+                let renderer = try await unrealEngine1RendererManager
+                    .installModernDeusExOpenGL(forExecutable: executable)
+                switch renderer.status {
+                case .installedPinned:
+                    log.log(
+                        "Deus Ex UE1: OpenGL moderno 2.1 descargado, verificado e instalado de forma aislada.",
+                        level: .info
+                    )
+                case .alreadyPinned:
+                    log.log("Deus Ex UE1: OpenGL moderno 2.1 verificado.", level: .debug)
+                case .existingCustom:
+                    log.log(
+                        "Deus Ex UE1: renderizador personalizado existente conservado.",
+                        level: .info
+                    )
+                }
+            } catch {
+                throw WineError.installationFailed(
+                    "no se pudo preparar el renderizador moderno de Deus Ex: \(error.localizedDescription)"
+                )
+            }
+        }
+        let url = URL(fileURLWithPath: executable).standardizedFileURL
+        let directory = url.deletingLastPathComponent()
+        let stem = url.deletingPathExtension().lastPathComponent
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: directory.path),
+              let iniName = entries.first(where: {
+                  $0.caseInsensitiveCompare("\(stem).ini") == .orderedSame
+              }) else { return }
+        let ini = directory.appendingPathComponent(iniName)
+        guard let existing = try? String(contentsOf: ini, encoding: .utf8) else { return }
+        let mode = CGDisplayCopyDisplayMode(CGMainDisplayID())
+        let screen = CGSize(width: mode?.width ?? 1512, height: mode?.height ?? 982)
+        let visible = NSScreen.main?.visibleFrame.size ?? screen
+        let safeWindow = Self.safeUnrealEngine1WindowSize(visibleSize: visible)
+        guard let repaired = Self.repairedUnrealEngine1Config(
+            existing: existing,
+            screenSize: screen,
+            windowedSize: isDeusEx ? safeWindow : screen,
+            forceModernOpenGL: isDeusEx,
+            forceSafeWindowedMode: isDeusEx
+        ) else { return }
+
+        let backup = ini.appendingPathExtension("vessel-original")
+        if !FileManager.default.fileExists(atPath: backup.path) {
+            try? FileManager.default.copyItem(at: ini, to: backup)
+        }
+        do {
+            try repaired.write(to: ini, atomically: true, encoding: .utf8)
+            if isDeusEx {
+                log.log(
+                    "Deus Ex UE1: OpenGL moderno y ventana \(Int(safeWindow.width))×\(Int(safeWindow.height)) ajustados automáticamente.",
+                    level: .info
+                )
+            } else {
+                log.log(
+                    "Unreal Engine 1: OpenGL y viewport \(Int(screen.width))×\(Int(screen.height)) preparados automáticamente.",
+                    level: .info
+                )
+            }
+        } catch {
+            throw WineError.installationFailed(
+                "no se pudo autorreparar la configuración de Unreal Engine 1: \(error.localizedDescription)"
+            )
+        }
+    }
+
     /// HPL3 de Frictional: combina un contexto OpenGL implícito de compatibilidad con GLSL
     /// moderno, VAO, bindings explícitos y primitivas/formato de textura retirados del perfil
     /// core de macOS. La firma exige arquitectura, imports, marcadores internos y el contrato de
@@ -917,6 +1386,14 @@ final class WineManager {
         basePrefix: String
     ) -> (executable: String, prefix: String) {
         let effectiveExecutable = preferredLegacyHPL3Executable(for: executable) ?? executable
+        if let productName = classicPopCapSteamProductName(effectiveExecutable) {
+            let payload = URL(fileURLWithPath: basePrefix, isDirectory: true)
+                .appendingPathComponent("drive_c/ProgramData/PopCap Games", isDirectory: true)
+                .appendingPathComponent(productName, isDirectory: true)
+                .appendingPathComponent("popcapgame1.exe")
+                .path
+            return (payload, basePrefix)
+        }
         guard isLegacyHPL3OpenGLEngine(effectiveExecutable) else {
             return (effectiveExecutable, basePrefix)
         }
@@ -980,11 +1457,179 @@ final class WineManager {
         }
     }
 
+    /// Runtime Virtools clásico con rasterizador DirectX 7 cargado dinámicamente. El ejecutable no
+    /// importa `ddraw.dll`: delega el render a `CKDX7Rasterizer.dll`, por lo que una detección basada
+    /// solo en la tabla PE lo clasifica como `.other` y lo lanza contra el modo de pantalla real.
+    /// En macOS ese `ChangeDisplaySettings(800×600)` devuelve `BADMODE`; el mismo runtime funciona
+    /// dentro de un escritorio virtual que emule el modo exclusivo.
+    ///
+    /// La firma combina el núcleo Virtools, sus marcadores internos, el rasterizador, el loader y
+    /// ambos tipos de contenido compilado. No depende del título, del AppID ni del nombre del exe.
+    func isClassicVirtoolsDirectDrawEngine(_ executable: String) -> Bool {
+        guard isExecutable32Bit(executable) else { return false }
+        let imports = peImportedLibraries(forExecutable: executable)
+        guard imports.contains("ck2.dll"), imports.contains("vxmath.dll"),
+              exeContains(executable, anyOf: ["SetVirtoolsVersion"]),
+              exeContains(executable, anyOf: ["CKRenderContext"]),
+              exeContains(executable, anyOf: ["Vx3D_D3DR"]),
+              exeContains(executable, anyOf: ["Creating full-screen render context"])
+        else { return false }
+
+        let fileManager = FileManager.default
+        let root = URL(fileURLWithPath: executable).deletingLastPathComponent()
+        func names(in directory: URL) -> Set<String> {
+            Set(((try? fileManager.contentsOfDirectory(atPath: directory.path)) ?? [])
+                .map { $0.lowercased() })
+        }
+
+        let rootNames = names(in: root)
+        let dllNames = names(in: root.appendingPathComponent("Dlls", isDirectory: true))
+        let cmoNames = names(in: root.appendingPathComponent("Cmo", isDirectory: true))
+        guard rootNames.contains("ck2.dll"), rootNames.contains("vxmath.dll"),
+              dllNames.contains("ckdx7rasterizer.dll"),
+              dllNames.contains("virtoolsloaderr.dll"),
+              cmoNames.contains(where: { $0.hasSuffix(".cmo") })
+        else { return false }
+
+        guard let enumerator = fileManager.enumerator(
+            at: root.appendingPathComponent("Data", isDirectory: true),
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return false }
+        var inspected = 0
+        for case let url as URL in enumerator {
+            inspected += 1
+            if inspected > 10_000 { break }
+            if url.pathExtension.caseInsensitiveCompare("nmo") == .orderedSame { return true }
+        }
+        return false
+    }
+
+    /// Extrae el directorio de partidas que el propio runtime entrega a SHGetFolderPath. Se exige
+    /// una cadena ASCII terminada en ` Saves` y delimitada por NUL; así se puede preparar el primer
+    /// arranque sin codificar un nombre de juego ni asumir el usuario del prefijo.
+    func classicVirtoolsSaveFolderName(_ executable: String) -> String? {
+        guard isClassicVirtoolsDirectDrawEngine(executable),
+              let data = try? Data(
+                  contentsOf: URL(fileURLWithPath: executable),
+                  options: .mappedIfSafe
+              )
+        else { return nil }
+        let contents = String(decoding: data, as: UTF8.self)
+        let pattern = #"(?:^|\x00)([A-Za-z0-9][A-Za-z0-9 ._'-]{1,63} Saves)\x00"#
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.firstMatch(
+                  in: contents,
+                  range: NSRange(contents.startIndex..., in: contents)
+              ),
+              let range = Range(match.range(at: 1), in: contents)
+        else { return nil }
+        return String(contents[range])
+    }
+
+    /// Contrato binario del `Config.dat` de esta generación: siete UInt32 little-endian. Solo se
+    /// cambia `bpp` de 16 a 32; volumen, música, subtítulos, detalle y FSAA permanecen intactos.
+    /// Si aún no existe se genera el mismo estado por defecto del runtime, ya corregido a 32 bits.
+    nonisolated static func repairedClassicVirtoolsConfig(existing: Data?) -> Data? {
+        func uint32(_ data: Data, at offset: Int) -> UInt32 {
+            (0..<4).reduce(0) { value, index in
+                value | (UInt32(data[offset + index]) << UInt32(index * 8))
+            }
+        }
+        func writeUInt32(_ value: UInt32, to data: inout Data, at offset: Int) {
+            for index in 0..<4 {
+                data[offset + index] = UInt8((value >> UInt32(index * 8)) & 0xff)
+            }
+        }
+
+        guard let existing else {
+            var created = Data(repeating: 0, count: 28)
+            for (index, value) in [
+                UInt32(0x5359_4232), 10, 5, 1, 32, 1, 0
+            ].enumerated() {
+                writeUInt32(value, to: &created, at: index * 4)
+            }
+            return created
+        }
+        guard existing.count == 28,
+              uint32(existing, at: 0) == 0x5359_4232,
+              uint32(existing, at: 16) == 16
+        else { return nil }
+        var repaired = existing
+        writeUInt32(32, to: &repaired, at: 16)
+        return repaired
+    }
+
+    /// Prepara o repara el vídeo del runtime antes de arrancar. Se conservan copias recuperables de
+    /// configuraciones existentes y se prioriza el usuario `crossover`, que es el perfil efectivo
+    /// del Wine completo; otros nombres siguen funcionando al reparar cualquier config ya creada.
+    private func ensureClassicVirtoolsDisplaySettings(prefix: String, executable: String) {
+        guard let saveFolder = classicVirtoolsSaveFolderName(executable),
+              exeContains(executable, anyOf: ["No 'Config.dat' file. Creating the default one."]),
+              exeContains(executable, anyOf: ["Wrong 'Config.dat' file version."])
+        else { return }
+
+        let fileManager = FileManager.default
+        let usersDirectory = "\(prefix)/drive_c/users"
+        let users = ((try? fileManager.contentsOfDirectory(atPath: usersDirectory)) ?? [])
+            .filter { $0.caseInsensitiveCompare("Public") != .orderedSame }
+            .sorted()
+        var paths = users.map {
+            "\(usersDirectory)/\($0)/Documents/\(saveFolder)/Config.dat"
+        }.filter(fileManager.fileExists)
+        if paths.isEmpty {
+            let preferred = users.first(where: {
+                $0.caseInsensitiveCompare("crossover") == .orderedSame
+            }) ?? users.first
+            guard let preferred else { return }
+            paths = ["\(usersDirectory)/\(preferred)/Documents/\(saveFolder)/Config.dat"]
+        }
+
+        for path in paths {
+            let existing = try? Data(contentsOf: URL(fileURLWithPath: path))
+            guard let repaired = Self.repairedClassicVirtoolsConfig(existing: existing) else {
+                continue
+            }
+            let backup = path + ".vessel-16bpp-backup"
+            if existing != nil, !fileManager.fileExists(atPath: backup) {
+                do {
+                    try fileManager.copyItem(atPath: path, toPath: backup)
+                } catch {
+                    log.log(
+                        "Virtools: no se tocó Config.dat porque no se pudo crear una copia recuperable.",
+                        level: .warn
+                    )
+                    continue
+                }
+            }
+            do {
+                try fileManager.createDirectory(
+                    atPath: (path as NSString).deletingLastPathComponent,
+                    withIntermediateDirectories: true
+                )
+                try repaired.write(to: URL(fileURLWithPath: path), options: .atomic)
+                log.log(
+                    existing == nil
+                        ? "Virtools clásico: vídeo inicial preparado automáticamente a 32 bits."
+                        : "Virtools clásico: vídeo de 16 bits autorreparado a 32 bits; copia conservada.",
+                    level: .info
+                )
+            } catch {
+                log.log(
+                    "No se pudo preparar el vídeo del runtime Virtools: \(error.localizedDescription)",
+                    level: .warn
+                )
+            }
+        }
+    }
+
     /// Los runtimes PE32 no conscientes de HiDPI deben trabajar 1:1 en puntos. Mantener la
     /// decisión en una función comprobable impide ampliar la excepción a cualquier juego de
     /// 32 bits y permite restaurar Retina explícitamente para todos los demás.
     func usesLegacy32BitNativeScaling(_ executable: String) -> Bool {
         isClickteamMultimediaFusion2DirectDrawEngine(executable)
+            || isUnrealEngine1Game(executable)
+            || isClassicVirtoolsDirectDrawEngine(executable)
     }
 
     /// Genera la configuración oficial de primer arranque de Ys Origin o repara solamente su
@@ -1863,6 +2508,8 @@ final class WineManager {
             || isFrozenbyteStorm3DD3D9Engine(executable)
             || isNihonFalcomYsOriginD3D9Engine(executable)
             || isPlaydeadLegacyD3D9Engine(executable)
+            || isClassicPopCapSteamEngine(executable)
+            || isUnrealEngine1Game(executable)
     }
 
     /// El new-WoW64 no crea dispositivos D3D9 de 32 bits y ANGLE 1.x no consigue inicializar EGL
@@ -1944,6 +2591,7 @@ final class WineManager {
         // El enum aún no tiene una categoría «Wine completo»; `.gcenx` representa aquí la familia
         // wined3d/compatibilidad y evita que el diagnóstico crea que se lanzó por DXMT.
         if isLegacyMoaiOpenGLGame(executable) { return .gcenx }
+        if isClassicVirtoolsDirectDrawEngine(executable) { return .gcenx }
         let go = eff.graphicsOverride
         if go == .gcenx { return .gcenx }
         let api = detectGraphicsAPI(forExecutable: executable)
@@ -1972,6 +2620,9 @@ final class WineManager {
         if isNWJSGame(executable) { return [.dxmt] }
         // Moai/AKUSDL no tiene «capas Direct3D» que probar: el adaptador Wine completo es su ruta.
         if isLegacyMoaiOpenGLGame(executable) { return [] }
+        // Virtools DX7 depende de un modo exclusivo emulado y de su rasterizador local. Cambiar de
+        // traductor no crea ese modo y solo reiniciaría un juego que ya tiene una ruta determinista.
+        if isClassicVirtoolsDirectDrawEngine(executable) { return [] }
         switch eff.graphicsOverride {
         case .gptk:  return [.gptk]
         case .dxmt:  return [.dxmt]
@@ -2140,6 +2791,7 @@ final class WineManager {
                 level: .info
             )
         }
+        try await ensureUnrealEngine1DisplaySettings(executable: executable)
         // Motor KEX (remasters de Nightdive: DOOM, Quake…): fijar la resolución a los píxeles reales,
         // o abre al doble de la pantalla (ver `fixKexResolution`). Se escribe en su cfg Y se pasa por
         // línea de comandos, para que valga también en el PRIMER arranque, cuando el cfg aún no existe.
@@ -2189,14 +2841,19 @@ final class WineManager {
         // automática y no convierte simples juegos Steamworks en modo Steam real. Cube World usa
         // precisamente esta variante y, sin esta ruta, nunca llega a `D3D11CreateDevice`.
         let steamStubRequiresRealClient = SteamDRMScanner.hasSteamStub(executable)
+        let legacyValveRunMeRequiresRealClient =
+            SteamDRMScanner.hasLegacyValveRunMeBootstrap(executable)
         let steamNetworkingRequiresRealClient = requiresRealSteamNetworking(executable)
+        let classicPopCapRequiresRealClient = isClassicPopCapSteamEngine(executable)
+        let protectedSteamAppLaunch = requiresSteamAppLaunch(executable)
+        let protectedDirectLaunch = usesProtectedDirectLaunchWithConnectedSteam(executable)
         let steamShimBootstrapper = steamShimBootstrapper(forPayload: executable)
         // Los juegos protegidos se delegan a Steam, que ejecuta sus `installscript.vdf` antes del
         // juego. Algunos redistribuibles antiguos (sobre todo PhysX) abren asistentes interactivos
         // aunque el flujo se haya iniciado desde Vessel. Preparar por evidencia los runtimes antes
         // de abrir Steam convierte el primer arranque en un proceso completamente desatendido y,
         // además, deja satisfechas las claves de detección que usa el propio installscript.
-        if steamStubRequiresRealClient {
+        if steamStubRequiresRealClient, !protectedDirectLaunch {
             _ = RuntimeDependencyProvisioner.provision(
                 executable: executable,
                 includeNestedFiles: false
@@ -2222,11 +2879,16 @@ final class WineManager {
                 }
             }
         }
-        if (eff.useRealSteam || steamRealGlobal || steamStubRequiresRealClient || steamNetworkingRequiresRealClient),
+        if (eff.useRealSteam || steamRealGlobal || protectedSteamAppLaunch
+                || steamNetworkingRequiresRealClient),
            let appId = steamAppId, !appId.isEmpty {
             let reason: String
             if steamStubRequiresRealClient {
                 reason = " [SteamStub/CEG autodetectado]"
+            } else if legacyValveRunMeRequiresRealClient {
+                reason = " [lanzador heredado de Valve autodetectado]"
+            } else if classicPopCapRequiresRealClient {
+                reason = " [API Steam heredada de PopCap autodetectada]"
             } else if steamNetworkingRequiresRealClient {
                 reason = " [red, lobbies y servidores Steam autodetectados]"
             } else if steamRealGlobal && !eff.useRealSteam {
@@ -2241,7 +2903,8 @@ final class WineManager {
                 appId: appId,
                 launchArguments: allArgs,
                 effective: eff,
-                steamAppLaunchRequired: steamStubRequiresRealClient || steamShimBootstrapper != nil
+                steamAppLaunchRequired: protectedSteamAppLaunch && !protectedDirectLaunch
+                    || steamShimBootstrapper != nil
             )
         }
         // DRM Steamworks AUTO: muchos juegos de Steam exigen que Steam esté corriendo (SteamAPI_Init)
@@ -2292,6 +2955,19 @@ final class WineManager {
             }
             return try await launchRetroWrapper(executable: executable, in: bottle,
                                                 arguments: allArgs, effective: eff)
+        }
+        // **Virtools clásico / DirectX 7**: el rasterizador se carga desde una DLL y el exe no
+        // revela DirectDraw en sus imports. Necesita su modo exclusivo 800×600 emulado, escala 1×
+        // y vídeo de 32 bits; se resuelve antes de la regla DirectDraw genérica de 640×480×8.
+        if isClassicVirtoolsDirectDrawEngine(executable),
+           let fullEngineWine = await fullEngineWineEnsured() {
+            return try await launchClassicVirtoolsDirectDrawGame(
+                executable: executable,
+                in: bottle,
+                arguments: allArgs,
+                effective: eff,
+                wine: fullEngineWine
+            )
         }
         // **DirectDraw de la era VGA (256 colores)**: escritorio virtual + Wine de CrossOver. Va
         // aquí, antes de la detección de API, porque estos juegos no son "D3D9" ni nada moderno:
@@ -2779,6 +3455,53 @@ final class WineManager {
             environment: env,
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: effective
+        )
+    }
+
+    /// Lanza Virtools clásico con el modo 800×600 que su rasterizador DirectX 7 espera. El escritorio
+    /// virtual evita pedir a macOS un modo exclusivo inexistente (`BADMODE`) y mantiene framebuffer,
+    /// ventana y coordenadas de entrada en la misma escala. La configuración binaria se prepara antes
+    /// de abrir Wine para que el primer arranque no caiga silenciosamente en color de 16 bits.
+    private func launchClassicVirtoolsDirectDrawGame(
+        executable: String,
+        in bottle: Bottle,
+        arguments: [String],
+        effective: EffectiveLaunchConfig,
+        wine: String
+    ) async throws -> Process {
+        log.log(
+            "Virtools clásico (DirectX 7): escritorio virtual 800×600, escala nativa y vídeo de 32 bits.",
+            level: .info
+        )
+        cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
+        try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: wine)
+        await resyncGamePrefix(gameWine: wine, prefix: bottle.prefixPath)
+        await setMacDriverRetinaMode(
+            prefix: bottle.prefixPath,
+            wine: wine,
+            enabled: false
+        )
+        ensureClassicVirtoolsDisplaySettings(
+            prefix: bottle.prefixPath,
+            executable: executable
+        )
+        return try await launchWineProcess(
+            winePath: wine,
+            prefix: bottle.prefixPath,
+            arguments: ["explorer", "/desktop=VesselVirtools,800x600", executable] + arguments,
+            environment: [
+                "WINEPREFIX": bottle.prefixPath,
+                "WINEDEBUG": "-all",
+                "WINEDLLOVERRIDES": "winemenubuilder.exe=d",
+                "WINEMSYNC": "1",
+                "WINEESYNC": "1",
+                "WINEFSYNC": "1"
+            ],
+            workingDirectory: gameWorkingDirectory(forExecutable: executable),
+            effective: effective,
+            forceSyncOn: true,
+            forceCleanEnv: true
         )
     }
 
@@ -3441,10 +4164,10 @@ final class WineManager {
                 enabled: legacyNativeScale ? false : effective.retina
             )
             if legacyNativeScale {
-                log.log(
-                    "Clickteam/MMF2 DirectDraw detectado: escala nativa para alinear superficie y ratón.",
-                    level: .info
-                )
+                let reason = isUnrealEngine1Game(rawExecutable)
+                    ? "Unreal Engine 1 detectado: escala nativa para alinear viewport y ratón."
+                    : "Clickteam/MMF2 DirectDraw detectado: escala nativa para alinear superficie y ratón."
+                log.log(reason, level: .info)
             }
             // Algunos motores D3D9 cargan Direct3D dinámicamente, por lo que llegan por esta ruta
             // genérica PE32 en vez de `launchD3D9GameWithCrossOver`. Almost Human necesita el mismo
@@ -3813,6 +4536,29 @@ final class WineManager {
         )
         log.log(
             "Motor Playdead D3D9 detectado: wined3d/OpenGL aislado y escala nativa.",
+            level: .info
+        )
+    }
+
+    /// El wrapper DRM clásico extrae el juego real como `popcapgame1.exe` (o uno de sus dos
+    /// slots rotatorios). En Vulkan crea la ventana, pero el framebuffer queda negro; OpenGL
+    /// renderiza correctamente DirectDraw/D3D8. Las claves se limitan a esos payloads internos.
+    private func configureClassicPopCapSteamRenderer(
+        prefix: String,
+        wine: String,
+        executable: String
+    ) async {
+        guard isClassicPopCapSteamEngine(executable) else { return }
+        for payloadName in Self.processFamilyImageNames("popcapgame1.exe") {
+            await setWined3dRenderer(
+                prefix: prefix,
+                wine: wine,
+                renderer: "gl",
+                forExecutable: payloadName
+            )
+        }
+        log.log(
+            "Motor PopCap clásico detectado: wined3d/OpenGL aislado para sus payloads DRM.",
             level: .info
         )
     }
@@ -4433,6 +5179,72 @@ final class WineManager {
         let gameDir = (executable as NSString).deletingLastPathComponent
         try? appId.write(toFile: "\(gameDir)/steam_appid.txt", atomically: true, encoding: .utf8)
 
+        // SteamStub + Virtools clásico: el cliente interno sigue siendo obligatorio para autorizar
+        // el ejecutable, pero `-applaunch` abre el splash raíz y no puede transportar el escritorio
+        // virtual. Con Steam ya conectado, lanzar el payload directamente en el MISMO wineserver
+        // conserva el DRM real y permite crear el modo exclusivo emulado de 800×600.
+        if usesProtectedDirectLaunchWithConnectedSteam(executable) {
+            guard let fullWine = await fullEngineWineEnsured() else {
+                throw WineError.launchFailed("No se encontró el motor completo para el runtime Virtools protegido.")
+            }
+            try await prepareRealSteamClient(
+                in: bottle,
+                wine: fullWine,
+                gameExecutable: executable
+            )
+            ensureSteamConfig(in: bottle)
+            log.log(
+                "Virtools protegido: preparando el cliente Steam interno en el wineserver compartido…",
+                level: .info
+            )
+            let connected = await ensureSteamConnected(
+                in: bottle,
+                clientWine: fullWine,
+                timeoutSeconds: 120,
+                background: true
+            )
+            if !connected {
+                if SteamAuthService.storedSessionNeedsReauthentication {
+                    throw steamRealReauthenticationRequired(gameExecutable: executable)
+                }
+                throw steamRealNotConnected(gameExecutable: executable, in: bottle)
+            }
+
+            cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
+            await setMacDriverRetinaMode(
+                prefix: bottle.prefixPath,
+                wine: fullWine,
+                enabled: false
+            )
+            ensureClassicVirtoolsDisplaySettings(
+                prefix: bottle.prefixPath,
+                executable: executable
+            )
+            var environment = steamClientEnvironment(
+                prefix: bottle.prefixPath,
+                wine: fullWine
+            )
+            environment["SteamAppId"] = appId
+            environment["SteamGameId"] = appId
+            for (key, value) in effective.extraEnv { environment[key] = value }
+            log.log(
+                "Cliente Steam conectado; lanzando Virtools autorizado en escritorio virtual 800×600.",
+                level: .info
+            )
+            return try await launchWineProcess(
+                winePath: fullWine,
+                prefix: bottle.prefixPath,
+                arguments: [
+                    "explorer", "/desktop=VesselVirtools,800x600", executable
+                ] + launchArguments,
+                environment: environment,
+                workingDirectory: gameWorkingDirectory(forExecutable: executable),
+                effective: effective,
+                forceSyncOn: true,
+                forceCleanEnv: true
+            )
+        }
+
         // 2) Motor según la API gráfica del juego:
         //    · D3D11 (Unity/Unreal/…) → motor UNIFICADO (DXMT→Metal); cliente y juego en su
         //      wineserver. Es lo que valida Grim Dawn.
@@ -4473,6 +5285,11 @@ final class WineManager {
                 wine: fullWine,
                 executable: executable
             )
+            await configureClassicPopCapSteamRenderer(
+                prefix: bottle.prefixPath,
+                wine: fullWine,
+                executable: executable
+            )
             ensureFalcomYsOriginDisplaySettings(
                 prefix: bottle.prefixPath,
                 executable: executable
@@ -4490,7 +5307,7 @@ final class WineManager {
                 "Cliente Steam conectado en wine-full; autorizando y lanzando el AppID protegido.",
                 level: .info
             )
-            return try launchThroughConnectedSteamClient(
+            return try await launchThroughConnectedSteamClient(
                 executable: executable,
                 appId: appId,
                 launchArguments: launchArguments,
@@ -4553,7 +5370,7 @@ final class WineManager {
                     "SteamStub/CEG D3D9: delegando el arranque al cliente conectado por AppID.",
                     level: .info
                 )
-                return try launchThroughConnectedSteamClient(
+                return try await launchThroughConnectedSteamClient(
                     executable: executable,
                     appId: appId,
                     launchArguments: launchArguments,
@@ -4641,7 +5458,7 @@ final class WineManager {
             if steamAppLaunchRequired {
                 log.log("SteamStub/CEG: delegando el arranque al cliente por AppID para que Steam autorice y desempaquete el ejecutable.", level: .info)
                 NotificationService.shared.status("Steam conectado. Autorizando y lanzando el juego…")
-                let process = try launchThroughConnectedSteamClient(
+                let process = try await launchThroughConnectedSteamClient(
                     executable: executable,
                     appId: appId,
                     launchArguments: launchArguments,
@@ -4721,7 +5538,7 @@ final class WineManager {
             if steamAppLaunchRequired {
                 log.log("SteamStub/CEG: delegando el arranque D3D12 al cliente por AppID.", level: .info)
                 NotificationService.shared.status("Steam conectado. Autorizando y lanzando el juego…")
-                let process = try launchThroughConnectedSteamClient(
+                let process = try await launchThroughConnectedSteamClient(
                     executable: executable,
                     appId: appId,
                     launchArguments: launchArguments,
@@ -4795,7 +5612,7 @@ final class WineManager {
         if steamAppLaunchRequired {
             log.log("SteamStub/CEG: delegando el arranque al cliente Steam por AppID.", level: .info)
             NotificationService.shared.status("Steam conectado. Autorizando y lanzando el juego…")
-            let process = try launchThroughConnectedSteamClient(
+            let process = try await launchThroughConnectedSteamClient(
                 executable: executable,
                 appId: appId,
                 launchArguments: launchArguments,
@@ -4820,16 +5637,81 @@ final class WineManager {
         return proc
     }
 
-    /// Envía `-applaunch` al Steam Windows YA conectado sin reiniciarlo ni matar su wineserver.
-    /// Un supervisor nativo espera a que aparezca el ejecutable real y vive hasta que este termina,
-    /// de modo que la UI, las estadísticas, las copias y «Detener» siguen el juego, no el relé fugaz.
+    /// Distingue una orden nueva aceptada por Steam de las entradas históricas del mismo AppID.
+    /// El registro puede rotarse entre la captura y la lectura; en ese caso se inspecciona completo.
+    nonisolated static func steamAppLaunchAcknowledged(
+        in currentLog: Data,
+        after baseline: Data,
+        appId: String
+    ) -> Bool {
+        let delta: Data
+        if currentLog.count >= baseline.count,
+           currentLog.prefix(baseline.count).elementsEqual(baseline) {
+            delta = Data(currentLog.dropFirst(baseline.count))
+        } else {
+            delta = currentLog
+        }
+        let text = String(decoding: delta, as: UTF8.self)
+        let escapedAppId = NSRegularExpression.escapedPattern(for: appId)
+        let commandPattern = #"(?i)-applaunch[ \t]+"?"#
+            + escapedAppId + #"(?=[" \t,\r\n]|$)"#
+        let actionPattern = #"(?i)GameAction[ \t]+\[AppID[ \t]+"#
+            + escapedAppId + #"(?=[,\]])"#
+        return text.range(of: commandPattern, options: .regularExpression) != nil
+            || text.range(of: actionPattern, options: .regularExpression) != nil
+    }
+
+    private func steamConsoleLogData(in bottle: Bottle) -> Data {
+        FileManager.default.contents(
+            atPath: "\(bottle.steamDirectory)/logs/console_log.txt"
+        ) ?? Data()
+    }
+
+    private func waitForSteamAppLaunchAcknowledgement(
+        supervisor: Process,
+        executable: String,
+        appId: String,
+        bottle: Bottle,
+        baseline: Data,
+        timeoutSeconds: Int
+    ) async -> Bool {
+        for elapsed in 0..<timeoutSeconds {
+            if Self.steamAppLaunchAcknowledged(
+                in: steamConsoleLogData(in: bottle),
+                after: baseline,
+                appId: appId
+            ) {
+                return true
+            }
+            if elapsed.isMultiple(of: 2),
+               await isGameProcessFamilyRunning(
+                   executable: executable,
+                   prefix: bottle.prefixPath
+               ) {
+                return true
+            }
+            guard supervisor.isRunning else { return false }
+            try? await Task.sleep(for: .seconds(1))
+        }
+        return Self.steamAppLaunchAcknowledged(
+            in: steamConsoleLogData(in: bottle),
+            after: baseline,
+            appId: appId
+        )
+    }
+
+    /// Envía `-applaunch` al Steam Windows conectado. Si un cliente zombi conserva procesos y
+    /// sesión pero no acepta la orden, Vessel lo detecta por el registro nuevo, reinicia únicamente
+    /// ese prefijo y reintenta una vez. Las descargas activas nunca se interrumpen.
+    /// El supervisor vive hasta que termina el ejecutable real para que la UI, las estadísticas,
+    /// las copias y «Detener» sigan el juego y no el relé fugaz.
     private func launchThroughConnectedSteamClient(
         executable: String,
         appId: String,
         launchArguments: [String],
         bottle: Bottle,
         wine: String
-    ) throws -> Process {
+    ) async throws -> Process {
         guard !appId.isEmpty, appId.allSatisfy(\.isNumber) else {
             throw WineError.launchFailed("Steam devolvió un AppID inválido para el juego protegido.")
         }
@@ -4874,31 +5756,100 @@ final class WineManager {
         while \(pgrep) >/dev/null 2>&1; do sleep 2; done
         """
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = ["-c", script]
-        process.environment = [
-            "HOME": NSHomeDirectory(),
-            "USER": NSUserName(),
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"
-        ]
         let logDirectory = "\(NSHomeDirectory())/Library/Logs/Vessel"
         try? FileManager.default.createDirectory(atPath: logDirectory, withIntermediateDirectories: true)
         let logPath = "\(logDirectory)/steam-protected-launch.log"
-        FileManager.default.createFile(atPath: logPath, contents: nil)
-        if launchArguments.contains(where: Self.isSensitiveLaunchArgument) {
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-        } else if let handle = FileHandle(forWritingAtPath: logPath) {
-            process.standardOutput = handle
-            process.standardError = handle
+
+        func makeSupervisor() throws -> Process {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/bash")
+            process.arguments = ["-c", script]
+            process.environment = [
+                "HOME": NSHomeDirectory(),
+                "USER": NSUserName(),
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"
+            ]
+            FileManager.default.createFile(atPath: logPath, contents: nil)
+            if launchArguments.contains(where: Self.isSensitiveLaunchArgument) {
+                process.standardOutput = FileHandle.nullDevice
+                process.standardError = FileHandle.nullDevice
+            } else if let handle = FileHandle(forWritingAtPath: logPath) {
+                process.standardOutput = handle
+                process.standardError = handle
+            }
+            do {
+                try process.run()
+                return process
+            } catch {
+                throw WineError.launchFailed(
+                    "No se pudo solicitar el juego al cliente Steam: \(error.localizedDescription)"
+                )
+            }
         }
-        do {
-            try process.run()
-            return process
-        } catch {
-            throw WineError.launchFailed("No se pudo solicitar el juego al cliente Steam: \(error.localizedDescription)")
+
+        let baseline = steamConsoleLogData(in: bottle)
+        let firstSupervisor = try makeSupervisor()
+        if await waitForSteamAppLaunchAcknowledgement(
+            supervisor: firstSupervisor,
+            executable: executable,
+            appId: appId,
+            bottle: bottle,
+            baseline: baseline,
+            timeoutSeconds: 20
+        ) {
+            return firstSupervisor
         }
+
+        if steamHasActiveDownloads(prefix: bottle.prefixPath, gameWine: wine) {
+            log.log(
+                "Steam no confirmó -applaunch, pero mantiene una descarga: se preserva el cliente.",
+                level: .warn
+            )
+            return firstSupervisor
+        }
+
+        log.log(
+            "Steam no aceptó -applaunch en 20 s; reinicio aislado del cliente y reintento único.",
+            level: .warn
+        )
+        NotificationService.shared.status(
+            "Steam no responde; reiniciándolo automáticamente…"
+        )
+        defer { NotificationService.shared.status(nil) }
+        if firstSupervisor.isRunning { firstSupervisor.terminate() }
+        try? await Task.sleep(for: .milliseconds(300))
+        try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
+        try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: wine)
+        try? await Task.sleep(for: .seconds(1))
+
+        let connected = await ensureSteamConnected(
+            in: bottle,
+            clientWine: wine,
+            timeoutSeconds: 120,
+            background: true
+        )
+        guard connected else {
+            throw WineError.launchFailed(
+                "Steam no recuperó su conexión después del reinicio automático."
+            )
+        }
+
+        let retryBaseline = steamConsoleLogData(in: bottle)
+        let retrySupervisor = try makeSupervisor()
+        guard await waitForSteamAppLaunchAcknowledgement(
+            supervisor: retrySupervisor,
+            executable: executable,
+            appId: appId,
+            bottle: bottle,
+            baseline: retryBaseline,
+            timeoutSeconds: 30
+        ) else {
+            if retrySupervisor.isRunning { retrySupervisor.terminate() }
+            throw WineError.launchFailed(
+                "Steam siguió sin aceptar la orden del juego tras el reinicio automático."
+            )
+        }
+        return retrySupervisor
     }
 
     /// Abre el cliente Steam COMPLETO y conectado en el **motor unificado** propio
@@ -5215,6 +6166,12 @@ final class WineManager {
     /// sistema. Ambas imágenes pertenecen al mismo juego y deben compartir estado, ventana y cierre.
     nonisolated static func processFamilyImageNames(_ executableName: String) -> [String] {
         guard !executableName.isEmpty else { return [] }
+        if executableName.range(
+            of: #"^popcapgame[1-3]\.exe$"#,
+            options: [.caseInsensitive, .regularExpression]
+        ) != nil {
+            return ["popcapgame1.exe", "popcapgame2.exe", "popcapgame3.exe"]
+        }
         var names = [executableName]
         for architecture in ["x32", "x64"] {
             guard let range = executableName.range(

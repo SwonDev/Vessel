@@ -236,6 +236,47 @@ final class ExecutableResolverTests: XCTestCase {
         XCTAssertEqual(exe, "\(dir)/stablegame.exe")
     }
 
+    /// Los splash clásicos de DotEmu declaran el payload real fuera de `splash/`. Vessel debe
+    /// saltarse la ventana temporal y analizar directamente el motor del juego.
+    func testPrefersPayloadDeclaredByVerifiedDotEmuSplash() throws {
+        let dir = tempDir("Classic Adventure")
+        try makeTree(
+            dir,
+            files: [
+                "ClassicAdventure.exe", "Game.exe",
+                "splash/config.txt", "splash/first.bmp", "splash/second.bmp"
+            ],
+            dirs: []
+        )
+        try Data(#"DotEmu SDL.dll splash\config.txt"#.utf8).write(
+            to: URL(fileURLWithPath: "\(dir)/ClassicAdventure.exe")
+        )
+        try Data("time 4000\nwidth 800\nheight 600\nexe Game.exe\nimg first.bmp\nimg second.bmp\n".utf8)
+            .write(to: URL(fileURLWithPath: "\(dir)/splash/config.txt"))
+        defer { try? FileManager.default.removeItem(atPath: (dir as NSString).deletingLastPathComponent) }
+
+        let exe = SteamLibraryImporter.mainGameExecutable(in: dir)
+        XCTAssertEqual(exe, "\(dir)/Game.exe")
+    }
+
+    /// Un `splash/config.txt` arbitrario no puede secuestrar el resolutor: son obligatorias las
+    /// imágenes declaradas y la firma completa del launcher DotEmu raíz.
+    func testDoesNotTrustUnverifiedSplashExecutableEntry() throws {
+        let dir = tempDir("Stable Adventure")
+        try makeTree(
+            dir,
+            files: ["StableAdventure.exe", "Game.exe", "splash/config.txt"],
+            dirs: []
+        )
+        try Data("exe Game.exe\nimg missing.bmp\n".utf8).write(
+            to: URL(fileURLWithPath: "\(dir)/splash/config.txt")
+        )
+        defer { try? FileManager.default.removeItem(atPath: (dir as NSString).deletingLastPathComponent) }
+
+        let exe = SteamLibraryImporter.mainGameExecutable(in: dir)
+        XCTAssertEqual(exe, "\(dir)/StableAdventure.exe")
+    }
+
     /// Normalización de nombres: ignora espacios y símbolos.
     func testNormalizedNameStripsNonAlphanumerics() {
         XCTAssertEqual(SteamLibraryImporter.normalizedName("Ancient Kingdoms"), "ancientkingdoms")

@@ -136,6 +136,31 @@ enum LaunchDiagnostics {
         return nil
     }
 
+    /// Steam puede detener el primer `-applaunch` en un EULA de terceros. Solo se considera la
+    /// orden más reciente: una licencia histórica en el mismo log no debe contaminar lanzamientos
+    /// posteriores una vez aceptada o cancelada.
+    nonisolated static func steamEULAPromptDetected(in consoleLog: String) -> Bool {
+        guard let latestCommand = consoleLog.range(
+            of: "ExecCommandLine:",
+            options: .backwards
+        ) else { return false }
+        let currentLaunch = consoleLog[latestCommand.lowerBound...]
+        return currentLaunch.localizedCaseInsensitiveContains("-applaunch")
+            && currentLaunch.contains("LaunchApp waiting for user response to ShowEula")
+    }
+
+    /// Comprueba únicamente el log modificado por el intento actual. La ventana pertenece a Steam
+    /// y debe dejar que el usuario revise la licencia; Vessel nunca la acepta silenciosamente.
+    nonisolated static func hasRecentSteamEULAPrompt(prefix: String, since: Date) -> Bool {
+        let log = URL(fileURLWithPath: prefix)
+            .appendingPathComponent("drive_c/Program Files (x86)/Steam/logs/console_log.txt")
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: log.path),
+              let modified = attributes[.modificationDate] as? Date,
+              modified >= since.addingTimeInterval(-2),
+              let contents = try? String(contentsOf: log, encoding: .utf8) else { return false }
+        return steamEULAPromptDetected(in: contents)
+    }
+
     /// Avisa (notificación + log) si hay un fallo. Se usa cuando NO se va a reintentar.
     static func diagnose(prefix: String, gameTitle: String) {
         guard let f = detect(prefix: prefix) else { return }
@@ -176,6 +201,7 @@ enum LaunchDiagnostics {
             let deadline = 75
             var failure: Failure? = nil
             var crashed = false
+            var waitingForSteamEULA = false
             var elapsed = 0
             // Chromium/NW.js puede mantener el proceso y una ventana negra mientras su proceso GPU
             // crashea y Crashpad genera varios minidumps. Sin esta señal se aprendía una capa como
@@ -202,6 +228,16 @@ enum LaunchDiagnostics {
                 if hasSteamInterfaceDialog() {
                     failure = Failure(category: .steam, title: "El juego necesita la API de Steam",
                                       body: "Usa Steam Input/Controller (interfaces que la emulación no provee). Activando modo Steam real.")
+                    break
+                }
+                if usesRealSteam, let launchStartedAt,
+                   hasRecentSteamEULAPrompt(prefix: prefix, since: launchStartedAt) {
+                    waitingForSteamEULA = true
+                    failure = Failure(
+                        category: .steam,
+                        title: "Steam necesita que revises una licencia",
+                        body: "Steam ha abierto el acuerdo de licencia de este juego. Revísalo y elige «Aceptar» o «Cancelar» en Steam; después vuelve a pulsar Jugar. Vessel nunca aceptará condiciones legales por ti."
+                    )
                     break
                 }
                 let newCrashReports: Int
@@ -245,10 +281,22 @@ enum LaunchDiagnostics {
             // in-app visible) y NO reintentamos; el cliente de Steam queda abierto para lanzar desde ahí.
             if usesRealSteam {
                 if !alive {
+                    let title = failure?.title ?? "\(gameTitle): no arrancó del todo"
+                    let body = failure?.body
+                        ?? "El juego se cerró al arrancar. Steam corre en segundo plano para el DRM (no tienes que abrir nada): vuelve a pulsar Jugar. Si es la primera vez, inicia sesión en Steam desde Vessel (botón de Steam, arriba) una sola vez."
                     NotificationService.shared.alert(
-                        title: "\(gameTitle): no arrancó del todo",
-                        body: "El juego se cerró al arrancar. Steam corre en segundo plano para el DRM (no tienes que abrir nada): vuelve a pulsar Jugar. Si es la primera vez, inicia sesión en Steam desde Vessel (botón de Steam, arriba) una sola vez.")
-                    LogStore.shared.log("⚠️ \(gameTitle): el juego (Steam real) se cerró al arrancar; se avisó al usuario para reintentar (Steam sigue en segundo plano).", level: .warn)
+                        title: title,
+                        body: body
+                    )
+                    if waitingForSteamEULA {
+                        GameLaunchTracker.shared.stop(gameId)
+                        LogStore.shared.log(
+                            "\(gameTitle): Steam espera la decisión del usuario sobre su licencia; el estado vuelve a Jugar sin cerrar el cliente.",
+                            level: .info
+                        )
+                    } else {
+                        LogStore.shared.log("⚠️ \(gameTitle): el juego (Steam real) se cerró al arrancar; se avisó al usuario para reintentar (Steam sigue en segundo plano).", level: .warn)
+                    }
                 }
                 return
             }

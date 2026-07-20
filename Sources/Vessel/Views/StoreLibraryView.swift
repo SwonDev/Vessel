@@ -73,6 +73,21 @@ enum StoreGameStateResolver {
         guard let selected else { return nil }
         return availableGames.first(where: { $0.id == selected.id }) ?? selected
     }
+
+    /// Una recarga transitoria puede devolver una lista vacía y debe conservar la ficha, pero una
+    /// desinstalación solicitada por el usuario no puede dejar una ficha fantasma si la plataforma
+    /// elimina por completo esa entrada (p. ej. una copia local DRM-free).
+    static func shouldDismissSelectionAfterUninstall(
+        selected: StoreGame?,
+        availableGames: [StoreGame],
+        requestedGameID: String?
+    ) -> Bool {
+        guard let selected,
+              let requestedGameID,
+              selected.id == requestedGameID
+        else { return false }
+        return !availableGames.contains(where: { $0.id == requestedGameID })
+    }
 }
 
 enum StoreSortOrder: String, CaseIterable, Identifiable {
@@ -328,6 +343,9 @@ struct StoreLibraryView: View {
     @State private var collectionEditorRequest: CollectionEditorRequest?
     @State private var collectionPendingDeletion: LibraryCollectionsStore.Collection?
     @State private var gamePendingUninstall: StoreGame?
+    /// Distingue una desaparición real tras pulsar «Desinstalar» de un vacío transitorio mientras
+    /// una tienda recarga. Solo vive hasta que la biblioteca publica el estado resultante.
+    @State private var uninstallRequestedGameID: String?
     @State private var logoutConfirmationPresented = false
     @State private var quickOpenPresented = false
     @State private var notesEditorGame: StoreGame?
@@ -1030,12 +1048,39 @@ struct StoreLibraryView: View {
     /// cacheada. Extraído del `.task(id: games)` para que el type-checker de SwiftUI no se
     /// desborde con la cadena de modificadores de esta vista coordinadora.
     private func refreshLibraryData() async {
+        reconcileSelectionAfterUninstall()
         recomputeDerivedCaches()
         refreshDisplayed()
         CoverCache.shared.prefetch(games.map { ($0.id, $0.coverCandidates) })
         indexLibraryForSpotlight()
         indexedMetadata = await StoreGameMetadataService.shared.cachedDetails(for: metadataRequests)
         refreshDisplayed()
+    }
+
+    /// Las tiendas conservan normalmente el juego y solo publican `installed = false`; en ese
+    /// caso basta con que `currentSelectedGame` consuma el modelo nuevo. Las copias locales pueden
+    /// desaparecer del catálogo: entonces cerramos la ficha y retiramos destinos inválidos para
+    /// que Atrás/Adelante tampoco pueda resucitarla.
+    private func reconcileSelectionAfterUninstall() {
+        guard let requestedGameID = uninstallRequestedGameID else { return }
+
+        if let current = games.first(where: { $0.id == requestedGameID }) {
+            guard !current.installed else { return }
+            uninstallRequestedGameID = nil
+            return
+        }
+
+        if StoreGameStateResolver.shouldDismissSelectionAfterUninstall(
+            selected: selectedGame,
+            availableGames: games,
+            requestedGameID: requestedGameID
+        ) {
+            lastDetailGameID = nil
+            selectedGame = nil
+        }
+        backHistory.removeAll { $0 == .game(requestedGameID) }
+        forwardHistory.removeAll { $0 == .game(requestedGameID) }
+        uninstallRequestedGameID = nil
     }
 
     private var libraryCommandLayer: some View {
@@ -1125,7 +1170,10 @@ struct StoreLibraryView: View {
             )
         ) {
             Button("Desinstalar", role: .destructive) {
-                if let g = gamePendingUninstall { onUninstall(g) }
+                if let g = gamePendingUninstall {
+                    uninstallRequestedGameID = g.id
+                    onUninstall(g)
+                }
                 gamePendingUninstall = nil
             }
             Button("Cancelar", role: .cancel) { gamePendingUninstall = nil }

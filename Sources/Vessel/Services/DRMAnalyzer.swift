@@ -104,7 +104,8 @@ enum DRMAnalyzer {
         var r = Report()
 
         // 1) SteamStub — SOLO en el exe que se lanza (ver regla 1 de la doc).
-        if SteamDRMScanner.hasSteamStub(executable) {
+        if SteamDRMScanner.hasSteamStub(executable)
+            || SteamDRMScanner.hasLegacyValveRunMeBootstrap(executable) {
             r.protections.append(.steamStub)
             r.evidence[Protection.steamStub.rawValue] = (executable as NSString).lastPathComponent
         }

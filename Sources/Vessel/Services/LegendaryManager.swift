@@ -330,10 +330,32 @@ final class LegendaryManager {
         log.log("✓ Epic: \(appName) actualizado", level: .info)
     }
 
-    /// Desinstala un juego de Epic (`legendary uninstall`): borra los archivos del disco y
-    /// actualiza el estado de legendary (`installed.json`). legendary sabe qué carpeta creó al
-    /// instalar, así que el borrado es limpio y seguro (no adivina rutas). `-y` evita el prompt.
-    func uninstallGame(appName: String, operationID: String? = nil) async throws {
+    /// Devuelve el directorio residual que puede eliminarse después de `legendary uninstall`.
+    /// Legendary solo conoce los archivos de su manifiesto y puede dejar DLL, backups o logs que
+    /// Vessel creó durante la reparación. La ruta debe existir, resolver dentro de `gamesRoot` y
+    /// ser una subcarpeta estricta; nunca se acepta la raíz ni un symlink que escape de ella.
+    nonisolated static func safeResidualInstallDirectory(
+        installPath: String?,
+        gamesRoot: String,
+        fileManager: FileManager = .default
+    ) -> String? {
+        guard let installPath, !installPath.isEmpty else { return nil }
+        return PathSafety.resolvedIfSafeToDelete(
+            installPath,
+            under: gamesRoot,
+            fileManager: fileManager
+        )
+    }
+
+    /// Desinstala un juego de Epic (`legendary uninstall`), actualiza `installed.json` y retira la
+    /// carpeta residual segura que pueda contener artefactos añadidos por Vessel. `-y` evita el
+    /// prompt y el directorio se valida contra la raíz exacta usada al instalar.
+    func uninstallGame(
+        appName: String,
+        installPath: String?,
+        gamesRoot: String,
+        operationID: String? = nil
+    ) async throws {
         let code = try await runStreaming(
             Self.binaryPath,
             args: ["-y", "uninstall", appName],
@@ -343,6 +365,20 @@ final class LegendaryManager {
         guard code == 0 else {
             throw NSError(domain: "Vessel", code: 113, userInfo: [NSLocalizedDescriptionKey:
                 "La desinstalación de Epic falló (código \(code)). Revisa los logs."])
+        }
+        if let residual = Self.safeResidualInstallDirectory(
+            installPath: installPath,
+            gamesRoot: gamesRoot
+        ) {
+            do {
+                try FileManager.default.removeItem(atPath: residual)
+                log.log("Epic: residuos de compatibilidad retirados (\(residual)).", level: .info)
+            } catch {
+                log.log(
+                    "Epic: no se pudo retirar la carpeta residual segura: \(error.localizedDescription)",
+                    level: .warn
+                )
+            }
         }
         log.log("✓ Epic: \(appName) desinstalado", level: .info)
     }
