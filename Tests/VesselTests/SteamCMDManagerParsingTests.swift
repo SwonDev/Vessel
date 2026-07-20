@@ -97,6 +97,31 @@ struct SteamCMDManagerParsingTests {
         #expect(installed == "100")
     }
 
+    @Test("Acepta una actualización que SteamCMD confirma ya al día")
+    func acceptsAlreadyUpToDateAsSuccess() {
+        let output = #"Success! App '207350' already up to date."#
+
+        #expect(SteamCMDManager.appUpdateSucceeded(in: output, exitCode: 0))
+    }
+
+    @Test("Acepta una instalación completada")
+    func acceptsFullyInstalledAsSuccess() {
+        let output = #"Success! App '207530' fully installed."#
+
+        #expect(SteamCMDManager.appUpdateSucceeded(in: output, exitCode: 0))
+    }
+
+    @Test("No confunde el código cero de SteamCMD con una operación correcta")
+    func rejectsFalseZeroExitSuccess() {
+        let output = "ERROR! Failed to install app '207350' (No subscription)"
+
+        #expect(!SteamCMDManager.appUpdateSucceeded(in: output, exitCode: 0))
+        #expect(!SteamCMDManager.appUpdateSucceeded(
+            in: #"Success! App '207350' already up to date."#,
+            exitCode: 1
+        ))
+    }
+
     private func manifest(buildID: String, stateFlags: Int) -> String {
         #"""
         "AppState"

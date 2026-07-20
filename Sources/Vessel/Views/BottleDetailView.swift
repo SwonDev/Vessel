@@ -123,9 +123,14 @@ struct BottleDetailView: View {
             await autoImportGames()
             startWatchingGames()
             await loadSteamLibrary()
-            await refreshSteamUpdates()
             await restoreSteamOperations()
             resumeInterruptedDownloads()
+            // Una cola persistida debe volver a estar operativa antes de consultar todas las
+            // builds remotas. Ese escaneo puede tardar y antes dejaba instalaciones o
+            // actualizaciones reales aparentando estar congeladas durante el arranque.
+            if !operations.hasItems {
+                await refreshSteamUpdates()
+            }
         }
         .onDisappear { gamesWatcher.stop() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -445,7 +450,10 @@ struct BottleDetailView: View {
         done.removeValue(forKey: appId)
         UserDefaults.standard.set(done, forKey: "steamcmd.inflight")
         await autoImportGames()
-        await refreshSteamUpdates()
+        // La operación ya terminó y su estado local es definitivo. Reconciliar el resto de la
+        // biblioteca no debe retrasar la retirada del elemento de la cola ni mantener el botón
+        // visualmente atascado; el refresco continúa en segundo plano.
+        Task { await refreshSteamUpdates() }
     }
 
     private func cancelSteamOperation(_ game: StoreGame) {
