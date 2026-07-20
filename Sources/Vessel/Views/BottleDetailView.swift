@@ -12,6 +12,117 @@ private struct SteamLibraryScanResult: Sendable {
     let discovered: [SteamLibraryImporter.ImportedGame]
 }
 
+/// Calcula los artefactos que pertenecen inequívocamente a una instalación de Steam antes de
+/// ejecutar una desinstalación. Además de la carpeta canónica reconoce instalaciones heredadas de
+/// SteamCMD llamadas `App <id>`, pero solo cuando su manifiesto interno confirma el mismo AppID.
+/// El plan nunca devuelve la raíz `common`, rutas inexistentes ni symlinks que escapen de ella.
+struct SteamUninstallPlan: Equatable {
+    let installFolders: [String]
+    let manifestFiles: [String]
+}
+
+enum SteamUninstallPlanner {
+    static func plan(
+        appID: String?,
+        executablePath: String,
+        steamDirectory: String,
+        fileManager: FileManager = .default
+    ) -> SteamUninstallPlan {
+        let steamapps = "\(steamDirectory)/steamapps"
+        let common = "\(steamapps)/common"
+        let canonicalCommon = PathSafety.canonical(common)
+        var folders = Set<String>()
+        var manifests = Set<String>()
+
+        func manifestValue(_ key: String, in content: String) -> String? {
+            for line in content.split(separator: "\n") {
+                let fields = line.split(separator: "\"", omittingEmptySubsequences: false)
+                guard fields.count >= 4,
+                      fields[1].caseInsensitiveCompare(key) == .orderedSame else { continue }
+                return String(fields[3])
+            }
+            return nil
+        }
+
+        func validInstallDirectory(_ value: String) -> String? {
+            let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty,
+                  name != ".", name != "..",
+                  !name.contains("/"), !name.contains("\\"), !name.contains("..")
+            else { return nil }
+            return name
+        }
+
+        func addDirectInstallFolder(named name: String) {
+            guard let safeName = validInstallDirectory(name),
+                  let resolved = PathSafety.resolvedIfSafeToDelete(
+                      "\(common)/\(safeName)",
+                      under: common,
+                      fileManager: fileManager
+                  ),
+                  PathSafety.canonical((resolved as NSString).deletingLastPathComponent)
+                    == canonicalCommon
+            else { return }
+            folders.insert(resolved)
+        }
+
+        if let appID, !appID.isEmpty {
+            let ownManifest = "\(steamapps)/appmanifest_\(appID).acf"
+            if fileManager.fileExists(atPath: ownManifest) {
+                manifests.insert(PathSafety.canonical(ownManifest))
+                if let content = try? String(contentsOfFile: ownManifest, encoding: .utf8),
+                   let installDirectory = manifestValue("installdir", in: content) {
+                    addDirectInstallFolder(named: installDirectory)
+                }
+            }
+
+            // Vessel antiguo podía usar `force_install_dir .../common/App <id>`. Se acepta esa
+            // carpeta únicamente si es hija directa y contiene el manifiesto interno del mismo id.
+            let legacyName = "App \(appID)"
+            let legacyFolder = "\(common)/\(legacyName)"
+            let nestedManifest = "\(legacyFolder)/steamapps/appmanifest_\(appID).acf"
+            if let nested = try? String(contentsOfFile: nestedManifest, encoding: .utf8),
+               manifestValue("appid", in: nested) == appID {
+                addDirectInstallFolder(named: legacyName)
+            }
+        }
+
+        // Si ya no hay manifiesto útil, la ruta registrada sigue siendo evidencia suficiente,
+        // pero solo se toma su primer componente bajo `common` y vuelve a pasar por PathSafety.
+        let commonPrefix = canonicalCommon + "/"
+        let canonicalExecutable = PathSafety.canonical(executablePath)
+        if canonicalExecutable.hasPrefix(commonPrefix) {
+            let relative = canonicalExecutable.dropFirst(commonPrefix.count)
+            if let first = relative.split(separator: "/").first {
+                addDirectInstallFolder(named: String(first))
+            }
+        }
+
+        // El cliente puede conservar más de un manifiesto para el mismo `installdir` (migraciones,
+        // AppID anterior o depot duplicado). Si se elimina esa carpeta, todos esos manifiestos deben
+        // desaparecer para que la biblioteca no vuelva a mostrar una instalación fantasma.
+        let folderNames = Set(folders.map {
+            ($0 as NSString).lastPathComponent.lowercased()
+        })
+        if let entries = try? fileManager.contentsOfDirectory(atPath: steamapps) {
+            for entry in entries where entry.hasPrefix("appmanifest_") && entry.hasSuffix(".acf") {
+                let path = "\(steamapps)/\(entry)"
+                guard let content = try? String(contentsOfFile: path, encoding: .utf8),
+                      let rawDirectory = manifestValue("installdir", in: content),
+                      let directory = validInstallDirectory(rawDirectory),
+                      folderNames.contains(directory.lowercased())
+                else { continue }
+                manifests.insert(PathSafety.canonical(path))
+            }
+        }
+
+        return SteamUninstallPlan(
+            installFolders: folders.sorted(),
+            manifestFiles: manifests.sorted()
+        )
+    }
+}
+
 struct BottleDetailView: View {
     let bottle: Bottle
     @State private var statusMessage: String?
@@ -222,63 +333,32 @@ struct BottleDetailView: View {
         }
     }
 
-    /// Desinstala el juego borrando SOLO su carpeta dentro de `steamapps/common`.
-    /// BLINDADO: la carpeta se deriva del `installdir` del appmanifest o del
-    /// `executablePath`, y se exige que sea una subcarpeta ESTRICTA de
-    /// `steamapps/common` (nunca el prefijo, ni `common`, ni rutas fuera de ahí).
-    /// `installPath` NO se usa: puede apuntar al prefijo entero.
+    /// Desinstala el juego borrando SOLO sus carpetas verificadas dentro de `steamapps/common`.
+    /// Incluye ubicaciones heredadas `App <id>` con manifiesto interno coincidente y manifiestos
+    /// duplicados que apunten al mismo `installdir`; nunca el prefijo, `common` ni rutas externas.
     private func uninstallGame(_ game: GameInstall) {
         let fm = FileManager.default
-        let steamCommon = "\(localBottle.steamDirectory)/steamapps/common"
-        var folderToDelete: String?
-
-        if let appId = game.steamAppId, !appId.isEmpty {
-            let manifest = "\(localBottle.steamDirectory)/steamapps/appmanifest_\(appId).acf"
-            if let content = try? String(contentsOfFile: manifest, encoding: .utf8),
-               let installdir = installDir(in: content), !installdir.isEmpty {
-                folderToDelete = "\(steamCommon)/\(installdir)"
-            }
+        let plan = SteamUninstallPlanner.plan(
+            appID: game.steamAppId,
+            executablePath: game.executablePath,
+            steamDirectory: localBottle.steamDirectory,
+            fileManager: fm
+        )
+        for manifest in plan.manifestFiles {
             try? fm.removeItem(atPath: manifest)
         }
-        if folderToDelete == nil, let range = game.executablePath.range(of: "\(steamCommon)/") {
-            let rest = game.executablePath[range.upperBound...]
-            if let first = rest.split(separator: "/").first {
-                folderToDelete = "\(steamCommon)/\(first)"
-            }
+        for folder in plan.installFolders {
+            try? fm.removeItem(atPath: folder)
+            log.log("Juego desinstalado: \(game.name) (\(folder))", level: .info)
         }
-
-        // SEGURIDAD CRÍTICA (centralizada en PathSafety): canonicalizar (resolver symlinks y `..`)
-        // y exigir que la ruta resultante siga siendo subcarpeta ESTRICTA de steamapps/common.
-        if let folder = folderToDelete,
-           let resolved = PathSafety.resolvedIfSafeToDelete(folder, under: steamCommon, fileManager: fm) {
-            try? fm.removeItem(atPath: resolved)
-            log.log("Juego desinstalado: \(game.name) (\(resolved))", level: .info)
-        } else if folderToDelete == nil {
+        if plan.installFolders.isEmpty {
             log.log("Desinstalar \(game.name): no se halló carpeta segura; solo se quita de la lista.", level: .warn)
-        } else {
-            log.log("Desinstalar \(game.name): ruta no segura tras canonicalizar; solo se quita de la lista.", level: .warn)
         }
 
         store.deleteGame(game.id, from: localBottle.id)
         if let updated = store.bottles.first(where: { $0.id == localBottle.id }) {
             localBottle = updated
         }
-    }
-
-    /// Extrae `"installdir" "X"` de un appmanifest .acf, rechazando valores con
-    /// separadores de ruta o traversal (`..`) por seguridad.
-    private func installDir(in manifest: String) -> String? {
-        for line in manifest.split(separator: "\n") {
-            let t = line.trimmingCharacters(in: .whitespaces)
-            if t.lowercased().contains("\"installdir\"") {
-                let parts = t.components(separatedBy: "\"").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-                if let last = parts.last, last.lowercased() != "installdir" {
-                    guard !last.contains("/"), !last.contains("\\"), !last.contains("..") else { return nil }
-                    return last
-                }
-            }
-        }
-        return nil
     }
 
     /// Carga la biblioteca completa (owned) de la cuenta logueada en el bottle.

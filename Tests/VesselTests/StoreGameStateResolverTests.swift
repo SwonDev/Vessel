@@ -39,4 +39,25 @@ struct StoreGameStateResolverTests {
 
         #expect(current == selected)
     }
+
+    @Test("Una desinstalación explícita cierra una ficha cuya entrada desapareció")
+    func explicitUninstallDismissesRemovedSelection() {
+        let selected = StoreGame(id: "42", title: "Copia local", installed: true)
+
+        #expect(StoreGameStateResolver.shouldDismissSelectionAfterUninstall(
+            selected: selected,
+            availableGames: [],
+            requestedGameID: selected.id
+        ))
+        #expect(!StoreGameStateResolver.shouldDismissSelectionAfterUninstall(
+            selected: selected,
+            availableGames: [],
+            requestedGameID: "otro"
+        ))
+        #expect(!StoreGameStateResolver.shouldDismissSelectionAfterUninstall(
+            selected: selected,
+            availableGames: [StoreGame(id: "42", title: "Copia local", installed: false)],
+            requestedGameID: selected.id
+        ))
+    }
 }

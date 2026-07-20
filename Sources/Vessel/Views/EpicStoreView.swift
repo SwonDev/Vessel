@@ -233,7 +233,12 @@ final class EpicStore {
                 updatesAvailable.remove(game.appName)
                 NotificationService.shared.notify(title: "Actualización completada", body: game.title)
             case .uninstall:
-                try await legendary.uninstallGame(appName: game.appName, operationID: operationID)
+                try await legendary.uninstallGame(
+                    appName: game.appName,
+                    installPath: game.installPath,
+                    gamesRoot: basePath,
+                    operationID: operationID
+                )
                 NotificationService.shared.notify(title: "Juego desinstalado", body: game.title)
             case .dlc:
                 guard let dlcAppName = operation.targetID else {
