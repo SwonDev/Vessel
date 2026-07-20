@@ -1,11 +1,22 @@
 import SwiftUI
 
+private struct RegisteredGameExecutableRepair: Sendable {
+    let appID: String
+    let name: String
+    let executablePath: String
+    let installPath: String
+}
+
+private struct SteamLibraryScanResult: Sendable {
+    let repairs: [RegisteredGameExecutableRepair]
+    let discovered: [SteamLibraryImporter.ImportedGame]
+}
+
 struct BottleDetailView: View {
     let bottle: Bottle
     @State private var statusMessage: String?
     @State private var showingInstaller = false
     @State private var wineManager = WineManager()
-    @State private var importer = SteamLibraryImporter()
     @State private var gamesWatcher = DirectoryWatcher()
     @State private var gameToUninstall: GameInstall?
     @State private var accountService = SteamAccountService()
@@ -23,6 +34,8 @@ struct BottleDetailView: View {
     @AppStorage("steamcmd.user") private var steamCMDUser = ""
     @State private var localBottle: Bottle
     @State private var dxvkInstalled: Bool = false
+    @State private var librarySyncInProgress = false
+    @State private var librarySyncRequested = false
 
     private let store = BottleStore.shared
     private let log = LogStore.shared
@@ -534,6 +547,52 @@ struct BottleDetailView: View {
     /// Escanea el Steam del bottle y añade a la lista los juegos instalados que aún
     /// no estén. Hace que aparezcan automáticamente con su botón "Jugar" (wine-dxmt).
     private func autoImportGames() async {
+        // El foco de la ventana, el watcher y una instalación pueden solicitar el mismo escaneo.
+        // Se fusionan para no recorrer simultáneamente decenas de árboles de juegos. Si llega una
+        // modificación mientras uno está en curso, se conserva una única pasada posterior.
+        if librarySyncInProgress {
+            librarySyncRequested = true
+            return
+        }
+        librarySyncInProgress = true
+        defer { librarySyncInProgress = false }
+
+        repeat {
+            librarySyncRequested = false
+            let bottleSnapshot = localBottle
+            let result = await Task.detached(priority: .utility) {
+                var repairs: [RegisteredGameExecutableRepair] = []
+
+                // Resolver ejecutables implica enumerar cada árbol de instalación. Se hace fuera
+                // del actor principal para que activar Vessel nunca bloquee eventos ni dibujado.
+                for game in bottleSnapshot.games {
+                    guard let appID = game.steamAppId, !appID.isEmpty else { continue }
+                    let installPath = game.installPath.isEmpty
+                        ? (game.executablePath as NSString).deletingLastPathComponent
+                        : game.installPath
+                    guard !installPath.isEmpty,
+                          FileManager.default.fileExists(atPath: installPath),
+                          let resolved = SteamLibraryImporter.mainGameExecutable(in: installPath)
+                    else { continue }
+                    repairs.append(RegisteredGameExecutableRepair(
+                        appID: appID,
+                        name: game.name,
+                        executablePath: resolved,
+                        installPath: installPath
+                    ))
+                }
+
+                return SteamLibraryScanResult(
+                    repairs: repairs,
+                    discovered: SteamLibraryImporter().scanBottleGames(bottle: bottleSnapshot)
+                )
+            }.value
+            applySteamLibraryScan(result)
+        } while librarySyncRequested
+    }
+
+    /// Aplica en el actor principal únicamente las diferencias calculadas por el escaneo de disco.
+    private func applySteamLibraryScan(_ result: SteamLibraryScanResult) {
         var changed = false
 
         // Las instalaciones hechas por SteamCMD guardan su manifiesto dentro de
@@ -542,31 +601,22 @@ struct BottleDetailView: View {
         // aunque el escaneo de manifiestos no lo devuelva. Esto migra datos de versiones antiguas
         // que eligieron un panel auxiliar (Ys Origin: `config.exe`) sin reinstalar ni cambiar de
         // vista, y también mantiene la garantía si el estudio reorganiza el depot en una update.
-        for game in localBottle.games {
-            guard let appId = game.steamAppId, !appId.isEmpty else { continue }
-            let installPath = game.installPath.isEmpty
-                ? (game.executablePath as NSString).deletingLastPathComponent
-                : game.installPath
-            guard !installPath.isEmpty,
-                  FileManager.default.fileExists(atPath: installPath),
-                  let resolved = SteamLibraryImporter.mainGameExecutable(in: installPath)
-            else { continue }
+        for repair in result.repairs {
             if store.fixGameExecutable(
-                steamAppId: appId,
-                executablePath: resolved,
-                installPath: installPath,
+                steamAppId: repair.appID,
+                executablePath: repair.executablePath,
+                installPath: repair.installPath,
                 in: localBottle.id
             ) {
                 log.log(
-                    "Auto-reparado el ejecutable registrado de \(game.name) → \((resolved as NSString).lastPathComponent)",
+                    "Auto-reparado el ejecutable registrado de \(repair.name) → \((repair.executablePath as NSString).lastPathComponent)",
                     level: .info
                 )
                 changed = true
             }
         }
 
-        let found = importer.scanBottleGames(bottle: localBottle)
-        for g in found {
+        for g in result.discovered {
             let existing = localBottle.games.first { $0.steamAppId == g.appId || $0.executablePath == g.executablePath }
             if existing == nil {
                 let game = GameInstall(
@@ -587,7 +637,7 @@ struct BottleDetailView: View {
         }
         if changed, let updated = store.bottles.first(where: { $0.id == localBottle.id }) {
             localBottle = updated
-            log.log("Biblioteca de Steam sincronizada (\(found.count) juego(s)) en \(localBottle.name)", level: .info)
+            log.log("Biblioteca de Steam sincronizada (\(result.discovered.count) juego(s)) en \(localBottle.name)", level: .info)
         }
     }
 

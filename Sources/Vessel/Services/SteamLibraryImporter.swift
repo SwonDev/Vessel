@@ -1,9 +1,10 @@
 import Foundation
 
-@MainActor
-@Observable
-final class SteamLibraryImporter {
-    struct ImportedGame: Identifiable, Hashable {
+/// Analizador de disco sin estado. No está aislado al actor principal porque recorrer los árboles
+/// de instalación puede tardar varios segundos; sus resultados son valores inmutables y se aplican
+/// después a la UI desde `BottleDetailView`.
+final class SteamLibraryImporter: Sendable {
+    struct ImportedGame: Identifiable, Hashable, Sendable {
         let id: String
         let appId: String
         let name: String
