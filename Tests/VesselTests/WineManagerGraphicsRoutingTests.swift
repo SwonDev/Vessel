@@ -254,6 +254,101 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertFalse(manager.usesLegacyD3D9NativeScaling(executable.path))
     }
 
+    func testClassicPopCapSteamEngineRequiresNativePointScaling() throws {
+        let executable = try makePE32(
+            named: "generic-sexyapp-runtime.exe",
+            marker: """
+            ?AVSexyAppBase@Sexy@@
+            PopCapDRM_EnableLocking
+            PopCapDrm_IPC_Response
+            SteamStartup
+            SteamBlockingCall
+            SteamIsAppSubscribed
+            Unable to load Steam.dll
+            !popcapdrmprotect!
+            """
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for name in ["MAIN.PAK", "Bass.DLL", "J2K-CODEC.DLL"] {
+            try Data(name.utf8).write(to: directory.appendingPathComponent(name))
+        }
+        let properties = directory.appendingPathComponent("properties", isDirectory: true)
+        try FileManager.default.createDirectory(at: properties, withIntermediateDirectories: true)
+        try Data("""
+        <Properties>
+        <Boolean id="NoReg">true</Boolean>
+        <Boolean id="DefaultWindowed">false</Boolean>
+        <String id="PartnerName">Steam</String>
+        <String id="ProdName">GenericPopCapProduct</String>
+        <Integer id="SteamId">1234</Integer>
+        </Properties>
+        """.utf8).write(to: properties.appendingPathComponent("PARTNER.XML"))
+
+        let manager = WineManager()
+
+        XCTAssertTrue(manager.isClassicPopCapSteamEngine(executable.path))
+        XCTAssertEqual(
+            manager.classicPopCapSteamProductName(executable.path),
+            "GenericPopCapProduct"
+        )
+        XCTAssertTrue(manager.usesLegacyD3D9NativeScaling(executable.path))
+        XCTAssertFalse(SteamDRMScanner.hasSteamStub(executable.path))
+        let trackingTarget = manager.launchTrackingTarget(
+            for: executable.path,
+            basePrefix: "/tmp/vessel-popcap-prefix"
+        )
+        XCTAssertEqual(
+            trackingTarget.executable,
+            "/tmp/vessel-popcap-prefix/drive_c/ProgramData/PopCap Games/GenericPopCapProduct/popcapgame1.exe"
+        )
+        XCTAssertEqual(trackingTarget.prefix, "/tmp/vessel-popcap-prefix")
+    }
+
+    func testPopCapLayoutWithoutLegacySteamPartnerKeepsDefaultPolicy() throws {
+        let executable = try makePE32(
+            named: "generic-sexyapp-runtime.exe",
+            marker: """
+            ?AVSexyAppBase@Sexy@@
+            PopCapDRM_EnableLocking
+            PopCapDrm_IPC_Response
+            SteamStartup
+            SteamBlockingCall
+            SteamIsAppSubscribed
+            Unable to load Steam.dll
+            !popcapdrmprotect!
+            """
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for name in ["main.pak", "bass.dll", "j2k-codec.dll"] {
+            try Data(name.utf8).write(to: directory.appendingPathComponent(name))
+        }
+        let properties = directory.appendingPathComponent("properties", isDirectory: true)
+        try FileManager.default.createDirectory(at: properties, withIntermediateDirectories: true)
+        try Data("""
+        <Properties>
+        <Boolean id="NoReg">true</Boolean>
+        <Boolean id="DefaultWindowed">false</Boolean>
+        <String id="PartnerName">Retail</String>
+        <String id="ProdName">GenericPopCapProduct</String>
+        <Integer id="SteamId">1234</Integer>
+        </Properties>
+        """.utf8).write(to: properties.appendingPathComponent("partner.xml"))
+
+        let manager = WineManager()
+
+        XCTAssertFalse(manager.isClassicPopCapSteamEngine(executable.path))
+        XCTAssertFalse(manager.usesLegacyD3D9NativeScaling(executable.path))
+        XCTAssertEqual(
+            manager.launchTrackingTarget(
+                for: executable.path,
+                basePrefix: "/tmp/vessel-popcap-prefix"
+            ).executable,
+            executable.path
+        )
+    }
+
     func testFalcomFirstRunConfigUsesLogicalFullscreenResolution() throws {
         let config = try XCTUnwrap(WineManager.repairedFalcomYsOriginConfig(
             existing: nil,
@@ -1396,6 +1491,10 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(
             WineManager.processFamilyImageNames("Banished.exe"),
             ["Banished.exe"]
+        )
+        XCTAssertEqual(
+            WineManager.processFamilyImageNames("popcapgame2.exe"),
+            ["popcapgame1.exe", "popcapgame2.exe", "popcapgame3.exe"]
         )
     }
 

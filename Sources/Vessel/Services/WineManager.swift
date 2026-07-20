@@ -838,6 +838,80 @@ final class WineManager {
             .allSatisfy(settings.contains)
     }
 
+    /// Framework clásico SexyApp de PopCap distribuido mediante la API de Steam anterior a
+    /// `steam_api.dll`. El juego carga `steam.dll` dinámicamente y necesita que el cliente lo
+    /// arranque por AppID; ejecutarlo directamente muestra «Unable to load Steam.dll» antes de
+    /// crear la superficie DirectDraw/D3D8.
+    ///
+    /// La firma no depende del título ni del AppID. Combina RTTI de SexyApp, el contrato DRM/IPC
+    /// de PopCap, símbolos de la API Steam heredada y el layout firmado por `partner.xml`.
+    func classicPopCapSteamProductName(_ executable: String) -> String? {
+        guard isExecutable32Bit(executable),
+              exeContains(executable, anyOf: ["?AVSexyAppBase@Sexy@@"]),
+              exeContains(executable, anyOf: ["PopCapDRM_EnableLocking"]),
+              exeContains(executable, anyOf: ["PopCapDrm_IPC_Response"]),
+              exeContains(executable, anyOf: ["SteamStartup"]),
+              exeContains(executable, anyOf: ["SteamBlockingCall"]),
+              exeContains(executable, anyOf: ["SteamIsAppSubscribed"]),
+              exeContains(executable, anyOf: ["Unable to load Steam.dll"]),
+              exeContains(executable, anyOf: ["!popcapdrmprotect!"])
+        else { return nil }
+
+        let root = URL(fileURLWithPath: executable)
+            .standardizedFileURL
+            .deletingLastPathComponent()
+        let fm = FileManager.default
+        guard let rootEntries = try? fm.contentsOfDirectory(atPath: root.path) else {
+            return nil
+        }
+        let rootNames = Set(rootEntries.map { $0.lowercased() })
+        let requiredFiles = ["main.pak", "bass.dll", "j2k-codec.dll"]
+        guard requiredFiles.allSatisfy({ rootNames.contains($0.lowercased()) }) else {
+            return nil
+        }
+
+        let properties = root.appendingPathComponent("properties", isDirectory: true)
+        guard let partnerName = (try? fm.contentsOfDirectory(atPath: properties.path))?
+            .first(where: { $0.caseInsensitiveCompare("partner.xml") == .orderedSame }),
+              let partnerXML = try? String(
+                contentsOf: properties.appendingPathComponent(partnerName),
+                encoding: .utf8
+              )
+        else { return nil }
+
+        let partner = partnerXML.lowercased()
+        guard [
+            "<string id=\"partnername\">steam</string>",
+            "<boolean id=\"noreg\">true</boolean>",
+            "<boolean id=\"defaultwindowed\">",
+            "<integer id=\"steamid\">",
+            "<string id=\"prodname\">"
+        ].allSatisfy(partner.contains) else { return nil }
+
+        let pattern = #"(?is)<string\s+id\s*=\s*[\"']prodname[\"']\s*>\s*([^<]+?)\s*</string\s*>"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(
+                in: partnerXML,
+                range: NSRange(partnerXML.startIndex..., in: partnerXML)
+              ),
+              let valueRange = Range(match.range(at: 1), in: partnerXML)
+        else { return nil }
+
+        let productName = partnerXML[valueRange]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let forbidden = CharacterSet(charactersIn: "/\\:")
+        guard !productName.isEmpty,
+              productName != ".",
+              productName != "..",
+              productName.rangeOfCharacter(from: forbidden) == nil
+        else { return nil }
+        return productName
+    }
+
+    func isClassicPopCapSteamEngine(_ executable: String) -> Bool {
+        classicPopCapSteamProductName(executable) != nil
+    }
+
     /// HPL3 de Frictional: combina un contexto OpenGL implícito de compatibilidad con GLSL
     /// moderno, VAO, bindings explícitos y primitivas/formato de textura retirados del perfil
     /// core de macOS. La firma exige arquitectura, imports, marcadores internos y el contrato de
@@ -917,6 +991,14 @@ final class WineManager {
         basePrefix: String
     ) -> (executable: String, prefix: String) {
         let effectiveExecutable = preferredLegacyHPL3Executable(for: executable) ?? executable
+        if let productName = classicPopCapSteamProductName(effectiveExecutable) {
+            let payload = URL(fileURLWithPath: basePrefix, isDirectory: true)
+                .appendingPathComponent("drive_c/ProgramData/PopCap Games", isDirectory: true)
+                .appendingPathComponent(productName, isDirectory: true)
+                .appendingPathComponent("popcapgame1.exe")
+                .path
+            return (payload, basePrefix)
+        }
         guard isLegacyHPL3OpenGLEngine(effectiveExecutable) else {
             return (effectiveExecutable, basePrefix)
         }
@@ -1863,6 +1945,7 @@ final class WineManager {
             || isFrozenbyteStorm3DD3D9Engine(executable)
             || isNihonFalcomYsOriginD3D9Engine(executable)
             || isPlaydeadLegacyD3D9Engine(executable)
+            || isClassicPopCapSteamEngine(executable)
     }
 
     /// El new-WoW64 no crea dispositivos D3D9 de 32 bits y ANGLE 1.x no consigue inicializar EGL
@@ -2190,6 +2273,7 @@ final class WineManager {
         // precisamente esta variante y, sin esta ruta, nunca llega a `D3D11CreateDevice`.
         let steamStubRequiresRealClient = SteamDRMScanner.hasSteamStub(executable)
         let steamNetworkingRequiresRealClient = requiresRealSteamNetworking(executable)
+        let classicPopCapRequiresRealClient = isClassicPopCapSteamEngine(executable)
         let steamShimBootstrapper = steamShimBootstrapper(forPayload: executable)
         // Los juegos protegidos se delegan a Steam, que ejecuta sus `installscript.vdf` antes del
         // juego. Algunos redistribuibles antiguos (sobre todo PhysX) abren asistentes interactivos
@@ -2222,11 +2306,14 @@ final class WineManager {
                 }
             }
         }
-        if (eff.useRealSteam || steamRealGlobal || steamStubRequiresRealClient || steamNetworkingRequiresRealClient),
+        if (eff.useRealSteam || steamRealGlobal || steamStubRequiresRealClient
+                || steamNetworkingRequiresRealClient || classicPopCapRequiresRealClient),
            let appId = steamAppId, !appId.isEmpty {
             let reason: String
             if steamStubRequiresRealClient {
                 reason = " [SteamStub/CEG autodetectado]"
+            } else if classicPopCapRequiresRealClient {
+                reason = " [API Steam heredada de PopCap autodetectada]"
             } else if steamNetworkingRequiresRealClient {
                 reason = " [red, lobbies y servidores Steam autodetectados]"
             } else if steamRealGlobal && !eff.useRealSteam {
@@ -2241,7 +2328,9 @@ final class WineManager {
                 appId: appId,
                 launchArguments: allArgs,
                 effective: eff,
-                steamAppLaunchRequired: steamStubRequiresRealClient || steamShimBootstrapper != nil
+                steamAppLaunchRequired: steamStubRequiresRealClient
+                    || classicPopCapRequiresRealClient
+                    || steamShimBootstrapper != nil
             )
         }
         // DRM Steamworks AUTO: muchos juegos de Steam exigen que Steam esté corriendo (SteamAPI_Init)
@@ -3817,6 +3906,29 @@ final class WineManager {
         )
     }
 
+    /// El wrapper DRM clásico extrae el juego real como `popcapgame1.exe` (o uno de sus dos
+    /// slots rotatorios). En Vulkan crea la ventana, pero el framebuffer queda negro; OpenGL
+    /// renderiza correctamente DirectDraw/D3D8. Las claves se limitan a esos payloads internos.
+    private func configureClassicPopCapSteamRenderer(
+        prefix: String,
+        wine: String,
+        executable: String
+    ) async {
+        guard isClassicPopCapSteamEngine(executable) else { return }
+        for payloadName in Self.processFamilyImageNames("popcapgame1.exe") {
+            await setWined3dRenderer(
+                prefix: prefix,
+                wine: wine,
+                renderer: "gl",
+                forExecutable: payloadName
+            )
+        }
+        log.log(
+            "Motor PopCap clásico detectado: wined3d/OpenGL aislado para sus payloads DRM.",
+            level: .info
+        )
+    }
+
     /// Atajo histórico: `renderer=vulkan` (usado por la ruta D3D9 de 32-bit en Gcenx).
     private func setWined3dRendererVulkan(prefix: String, wine: String) async {
         await setWined3dRenderer(prefix: prefix, wine: wine, renderer: "vulkan")
@@ -4469,6 +4581,11 @@ final class WineManager {
             // elegido automáticamente por cxcompatdb. Se retiran antes de que Steam cree el proceso.
             cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
             await configurePlaydeadLegacyD3D9Renderer(
+                prefix: bottle.prefixPath,
+                wine: fullWine,
+                executable: executable
+            )
+            await configureClassicPopCapSteamRenderer(
                 prefix: bottle.prefixPath,
                 wine: fullWine,
                 executable: executable
@@ -5215,6 +5332,12 @@ final class WineManager {
     /// sistema. Ambas imágenes pertenecen al mismo juego y deben compartir estado, ventana y cierre.
     nonisolated static func processFamilyImageNames(_ executableName: String) -> [String] {
         guard !executableName.isEmpty else { return [] }
+        if executableName.range(
+            of: #"^popcapgame[1-3]\.exe$"#,
+            options: [.caseInsensitive, .regularExpression]
+        ) != nil {
+            return ["popcapgame1.exe", "popcapgame2.exe", "popcapgame3.exe"]
+        }
         var names = [executableName]
         for architecture in ["x32", "x64"] {
             guard let range = executableName.range(

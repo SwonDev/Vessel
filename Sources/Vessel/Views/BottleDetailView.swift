@@ -684,6 +684,7 @@ struct BottleDetailView: View {
         let usesRealSteamLaunch = eff.useRealSteam
             || UserDefaults.standard.bool(forKey: "vessel.steamRealGlobal")
             || SteamDRMScanner.hasSteamStub(exePath)
+            || wineManager.isClassicPopCapSteamEngine(exePath)
         await GameLaunchTracker.shared.track(
             trackId, statsKey: "steam:\(trackId)",
             // Copia de partida automática: al CERRAR el juego, respalda la partida (seguro, solo copia).
