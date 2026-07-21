@@ -19,6 +19,12 @@ final class WineManager {
         case backgroundDRM
     }
 
+    enum RuntimePrefixPreparationDecision: Equatable, Sendable {
+        case continueWithoutCleanup
+        case prepareExclusively
+        case deferForActiveDownloads
+    }
+
     enum WineError: LocalizedError {
         case noEngine
         case launchFailed(String)
@@ -101,6 +107,20 @@ final class WineManager {
         guard steamRunning else { return false }
         guard currentEngineID == targetEngineID else { return true }
         return role == .interactive && !wrapperInstalled
+    }
+
+    /// Decide si una instalación de runtimes puede tomar posesión exclusiva del prefijo. Los
+    /// preflights de juegos protegidos cambian temporalmente a `wine-full`; reutilizar un
+    /// `wineserver` vivo de otro motor provoca un choque de protocolo antes de que Winetricks
+    /// pueda resolver `%AppData%`. Una descarga real de Steam siempre tiene prioridad y se difiere
+    /// la preparación en vez de cortarla.
+    nonisolated static func runtimePrefixPreparationDecision(
+        exclusiveRequested: Bool,
+        hasPendingRuntimes: Bool,
+        hasActiveSteamDownloads: Bool
+    ) -> RuntimePrefixPreparationDecision {
+        guard hasPendingRuntimes, exclusiveRequested else { return .continueWithoutCleanup }
+        return hasActiveSteamDownloads ? .deferForActiveDownloads : .prepareExclusively
     }
 
     /// Toma el turno del flujo Steam. Devuelve `true` si somos el dueño (liberar
@@ -3073,7 +3093,8 @@ final class WineManager {
                 guard await applyWinetricksVerbs(
                     runtimePlan.winetricksVerbs,
                     prefix: bottle.prefixPath,
-                    wine: fullWine
+                    wine: fullWine,
+                    exclusivePrefixPreparation: true
                 ) else {
                     throw WineError.installationFailed("no se pudieron instalar los runtimes requeridos por el juego protegido")
                 }
@@ -5216,8 +5237,8 @@ final class WineManager {
     /// Identidad del motor que está sirviendo el prefijo en este instante. `lsof` es la fuente
     /// principal; el marker escrito por `ensurePrefixSyncedToEngine` cubre el breve intervalo en
     /// que Steam está vivo pero macOS todavía no expone descriptores suficientes del wineserver.
-    private func currentSteamEngineID(prefix: String) -> String? {
-        if let engine = liveWineserverEngine(prefix: prefix) {
+    private func currentSteamEngineID(prefix: String) async -> String? {
+        if let engine = await Self.liveWineserverEngine(prefix: prefix) {
             return URL(fileURLWithPath: engine).lastPathComponent
         }
         let marker = "\(prefix)/.vessel-prefix-engine"
@@ -5236,7 +5257,7 @@ final class WineManager {
     ) async -> Bool {
         let running = isWineProcessRunning(matching: "steam.exe", prefix: bottle.prefixPath)
         let targetEngineID = engineID(forWine: wine)
-        let currentEngineID = currentSteamEngineID(prefix: bottle.prefixPath)
+        let currentEngineID = await currentSteamEngineID(prefix: bottle.prefixPath)
         let wrapperInstalled = wrapperInstaller.isInstalled(in: bottle)
         guard Self.shouldRestartSteamClient(
             steamRunning: running,
@@ -5547,7 +5568,7 @@ final class WineManager {
 
         let steamWasRunning = isWineProcessRunning(matching: "steam.exe", prefix: bottle.prefixPath)
         let targetEngineID = engineID(forWine: wine)
-        let currentEngineID = currentSteamEngineID(prefix: bottle.prefixPath)
+        let currentEngineID = await currentSteamEngineID(prefix: bottle.prefixPath)
         // Un Steam interactivo Gcenx puede estar conectado y aun así ser inútil para el juego:
         // Steamworks solo cruza procesos del MISMO wineserver. Al volver de una EULA hay que cerrar
         // Gcenx y levantar el cliente background en el motor gráfico exacto del juego.
@@ -6450,7 +6471,7 @@ final class WineManager {
             return retrySupervisor
         }
 
-        if steamHasActiveDownloads(prefix: bottle.prefixPath, gameWine: wine) {
+        if await steamHasActiveDownloads(prefix: bottle.prefixPath, gameWine: wine) {
             log.log(
                 "Steam no confirmó -applaunch, pero mantiene una descarga: se preserva el cliente.",
                 level: .warn
@@ -6782,10 +6803,11 @@ final class WineManager {
                     log.log("Steam registró la respuesta del usuario al EULA de \(appId).", level: .info)
                     return
                 }
+                let liveSteamEngineID = await currentSteamEngineID(prefix: bottle.prefixPath)
                 guard isWineProcessRunning(
                     matching: "steam.exe",
                     prefix: bottle.prefixPath
-                ), currentSteamEngineID(prefix: bottle.prefixPath) == engineID(forWine: wine)
+                ), liveSteamEngineID == engineID(forWine: wine)
                 else { return }
 
                 if SteamAuthorizationLog.webHelperRestarted(
@@ -7960,21 +7982,14 @@ final class WineManager {
     private func killOrphanWineProcesses(prefix: String, gameWine: String? = nil) async throws {
         // Con una descarga de Steam a medias no se limpia el prefijo: se llevaría por delante el
         // cliente y el usuario perdería la descarga por lanzar un juego (ver `terminateWineProcesses`).
-        if steamHasActiveDownloads(prefix: prefix, gameWine: gameWine) {
+        if await steamHasActiveDownloads(prefix: prefix, gameWine: gameWine) {
             log.log("Steam está descargando: se respeta el prefijo para no cortar la descarga.", level: .info)
             return
         }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        process.arguments = ["-9", "-f", prefix]
-        process.standardOutput = FileHandle(forWritingAtPath: "/dev/null")
-        process.standardError = FileHandle(forWritingAtPath: "/dev/null")
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            // pkill devuelve non-zero si no hay procesos que matar: esperado.
-        }
+        await Self.runCleanupCommand(
+            path: "/usr/bin/pkill",
+            arguments: ["-9", "-f", prefix]
+        )
         // El WINESERVER NO lleva el prefix en su argv (lo lee de la env `WINEPREFIX`),
         // así que `pkill -f <prefix>` NO lo alcanza y queda ZOMBI. Al cambiar de motor
         // (fallback DXMT→GPTK→Gcenx, o cliente Steam→juego) el nuevo wine —de otra
@@ -8007,7 +8022,7 @@ final class WineManager {
     /// toca echarlo (y el usuario pierde la descarga, que es el mal menor frente a que el juego no
     /// abra). Con `gameWine` a `nil` se asume que sí, para las limpiezas que no van atadas a un
     /// motor concreto.
-    private func steamHasActiveDownloads(prefix: String, gameWine: String? = nil) -> Bool {
+    private func steamHasActiveDownloads(prefix: String, gameWine: String? = nil) async -> Bool {
         var hayDescarga = false
         for base in ["Program Files (x86)", "Program Files"] {
             let dir = "\(prefix)/drive_c/\(base)/Steam/steamapps/downloading"
@@ -8020,7 +8035,8 @@ final class WineManager {
         // que perder la descarga. NO basta con mirar el motor del juego: el server vivo puede haberlo
         // dejado OTRO juego (pasó con DOOM: server de wine-unified + juego de wine-full → mismatch).
         guard let wine = gameWine else { return true }
-        return liveWineserverEngine(prefix: prefix).map { $0 == engineDirectory(forWine: wine) } ?? true
+        guard let liveEngine = await Self.liveWineserverEngine(prefix: prefix) else { return true }
+        return liveEngine == engineDirectory(forWine: wine)
     }
 
     /// Directorio del motor al que pertenece un binario `wine` (…/<motor>/bin/wine → …/<motor>).
@@ -8029,28 +8045,56 @@ final class WineManager {
     }
 
     /// Motor del `wineserver` que está vivo en este prefijo, o `nil` si no hay ninguno.
-    private func liveWineserverEngine(prefix: String) -> String? {
-        let shell = Process()
-        shell.executableURL = URL(fileURLWithPath: "/bin/sh")
-        shell.arguments = ["-c", """
-        for pid in $(/usr/bin/pgrep -x wineserver 2>/dev/null); do
-          if /usr/sbin/lsof -p "$pid" 2>/dev/null | /usr/bin/grep -qF '\(prefix)'; then
-            /bin/ps -o command= -p "$pid"; break
-          fi
-        done
-        """]
-        let pipe = Pipe()
-        shell.standardOutput = pipe; shell.standardError = FileHandle(forWritingAtPath: "/dev/null")
-        guard (try? shell.run()) != nil else { return nil }
-        let salida = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        shell.waitUntilExit()
-        let ruta = salida.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !ruta.isEmpty else { return nil }
-        // …/<motor>/bin/wineserver o …/<motor>/lib/wine/…/wineserver → quedarse con <motor>.
-        guard let r = ruta.range(of: "/Engines/") else { return nil }
-        let resto = ruta[r.upperBound...]
-        guard let barra = resto.firstIndex(of: "/") else { return nil }
-        return String(ruta[..<r.upperBound]) + String(resto[..<barra])
+    private nonisolated static func liveWineserverEngine(prefix: String) async -> String? {
+        await Task.detached(priority: .utility) {
+            let pgrep = Process()
+            pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+            pgrep.arguments = ["-x", "wineserver"]
+            let pidsPipe = Pipe()
+            pgrep.standardOutput = pidsPipe
+            pgrep.standardError = FileHandle.nullDevice
+            guard (try? pgrep.run()) != nil else { return nil }
+            let pidsData = pidsPipe.fileHandleForReading.readDataToEndOfFile()
+            pgrep.waitUntilExit()
+
+            for pidText in String(decoding: pidsData, as: UTF8.self)
+                .split(whereSeparator: { $0.isWhitespace }) {
+                guard let pid = Int32(pidText) else { continue }
+                let lsof = Process()
+                lsof.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+                lsof.arguments = lsofProcessLookupArguments(processID: pid)
+                let filesPipe = Pipe()
+                lsof.standardOutput = filesPipe
+                lsof.standardError = FileHandle.nullDevice
+                guard (try? lsof.run()) != nil else { continue }
+                let listing = String(
+                    decoding: filesPipe.fileHandleForReading.readDataToEndOfFile(),
+                    as: UTF8.self
+                )
+                lsof.waitUntilExit()
+                guard listing.contains(prefix) else { continue }
+
+                let ps = Process()
+                ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+                ps.arguments = ["-o", "command=", "-p", String(pid)]
+                let commandPipe = Pipe()
+                ps.standardOutput = commandPipe
+                ps.standardError = FileHandle.nullDevice
+                guard (try? ps.run()) != nil else { continue }
+                let command = String(
+                    decoding: commandPipe.fileHandleForReading.readDataToEndOfFile(),
+                    as: UTF8.self
+                ).trimmingCharacters(in: .whitespacesAndNewlines)
+                ps.waitUntilExit()
+
+                // …/<motor>/bin/wineserver o …/<motor>/lib/wine/…/wineserver → <motor>.
+                guard let enginesRange = command.range(of: "/Engines/") else { continue }
+                let remainder = command[enginesRange.upperBound...]
+                guard let slash = remainder.firstIndex(of: "/") else { continue }
+                return String(command[..<enginesRange.upperBound]) + String(remainder[..<slash])
+            }
+            return nil
+        }.value
     }
 
     /// Mata por SIGKILL los procesos Wine CLIENTE (argv de Windows, con `.exe`) que
@@ -8063,7 +8107,7 @@ final class WineManager {
     /// (de hecho los juegos con DRM COMPARTEN wineserver con el cliente a propósito). Si no hay
     /// descargas, se mantiene el comportamiento de siempre: fuera, para que el juego arranque limpio.
     private func killPrefixWineClients(prefix: String, gameWine: String? = nil) async {
-        let preservarSteam = steamHasActiveDownloads(prefix: prefix, gameWine: gameWine)
+        let preservarSteam = await steamHasActiveDownloads(prefix: prefix, gameWine: gameWine)
         if preservarSteam {
             log.log("Steam está descargando: se deja abierto para no cortar la descarga.", level: .info)
         }
@@ -8071,24 +8115,14 @@ final class WineManager {
         let filtroSteam = preservarSteam
             ? "| /usr/bin/grep -viE 'steam\\.exe|steamwebhelper|steamservice|steamerrorreporter'"
             : ""
-        let shell = Process()
-        shell.executableURL = URL(fileURLWithPath: "/bin/sh")
         let script = """
         for pid in $(/bin/ps -axo pid=,command= | /usr/bin/grep -F '.exe' | /usr/bin/grep -v grep \(filtroSteam) | /usr/bin/awk '{print $1}'); do
-          if /usr/sbin/lsof -p "$pid" 2>/dev/null | /usr/bin/grep -qF '\(prefix)'; then
+          if /usr/sbin/lsof -nP -a -p "$pid" -Fn 2>/dev/null | /usr/bin/grep -qF '\(prefix)'; then
             /bin/kill -9 "$pid" 2>/dev/null
           fi
         done
         """
-        shell.arguments = ["-c", script]
-        shell.standardOutput = FileHandle(forWritingAtPath: "/dev/null")
-        shell.standardError = FileHandle(forWritingAtPath: "/dev/null")
-        do {
-            try shell.run()
-            shell.waitUntilExit()
-        } catch {
-            // Sin procesos o sin lsof: nada que hacer.
-        }
+        await Self.runCleanupCommand(path: "/bin/sh", arguments: ["-c", script])
     }
 
     /// Mata por SIGKILL cualquier `wineserver` ligado a `prefix`, sea cual sea el motor
@@ -8099,26 +8133,36 @@ final class WineManager {
         // dentro, incluido el Steam que esté descargando. Si hay una descarga a medias se respeta;
         // el cliente usa el mismo motor que el juego, así que no hay mismatch de versión que temer
         // (que es para lo que existe esta limpieza).
-        if steamHasActiveDownloads(prefix: prefix, gameWine: gameWine) { return }
-        let shell = Process()
-        shell.executableURL = URL(fileURLWithPath: "/bin/sh")
+        if await steamHasActiveDownloads(prefix: prefix, gameWine: gameWine) { return }
         // Para cada wineserver vivo, si tiene ABIERTO algo bajo el prefix → SIGKILL.
         let script = """
         for pid in $(/usr/bin/pgrep -x wineserver 2>/dev/null); do
-          if /usr/sbin/lsof -p "$pid" 2>/dev/null | /usr/bin/grep -qF '\(prefix)'; then
+          if /usr/sbin/lsof -nP -a -p "$pid" -Fn 2>/dev/null | /usr/bin/grep -qF '\(prefix)'; then
             /bin/kill -9 "$pid" 2>/dev/null
           fi
         done
         """
-        shell.arguments = ["-c", script]
-        shell.standardOutput = FileHandle(forWritingAtPath: "/dev/null")
-        shell.standardError = FileHandle(forWritingAtPath: "/dev/null")
-        do {
-            try shell.run()
-            shell.waitUntilExit()
-        } catch {
-            // Sin wineservers o sin lsof: nada que hacer.
-        }
+        await Self.runCleanupCommand(path: "/bin/sh", arguments: ["-c", script])
+    }
+
+    /// Ejecuta limpiezas de procesos fuera del actor principal. Los sondeos de `lsof` sobre Steam
+    /// y CEF pueden recorrer muchos descriptores; aunque usen `-nP`, nunca deben bloquear entrada,
+    /// animaciones o accesibilidad de Vessel.
+    private nonisolated static func runCleanupCommand(
+        path: String,
+        arguments: [String],
+        environment: [String: String]? = nil
+    ) async {
+        await Task.detached(priority: .utility) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: path)
+            process.arguments = arguments
+            if let environment { process.environment = environment }
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            guard (try? process.run()) != nil else { return }
+            process.waitUntilExit()
+        }.value
     }
 
     /// Nombre del motor (carpeta) al que pertenece un binario wine, para el marker.
@@ -8427,33 +8471,19 @@ final class WineManager {
         // avisarle. Si hay una descarga a medias se respeta — el cliente usa el mismo motor que el
         // juego, así que no hay choque de versiones que justifique echarlo (de hecho los juegos con
         // DRM comparten wineserver con él a propósito). Solo si el juego usa SU MISMO motor.
-        if steamHasActiveDownloads(prefix: prefix, gameWine: winePath) { return }
+        if await steamHasActiveDownloads(prefix: prefix, gameWine: winePath) { return }
         guard let wineserverPath = siblingTool(named: "wineserver", forWinePath: winePath) else {
             return
         }
 
-        _ = try? await runExecutableAllowingFailure(
+        await Self.runCleanupCommand(
             path: wineserverPath,
             arguments: ["-k"],
-            prefix: prefix
+            environment: [
+                "WINEPREFIX": prefix,
+                "WINEDEBUG": "-all"
+            ]
         )
-    }
-
-    private func runExecutableAllowingFailure(path: String, arguments: [String], prefix: String) async throws -> ProcessResult {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = arguments
-        process.environment = [
-            "WINEPREFIX": prefix,
-            "WINEDEBUG": "-all"
-        ]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        try process.run()
-        process.waitUntilExit()
-        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        return ProcessResult(exitCode: process.terminationStatus, output: output)
     }
 
     /// Ruta al helper `vessel-spawn` (desacopla el subproceso de la identidad de la app con
@@ -9258,7 +9288,8 @@ final class WineManager {
     /// de modo que no depende de Homebrew ni bloquea la interfaz mientras instala el runtime.
     @discardableResult
     private func applyWinetricksVerbs(_ verbs: [String], prefix: String, wine: String,
-                                      force: Bool = false) async -> Bool {
+                                      force: Bool = false,
+                                      exclusivePrefixPreparation: Bool = false) async -> Bool {
         let marker = "\(prefix)/.vessel-winetricks-applied"
         let already = Set(((try? String(contentsOfFile: marker, encoding: .utf8)) ?? "")
             .split(separator: "\n").map(String.init))
@@ -9266,6 +9297,32 @@ final class WineManager {
         let requested = verbs.filter { seen.insert($0).inserted }
         let pending = force ? requested : requested.filter { !already.contains($0) }
         guard !pending.isEmpty else { return true }
+
+        let hasActiveSteamDownloads: Bool
+        if exclusivePrefixPreparation {
+            hasActiveSteamDownloads = await steamHasActiveDownloads(prefix: prefix)
+        } else {
+            hasActiveSteamDownloads = false
+        }
+        let preparationDecision = Self.runtimePrefixPreparationDecision(
+            exclusiveRequested: exclusivePrefixPreparation,
+            hasPendingRuntimes: true,
+            hasActiveSteamDownloads: hasActiveSteamDownloads
+        )
+        switch preparationDecision {
+        case .continueWithoutCleanup:
+            break
+        case .deferForActiveDownloads:
+            log.log(
+                "Steam está descargando: se difiere la preparación de runtimes para no cortar la descarga.",
+                level: .warn
+            )
+            return false
+        case .prepareExclusively:
+            guard await preparePrefixForExclusiveRuntimeInstallation(prefix: prefix, wine: wine) else {
+                return false
+            }
+        }
 
         // winetricks: del sistema o AUTO-DESCARGADO (es un único script shell público, sin compilar),
         // para que la auto-reparación de runtimes NO dependa de `brew install winetricks`.
@@ -9327,17 +9384,64 @@ final class WineManager {
                 cont.resume(returning: nil)
             }
         }
-        if status == 0 {
+        let succeeded = status == 0
+        if succeeded {
             let updated = already.union(pending).sorted().joined(separator: "\n")
             try? updated.write(toFile: marker, atomically: true, encoding: .utf8)
             log.log("✓ winetricks aplicado: \(pending.joined(separator: ", "))", level: .info)
-            return true
         } else if let status {
             log.log("winetricks devolvió código \(status) aplicando [\(pending.joined(separator: ", "))]. Detalle: \(outPath)", level: .warn)
         } else {
             log.log("No se pudo ejecutar winetricks.", level: .warn)
         }
-        return false
+
+        if preparationDecision == .prepareExclusively {
+            let released = await releasePrefixAfterExclusiveRuntimeInstallation(
+                prefix: prefix,
+                wine: wine
+            )
+            guard released else { return false }
+        }
+        return succeeded
+    }
+
+    /// Detiene cualquier cliente/servidor Wine del prefijo antes de ejecutar Winetricks con un
+    /// motor distinto. Es deliberadamente exclusiva: mezclar clientes Wine de versiones diferentes
+    /// en un mismo `wineserver` hace que `cmd.exe` no pueda resolver ni siquiera `%AppData%`.
+    private func preparePrefixForExclusiveRuntimeInstallation(prefix: String, wine: String) async -> Bool {
+        log.log("Alineando el prefijo al motor de runtimes antes del preflight protegido…", level: .info)
+        try? await terminateWineProcesses(winePath: wine, prefix: prefix)
+        try? await killOrphanWineProcesses(prefix: prefix, gameWine: wine)
+        try? await Task.sleep(for: .milliseconds(500))
+
+        guard await Self.liveWineserverEngine(prefix: prefix) == nil,
+              !isWineProcessRunning(matching: "steam.exe", prefix: prefix) else {
+            log.log(
+                "No se pudo liberar el prefijo para instalar los runtimes sin mezclar motores Wine.",
+                level: .warn
+            )
+            return false
+        }
+        await ensurePrefixSyncedToEngine(wine, prefix: prefix)
+        return true
+    }
+
+    /// Winetricks puede dejar vivo el `wineserver` del motor de preparación. Se cierra antes de
+    /// entregar el prefijo al motor D3DMetal del juego; de lo contrario el lanzamiento siguiente
+    /// vuelve a chocar por versión aunque la instalación del runtime haya terminado correctamente.
+    private func releasePrefixAfterExclusiveRuntimeInstallation(prefix: String, wine: String) async -> Bool {
+        try? await terminateWineProcesses(winePath: wine, prefix: prefix)
+        try? await killOrphanWineProcesses(prefix: prefix, gameWine: wine)
+        try? await Task.sleep(for: .milliseconds(500))
+
+        guard await Self.liveWineserverEngine(prefix: prefix) == nil else {
+            log.log(
+                "El motor de runtimes dejó un wineserver activo; se cancela el arranque para evitar un cambio de motor inseguro.",
+                level: .warn
+            )
+            return false
+        }
+        return true
     }
 
     nonisolated static func isRecoverableSteamServiceCrash(_ output: String) -> Bool {

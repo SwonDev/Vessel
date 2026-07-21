@@ -2309,6 +2309,29 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         ))
     }
 
+    func testProtectedRuntimePreflightOwnsPrefixWithoutInterruptingDownloads() {
+        XCTAssertEqual(WineManager.runtimePrefixPreparationDecision(
+            exclusiveRequested: true,
+            hasPendingRuntimes: true,
+            hasActiveSteamDownloads: false
+        ), .prepareExclusively)
+        XCTAssertEqual(WineManager.runtimePrefixPreparationDecision(
+            exclusiveRequested: true,
+            hasPendingRuntimes: true,
+            hasActiveSteamDownloads: true
+        ), .deferForActiveDownloads)
+        XCTAssertEqual(WineManager.runtimePrefixPreparationDecision(
+            exclusiveRequested: true,
+            hasPendingRuntimes: false,
+            hasActiveSteamDownloads: false
+        ), .continueWithoutCleanup)
+        XCTAssertEqual(WineManager.runtimePrefixPreparationDecision(
+            exclusiveRequested: false,
+            hasPendingRuntimes: true,
+            hasActiveSteamDownloads: false
+        ), .continueWithoutCleanup)
+    }
+
     func testSteamAppLaunchAcknowledgementRequiresNewExactAppIDEntry() {
         let baseline = Data("""
         ExecCommandLine: "steam.exe -applaunch 6910"
