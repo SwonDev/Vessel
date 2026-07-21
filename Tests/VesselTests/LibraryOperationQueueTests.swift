@@ -58,6 +58,62 @@ struct LibraryOperationQueueTests {
         #expect(restored.kind(for: "persistente") == .install)
     }
 
+    @Test("Una operación restaurada solo se reanuda después de reconectar su ejecutor")
+    @MainActor
+    func restoredOperationRequiresAReattachedExecutor() async {
+        let suffix = UUID().uuidString
+        let defaultsKey = "vessel.operationQueue.tests-\(suffix)"
+        UserDefaults.standard.removeObject(forKey: defaultsKey)
+        defer { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+
+        let first = LibraryOperationQueue(storageKey: "tests-\(suffix)", activityStore: nil)
+        first.enqueue(gameID: "persistente", title: "Persistente", kind: .install) { _ in }
+        first.pause("persistente")
+
+        let restored = LibraryOperationQueue(storageKey: "tests-\(suffix)", activityStore: nil)
+        restored.resume("persistente")
+        #expect(restored.phase(for: "persistente") == .paused)
+        #expect(restored.message(for: "persistente") == "En pausa")
+
+        let recorder = OperationRecorder()
+        restored.enqueue(gameID: "persistente", title: "Persistente", kind: .install) { operation in
+            recorder.values.append(operation.id)
+        }
+
+        await waitUntil { !restored.hasItems }
+        #expect(recorder.values == ["persistente"])
+    }
+
+    @Test("Una cola restaurada sin sesión vuelve a pausa real")
+    @MainActor
+    func restoredQueuedOperationPausesWhenItsExecutorCannotBeRebuilt() throws {
+        let suffix = UUID().uuidString
+        let defaultsKey = "vessel.operationQueue.tests-\(suffix)"
+        UserDefaults.standard.removeObject(forKey: defaultsKey)
+        defer { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+
+        let operation = LibraryOperationQueue.Operation(
+            gameID: "pendiente",
+            title: "Pendiente",
+            kind: .install,
+            targetID: nil,
+            enqueuedAt: Date()
+        )
+        let item = LibraryOperationQueue.Item(
+            operation: operation,
+            phase: .queued,
+            message: "Pendiente de reanudar…",
+            fractionCompleted: nil
+        )
+        UserDefaults.standard.set(try JSONEncoder().encode([item]), forKey: defaultsKey)
+
+        let restored = LibraryOperationQueue(storageKey: "tests-\(suffix)", activityStore: nil)
+        #expect(restored.phase(for: "pendiente") == .queued)
+        restored.pauseItemsWithoutExecutors()
+        #expect(restored.phase(for: "pendiente") == .paused)
+        #expect(restored.message(for: "pendiente") == "En pausa")
+    }
+
     @Test("Volver a encolar una operación fallida la reintenta")
     @MainActor
     func enqueueRetriesFailedOperation() async {
