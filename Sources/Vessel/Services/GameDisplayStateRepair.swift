@@ -34,6 +34,42 @@ enum GameDisplayStateRepair {
     private static let kunitsuGamiConfigName = "config.ini"
     private static let displayBackupSuffix = ".vessel-display-backup"
 
+    /// Esta build de RE Engine crea la ventana con las coordenadas que guarda en
+    /// `NormalWindowResolution`, incluso cuando Wine expone un framebuffer Retina. Con Retina
+    /// activo, el juego persistía 2704×1756 y macOS terminaba creando una ventana de ese tamaño en
+    /// puntos: el contenido quedaba al doble, desbordado y con el ratón desalineado. La excepción es
+    /// deliberadamente estrecha y además valida las huellas estructurales de la instalación.
+    nonisolated static func requiresOneXWindowCoordinates(
+        appId: String?,
+        executable: String,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        guard appId == kunitsuGamiDemoAppID,
+              (executable as NSString).lastPathComponent
+                .caseInsensitiveCompare(kunitsuGamiDemoExecutable) == .orderedSame
+        else { return false }
+        guard isKunitsuGamiDemoInstallation(
+            executable: executable,
+            fileManager: fileManager
+        ) else { return false }
+
+        let gameDirectory = (executable as NSString).deletingLastPathComponent
+        let configPath = "\(gameDirectory)/\(kunitsuGamiConfigName)"
+        guard let config = try? String(contentsOfFile: configPath, encoding: .utf8),
+              let section = iniSectionRange(named: "RenderConfig", in: config) else {
+            return true
+        }
+        if let mode = iniValue(for: "WindowMode", in: config, section: section),
+           mode.caseInsensitiveCompare("Normal") != .orderedSame {
+            return false
+        }
+        if let fullScreen = iniValue(for: "FullScreenMode", in: config, section: section),
+           fullScreen.caseInsensitiveCompare("true") == .orderedSame {
+            return false
+        }
+        return true
+    }
+
     /// Repara el estado justo antes de lanzar el juego, después de cualquier restauración de partida
     /// o sincronización previa. Es idempotente y conserva una copia exacta antes del primer cambio.
     @discardableResult
@@ -247,19 +283,12 @@ enum GameDisplayStateRepair {
         displayMetrics: DisplayMetrics,
         recognizedPreviousBackingScale: Double? = nil
     ) -> Report {
-        let gameDirectory = (executable as NSString).deletingLastPathComponent
-        guard fileManager.fileExists(atPath: "\(gameDirectory)/re_chunk_000.pak"),
-              fileManager.fileExists(atPath: "\(gameDirectory)/steam_api64.dll"),
-              let defaults = try? String(
-                contentsOfFile: "\(gameDirectory)/config_default.ini",
-                encoding: .utf8
-              ),
-              defaults.contains("[AppRender]"),
-              defaults.range(
-                of: #"(?mi)^[ \t]*WindowMode[ \t]*=[ \t]*0[ \t]*\r?$"#,
-                options: .regularExpression
-              ) != nil else { return Report() }
+        guard isKunitsuGamiDemoInstallation(
+            executable: executable,
+            fileManager: fileManager
+        ) else { return Report() }
 
+        let gameDirectory = (executable as NSString).deletingLastPathComponent
         let path = "\(gameDirectory)/\(kunitsuGamiConfigName)"
         let existed = fileManager.fileExists(atPath: path)
         let original = existed ? try? String(contentsOfFile: path, encoding: .utf8) : nil
@@ -290,6 +319,25 @@ enum GameDisplayStateRepair {
             return Report()
         }
         return report
+    }
+
+    private nonisolated static func isKunitsuGamiDemoInstallation(
+        executable: String,
+        fileManager: FileManager
+    ) -> Bool {
+        let gameDirectory = (executable as NSString).deletingLastPathComponent
+        guard fileManager.fileExists(atPath: "\(gameDirectory)/re_chunk_000.pak"),
+              fileManager.fileExists(atPath: "\(gameDirectory)/steam_api64.dll"),
+              let defaults = try? String(
+                contentsOfFile: "\(gameDirectory)/config_default.ini",
+                encoding: .utf8
+              ),
+              defaults.contains("[AppRender]"),
+              defaults.range(
+                of: #"(?mi)^[ \t]*WindowMode[ \t]*=[ \t]*0[ \t]*\r?$"#,
+                options: .regularExpression
+              ) != nil else { return false }
+        return true
     }
 
     private nonisolated static func currentDisplayMetrics() -> DisplayMetrics {

@@ -247,6 +247,24 @@ final class GameDisplayStateRepairTests: XCTestCase {
             try String(contentsOfFile: config.path + ".vessel-display-backup", encoding: .utf8),
             broken
         )
+
+        XCTAssertTrue(GameDisplayStateRepair.requiresOneXWindowCoordinates(
+            appId: "2842890",
+            executable: executable.path,
+            fileManager: .default
+        ))
+
+        try """
+        [RenderConfig]
+        NormalWindowResolution=(3024.000000,1964.000000)
+        FullScreenMode=false
+        WindowMode=Borderless
+        """.write(to: config, atomically: true, encoding: .utf8)
+        XCTAssertFalse(GameDisplayStateRepair.requiresOneXWindowCoordinates(
+            appId: "2842890",
+            executable: executable.path,
+            fileManager: .default
+        ))
     }
 
     func testKunitsuRuleNeverTouchesAnotherAppID() throws {
@@ -271,6 +289,11 @@ final class GameDisplayStateRepairTests: XCTestCase {
         )
 
         XCTAssertFalse(report.didRepair)
+        XCTAssertFalse(GameDisplayStateRepair.requiresOneXWindowCoordinates(
+            appId: "2510710",
+            executable: root.appendingPathComponent("KunitsuGamiDemo.exe").path,
+            fileManager: .default
+        ))
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("config.ini").path))
     }
 
