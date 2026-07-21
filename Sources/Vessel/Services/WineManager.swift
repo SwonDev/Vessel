@@ -2504,6 +2504,21 @@ final class WineManager {
         if exeImports(executable, anyOf: ["d3d12.dll"]) { return .d3d12 }
         if exeImports(executable, anyOf: ["d3d11.dll", "dxgi.dll", "d3d10.dll", "d3d10core.dll"]) { return .d3d11 }
         if exeImports(executable, anyOf: ["d3d9.dll", "d3d8.dll", "ddraw.dll"]) { return .d3d9 }
+        // Algunos motores enlazan la API gráfica a través de una DLL local obligatoria. La tabla PE
+        // del ejecutable declara ese módulo y el módulo declara D3D; seguir solo ese salto evita que
+        // un payload Northlight D3D12 parezca «carga dinámica» y caiga en wined3d/Gcenx. Los imports
+        // directos de arriba tienen prioridad para que una DLL de traducción local nunca contradiga
+        // el contrato explícito del ejecutable. No se inspeccionan plugins opcionales ni títulos.
+        let linkedSiblingImports = PEImportScanner
+            .importedLibrariesFromDirectSiblingDependencies(atPath: executable)
+        if linkedSiblingImports.contains("d3d12.dll") { return .d3d12 }
+        if !linkedSiblingImports.isDisjoint(with: [
+            "d3d11.dll", "dxgi.dll", "d3d10.dll", "d3d10core.dll"
+        ]) { return .d3d11 }
+        if !linkedSiblingImports.isDisjoint(with: ["d3d9.dll", "d3d8.dll", "ddraw.dll"]) {
+            return .d3d9
+        }
+        if linkedSiblingImports.contains("opengl32.dll") { return .opengl }
         // **MKXP/RGSS** carga OpenGL dinámicamente desde su runtime Ruby, así que el PE principal no
         // importa `opengl32.dll`. La firma del motor (MKXP + RGSS + Ruby + SDL2) permite identificarlo
         // sin depender del título y evita enviarlo por error a la ruta genérica de Direct3D dinámico.

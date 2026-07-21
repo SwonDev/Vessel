@@ -2014,6 +2014,77 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .dxmt)
     }
 
+    func testDirectlyImportedSiblingModuleRoutesNorthlightPayloadToD3D12() throws {
+        let executable = try makePE64(
+            named: "NorthlightGame_DX12.exe",
+            imports: ["d3d_rmdwin10_f.dll"]
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let moduleSource = try makePE64(
+            named: "d3d_rmdwin10_f.dll",
+            imports: ["dxgi.dll", "d3d12.dll"]
+        )
+        defer { try? FileManager.default.removeItem(at: moduleSource.deletingLastPathComponent()) }
+        try FileManager.default.copyItem(
+            at: moduleSource,
+            to: directory.appendingPathComponent("d3d_rmdwin10_f.dll")
+        )
+
+        let manager = WineManager()
+        XCTAssertEqual(
+            PEImportScanner.importedLibrariesFromDirectSiblingDependencies(atPath: executable.path),
+            ["dxgi.dll", "d3d12.dll"]
+        )
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .d3d12)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .gptk)
+        XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [.gptk])
+    }
+
+    func testUnlinkedOptionalSiblingCannotChangeGraphicsRouting() throws {
+        let executable = try makePE64(named: "StableGame.exe")
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let moduleSource = try makePE64(
+            named: "optional_renderer.dll",
+            imports: ["d3d12.dll"]
+        )
+        defer { try? FileManager.default.removeItem(at: moduleSource.deletingLastPathComponent()) }
+        try FileManager.default.copyItem(
+            at: moduleSource,
+            to: directory.appendingPathComponent("optional_renderer.dll")
+        )
+
+        let manager = WineManager()
+        XCTAssertTrue(
+            PEImportScanner.importedLibrariesFromDirectSiblingDependencies(atPath: executable.path)
+                .isEmpty
+        )
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .other)
+    }
+
+    func testDirectD3D12ImportWinsOverLocalTranslationDependency() throws {
+        let executable = try makePE64(
+            named: "ExplicitD3D12Game.exe",
+            imports: ["d3d12.dll", "dxgi.dll"]
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let moduleSource = try makePE64(
+            named: "dxgi.dll",
+            imports: ["d3d11.dll"]
+        )
+        defer { try? FileManager.default.removeItem(at: moduleSource.deletingLastPathComponent()) }
+        try FileManager.default.copyItem(
+            at: moduleSource,
+            to: directory.appendingPathComponent("dxgi.dll")
+        )
+
+        let manager = WineManager()
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .d3d12)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .gptk)
+    }
+
     func testSiblingEngineDLLConfirmsNativeVulkanRenderer() throws {
         let executable = try makePE64(named: "Hades.exe")
         let directory = executable.deletingLastPathComponent()

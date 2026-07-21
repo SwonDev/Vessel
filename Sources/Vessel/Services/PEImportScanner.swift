@@ -102,6 +102,54 @@ enum PEImportScanner {
         return result
     }
 
+    /// Dependencias gráficas que declaran los módulos locales enlazados directamente por el PE.
+    ///
+    /// Algunos motores mantienen el ejecutable principal deliberadamente fino y enlazan un módulo
+    /// de plataforma situado a su lado (`d3d_rmdwin10_f.dll`, por ejemplo). El `.exe` no importa
+    /// D3D12, pero ese módulo local —que forma parte obligatoria de su tabla Import— sí lo hace.
+    /// Seguir únicamente ese primer salto conserva la evidencia estructural y evita confundir DLL
+    /// opcionales que estén en la carpeta pero que el proceso no vaya a cargar.
+    static func importedLibrariesFromDirectSiblingDependencies(
+        atPath path: String,
+        fileManager: FileManager = .default
+    ) -> Set<String> {
+        let directory = (path as NSString).deletingLastPathComponent
+        guard !directory.isEmpty,
+              let names = try? fileManager.contentsOfDirectory(atPath: directory) else {
+            return []
+        }
+
+        let localFiles = Dictionary(
+            names.map { ($0.lowercased(), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var result: Set<String> = []
+        for library in importedLibraries(atPath: path) where library.hasSuffix(".dll") {
+            guard let actualName = localFiles[library.lowercased()] else { continue }
+            let dependency = (directory as NSString).appendingPathComponent(actualName)
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: dependency, isDirectory: &isDirectory),
+                  !isDirectory.boolValue else { continue }
+            result.formUnion(importedLibraries(atPath: dependency))
+        }
+        return result
+    }
+
+    /// `true` cuando el PE contiene el directorio COM Descriptor (CLR Runtime Header).
+    ///
+    /// Es una señal de formato, no una búsqueda de texto: permite distinguir un selector .NET de
+    /// un payload nativo sin ejecutar código de terceros ni depender del nombre del juego.
+    static func hasCLRRuntimeHeader(atPath path: String) -> Bool {
+        guard let image = image(atPath: path) else { return false }
+        let directory = image.dataDirectoryOffset + 14 * 8 // IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR
+        guard directory <= image.optionalOffset + image.optionalSize - 8,
+              let rva = readUInt32(image.data, at: directory),
+              let size = readUInt32(image.data, at: directory + 4) else {
+            return false
+        }
+        return rva != 0 && size >= 0x48 && image.fileOffset(forRVA: rva) != nil
+    }
+
     /// Símbolos que el PE publica en IMAGE_DIRECTORY_ENTRY_EXPORT.
     ///
     /// La lectura es intencionadamente acotada: solo sigue la tabla oficial de nombres exportados,
