@@ -2085,6 +2085,150 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .gptk)
     }
 
+    func testDeclaredX64PayloadRoutesMinimalLauncherToD3D12() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-declared-payload-\(UUID().uuidString)", isDirectory: true)
+        let x64 = root.appendingPathComponent("x64", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: x64, withIntermediateDirectories: true)
+
+        let launcher = root.appendingPathComponent("CustomLauncher.exe")
+        try writePE(
+            to: launcher,
+            is64Bit: true,
+            imports: ["KERNEL32.dll", "USER32.dll"],
+            marker: "x64/"
+        )
+        try writePE(
+            to: x64.appendingPathComponent("CustomGame.exe"),
+            is64Bit: true,
+            imports: ["d3d11.dll", "d3d12.dll", "dxgi.dll"],
+            marker: ""
+        )
+        try Data("""
+        <?xml version="1.0" encoding="utf-8"?>
+        <startup><cmdline>CustomGame.exe</cmdline></startup>
+        """.utf8).write(to: root.appendingPathComponent("CustomLauncher.xml"))
+
+        let manager = WineManager()
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: launcher.path), .d3d12)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: launcher.path), .gptk)
+        XCTAssertEqual(manager.fallbackLayers(forExecutable: launcher.path), [.gptk])
+        XCTAssertEqual(
+            manager.trackedProcessFamilyImageNames(forExecutable: launcher.path),
+            ["CustomLauncher.exe", "CustomGame.exe"]
+        )
+
+        let processPattern = manager.launchSupervisorProcessPattern(
+            forExecutable: launcher.path
+        )
+        let regex = try NSRegularExpression(pattern: processPattern, options: [.caseInsensitive])
+        for process in [
+            #"/wine64-preloader Z:\Games\CustomLauncher.exe"#,
+            #"/wine64-preloader Z:\Games\x64\CustomGame.exe"#
+        ] {
+            XCTAssertNotNil(regex.firstMatch(
+                in: process,
+                range: NSRange(process.startIndex..., in: process)
+            ))
+        }
+        let watcher = "while /usr/bin/pgrep -i -f '\(processPattern)' >/dev/null; do sleep 5; done"
+        XCTAssertNil(regex.firstMatch(
+            in: watcher,
+            range: NSRange(watcher.startIndex..., in: watcher)
+        ))
+    }
+
+    func testDeclaredX64PayloadRejectsEscapingCommandLine() throws {
+        let parent = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-unsafe-payload-\(UUID().uuidString)", isDirectory: true)
+        let root = parent.appendingPathComponent("Game", isDirectory: true)
+        let x64 = root.appendingPathComponent("x64", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        try FileManager.default.createDirectory(at: x64, withIntermediateDirectories: true)
+
+        let launcher = root.appendingPathComponent("CustomLauncher.exe")
+        try writePE(to: launcher, is64Bit: true, imports: [], marker: "x64/")
+        try writePE(
+            to: parent.appendingPathComponent("Outside.exe"),
+            is64Bit: true,
+            imports: ["d3d12.dll"],
+            marker: ""
+        )
+        try Data("""
+        <startup><cmdline>../Outside.exe</cmdline></startup>
+        """.utf8).write(to: root.appendingPathComponent("CustomLauncher.xml"))
+
+        XCTAssertEqual(WineManager().detectGraphicsAPI(forExecutable: launcher.path), .other)
+    }
+
+    func testDeclaredX64PayloadRequiresLauncherMarker() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-unmarked-payload-\(UUID().uuidString)", isDirectory: true)
+        let x64 = root.appendingPathComponent("x64", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: x64, withIntermediateDirectories: true)
+
+        let launcher = root.appendingPathComponent("CustomLauncher.exe")
+        try writePE(to: launcher, is64Bit: true, imports: [], marker: "")
+        try writePE(
+            to: x64.appendingPathComponent("CustomGame.exe"),
+            is64Bit: true,
+            imports: ["d3d12.dll"],
+            marker: ""
+        )
+        try Data("""
+        <startup><cmdline>CustomGame.exe</cmdline></startup>
+        """.utf8).write(to: root.appendingPathComponent("CustomLauncher.xml"))
+
+        XCTAssertEqual(WineManager().detectGraphicsAPI(forExecutable: launcher.path), .other)
+    }
+
+    func testDirectLauncherImportWinsOverDeclaredPayloadRenderer() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-explicit-launcher-\(UUID().uuidString)", isDirectory: true)
+        let x64 = root.appendingPathComponent("x64", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: x64, withIntermediateDirectories: true)
+
+        let launcher = root.appendingPathComponent("CustomLauncher.exe")
+        try writePE(to: launcher, is64Bit: true, imports: ["d3d11.dll"], marker: "x64/")
+        try writePE(
+            to: x64.appendingPathComponent("CustomGame.exe"),
+            is64Bit: true,
+            imports: ["d3d12.dll"],
+            marker: ""
+        )
+        try Data("""
+        <startup><cmdline>CustomGame.exe</cmdline></startup>
+        """.utf8).write(to: root.appendingPathComponent("CustomLauncher.xml"))
+
+        XCTAssertEqual(WineManager().detectGraphicsAPI(forExecutable: launcher.path), .d3d11)
+    }
+
+    func testD3D12ProcessArgumentsPreserveResolvedStoreContext() {
+        XCTAssertEqual(
+            WineManager.d3d12ProcessArguments(
+                executable: "/Games/CustomLauncher.exe",
+                engineArguments: ["-nohmd"],
+                resolvedArguments: [
+                    "-AUTH_LOGIN=unused",
+                    "-AUTH_TYPE=exchangecode",
+                    "-AUTH_PASSWORD=redacted",
+                    "-EpicPortal"
+                ]
+            ),
+            [
+                "/Games/CustomLauncher.exe",
+                "-nohmd",
+                "-AUTH_LOGIN=unused",
+                "-AUTH_TYPE=exchangecode",
+                "-AUTH_PASSWORD=redacted",
+                "-EpicPortal"
+            ]
+        )
+    }
+
     func testSiblingEngineDLLConfirmsNativeVulkanRenderer() throws {
         let executable = try makePE64(named: "Hades.exe")
         let directory = executable.deletingLastPathComponent()

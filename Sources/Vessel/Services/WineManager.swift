@@ -866,7 +866,7 @@ final class WineManager {
 
     /// `true` si el `.exe` contiene alguna de estas cadenas. Se mapea el fichero en memoria en vez
     /// de leerlo entero: los ejecutables de Godot pesan más de 100 MB.
-    private func exeContains(_ executable: String, anyOf needles: [String]) -> Bool {
+    private nonisolated func exeContains(_ executable: String, anyOf needles: [String]) -> Bool {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: executable), options: .mappedIfSafe)
         else { return false }
         return needles.contains { data.range(of: Data($0.utf8)) != nil }
@@ -2519,6 +2519,15 @@ final class WineManager {
             return .d3d9
         }
         if linkedSiblingImports.contains("opengl32.dll") { return .opengl }
+        // Algunos motores propietarios distribuyen un launcher mínimo y declaran el payload real
+        // en un descriptor XML homónimo. GIANTS Engine, por ejemplo, conserva el contrato de
+        // arranque/EOS en el launcher raíz y sitúa el renderer en `x64/`: ejecutar el payload
+        // directamente rompería ese contrato, pero ignorarlo clasifica el juego como carga D3D
+        // dinámica. Se hereda únicamente la API gráfica del payload declarado, con una regla
+        // estructural acotada y rutas contenidas; el proceso que se lanza sigue siendo el original.
+        if let declaredPayloadAPI = declaredX64PayloadGraphicsAPI(forExecutable: executable) {
+            return declaredPayloadAPI
+        }
         // **MKXP/RGSS** carga OpenGL dinámicamente desde su runtime Ruby, así que el PE principal no
         // importa `opengl32.dll`. La firma del motor (MKXP + RGSS + Ruby + SDL2) permite identificarlo
         // sin depender del título y evita enviarlo por error a la ruta genérica de Direct3D dinámico.
@@ -2548,6 +2557,160 @@ final class WineManager {
             return .d3d11
         }
         return .other
+    }
+
+    /// API gráfica de un payload nativo declarado por un launcher mediante `<startup><cmdline>`.
+    ///
+    /// La detección exige simultáneamente el marcador `x64/` en el launcher, un XML homónimo y un
+    /// nombre de ejecutable simple que exista dentro de `x64/`. No acepta argumentos, rutas ni
+    /// symlinks que escapen del juego. Así se reconoce el patrón del motor sin confiar en títulos,
+    /// AppIDs ni archivos opcionales presentes por casualidad.
+    private func declaredX64PayloadGraphicsAPI(forExecutable executable: String) -> GameGraphicsAPI? {
+        guard let payload = declaredX64PayloadExecutable(forExecutable: executable) else { return nil }
+        var imports = PEImportScanner.importedLibraries(atPath: payload)
+        imports.formUnion(
+            PEImportScanner.importedLibrariesFromDirectSiblingDependencies(atPath: payload)
+        )
+        if imports.contains("d3d12.dll") { return .d3d12 }
+        if !imports.isDisjoint(with: [
+            "d3d11.dll", "dxgi.dll", "d3d10.dll", "d3d10core.dll"
+        ]) { return .d3d11 }
+        if !imports.isDisjoint(with: ["d3d9.dll", "d3d8.dll", "ddraw.dll"]) { return .d3d9 }
+        if imports.contains("vulkan-1.dll") { return .d3d11 }
+        if imports.contains("opengl32.dll") { return .opengl }
+        return nil
+    }
+
+    /// Resuelve el payload declarado sin alterar el ejecutable que se debe lanzar. Además del
+    /// enrutado gráfico, esta ruta alimenta el seguimiento multiproceso para que la UI no vuelva a
+    /// «Jugar» cuando el launcher entrega el control a su proceso nativo.
+    private nonisolated func declaredX64PayloadExecutable(forExecutable executable: String) -> String? {
+        guard exeContains(executable, anyOf: ["x64/"]) else { return nil }
+
+        let fileManager = FileManager.default
+        let root = (executable as NSString).deletingLastPathComponent
+        let launcherStem = (((executable as NSString).lastPathComponent) as NSString)
+            .deletingPathExtension
+        guard !root.isEmpty,
+              let rootEntries = try? fileManager.contentsOfDirectory(atPath: root),
+              let descriptorName = rootEntries.first(where: {
+                  $0.caseInsensitiveCompare("\(launcherStem).xml") == .orderedSame
+              }) else { return nil }
+
+        let descriptorPath = (root as NSString).appendingPathComponent(descriptorName)
+        guard PathSafety.isContained(descriptorPath, in: root),
+              let attributes = try? fileManager.attributesOfItem(atPath: descriptorPath),
+              let size = (attributes[.size] as? NSNumber)?.intValue,
+              size > 0, size <= 64 * 1_024,
+              let data = try? Data(contentsOf: URL(fileURLWithPath: descriptorPath)) else {
+            return nil
+        }
+
+        let delegate = StartupCommandLineXMLDelegate()
+        let parser = XMLParser(data: data)
+        parser.delegate = delegate
+        parser.shouldResolveExternalEntities = false
+        guard parser.parse(), !delegate.isInvalid,
+              let payloadName = delegate.commandLine,
+              Self.isSafeDeclaredPayloadName(payloadName) else { return nil }
+
+        guard let x64Name = rootEntries.first(where: {
+            var isDirectory: ObjCBool = false
+            let path = (root as NSString).appendingPathComponent($0)
+            return $0.caseInsensitiveCompare("x64") == .orderedSame
+                && fileManager.fileExists(atPath: path, isDirectory: &isDirectory)
+                && isDirectory.boolValue
+        }) else { return nil }
+
+        let x64Directory = (root as NSString).appendingPathComponent(x64Name)
+        guard PathSafety.isContained(x64Directory, in: root),
+              let payloadEntries = try? fileManager.contentsOfDirectory(atPath: x64Directory),
+              let actualPayloadName = payloadEntries.first(where: {
+                  $0.caseInsensitiveCompare(payloadName) == .orderedSame
+              }) else { return nil }
+
+        let payload = (x64Directory as NSString).appendingPathComponent(actualPayloadName)
+        var isDirectory: ObjCBool = false
+        guard PathSafety.isContained(payload, in: x64Directory),
+              fileManager.fileExists(atPath: payload, isDirectory: &isDirectory),
+              !isDirectory.boolValue else { return nil }
+        return payload
+    }
+
+    private nonisolated static func isSafeDeclaredPayloadName(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value == trimmed,
+              !trimmed.isEmpty,
+              trimmed.utf8.count <= 255,
+              (trimmed as NSString).pathExtension.caseInsensitiveCompare("exe") == .orderedSame,
+              !trimmed.contains(".."),
+              trimmed.rangeOfCharacter(from: CharacterSet(charactersIn: "/\\:\"'")) == nil,
+              trimmed.unicodeScalars.allSatisfy({
+                  !CharacterSet.controlCharacters.contains($0)
+              }) else { return false }
+        return (trimmed as NSString).lastPathComponent == trimmed
+    }
+
+    private final class StartupCommandLineXMLDelegate: NSObject, XMLParserDelegate {
+        private var stack: [String] = []
+        private var buffer = ""
+        private var capturesCommandLine = false
+        private(set) var commandLine: String?
+        private(set) var isInvalid = false
+
+        func parser(
+            _ parser: XMLParser,
+            didStartElement elementName: String,
+            namespaceURI: String?,
+            qualifiedName qName: String?,
+            attributes attributeDict: [String: String] = [:]
+        ) {
+            let element = elementName.lowercased()
+            stack.append(element)
+            if element == "cmdline" {
+                guard stack == ["startup", "cmdline"], commandLine == nil,
+                      !capturesCommandLine else {
+                    isInvalid = true
+                    return
+                }
+                capturesCommandLine = true
+                buffer = ""
+            }
+        }
+
+        func parser(_ parser: XMLParser, foundCharacters string: String) {
+            guard capturesCommandLine else { return }
+            buffer += string
+            if buffer.utf8.count > 255 { isInvalid = true }
+        }
+
+        func parser(
+            _ parser: XMLParser,
+            didEndElement elementName: String,
+            namespaceURI: String?,
+            qualifiedName qName: String?
+        ) {
+            let element = elementName.lowercased()
+            guard stack.last == element else {
+                isInvalid = true
+                return
+            }
+            if capturesCommandLine, stack == ["startup", "cmdline"] {
+                commandLine = buffer
+                capturesCommandLine = false
+                buffer = ""
+            }
+            stack.removeLast()
+        }
+
+        func parser(
+            _ parser: XMLParser,
+            resolveExternalEntityName name: String,
+            systemID: String?
+        ) -> Data? {
+            isInvalid = true
+            return nil
+        }
     }
 
     private func siblingEngineGraphicsAPI(forExecutable executable: String) -> GameGraphicsAPI? {
@@ -3460,7 +3623,14 @@ final class WineManager {
             // con Dragon Is Dead, y con Palworld: menú, WebViews internos y audio correctos). El
             // wine-d3dmetal queda para el modo Steam-real (que ya se gestiona arriba y comparte
             // wineserver con el cliente Steam).
-            return try await launchD3D12Game(executable: executable, in: bottle, steamAppId: steamAppId, effective: eff, forceGPTK: true)
+            return try await launchD3D12Game(
+                executable: executable,
+                in: bottle,
+                arguments: allArgs,
+                steamAppId: steamAppId,
+                effective: eff,
+                forceGPTK: true
+            )
         }
         // Juegos D3D9/D3D8/DDraw → Gcenx (wine-osx64, Wine 11 completo, wined3d→Metal).
         // wine-dxmt no resuelve el d3d9 (falla con c0000135 "d3d9.dll not found"); Gcenx sí.
@@ -3515,7 +3685,14 @@ final class WineManager {
                 log.log("Override DXMT ignorado en Unity 6.x: se usa D3DMetal de Apple (gptk-mythic), lo único que corre su init gráfica.", level: .info)
             }
             log.log("Unity 6.x (6000.x+) detectado → D3DMetal de Apple (gptk-mythic); DXMT cuelga su init gráfica.", level: .info)
-            return try await launchD3D12Game(executable: executable, in: bottle, steamAppId: steamAppId, effective: eff, forceGPTK: true)
+            return try await launchD3D12Game(
+                executable: executable,
+                in: bottle,
+                arguments: allArgs,
+                steamAppId: steamAppId,
+                effective: eff,
+                forceGPTK: true
+            )
         }
         // OpenGL necesita primero la base unificada y después su clon con winemac.so parcheado.
         // Se hace antes de resolver el binario para que una instalación nueva no caiga por error al
@@ -5069,7 +5246,14 @@ final class WineManager {
     /// de Microsoft (lo que hacía vkd3d) es lo que provocaba el crash con puntero
     /// corrupto dentro del juego. El cliente de Steam se lanza EN el mismo wine de
     /// GPTK (mismo wineserver) para que el DRM de Steamworks funcione.
-    private func launchD3D12Game(executable: String, in bottle: Bottle, steamAppId: String?, effective: EffectiveLaunchConfig = EffectiveLaunchConfig(), forceGPTK: Bool = false) async throws -> Process {
+    private func launchD3D12Game(
+        executable: String,
+        in bottle: Bottle,
+        arguments: [String] = [],
+        steamAppId: String?,
+        effective: EffectiveLaunchConfig = EffectiveLaunchConfig(),
+        forceGPTK: Bool = false
+    ) async throws -> Process {
         let gameDir = (executable as NSString).deletingLastPathComponent
         let fm = FileManager.default
 
@@ -5210,19 +5394,34 @@ final class WineManager {
                 : "motor D3DMetal aislado (trío gráfico coherente)")
             : (useD3DMetalEngine ? "motor D3DMetal Vessel (WineHQ 11.10)" : "GPTK/D3DMetal")
         log.log("Lanzando juego D3D12 con \(engineLbl): \((executable as NSString).lastPathComponent)", level: .info)
+        let processArguments = Self.d3d12ProcessArguments(
+            executable: executable,
+            engineArguments: unityArgs + unrealEngineArguments(forExecutable: executable),
+            resolvedArguments: arguments
+        )
         return try await launchWineProcess(
             winePath: d3d12Wine,
             prefix: bottle.prefixPath,
             // `unrealEngineArguments` (`-nohmd`) también aquí: esta ruta arma su propia lista y se
             // saltaba los argumentos del motor. Justo los juegos de UE con D3D12 son los que más lo
             // necesitan — sin él se quedan buscando un visor de VR y no abren (ASTRONEER).
-            arguments: [executable] + unityArgs + unrealEngineArguments(forExecutable: executable)
-                + effective.launchArgs,
+            arguments: processArguments,
             environment: env,
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: effective,
             d3dMetalGame: useD3DMetalEngine
         )
+    }
+
+    /// Lista final de argumentos de la ruta D3D12. `resolvedArguments` ya contiene la petición de
+    /// la tienda, el perfil y los ajustes automáticos; recomponerla desde `effective.launchArgs`
+    /// descartaba silenciosamente la autenticación de Epic en esta única ruta.
+    nonisolated static func d3d12ProcessArguments(
+        executable: String,
+        engineArguments: [String],
+        resolvedArguments: [String]
+    ) -> [String] {
+        [executable] + engineArguments + resolvedArguments
     }
 
     /// Asegura que el cliente de Steam (Gcenx) está corriendo, necesario para el
@@ -7144,14 +7343,39 @@ final class WineManager {
         return names
     }
 
+    /// Imágenes que forman una única sesión jugable para un ejecutable concreto. Mantiene las
+    /// variantes de arquitectura existentes y añade el payload declarado por el launcher cuando
+    /// el contrato XML/x64 ha sido validado. El orden conserva primero el ejecutable solicitado.
+    nonisolated func trackedProcessFamilyImageNames(forExecutable executable: String) -> [String] {
+        let launcherName = (executable as NSString).lastPathComponent
+        var names = Self.processFamilyImageNames(launcherName)
+        if let payload = declaredX64PayloadExecutable(forExecutable: executable) {
+            for candidate in Self.processFamilyImageNames((payload as NSString).lastPathComponent)
+            where !names.contains(where: {
+                $0.caseInsensitiveCompare(candidate) == .orderedSame
+            }) {
+                names.append(candidate)
+            }
+        }
+        return names
+    }
+
+    /// Patrón del supervisor launchd que sobrevive a un handoff launcher→payload sin coincidir con
+    /// su propia orden `pgrep`. Cada alternativa se autoexcluye de forma independiente.
+    nonisolated func launchSupervisorProcessPattern(forExecutable executable: String) -> String {
+        let patterns = trackedProcessFamilyImageNames(forExecutable: executable)
+            .map(Self.selfExcludingProcessPattern)
+        guard let first = patterns.first else { return Self.selfExcludingProcessPattern("wine") }
+        return patterns.count == 1 ? first : "(" + patterns.joined(separator: "|") + ")"
+    }
+
     /// Obtiene la unión exacta de PIDs de todas las variantes oficiales de una misma imagen. La
     /// comprobación sigue acotada por prefijo y directorio abierto mediante `lsof`.
     private nonisolated static func gameWineProcessFamilyIDs(
-        imageName: String,
+        imageNames: [String],
         prefix: String,
         executableDirectory: String?
     ) async -> [pid_t] {
-        let imageNames = processFamilyImageNames(imageName)
         return await Task.detached(priority: .utility) {
             var identifiers = Set<pid_t>()
             for candidate in imageNames {
@@ -7173,11 +7397,11 @@ final class WineManager {
     /// dentro de su prefijo. Evita confundir un launcher que terminó con el cierre del juego, y evita
     /// a la vez atribuir procesos de otro bottle o del Steam nativo de macOS.
     nonisolated func isGameProcessFamilyRunning(executable: String, prefix: String) async -> Bool {
-        let imageName = (executable as NSString).lastPathComponent
+        let imageNames = trackedProcessFamilyImageNames(forExecutable: executable)
         let executableDirectory = processTrackingDirectory(forExecutable: executable)
-        guard !imageName.isEmpty else { return false }
+        guard !imageNames.isEmpty else { return false }
         return !(await Self.gameWineProcessFamilyIDs(
-            imageName: imageName,
+            imageNames: imageNames,
             prefix: prefix,
             executableDirectory: executableDirectory
         )).isEmpty
@@ -7207,11 +7431,11 @@ final class WineManager {
     /// proceso Wine vivo no basta: launchers, SDKs y watchdogs pueden sobrevivir sin renderizar nada
     /// y no deben convertirse en una capa de compatibilidad «aprendida».
     nonisolated func hasVisibleGameWindow(executable: String, prefix: String) async -> Bool {
-        let imageName = (executable as NSString).lastPathComponent
+        let imageNames = trackedProcessFamilyImageNames(forExecutable: executable)
         let executableDirectory = processTrackingDirectory(forExecutable: executable)
-        guard !imageName.isEmpty else { return false }
+        guard !imageNames.isEmpty else { return false }
         let processIDs = Set(await Self.gameWineProcessFamilyIDs(
-            imageName: imageName,
+            imageNames: imageNames,
             prefix: prefix,
             executableDirectory: executableDirectory
         ))
@@ -7227,11 +7451,11 @@ final class WineManager {
     /// Cierra únicamente la familia exacta del juego en su prefijo. Nunca usa `wineserver -k`, por
     /// lo que el cliente Steam interno y sus descargas permanecen intactos.
     nonisolated func terminateGameProcessFamily(executable: String, prefix: String) async {
-        let imageName = (executable as NSString).lastPathComponent
+        let imageNames = trackedProcessFamilyImageNames(forExecutable: executable)
         let executableDirectory = processTrackingDirectory(forExecutable: executable)
-        guard !imageName.isEmpty else { return }
+        guard !imageNames.isEmpty else { return }
         var processIDs = await Self.gameWineProcessFamilyIDs(
-            imageName: imageName,
+            imageNames: imageNames,
             prefix: prefix,
             executableDirectory: executableDirectory
         )
@@ -7241,7 +7465,7 @@ final class WineManager {
         for _ in 0..<20 {
             try? await Task.sleep(for: .milliseconds(100))
             processIDs = await Self.gameWineProcessFamilyIDs(
-                imageName: imageName,
+                imageNames: imageNames,
                 prefix: prefix,
                 executableDirectory: executableDirectory
             )
@@ -7251,14 +7475,14 @@ final class WineManager {
         for _ in 0..<20 {
             try? await Task.sleep(for: .milliseconds(100))
             if (await Self.gameWineProcessFamilyIDs(
-                imageName: imageName,
+                imageNames: imageNames,
                 prefix: prefix,
                 executableDirectory: executableDirectory
             )).isEmpty { return }
         }
         await MainActor.run {
             LogStore.shared.log(
-                "No se pudo cerrar por completo la familia de procesos de \(imageName).",
+                "No se pudo cerrar por completo la familia de procesos de \(imageNames.joined(separator: ", ")).",
                 level: .error
             )
         }
@@ -9038,9 +9262,12 @@ final class WineManager {
             // Conservar `.exe` evita coincidencias por prefijo con procesos nativos de macOS.
             // Ejemplo real: vigilar `CrashReport` mantenía este supervisor vivo para siempre porque
             // también encontraba `/System/.../CrashReporterSupportHelper`.
-            let executableName = arguments.first(where: { $0.lowercased().hasSuffix(".exe") })
-                .map { ($0 as NSString).lastPathComponent } ?? "wine"
-            let processPattern = Self.selfExcludingProcessPattern(executableName)
+            let supervisedExecutable = arguments.first(where: {
+                $0.lowercased().hasSuffix(".exe")
+            }) ?? "wine"
+            let processPattern = launchSupervisorProcessPattern(
+                forExecutable: supervisedExecutable
+            )
             let pgrepGame = Self.caseInsensitivePgrepShellCommand(
                 matchingPattern: processPattern
             )
@@ -9185,9 +9412,12 @@ final class WineManager {
                     + "for r in 1 2 3 4 5 6; do sleep 4; /usr/bin/pgrep -f 'steam\\.exe' >/dev/null 2>&1 && break; "
                     + "/bin/launchctl kickstart gui/\(uid)/\(agentLabel) 2>/dev/null; done"
             } else {
-                let executableName = arguments.first(where: { $0.lowercased().hasSuffix(".exe") })
-                    .map { ($0 as NSString).lastPathComponent } ?? "wine"
-                let processPattern = Self.selfExcludingProcessPattern(executableName)
+                let supervisedExecutable = arguments.first(where: {
+                    $0.lowercased().hasSuffix(".exe")
+                }) ?? "wine"
+                let processPattern = launchSupervisorProcessPattern(
+                    forExecutable: supervisedExecutable
+                )
                 let pgrepGame = Self.caseInsensitivePgrepShellCommand(
                     matchingPattern: processPattern
                 )
