@@ -25,7 +25,7 @@ enum DRMAnalyzer {
 
     /// Protección real: impide (o compromete) ejecutar el juego como copia local independiente.
     enum Protection: String, Codable, Sendable, CaseIterable {
-        case steamStub, denuvo, vmProtect, themida, enigma, armadillo
+        case steamStub, publisherSteamTicket, denuvo, vmProtect, themida, enigma, armadillo
         case easyAntiCheat, battlEye, gameGuard, vanguard, xigncode
         case eaActivation, ubisoftConnect, rockstarLauncher
         case secuROM, safeDisc, starForce, tages, laserLock
@@ -33,6 +33,7 @@ enum DRMAnalyzer {
         var label: String {
             switch self {
             case .steamStub: return "DRM de Steam (SteamStub/CEG)"
+            case .publisherSteamTicket: return "DRM de cuenta del editor (ticket de Steam)"
             case .denuvo: return "Denuvo Anti-Tamper"
             case .vmProtect: return "VMProtect"
             case .themida: return "Themida/WinLicense"
@@ -164,6 +165,18 @@ enum DRMAnalyzer {
         if let f = hit(["devx.sys", "tagesclient.exe", "wave.aif"]) { add(&r, .tages, f) }
         if let f = hit(["nomouse.sp", "l16dll.dll"]) { add(&r, .laserLock, f) }
 
+        // Algunos motores propietarios delegan la autenticación de la cuenta del editor en un
+        // ticket cifrado emitido por el cliente oficial de Steam. No es un simple SDK de logros:
+        // sustituir `steam_api64.dll` por Goldberg deja al módulo sin un ticket cifrado válido y
+        // el juego no supera su inicialización. La firma exige el
+        // nombre exacto del módulo, un PE que importe Steamworks de verdad y dos símbolos de la
+        // secuencia de ticket; una DLL ajena llamada «crm» no activa esta ruta.
+        if let moduleName = hit(["crm_module_w64.dll", "crm_module.dll"]),
+           let modulePath = firstFilePath(named: moduleName, in: folder),
+           isPublisherSteamTicketModule(modulePath) {
+            add(&r, .publisherSteamTicket, moduleName)
+        }
+
         // 4) SDK sociales — informativos, NUNCA una advertencia.
         if files.contains("steam_api64.dll") || files.contains("steam_api.dll") { r.social.append(.steamworks) }
         if files.contains(where: { $0.hasPrefix("eossdk-") }) { r.social.append(.epicOnlineServices) }
@@ -178,6 +191,37 @@ enum DRMAnalyzer {
     private static func add(_ r: inout Report, _ p: Protection, _ evidence: String) {
         r.protections.append(p)
         r.evidence[p.rawValue] = evidence
+    }
+
+    /// Valida el módulo de ticket sin depender del título, AppID ni editor concreto.
+    static func isPublisherSteamTicketModule(_ path: String) -> Bool {
+        let name = (path as NSString).lastPathComponent.lowercased()
+        guard name == "crm_module_w64.dll" || name == "crm_module.dll" else { return false }
+        let imports = PEImportScanner.importedLibraries(atPath: path)
+        guard imports.contains("steam_api64.dll") || imports.contains("steam_api.dll") else {
+            return false
+        }
+        return containsASCII(path, "SetSteamEncryptedAppTicket")
+            && containsASCII(path, "SteamUser")
+    }
+
+    /// Devuelve la primera ruta cuyo nombre coincida, manteniendo el mismo límite del índice para
+    /// que analizar una biblioteca enorme no bloquee la interfaz.
+    private static func firstFilePath(
+        named target: String,
+        in folder: String,
+        maxEntries: Int = 20_000
+    ) -> String? {
+        guard let enumerator = FileManager.default.enumerator(atPath: folder) else { return nil }
+        var count = 0
+        while let relative = enumerator.nextObject() as? String {
+            count += 1
+            if count > maxEntries { return nil }
+            if (relative as NSString).lastPathComponent.caseInsensitiveCompare(target) == .orderedSame {
+                return (folder as NSString).appendingPathComponent(relative)
+            }
+        }
+        return nil
     }
 
     /// Índice de nombres de fichero (en minúscula) de todo el árbol. Acotado para no penalizar

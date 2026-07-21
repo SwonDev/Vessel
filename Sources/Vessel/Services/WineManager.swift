@@ -1019,7 +1019,7 @@ final class WineManager {
         let report = DRMAnalyzer.analyze(folder: installRoot, executable: executable)
         guard report.social.contains(.steamworks) else { return nil }
         let clientBound: Set<DRMAnalyzer.Protection> = [
-            .denuvo, .vmProtect, .themida, .enigma
+            .publisherSteamTicket, .denuvo, .vmProtect, .themida, .enigma
         ]
         return report.protections.first { clientBound.contains($0) }
     }
