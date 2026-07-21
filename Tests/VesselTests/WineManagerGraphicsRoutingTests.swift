@@ -2014,6 +2014,57 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .dxmt)
     }
 
+    func testCryEngineGameModuleRoutesMinimalLauncherToD3D12() throws {
+        let executable = try makePE64(
+            named: "CustomLauncher.exe",
+            marker: """
+            Unable to locate CryEngine root folder
+            CryEngine root path is to long
+            """
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let moduleSource = try makePE64(
+            named: "ProjectGame.dll",
+            marker: "EngineModule_CryRenderer",
+            imports: ["d3d12.dll", "dxgi.dll"]
+        )
+        defer { try? FileManager.default.removeItem(at: moduleSource.deletingLastPathComponent()) }
+        try FileManager.default.copyItem(
+            at: moduleSource,
+            to: directory.appendingPathComponent("ProjectGame.dll")
+        )
+
+        let manager = WineManager()
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .d3d12)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .gptk)
+        XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [.gptk])
+    }
+
+    func testUnverifiedCryEngineSiblingCannotChangeGraphicsRouting() throws {
+        let executable = try makePE64(
+            named: "CustomLauncher.exe",
+            marker: """
+            Unable to locate CryEngine root folder
+            CryEngine root path is to long
+            """
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let moduleSource = try makePE64(
+            named: "OptionalGame.dll",
+            marker: "unrelated optional renderer",
+            imports: ["d3d12.dll", "dxgi.dll"]
+        )
+        defer { try? FileManager.default.removeItem(at: moduleSource.deletingLastPathComponent()) }
+        try FileManager.default.copyItem(
+            at: moduleSource,
+            to: directory.appendingPathComponent("OptionalGame.dll")
+        )
+
+        XCTAssertEqual(WineManager().detectGraphicsAPI(forExecutable: executable.path), .other)
+    }
+
     func testDirectlyImportedSiblingModuleRoutesNorthlightPayloadToD3D12() throws {
         let executable = try makePE64(
             named: "NorthlightGame_DX12.exe",

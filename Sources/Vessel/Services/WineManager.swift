@@ -2519,6 +2519,15 @@ final class WineManager {
             return .d3d9
         }
         if linkedSiblingImports.contains("opengl32.dll") { return .opengl }
+        // CryEngine moderno mantiene un launcher PE mínimo y carga dinámicamente el módulo del
+        // juego (`*Game.dll`), que también contiene el renderer monolítico. El launcher no enlaza
+        // esa DLL ni D3D, por lo que el salto PE directo no puede descubrirla. La firma exige los
+        // diagnósticos de raíz de CryEngine en el launcher, el contrato `EngineModule_CryRenderer`
+        // dentro de un módulo PE64 `*Game.dll` y sus imports gráficos reales. Así un plugin o
+        // renderer opcional presente junto a cualquier otro juego nunca altera su ruta automática.
+        if let cryEngineAPI = cryEngineGameModuleGraphicsAPI(forExecutable: executable) {
+            return cryEngineAPI
+        }
         // Algunos motores propietarios distribuyen un launcher mínimo y declaran el payload real
         // en un descriptor XML homónimo. GIANTS Engine, por ejemplo, conserva el contrato de
         // arranque/EOS en el launcher raíz y sitúa el renderer en `x64/`: ejecutar el payload
@@ -2732,6 +2741,41 @@ final class WineManager {
         if paths.contains(where: { exeImports($0, anyOf: ["vulkan-1.dll"]) }) { return .d3d11 }
         if paths.contains(where: { exeImports($0, anyOf: ["d3d9.dll", "d3d8.dll", "ddraw.dll"]) }) { return .d3d9 }
         if paths.contains(where: { exeImports($0, anyOf: ["opengl32.dll"]) }) { return .opengl }
+        return nil
+    }
+
+    private func cryEngineGameModuleGraphicsAPI(
+        forExecutable executable: String
+    ) -> GameGraphicsAPI? {
+        guard isExecutable64Bit(executable),
+              exeContains(executable, anyOf: ["Unable to locate CryEngine root folder"]),
+              exeContains(executable, anyOf: ["CryEngine root path is to long"])
+        else { return nil }
+
+        let directory = (executable as NSString).deletingLastPathComponent
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory) else {
+            return nil
+        }
+        let modules = names
+            .filter { $0.lowercased().hasSuffix("game.dll") }
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            .prefix(16)
+            .map { "\(directory)/\($0)" }
+            .filter {
+                isExecutable64Bit($0)
+                    && exeContains($0, anyOf: ["EngineModule_CryRenderer"])
+            }
+        guard !modules.isEmpty else { return nil }
+
+        if modules.contains(where: { exeImports($0, anyOf: ["d3d12.dll"]) }) { return .d3d12 }
+        if modules.contains(where: {
+            exeImports($0, anyOf: ["d3d11.dll", "dxgi.dll", "d3d10.dll", "d3d10core.dll"])
+        }) { return .d3d11 }
+        if modules.contains(where: { exeImports($0, anyOf: ["vulkan-1.dll"]) }) { return .d3d11 }
+        if modules.contains(where: { exeImports($0, anyOf: ["d3d9.dll", "d3d8.dll", "ddraw.dll"]) }) {
+            return .d3d9
+        }
+        if modules.contains(where: { exeImports($0, anyOf: ["opengl32.dll"]) }) { return .opengl }
         return nil
     }
 
