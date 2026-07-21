@@ -148,18 +148,32 @@ final class LibraryOperationQueue {
         // Un juego solo puede tener una operación viva. Un doble clic o "Actualizar todo" no debe
         // reiniciar una descarga, reemplazar una verificación activa ni duplicar trabajo.
         if let index = items.firstIndex(where: { $0.id == gameID }) {
-            // Un fallo persistido no está vivo: volver a pulsar Instalar/Actualizar es una petición
-            // explícita de reintento. Reconectamos el ejecutor actual y lo devolvemos a la cola en
-            // vez de ignorar silenciosamente el clic (el centro de descargas conserva el mismo ítem).
-            if items[index].phase == .failed {
+            // Una operación restaurada no conserva closures. Volver a pulsar Reanudar/Reintentar
+            // pasa por el flujo autenticado de la tienda, que entrega aquí un ejecutor nuevo. Solo
+            // entonces se devuelve a la cola; así la UI nunca promete una descarga inexistente.
+            switch items[index].phase {
+            case .paused, .failed:
+                let wasFailed = items[index].phase == .failed
                 executors[gameID] = executor
                 items[index].operation.title = title
                 items[index].operation.kind = kind
                 items[index].operation.targetID = targetID
                 items[index].phase = .queued
-                items[index].message = "En cola para reintentar…"
+                items[index].message = wasFailed
+                    ? "En cola para reintentar…"
+                    : "En cola para reanudar…"
                 items[index].fractionCompleted = nil
                 persist()
+            case .queued:
+                // La cola pudo restaurar un proceso que estaba activo como `.queued`; reconectar
+                // su ejecutor permite que `startIfNeeded` lo retome sin alterar su posición.
+                // Un segundo enqueue mientras ya existe un ejecutor es un doble clic y debe
+                // ignorarse: reemplazar el closure cambiaría una operación real a mitad de cola.
+                if executors[gameID] == nil {
+                    executors[gameID] = executor
+                }
+            case .running, .pausing, .cancelling:
+                break
             }
             startIfNeeded()
             return
@@ -212,12 +226,28 @@ final class LibraryOperationQueue {
 
     func resume(_ gameID: String) {
         guard let index = items.firstIndex(where: { $0.id == gameID }),
-              [.paused, .failed].contains(items[index].phase) else { return }
+              [.paused, .failed].contains(items[index].phase),
+              executors[gameID] != nil else { return }
         items[index].phase = .queued
         items[index].message = "En cola para reanudar…"
         items[index].fractionCompleted = nil
         persist()
         startIfNeeded()
+    }
+
+    /// Los closures no se pueden persistir. Si la tienda no logra reconstruir la sesión al abrir
+    /// la app, una fila restaurada en `.queued` no debe aparentar que está descargando eternamente:
+    /// se deja pausada para que «Reanudar» vuelva a pasar por autenticación y adjunte un ejecutor.
+    func pauseItemsWithoutExecutors() {
+        var didChange = false
+        for index in items.indices
+        where items[index].phase == .queued && executors[items[index].id] == nil {
+            items[index].phase = .paused
+            items[index].message = "En pausa"
+            items[index].fractionCompleted = nil
+            didChange = true
+        }
+        if didChange { persist() }
     }
 
     func cancel(_ gameID: String) {

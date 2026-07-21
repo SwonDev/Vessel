@@ -226,10 +226,14 @@ struct BottleDetailView: View {
             canPrioritizeTransfer: { operations.canPrioritize($0) },
             canRetryTransfer: { operations.canRetry($0) },
             onPauseTransfer: { operations.pause($0.id) },
-            onResumeTransfer: { operations.resume($0.id) },
+            onResumeTransfer: { game in
+                Task { await resumeSteamOperation(game.id) }
+            },
             onCancelTransfer: cancelSteamOperation,
             onPrioritizeTransfer: { operations.prioritize($0.id) },
-            onRetryTransfer: { operations.resume($0.id) },
+            onRetryTransfer: { game in
+                Task { await resumeSteamOperation(game.id) }
+            },
             onInstall: { sg in if sg.steamAppId != nil { Task { await enqueueSteamOperation(sg.id, kind: .install) } } },
             onPlay: { sg in
                 if let g = localBottle.games.first(where: { ($0.steamAppId ?? $0.id.uuidString) == sg.id }) {
@@ -421,10 +425,18 @@ struct BottleDetailView: View {
 
     private func restoreSteamOperations() async {
         guard operations.hasItems else { return }
-        do { try await steamCMD.ensureInstalled() } catch { return }
+        do {
+            try await steamCMD.ensureInstalled()
+        } catch {
+            operations.pauseItemsWithoutExecutors()
+            return
+        }
         var user = steamCMDUser
         if user.isEmpty { user = accountService.detectAccount(bottle: localBottle)?.accountName ?? "" }
-        guard !user.isEmpty, await steamCMD.hasSession(user: user) else { return }
+        guard !user.isEmpty, await steamCMD.hasSession(user: user) else {
+            operations.pauseItemsWithoutExecutors()
+            return
+        }
         steamCMDUser = user
         steamCMDSessionConfirmed = true
         for item in operations.items {
@@ -490,6 +502,14 @@ struct BottleDetailView: View {
         clearCancelledSteamMarker(appId)
         operations.enqueue(gameID: appId, title: name, kind: kind,
                            executor: steamExecutor(appId: appId, user: user))
+    }
+
+    /// Reanudar una fila persistida debe reconstruir primero la sesión y el ejecutor de SteamCMD.
+    /// Llamar directamente a `operations.resume` tras relanzar la app solo cambiaba el texto de la
+    /// UI: los closures no son serializables y, por tanto, no existía ningún backend que ejecutar.
+    private func resumeSteamOperation(_ appId: String) async {
+        guard let kind = operations.kind(for: appId) else { return }
+        await enqueueSteamOperation(appId, kind: kind)
     }
 
     private func steamExecutor(appId: String, user: String) -> LibraryOperationQueue.Executor {

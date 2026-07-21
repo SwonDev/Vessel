@@ -5955,6 +5955,19 @@ final class WineManager {
         if isD3D12, let d3dmWine = selectedD3DMetalWine {
             try await prepareRealSteamClient(in: bottle, wine: d3dmWine, gameExecutable: executable)
             ensureSteamConfig(in: bottle)
+            let requiresOneXWindowCoordinates = GameDisplayStateRepair
+                .requiresOneXWindowCoordinates(appId: appId, executable: executable)
+            var oneXRetinaWriteSucceeded = false
+            if requiresOneXWindowCoordinates {
+                // Se aplica antes de arrancar Steam para que el wineserver no pueda conservar el
+                // RetinaMode del juego anterior. En esta build concreta de RE Engine, Retina 2×
+                // convierte 2704×1756 en tamaño de ventana y desborda el escritorio.
+                oneXRetinaWriteSucceeded = await setMacDriverRetinaMode(
+                    prefix: bottle.prefixPath,
+                    wine: d3dmWine,
+                    enabled: false
+                )
+            }
             log.log(
                 needsManagedMedia
                     ? "Modo Steam real (D3DMetal + multimedia): preparando el cliente Steam conectado…"
@@ -5982,23 +5995,41 @@ final class WineManager {
             // un intento previo dejara junto al exe (chocan). NO se toca la subcarpeta D3D12/ (Agility SDK).
             cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
             // Modo Retina para render a resolución física completa en pantallas Retina.
-            let retinaWriteSucceeded = await setMacDriverRetinaMode(
-                prefix: bottle.prefixPath,
-                wine: d3dmWine,
-                enabled: effective.retina
-            )
+            let retinaWriteSucceeded: Bool
+            if requiresOneXWindowCoordinates {
+                // Un fallo temprano se reintenta ahora con el wineserver definitivo del cliente.
+                if oneXRetinaWriteSucceeded {
+                    retinaWriteSucceeded = true
+                } else {
+                    retinaWriteSucceeded = await setMacDriverRetinaMode(
+                        prefix: bottle.prefixPath,
+                        wine: d3dmWine,
+                        enabled: false
+                    )
+                }
+            } else {
+                retinaWriteSucceeded = await setMacDriverRetinaMode(
+                    prefix: bottle.prefixPath,
+                    wine: d3dmWine,
+                    enabled: effective.retina
+                )
+            }
             if needsManagedMedia {
                 let scaleRepair = GameDisplayStateRepair.repairKunitsuGamiForEffectiveRetina(
                     appId: appId,
                     executable: executable,
-                    retinaEnabled: effective.retina && retinaWriteSucceeded
+                    retinaEnabled: !requiresOneXWindowCoordinates
+                        && effective.retina
+                        && retinaWriteSucceeded
                 )
                 if scaleRepair.didRepair {
                     log.log(
-                        retinaWriteSucceeded
+                        requiresOneXWindowCoordinates
+                            ? "Escala nativa 1× de RE Engine aplicada para mantener la ventana dentro del escritorio."
+                            : retinaWriteSucceeded
                             ? "Resolución RE Engine sincronizada con el modo Retina efectivo."
                             : "Retina no quedó activo; resolución RE Engine reducida automáticamente para no desbordar la pantalla.",
-                        level: retinaWriteSucceeded ? .info : .warn
+                        level: requiresOneXWindowCoordinates || retinaWriteSucceeded ? .info : .warn
                     )
                 }
             }
