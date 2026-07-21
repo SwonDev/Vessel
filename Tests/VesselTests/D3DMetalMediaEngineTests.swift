@@ -202,6 +202,9 @@ final class D3DMetalMediaEngineTests: XCTestCase {
         XCTAssertTrue(environment["DYLD_FALLBACK_LIBRARY_PATH", default: ""].contains(
             "wine-d3dmetal-media/lib64/apple_gptk/external"
         ))
+        if #available(macOS 15, *) {
+            XCTAssertEqual(environment["ROSETTA_ADVERTISE_AVX"], "1")
+        }
     }
 
     func testMediaEngineLocatorDoesNotBroadenOtherEngineRoles() throws {

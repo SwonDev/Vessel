@@ -2,6 +2,34 @@ import Foundation
 
 /// Lee únicamente las decisiones que Steam exige durante un intento nuevo de lanzamiento.
 enum SteamGameActionLog {
+    /// Confirma que una espera de Steam persiste durante varios sondeos. El cliente escribe primero
+    /// `waiting for user response` y, para avisos informativos ya vistos, escribe `continues` hasta
+    /// un segundo después. Reaccionar a la primera línea mata un lanzamiento que ya estaba avanzando.
+    struct SustainedWaitingTask {
+        private var task: String?
+        private var consecutiveSamples = 0
+
+        mutating func observe(
+            _ candidate: String?,
+            requiredConsecutiveSamples: Int
+        ) -> String? {
+            guard let candidate, !candidate.isEmpty else {
+                task = nil
+                consecutiveSamples = 0
+                return nil
+            }
+            if task?.caseInsensitiveCompare(candidate) == .orderedSame {
+                consecutiveSamples += 1
+            } else {
+                task = candidate
+                consecutiveSamples = 1
+            }
+            return consecutiveSamples >= max(1, requiredConsecutiveSamples)
+                ? candidate
+                : nil
+        }
+    }
+
     static func waitingTask(
         in current: Data,
         after baseline: Data,

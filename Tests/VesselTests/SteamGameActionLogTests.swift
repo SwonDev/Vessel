@@ -67,4 +67,29 @@ final class SteamGameActionLogTests: XCTestCase {
             appId: "2842890"
         ))
     }
+
+    func testSustainedWaitIgnoresTransientInterstitialAndConfirmsPersistentDecision() {
+        var observation = SteamGameActionLog.SustainedWaitingTask()
+
+        XCTAssertNil(observation.observe(
+            "ShowInterstitials",
+            requiredConsecutiveSamples: 4
+        ))
+        XCTAssertNil(observation.observe(
+            "ShowInterstitials",
+            requiredConsecutiveSamples: 4
+        ))
+        XCTAssertNil(observation.observe(nil, requiredConsecutiveSamples: 4))
+
+        for _ in 0..<3 {
+            XCTAssertNil(observation.observe(
+                "ShowEula",
+                requiredConsecutiveSamples: 4
+            ))
+        }
+        XCTAssertEqual(
+            observation.observe("ShowEula", requiredConsecutiveSamples: 4),
+            "ShowEula"
+        )
+    }
 }

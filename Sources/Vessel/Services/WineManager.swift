@@ -6521,18 +6521,26 @@ final class WineManager {
         baseline: Data,
         timeoutSeconds: Int
     ) async -> String? {
+        var sustainedWait = SteamGameActionLog.SustainedWaitingTask()
         for elapsed in 0..<timeoutSeconds {
             if elapsed.isMultiple(of: 2),
                await isGameProcessFamilyRunning(
                 executable: executable,
-                prefix: bottle.prefixPath
+                   prefix: bottle.prefixPath
                ) {
                 return nil
             }
-            if let task = SteamGameActionLog.waitingTask(
+            let waitingTask = SteamGameActionLog.waitingTask(
                 in: steamConsoleLogData(in: bottle),
                 after: baseline,
                 appId: appId
+            )
+            // Cuatro muestras a intervalos de un segundo: suficiente para que Steam escriba la
+            // continuación automática de `ShowInterstitials`, sin retrasar de forma apreciable una
+            // EULA o decisión de hardware que sí permanece bloqueada.
+            if let task = sustainedWait.observe(
+                waitingTask,
+                requiredConsecutiveSamples: 4
             ) {
                 return task
             }

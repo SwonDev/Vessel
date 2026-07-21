@@ -622,7 +622,7 @@ enum D3DMetalMediaEngineProvisioner {
             engine.appendingPathComponent("lib").path,
             runtimeLibrary
         ].joined(separator: ":")
-        return [
+        var environment = [
             "WINEPREFIX": prefix,
             "WINEDEBUG": "-all",
             "WINEMSYNC": "1",
@@ -641,6 +641,14 @@ enum D3DMetalMediaEngineProvisioner {
                 .path,
             "GIO_EXTRA_MODULES": runtime.appendingPathComponent("lib/gio/modules").path
         ]
+        // Este perfil se usa también como motor DRM de Steam: el cliente crea el wineserver y los
+        // juegos que lanza heredan su contexto nativo. Sin anunciar AVX en ese primer proceso,
+        // Rosetta puede ejecutar las instrucciones pero CPUID/IsProcessorFeaturePresent las oculta;
+        // Dragon Engine aborta antes de renderizar. La variable solo existe en macOS 15+.
+        if #available(macOS 15, *) {
+            environment["ROSETTA_ADVERTISE_AVX"] = "1"
+        }
+        return environment
     }
 
     private static func patchWineGStreamerRPath(_ binary: URL) async throws {
