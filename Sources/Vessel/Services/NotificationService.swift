@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import CoreGraphics
+import Darwin
 import UserNotifications
 
 /// Notificaciones nativas de macOS para eventos largos que ocurren cuando el usuario está en
@@ -57,23 +58,70 @@ final class NotificationService {
     func perform(_ action: LaunchAlertAction) {
         switch action {
         case .showSteamClient:
-            // La alerta de SwiftUI todavía está cerrándose cuando llega la acción. Darle un
-            // instante evita que Vessel recupere el foco justo después de activar la ventana de
-            // Steam y hace que el botón responda de forma determinista.
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(350))
-                if Self.activateSteamClientWindow() {
-                    LogStore.shared.log(
-                        "Cliente Steam traído al frente para revisar la licencia.",
-                        level: .debug
-                    )
-                } else {
-                    LogStore.shared.log(
-                        "No se encontró una ventana visible del cliente Steam para traerla al frente.",
-                        level: .warn
-                    )
-                }
+            guard let steam = Self.steamClientApplication() else {
+                LogStore.shared.log(
+                    "No se encontró la aplicación visible del cliente Steam para traerla al frente.",
+                    level: .warn
+                )
+                return
             }
+            // La cesión y la activación coordinada forman una única transacción de foco. Ambas
+            // deben ocurrir dentro de la acción del botón, mientras Vessel todavía es la
+            // aplicación activa; una notificación del sistema puede ocupar el primer plano en el
+            // siguiente ciclo del run loop e invalidar ese contexto.
+            NSApp.yieldActivation(to: steam)
+            // Es importante usar la petición sin opciones: es el par exacto de
+            // `yieldActivation(to:)` para la activación cooperativa moderna. Wine ya expone una
+            // única ventana principal y `activateAllWindows` puede hacer que AppKit rechace un
+            // proceso sin bundle nativo.
+            if steam.activate() || Self.activateUnbundledSteamFromUserAction(steam) {
+                LogStore.shared.log(
+                    "Cliente Steam traído al frente para revisar la licencia.",
+                    level: .debug
+                )
+            } else {
+                LogStore.shared.log(
+                    "macOS no pudo traer al frente la ventana Wine del cliente Steam.",
+                    level: .warn
+                )
+            }
+        }
+    }
+
+    /// Wine es una aplicación regular pero carece de bundle identifier. En ese caso AppKit puede
+    /// rechazar la activación aun después de una cesión válida. Este API público heredado es el
+    /// único que permite declarar que el cambio procede del gesto directo del usuario; jamás se
+    /// invoca desde arranques o notificaciones automáticas.
+    private static func activateUnbundledSteamFromUserAction(
+        _ application: NSRunningApplication
+    ) -> Bool {
+        typealias GetProcessForPIDFunction = @convention(c) (
+            pid_t,
+            UnsafeMutableRawPointer
+        ) -> Int32
+        typealias SetFrontProcessFunction = @convention(c) (
+            UnsafeRawPointer,
+            UInt32
+        ) -> Int32
+
+        guard let framework = dlopen(
+            "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices",
+            RTLD_LAZY | RTLD_LOCAL
+        ) else { return false }
+        defer { dlclose(framework) }
+        guard let getProcessSymbol = dlsym(framework, "GetProcessForPID"),
+              let setFrontSymbol = dlsym(framework, "SetFrontProcessWithOptions")
+        else { return false }
+
+        let getProcess = unsafeBitCast(getProcessSymbol, to: GetProcessForPIDFunction.self)
+        let setFront = unsafeBitCast(setFrontSymbol, to: SetFrontProcessFunction.self)
+        var process = (high: UInt32(0), low: UInt32(0))
+        return withUnsafeMutablePointer(to: &process) { pointer in
+            let raw = UnsafeMutableRawPointer(pointer)
+            guard getProcess(application.processIdentifier, raw) == 0 else { return false }
+            // Bits públicos de HIServices: solo la ventana frontal y acción causada por el usuario.
+            let options = UInt32((1 << 0) | (1 << 1))
+            return setFront(UnsafeRawPointer(raw), options) == 0
         }
     }
 
@@ -95,11 +143,11 @@ final class NotificationService {
             && height >= 240
     }
 
-    private static func activateSteamClientWindow() -> Bool {
+    private static func steamClientApplication() -> NSRunningApplication? {
         guard let windows = CGWindowListCopyWindowInfo(
             [.optionOnScreenOnly, .excludeDesktopElements],
             kCGNullWindowID
-        ) as? [[String: Any]] else { return false }
+        ) as? [[String: Any]] else { return nil }
 
         for window in windows {
             let owner = window[kCGWindowOwnerName as String] as? String ?? ""
@@ -117,9 +165,7 @@ final class NotificationService {
                   let application = NSRunningApplication(processIdentifier: pid)
             else { continue }
 
-            if yieldAndActivate(application) {
-                return true
-            }
+            return application
         }
 
         // CGWindowList puede omitir por completo ventanas ajenas cuando Vessel no tiene permiso
@@ -130,16 +176,8 @@ final class NotificationService {
                 && application.localizedName?.localizedCaseInsensitiveCompare("wine") == .orderedSame
                 && !application.isTerminated
         }
-        guard wineApplications.count == 1, let steam = wineApplications.first else { return false }
-        return yieldAndActivate(steam)
-    }
-
-    /// En macOS moderno una aplicación activa debe ceder explícitamente el foco antes de que otra
-    /// pueda solicitarlo. Sin este paso AppKit devuelve `false` para Wine aunque sea una aplicación
-    /// regular y tenga una ventana visible.
-    private static func yieldAndActivate(_ application: NSRunningApplication) -> Bool {
-        NSApp.yieldActivation(to: application)
-        return application.activate(options: [.activateAllWindows])
+        guard wineApplications.count == 1 else { return nil }
+        return wineApplications.first
     }
 
     /// Estado EN VIVO no bloqueante (banner in-app): informa de fases largas como abrir Steam,
