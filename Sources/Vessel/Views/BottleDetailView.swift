@@ -12,6 +12,47 @@ private struct SteamLibraryScanResult: Sendable {
     let discovered: [SteamLibraryImporter.ImportedGame]
 }
 
+/// Combina la propiedad permanente de Steam con el estado local de instalación. Un juego
+/// instalado sustituye visualmente a su entrada «sin instalar», pero la propiedad original no se
+/// muta: al desinstalar debe reaparecer inmediatamente sin recargar la cuenta ni cambiar de vista.
+@MainActor
+enum SteamLibraryCombiner {
+    static func games(
+        installed: [GameInstall],
+        owned: [SteamAccountService.OwnedGame],
+        updatesAvailable: Set<String> = [],
+        installSize: (String) -> Int64? = { _ in nil }
+    ) -> [StoreGame] {
+        let installedGames = installed.map { game in
+            StoreGame(
+                id: game.steamAppId ?? game.id.uuidString,
+                title: game.name,
+                steamAppId: game.steamAppId,
+                installed: true,
+                updateAvailable: game.steamAppId.map(updatesAvailable.contains) ?? false,
+                lastPlayed: game.lastPlayedAt,
+                installPath: game.installPath.isEmpty
+                    ? (game.executablePath as NSString).deletingLastPathComponent
+                    : game.installPath,
+                executablePath: game.executablePath,
+                installSizeBytes: game.steamAppId.flatMap(installSize)
+            )
+        }
+        let installedIDs = Set(installed.compactMap(\.steamAppId))
+        let availableGames = owned
+            .filter { !installedIDs.contains($0.appId) }
+            .map {
+                StoreGame(
+                    id: $0.appId,
+                    title: $0.name,
+                    steamAppId: $0.appId,
+                    installed: false
+                )
+            }
+        return installedGames + availableGames
+    }
+}
+
 /// Calcula los artefactos que pertenecen inequívocamente a una instalación de Steam antes de
 /// ejecutar una desinstalación. Además de la carpeta canónica reconoce instalaciones heredadas de
 /// SteamCMD llamadas `App <id>`, pero solo cuando su manifiesto interno confirma el mismo AppID.
@@ -162,22 +203,12 @@ struct BottleDetailView: View {
     /// Mapeo de los juegos de Steam (instalados + biblioteca owned) al modelo genérico
     /// `StoreGame`, para usar la biblioteca común (igual que Epic/GOG).
     private var steamGames: [StoreGame] {
-        let installed = localBottle.games.map { g in
-            StoreGame(id: g.steamAppId ?? g.id.uuidString, title: g.name,
-                      steamAppId: g.steamAppId, installed: true,
-                      updateAvailable: g.steamAppId.map(updatesAvailable.contains) ?? false,
-                      lastPlayed: g.lastPlayedAt,
-                      installPath: g.installPath.isEmpty
-                        ? (g.executablePath as NSString).deletingLastPathComponent
-                        : g.installPath,
-                      executablePath: g.executablePath,
-                      installSizeBytes: g.steamAppId.flatMap(steamInstallSize))
-        }
-        let installedIds = Set(localBottle.games.compactMap { $0.steamAppId })
-        let notInstalled = ownedGames
-            .filter { !installedIds.contains($0.appId) }
-            .map { StoreGame(id: $0.appId, title: $0.name, steamAppId: $0.appId, installed: false) }
-        return installed + notInstalled
+        SteamLibraryCombiner.games(
+            installed: localBottle.games,
+            owned: ownedGames,
+            updatesAvailable: updatesAvailable,
+            installSize: steamInstallSize
+        )
     }
 
     var body: some View {
@@ -530,7 +561,6 @@ struct BottleDetailView: View {
             )
             store.addGame(game, to: localBottle.id)
             if let updated = store.bottles.first(where: { $0.id == localBottle.id }) { localBottle = updated }
-            ownedGames.removeAll { $0.appId == appId }
             NotificationService.shared.notify(title: "Instalación completada", body: name)
         } else if operation.kind == .update {
             updatesAvailable.remove(appId)
@@ -764,6 +794,8 @@ struct BottleDetailView: View {
         let usesRealSteamLaunch = eff.useRealSteam
             || UserDefaults.standard.bool(forKey: "vessel.steamRealGlobal")
             || wineManager.requiresSteamAppLaunch(exePath)
+            || wineManager.officialSteamClientProtection(exePath) != nil
+        var launchStartedAt: Date?
         await GameLaunchTracker.shared.track(
             trackId, statsKey: "steam:\(trackId)",
             // Copia de partida automática: al CERRAR el juego, respalda la partida (seguro, solo copia).
@@ -793,6 +825,7 @@ struct BottleDetailView: View {
             }
             // Restaura la copia ANTES de jugar SOLO si es más nueva que la partida local.
             await SaveBackupManager.shared.restoreIfNewer(store: .steam, id: trackId, title: game.name, steamId: game.steamAppId, prefix: localBottle.prefixPath, installPath: game.installPath)
+            launchStartedAt = Date()
             let proc = try await wineManager.launch(
                 executable: exePath, in: localBottle,
                 arguments: [], steamAppId: game.steamAppId, effective: eff)
@@ -806,6 +839,8 @@ struct BottleDetailView: View {
             currentLayer: usedLayer, attempt: attempt,
             fallbackLayers: wineManager.fallbackLayers(forExecutable: exePath, effective: eff),
             usesRealSteam: usesRealSteamLaunch,
+            steamAppId: game.steamAppId,
+            launchStartedAt: launchStartedAt,
             isRunning: { GameLaunchTracker.shared.state(trackId) == .running },
             hasVisibleWindow: {
                 await wineManager.hasVisibleGameWindow(

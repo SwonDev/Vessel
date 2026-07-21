@@ -113,6 +113,31 @@ final class ExecutableResolverTests: XCTestCase {
         XCTAssertNil(SteamLibraryImporter.mainGameExecutable(in: dir))
     }
 
+    /// RE ENGINE y otros motores modernos incluyen reportadores e instaladores auxiliares junto al
+    /// juego. Ninguno puede ganar el desempate por tener un nombre más corto que el payload real.
+    func testIgnoresModernCrashReporterAndInstallerHelpers() throws {
+        let dir = tempDir("Kunitsu-Gami Path of the Goddess - Demo")
+        try makeTree(
+            dir,
+            files: ["KunitsuGamiDemo.exe", "CrashReport.exe", "InstallerMessage.exe"],
+            dirs: []
+        )
+        defer { try? FileManager.default.removeItem(atPath: (dir as NSString).deletingLastPathComponent) }
+
+        let exe = SteamLibraryImporter.mainGameExecutable(in: dir)
+        XCTAssertEqual((exe as NSString?)?.lastPathComponent, "KunitsuGamiDemo.exe")
+    }
+
+    /// Una descarga que solo haya materializado utilidades de diagnóstico/instalación no está
+    /// jugable todavía y no debe aparecer como instalada en Vessel.
+    func testRejectsInstallContainingOnlyModernAuxiliaries() throws {
+        let dir = tempDir("Partial Modern Game")
+        try makeTree(dir, files: ["CrashReporter.exe", "InstallerHelper.exe"], dirs: [])
+        defer { try? FileManager.default.removeItem(atPath: (dir as NSString).deletingLastPathComponent) }
+
+        XCTAssertNil(SteamLibraryImporter.mainGameExecutable(in: dir))
+    }
+
     /// Cuando el juego ofrece un renderer OpenGL real junto al ejecutable base, debe preferirse la
     /// variante explícita. Regresión de Dead Cells: el empate elegía `deadcells.exe` por ser más corto
     /// y ocultaba `deadcells_gl.exe`, que es la ruta compatible con el motor OpenGL de Vessel.

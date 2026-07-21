@@ -90,6 +90,30 @@ final class DependencyManagerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: normalizedPath))
     }
 
+    func testInteractiveSteamEngineNeverFallsThroughToUnifiedWine() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VesselSteamRoleTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        for engine in [WineEngineLocator.unifiedEngineName, WineEngineLocator.portableEngineName] {
+            let bin = tempRoot.appendingPathComponent(engine).appendingPathComponent("bin")
+            try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+            let wine = bin.appendingPathComponent("wine")
+            try "#!/bin/sh\nexit 0\n".write(to: wine, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: wine.path)
+        }
+
+        let resolved = WineEngineLocator.interactiveSteamWineBinary(
+            enginesDirectory: tempRoot.path
+        )
+
+        XCTAssertEqual(
+            resolved,
+            tempRoot.appendingPathComponent(WineEngineLocator.portableEngineName)
+                .appendingPathComponent("bin/wine").path
+        )
+    }
+
     func testDetectsRecoverableSteamServiceCrash() {
         let output = """
         wine: Unhandled page fault on read access to 00000000 at address 00461342
@@ -124,6 +148,20 @@ final class DependencyManagerTests: XCTestCase {
         // estar en los argumentos (ver WineManager.steamLaunchArguments).
         XCTAssertFalse(WineManager.steamLaunchArguments.contains("-cef-disable-gpu"))
         XCTAssertFalse(WineManager.steamLaunchArguments.contains("-noreactlogin"))
+    }
+
+    func testSteamWebHelperWrapperForcesValidatedSoftwareCompositor() throws {
+        let source = try String(
+            contentsOf: VesselPaths.devRepoRoot
+                .appendingPathComponent("Resources/wrapper/steamwebhelper-wrapper.c"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("--disable-gpu --single-process"))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: VesselPaths.devRepoRoot
+                .appendingPathComponent("Resources/steamwebhelper-wrapper.exe").path
+        ))
     }
 
     @MainActor

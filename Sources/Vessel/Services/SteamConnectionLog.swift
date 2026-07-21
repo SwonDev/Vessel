@@ -9,6 +9,9 @@ enum SteamConnectionLogState: Equatable {
     case starting
     case connected
     case disconnected
+    /// Steam invalida esta conexión porque la misma cuenta inició otro cliente. Este estado es
+    /// terminal para el proceso actual: el propio registro dice que no intentará reconectar.
+    case sessionReplaced
     case accessDenied
 
     /// Analiza únicamente lo escrito después de una captura previa del fichero. Comparar el
@@ -61,6 +64,8 @@ enum SteamConnectionLogState: Equatable {
                 state = .starting
             } else if line.contains("Access Denied") || line.contains("LogonFailureReceived") {
                 state = .accessDenied
+            } else if line.localizedCaseInsensitiveContains("Session Replaced") {
+                state = .sessionReplaced
             } else if line.contains("[Logged On,") || line.contains(" Logged On,") {
                 state = .connected
             } else if line.contains("[Logged Off,")
@@ -68,7 +73,9 @@ enum SteamConnectionLogState: Equatable {
                         || line.contains("ConnectionDisconnected") {
                 // No degradar `Access Denied` al `Logged Off` que Steam escribe inmediatamente
                 // después: el rechazo remoto es la causa que necesita autorreparación explícita.
-                if state != .accessDenied { state = .disconnected }
+                if state != .accessDenied, state != .sessionReplaced {
+                    state = .disconnected
+                }
             }
         }
         return state

@@ -361,9 +361,24 @@ final class SteamLibraryImporter: Sendable {
             let lower = path.lowercased()
             let executableStem = ((((lower as NSString).lastPathComponent) as NSString)
                 .deletingPathExtension)
+            let normalizedStem = normalizedName(executableStem)
             if lower.contains("redist") || lower.contains("vcredist") || lower.contains("crashpad")
                 || lower.contains("unitycrash") || lower.contains("crashhandler") || lower.contains("dxsetup")
                 || lower.contains("dotnet") || lower.contains("directx") || lower.contains("uninstall") {
+                continue
+            }
+            // Reportadores de fallos e instaladores auxiliares modernos: tampoco son payloads
+            // jugables. RE ENGINE, entre otros motores AAA, deja `CrashReport.exe` e
+            // `InstallerMessage.exe` en la misma raíz que el juego; como sus rutas son más cortas,
+            // el desempate antiguo podía abrir el reportador en vez del ejecutable principal.
+            // Acotamos la exclusión a nombres funcionales inequívocos para no castigar juegos cuyo
+            // título contenga palabras genéricas como «crash» o «install».
+            let auxiliaryPrefixes = [
+                "crashreport", "crashreporter", "crashsender", "crashuploader", "crashdump",
+                "errorreport", "reportcrash", "installermessage", "installerhelper",
+                "installhelper", "installationhelper", "prerequisiteinstaller", "prereqinstaller"
+            ]
+            if auxiliaryPrefixes.contains(where: { normalizedStem.hasPrefix($0) }) {
                 continue
             }
             // Paneles auxiliares de configuración: no son el juego. Algunos depots antiguos los

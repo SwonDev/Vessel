@@ -62,6 +62,7 @@ Convención general: servicios de orquestación son `@MainActor @Observable fina
 
 - **`WineManager`** — el núcleo. Orquesta crear bottle (`wineboot --init`), configurar capas gráficas, instalar/lanzar Steam y lanzar juegos. Toda la lógica delicada de Wine vive aquí.
 - **`WineEngineLocator`** — resuelve qué binario Wine usar. Detecta el motor portable de Vessel y motores del sistema (Homebrew, GPTK, CrossOver). Define los nombres de motor.
+- **`D3DMetalMediaEngine`** — perfil aislado y auto-reparable para juegos D3D12 que importan Media Foundation. Clona la build FOSS `wine-full`, superpone D3DMetal desde el GPTK ya gestionado, integra `winegstreamer` libre y provisiona un runtime privado oficial de GStreamer verificado por SHA-256; nunca modifica el motor base ni activa `cxcompatdb`.
 - **`DependencyManager`** — descarga e instala el Wine portable, comprueba GPTK/Rosetta/DXMT/DXVK. Descarga tarballs, los extrae, **quita quarantine** (`xattr -d com.apple.quarantine`) y **firma ad-hoc** (`codesign --sign -`) todos los Mach-O.
 - **`DXMTManager` / `DXVKManager`** — instalan las DLLs de traducción en `system32`/`syswow64` del bottle y registran `WINEDLLOVERRIDES` vía `wine reg add`. **Versiones fijadas a propósito**: DXVK `1.10.3` (DXVK 2.x exige `geometryShader`, que el MoltenVK incluido no soporta), DXMT `0.80`.
 - **`SteamWebHelperWrapperInstaller` / `GameWrapperInstaller`** — instalan los wrappers PE32+ (ver abajo) dentro del bottle.

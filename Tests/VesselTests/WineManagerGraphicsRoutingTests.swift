@@ -952,6 +952,41 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         return url
     }
 
+    private func makeRTsoftProtonExecutable(
+        imports: [String]? = nil,
+        marker: String? = nil,
+        includeTexture: Bool = true,
+        includeFont: Bool = true
+    ) throws -> URL {
+        let requiredImports = [
+            "OPENGL32.dll", "fmod.dll", "zlibwapi.dll", "DINPUT8.dll", "libcurl-x64.dll"
+        ]
+        let requiredMarkers = [
+            #"d:\projects\proton\shared\audio\audiomanagerfmodstudio.cpp"#,
+            "protoncurl-agent/1.0",
+            "proton_temp.tmp",
+            "Error initializing GL extensions. Update your GL drivers!"
+        ].joined(separator: " ")
+        let executable = try makePE64(
+            named: "rtsoft-runtime.exe",
+            marker: marker ?? requiredMarkers,
+            imports: imports ?? requiredImports
+        )
+        let root = executable.deletingLastPathComponent()
+        for library in ["fmod.dll", "zlibwapi.dll", "libcurl-x64.dll"] {
+            try Data(library.utf8).write(to: root.appendingPathComponent(library))
+        }
+        let interface = root.appendingPathComponent("interface", isDirectory: true)
+        try FileManager.default.createDirectory(at: interface, withIntermediateDirectories: true)
+        if includeTexture {
+            try Data("texture".utf8).write(to: interface.appendingPathComponent("skin.rttex"))
+        }
+        if includeFont {
+            try Data("font".utf8).write(to: interface.appendingPathComponent("ui.rtfont"))
+        }
+        return executable
+    }
+
     func testPE32DynamicOpenGLUsesUnifiedOpenGLLayer() throws {
         let executable = try makePE32(named: "deadcells_gl.exe", marker: "Failed to init SDL: OpenGL Error")
         defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
@@ -1079,6 +1114,11 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertTrue(manager.isClassicVirtoolsDirectDrawEngine(executable.path))
         XCTAssertTrue(SteamDRMScanner.hasSteamStub(executable.path))
         XCTAssertTrue(manager.usesProtectedDirectLaunchWithConnectedSteam(executable.path))
+        XCTAssertFalse(WineManager.requiresOfficialSteamAppLaunch(
+            builtInProtection: manager.requiresSteamAppLaunch(executable.path),
+            thirdPartyProtection: nil,
+            directLaunchException: manager.usesProtectedDirectLaunchWithConnectedSteam(executable.path)
+        ))
         XCTAssertEqual(
             manager.classicVirtoolsSaveFolderName(executable.path),
             "Classic Adventure Saves"
@@ -1395,6 +1435,54 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [])
     }
 
+    func testRTsoftProtonSDKUsesItsDeterministicOpenGLRoute() throws {
+        let executable = try makeRTsoftProtonExecutable()
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+        let manager = WineManager()
+
+        XCTAssertTrue(manager.isRTsoftProtonOpenGLEngine(executable.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .opengl)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .gcenx)
+        XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [])
+    }
+
+    func testRTsoftProtonSDKRequiresEveryInternalMarker() throws {
+        let marker = [
+            #"d:\projects\proton\shared\audio\audiomanagerfmodstudio.cpp"#,
+            "protoncurl-agent/1.0",
+            "Error initializing GL extensions. Update your GL drivers!"
+        ].joined(separator: " ")
+        let executable = try makeRTsoftProtonExecutable(marker: marker)
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+
+        XCTAssertFalse(WineManager().isRTsoftProtonOpenGLEngine(executable.path))
+    }
+
+    func testRTsoftProtonSDKRequiresItsInterfaceAssets() throws {
+        let executable = try makeRTsoftProtonExecutable(includeFont: false)
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+
+        XCTAssertFalse(WineManager().isRTsoftProtonOpenGLEngine(executable.path))
+    }
+
+    func testRTsoftProtonSDKRequiresEveryImportedRuntime() throws {
+        let executable = try makeRTsoftProtonExecutable(imports: [
+            "OPENGL32.dll", "fmod.dll", "zlibwapi.dll", "DINPUT8.dll"
+        ])
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+
+        XCTAssertFalse(WineManager().isRTsoftProtonOpenGLEngine(executable.path))
+    }
+
+    func testRTsoftProtonSDKAddsWindowModeOnce() {
+        XCTAssertEqual(
+            WineManager.rtsoftProtonLaunchArguments(["-language", "es"]),
+            ["-language", "es", "-window"]
+        )
+        XCTAssertEqual(WineManager.rtsoftProtonLaunchArguments(["-WINDOW"]), ["-WINDOW"])
+        XCTAssertEqual(WineManager.rtsoftProtonLaunchArguments(["-Windowed"]), ["-Windowed"])
+    }
+
     func testLegacyOgreUsesTheRendererSelectedInPluginsConfig() throws {
         let executable = try makePE32(named: "ogre-game.exe")
         let directory = executable.deletingLastPathComponent()
@@ -1466,6 +1554,9 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             "DXVK_LOG_LEVEL": "info",
             "DXVK_LOG_PATH": "/tmp/game",
             "MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS": "1",
+            "GST_PLUGIN_SYSTEM_PATH": "/tmp/gstreamer/plugins",
+            "GST_PLUGIN_SCANNER": "/tmp/gstreamer/scanner",
+            "GST_REGISTRY": "/tmp/bottle/gstreamer.bin",
             "GITHUB_PERSONAL_ACCESS_TOKEN": "placeholder-secret",
             "OPENAI_API_KEY": "placeholder-secret"
         ]
@@ -1478,6 +1569,9 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(clean["DXVK_LOG_LEVEL"], "info")
         XCTAssertEqual(clean["DXVK_LOG_PATH"], "/tmp/game")
         XCTAssertEqual(clean["MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS"], "1")
+        XCTAssertEqual(clean["GST_PLUGIN_SYSTEM_PATH"], "/tmp/gstreamer/plugins")
+        XCTAssertEqual(clean["GST_PLUGIN_SCANNER"], "/tmp/gstreamer/scanner")
+        XCTAssertEqual(clean["GST_REGISTRY"], "/tmp/bottle/gstreamer.bin")
         XCTAssertNil(clean["GITHUB_PERSONAL_ACCESS_TOKEN"])
         XCTAssertNil(clean["OPENAI_API_KEY"])
     }
@@ -1491,6 +1585,47 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             WineManager.fullEngineLaunchAgentLabel(arguments: ["/tmp/games/online-engine.exe"]),
             "com.swondev.vessel.fullgamelauncher"
         )
+    }
+
+    func testManagedMediaEngineDetachesOnlyItsSteamClient() {
+        let mediaWine = "/tmp/Vessel/Engines/wine-d3dmetal-media/bin/wine64"
+        let fullWine = "/tmp/Vessel/Engines/wine-full/bin/wine64"
+
+        XCTAssertTrue(WineManager.requiresDetachedSteamLaunchContext(
+            winePath: mediaWine,
+            arguments: ["/tmp/prefix/drive_c/Steam/steam.exe", "-silent"]
+        ))
+        XCTAssertFalse(WineManager.requiresDetachedSteamLaunchContext(
+            winePath: mediaWine,
+            arguments: ["reg", "add", #"HKCU\\Software\\Wine"#]
+        ))
+        XCTAssertTrue(WineManager.requiresDetachedSteamLaunchContext(
+            winePath: fullWine,
+            arguments: ["reg", "add", #"HKCU\\Software\\Wine"#]
+        ))
+    }
+
+    func testManagedMediaControlCommandsMatchThePersistentSteamWineserver() {
+        let environment = WineManager.wineControlEnvironment(
+            prefix: "/tmp/vessel-bottle",
+            wine: "/tmp/Vessel/Engines/wine-d3dmetal-media/bin/wine64"
+        )
+
+        XCTAssertEqual(environment["WINEMSYNC"], "1")
+        XCTAssertEqual(environment["WINEESYNC"], "1")
+        XCTAssertEqual(environment["WINEFSYNC"], "1")
+    }
+
+    func testSystemNotificationsRequireAnApplicationBundle() {
+        XCTAssertTrue(NotificationService.canPostSystemNotifications(
+            bundleURL: URL(fileURLWithPath: "/Applications/Vessel.app", isDirectory: true)
+        ))
+        XCTAssertFalse(NotificationService.canPostSystemNotifications(
+            bundleURL: URL(fileURLWithPath: "/tmp/VesselPackageTests.xctest")
+        ))
+        XCTAssertFalse(NotificationService.canPostSystemNotifications(
+            bundleURL: URL(fileURLWithPath: "/tmp/Vessel")
+        ))
     }
 
     func testPE32SDL2OpenGLDisablesLegacyRetinaScaling() throws {
@@ -1897,6 +2032,22 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         ))
     }
 
+    func testLaunchAgentHelperPatternDoesNotMatchMacOSCrashReporter() throws {
+        let pattern = WineManager.selfExcludingProcessPattern("CrashReport.exe")
+        let regex = try NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        let gameHelper = #"C:\Games\Example\CrashReport.exe"#
+        let macOSHelper = "/System/Library/CoreServices/CrashReporterSupportHelper server-init"
+
+        XCTAssertNotNil(regex.firstMatch(
+            in: gameHelper,
+            range: NSRange(gameHelper.startIndex..., in: gameHelper)
+        ))
+        XCTAssertNil(regex.firstMatch(
+            in: macOSHelper,
+            range: NSRange(macOSHelper.startIndex..., in: macOSHelper)
+        ))
+    }
+
     func testWindowsProcessLookupIgnoresExecutableCapitalization() throws {
         XCTAssertEqual(
             WineManager.pgrepProcessLookupArguments(matching: "limbo.exe"),
@@ -1969,6 +2120,32 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             WineManager.enablingManagedRuntime(in: "mscoree=d;winemenubuilder.exe=d"),
             "winemenubuilder.exe=d"
         )
+    }
+
+    func testD3D12MediaProfileIsDetectedFromPEImports() {
+        XCTAssertTrue(WineManager.requiresManagedD3D12Media(
+            importedLibraries: ["D3D12.dll", "MFPlat.DLL", "MFReadWrite.dll"],
+            isD3D12: true
+        ))
+        XCTAssertTrue(WineManager.requiresManagedD3D12Media(
+            importedLibraries: ["d3d12.dll", "mfplat.dll", "mf.dll"],
+            isD3D12: true
+        ))
+    }
+
+    func testMediaImportsDoNotRerouteD3D11OrGamesWithoutAReader() {
+        XCTAssertFalse(WineManager.requiresManagedD3D12Media(
+            importedLibraries: ["d3d11.dll", "mfplat.dll", "mfreadwrite.dll"],
+            isD3D12: false
+        ))
+        XCTAssertFalse(WineManager.requiresManagedD3D12Media(
+            importedLibraries: ["d3d12.dll", "mfplat.dll"],
+            isD3D12: true
+        ))
+        XCTAssertFalse(WineManager.requiresManagedD3D12Media(
+            importedLibraries: ["d3d12.dll", "mfreadwrite.dll"],
+            isD3D12: true
+        ))
     }
 
     func testEpicLaunchArgumentsAreRedacted() {
@@ -2050,6 +2227,86 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
 
         XCTAssertTrue(LaunchDiagnostics.steamEULAPromptDetected(in: waiting))
         XCTAssertFalse(LaunchDiagnostics.steamEULAPromptDetected(in: acceptedAndRetried))
+    }
+
+    func testSteamAlertOnlyFocusesARealClientWindow() {
+        XCTAssertTrue(NotificationService.isSteamClientWindow(
+            ownerName: "wine",
+            windowName: "Steam",
+            width: 1280,
+            height: 800
+        ))
+        // macOS puede ocultar el título sin permiso de captura; la ventana grande del único
+        // proceso Wine sigue siendo identificable durante el EULA (el juego aún no existe).
+        XCTAssertTrue(NotificationService.isSteamClientWindow(
+            ownerName: "wine",
+            windowName: "",
+            width: 1280,
+            height: 800
+        ))
+        XCTAssertTrue(NotificationService.isSteamClientWindow(
+            ownerName: "wine",
+            windowName: "Steam Client Bootstrapper",
+            width: 1280,
+            height: 800
+        ))
+        XCTAssertFalse(NotificationService.isSteamClientWindow(
+            ownerName: "wine",
+            windowName: "",
+            width: 480,
+            height: 320
+        ))
+        XCTAssertFalse(NotificationService.isSteamClientWindow(
+            ownerName: "KunitsuGamiDemo",
+            windowName: "Steamworks",
+            width: 1280,
+            height: 800
+        ))
+        XCTAssertFalse(NotificationService.isSteamClientWindow(
+            ownerName: "wine",
+            windowName: "Steam",
+            width: 1,
+            height: 1
+        ))
+    }
+
+    func testSteamClientRolesRestartOnlyWhenTheTransitionRequiresIt() {
+        XCTAssertFalse(WineManager.shouldRestartSteamClient(
+            steamRunning: false,
+            currentEngineID: nil,
+            targetEngineID: "wine-osx64",
+            role: .interactive,
+            wrapperInstalled: false
+        ))
+        XCTAssertTrue(WineManager.shouldRestartSteamClient(
+            steamRunning: true,
+            currentEngineID: "wine-d3dmetal",
+            targetEngineID: "wine-osx64",
+            role: .interactive,
+            wrapperInstalled: false
+        ))
+        XCTAssertTrue(WineManager.shouldRestartSteamClient(
+            steamRunning: true,
+            currentEngineID: "wine-osx64",
+            targetEngineID: "wine-osx64",
+            role: .interactive,
+            wrapperInstalled: false
+        ))
+        XCTAssertFalse(WineManager.shouldRestartSteamClient(
+            steamRunning: true,
+            currentEngineID: "wine-osx64",
+            targetEngineID: "wine-osx64",
+            role: .interactive,
+            wrapperInstalled: true
+        ))
+        // Un cliente visible conectado puede servir como DRM si el juego usa el mismo motor.
+        XCTAssertFalse(WineManager.shouldRestartSteamClient(
+            steamRunning: true,
+            currentEngineID: "wine-unified",
+            targetEngineID: "wine-unified",
+            role: .backgroundDRM,
+            wrapperInstalled: true
+        ))
     }
 
     func testSteamAppLaunchAcknowledgementRequiresNewExactAppIDEntry() {
