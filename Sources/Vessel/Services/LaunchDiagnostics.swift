@@ -183,6 +183,7 @@ enum LaunchDiagnostics {
         currentLayer: GameConfig.GraphicsLayer, attempt: Int,
         fallbackLayers: [GameConfig.GraphicsLayer] = [],
         usesRealSteam: Bool = false,
+        steamAppId: String? = nil,
         launchStartedAt: Date? = nil,
         isRunning: @escaping @MainActor () -> Bool = { false },
         hasVisibleWindow: (@MainActor () async -> Bool)? = nil,
@@ -288,7 +289,8 @@ enum LaunchDiagnostics {
                         title: title,
                         body: body,
                         actionTitle: waitingForSteamEULA ? "Abrir Steam" : nil,
-                        action: waitingForSteamEULA ? .showSteamClient : nil
+                        action: waitingForSteamEULA ? .showSteamClient : nil,
+                        steamAppId: waitingForSteamEULA ? steamAppId : nil
                     )
                     if waitingForSteamEULA {
                         GameLaunchTracker.shared.stop(gameId)

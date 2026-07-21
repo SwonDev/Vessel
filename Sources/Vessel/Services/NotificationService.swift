@@ -17,13 +17,24 @@ final class NotificationService {
     static let shared = NotificationService()
     private init() {}
 
+    /// `UNUserNotificationCenter.current()` aborta internamente si el proceso no pertenece a un
+    /// bundle de aplicación (por ejemplo, `xctest` o una herramienta CLI). Vessel conserva en esos
+    /// contextos sus banners in-app, pero no intenta publicar una notificación del sistema.
+    nonisolated static func canPostSystemNotifications(
+        bundleURL: URL = Bundle.main.bundleURL
+    ) -> Bool {
+        bundleURL.pathExtension.caseInsensitiveCompare("app") == .orderedSame
+    }
+
     /// Pide permiso de notificaciones una vez (al arrancar). Idempotente.
     func requestAuthorization() {
+        guard Self.canPostSystemNotifications() else { return }
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
     /// Publica una notificación inmediata. Si el usuario denegó el permiso, el sistema la ignora.
     func notify(title: String, body: String) {
+        guard Self.canPostSystemNotifications() else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
@@ -40,7 +51,8 @@ final class NotificationService {
         title: String,
         body: String,
         actionTitle: String? = nil,
-        action: LaunchAlertAction? = nil
+        action: LaunchAlertAction? = nil,
+        steamAppId: String? = nil
     ) {
         notify(title: title, body: body)
         var userInfo: [String: Any] = ["title": title, "body": body]
@@ -48,6 +60,7 @@ final class NotificationService {
             userInfo["actionTitle"] = actionTitle
             userInfo["action"] = action.rawValue
         }
+        if let steamAppId { userInfo["steamAppId"] = steamAppId }
         NotificationCenter.default.post(
             name: .launchMessage,
             object: nil,
@@ -55,36 +68,51 @@ final class NotificationService {
         )
     }
 
-    func perform(_ action: LaunchAlertAction) {
+    func perform(_ action: LaunchAlertAction, steamAppId: String? = nil) {
         switch action {
         case .showSteamClient:
-            guard let steam = Self.steamClientApplication() else {
-                LogStore.shared.log(
-                    "No se encontró la aplicación visible del cliente Steam para traerla al frente.",
-                    level: .warn
+            // El backend de DRM puede estar conectado pero renderizar completamente negro. La
+            // acción no intenta enfocarlo: cambia primero al rol interactivo validado y vuelve a
+            // solicitar el AppID para que Steam muestre su EULA en esa interfaz.
+            Task { @MainActor in
+                guard let bottle = BottleStore.shared.bottles.first(where: { $0.name == "Steam" })
+                    ?? BottleStore.shared.bottles.first(where: {
+                        FileManager.default.fileExists(atPath: $0.steamPath)
+                    }) else {
+                    LogStore.shared.log(
+                        "No se encontró el entorno Steam de Vessel para abrir la licencia.",
+                        level: .warn
+                    )
+                    return
+                }
+                await WineManager().openSteamClient(
+                    in: bottle,
+                    requestingAppId: steamAppId
                 )
-                return
+                Self.focusSteamClientFromUserAction()
             }
-            // La cesión y la activación coordinada forman una única transacción de foco. Ambas
-            // deben ocurrir dentro de la acción del botón, mientras Vessel todavía es la
-            // aplicación activa; una notificación del sistema puede ocupar el primer plano en el
-            // siguiente ciclo del run loop e invalidar ese contexto.
-            NSApp.yieldActivation(to: steam)
-            // Es importante usar la petición sin opciones: es el par exacto de
-            // `yieldActivation(to:)` para la activación cooperativa moderna. Wine ya expone una
-            // única ventana principal y `activateAllWindows` puede hacer que AppKit rechace un
-            // proceso sin bundle nativo.
-            if steam.activate() || Self.activateUnbundledSteamFromUserAction(steam) {
-                LogStore.shared.log(
-                    "Cliente Steam traído al frente para revisar la licencia.",
-                    level: .debug
-                )
-            } else {
-                LogStore.shared.log(
-                    "macOS no pudo traer al frente la ventana Wine del cliente Steam.",
-                    level: .warn
-                )
-            }
+        }
+    }
+
+    private static func focusSteamClientFromUserAction() {
+        guard let steam = steamClientApplication() else {
+            LogStore.shared.log(
+                "No se encontró la aplicación visible del cliente Steam para traerla al frente.",
+                level: .warn
+            )
+            return
+        }
+        NSApp.yieldActivation(to: steam)
+        if steam.activate() || activateUnbundledSteamFromUserAction(steam) {
+            LogStore.shared.log(
+                "Cliente Steam interactivo traído al frente para revisar la licencia.",
+                level: .debug
+            )
+        } else {
+            LogStore.shared.log(
+                "macOS no pudo traer al frente la ventana Wine del cliente Steam.",
+                level: .warn
+            )
         }
     }
 

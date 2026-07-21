@@ -113,6 +113,33 @@ final class DependencyManager {
         )
     }
 
+    /// Asegura el motor del cliente Steam **interactivo** y devuelve exactamente su binario.
+    ///
+    /// `ensureWinePortableInstalled` conserva su contrato histórico y puede devolver el motor DXMT
+    /// preferido por el inventario general. Para login, tienda y EULA eso no es suficiente: la ruta
+    /// validada visualmente es Gcenx (`wine-osx64`) con el wrapper de composición por software.
+    /// Separar el contrato impide seleccionar por accidente un motor de juego para la interfaz.
+    func ensureInteractiveSteamEngineInstalled(
+        progress: @escaping @Sendable (String, Double) -> Void
+    ) async throws -> String {
+        if let wine = WineEngineLocator.interactiveSteamWineBinary() {
+            return wine
+        }
+
+        try await installGcenxWine(progress: progress)
+        guard let wine = WineEngineLocator.interactiveSteamWineBinary() else {
+            throw NSError(
+                domain: "Vessel",
+                code: 4,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "El motor interactivo de Steam se instaló, pero no se pudo verificar."
+                ]
+            )
+        }
+        return wine
+    }
+
     /// Instala los DOS motores que Vessel necesita (arquitectura de doble motor):
     ///  - **Gcenx wine-osx64** (Wine completo): motor del CLIENTE de Steam y apps.
     ///  - **wine-dxmt** (3Shain, con símbolos macdrv): motor de JUEGOS D3D11, con
@@ -616,6 +643,59 @@ final class DependencyManager {
     func ensureFullEngine(progress: @escaping @Sendable (String, Double) -> Void = { _, _ in }) async throws {
         guard !WineEngineLocator.isFullEngineInstalled(enginesDirectory: enginesDirectory) else { return }
         try await installWineFull(progress: progress)
+    }
+
+    /// Asegura el perfil aislado para juegos D3D12 que reproducen vídeo mediante Media Foundation.
+    ///
+    /// La combinación se construye solo con dependencias ya gestionadas por Vessel: núcleo FOSS de
+    /// `wine-full`, D3DMetal del motor GPTK, winegstreamer de Gcenx y GStreamer oficial con SHA-256.
+    /// Ninguna pieza se aplica sobre los motores compartidos, de modo que una reparación multimedia
+    /// no puede introducir regresiones en juegos que ya funcionan.
+    func ensureD3DMetalMediaEngine(
+        progress: @escaping @Sendable (String, Double) -> Void = { _, _ in }
+    ) async throws -> String {
+        try await ensureFullEngine(progress: progress)
+        guard let baseWine = WineEngineLocator.fullWineBinary(
+            enginesDirectory: enginesDirectory
+        ), let baseEngine = WineEngineLocator.engineRoot(
+            forWineExecutable: URL(fileURLWithPath: baseWine)
+        ) else {
+            throw NSError(
+                domain: "Vessel",
+                code: 104,
+                userInfo: [NSLocalizedDescriptionKey: "No se pudo localizar el núcleo Wine FOSS para el motor multimedia."]
+            )
+        }
+
+        let gptk = GPTKManager()
+        try await gptk.ensureInstalled(progress: progress)
+        let gptkWineRoot = URL(fileURLWithPath: gptk.engineRootPath, isDirectory: true)
+            .appendingPathComponent("wine", isDirectory: true)
+
+        let gcenxWine = try await ensureInteractiveSteamEngineInstalled(progress: progress)
+        guard let gcenxEngine = WineEngineLocator.engineRoot(
+            forWineExecutable: URL(fileURLWithPath: gcenxWine)
+        ) else {
+            throw NSError(
+                domain: "Vessel",
+                code: 105,
+                userInfo: [NSLocalizedDescriptionKey: "No se pudo localizar winegstreamer en el motor de Steam."]
+            )
+        }
+
+        _ = try await ManagedGStreamerRuntime.shared.ensureInstalled(
+            enginesDirectory: enginesDirectory,
+            progress: progress
+        )
+        let finalEngine = URL(fileURLWithPath: enginesDirectory, isDirectory: true)
+            .appendingPathComponent(WineEngineLocator.d3dmetalMediaEngineName, isDirectory: true)
+        return try await D3DMetalMediaEngineProvisioner.ensureInstalled(
+            baseEngine: baseEngine,
+            gptkWineRoot: gptkWineRoot,
+            gcenxEngine: gcenxEngine,
+            finalEngine: finalEngine,
+            progress: progress
+        )
     }
 
     /// Descarga la build propia de `wine-full` (fuentes CrossOver 26.2.0) de Vessel-Engines.

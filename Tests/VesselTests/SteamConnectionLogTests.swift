@@ -101,4 +101,17 @@ final class SteamConnectionLogTests: XCTestCase {
             .connected
         )
     }
+
+    func testSessionReplacementRemainsTerminalAfterDisconnectLines() {
+        let text = """
+        [2026-07-21 07:58:13] [Logged On, 4, 7] RecvMsgClientLoggedOff('Session Replaced')\r
+        [2026-07-21 07:58:13] [Logged Off, 4, 0] ConnectionDisconnected('Disconnected By Remote Host') : 'Session Replaced'\r
+        [2026-07-21 07:58:13] ConnectionDisconnected() not auto reconnecting due to Session Replaced\r
+        """
+
+        XCTAssertEqual(
+            SteamConnectionLogState.parseRecent(Data(text.utf8)),
+            .sessionReplaced
+        )
+    }
 }

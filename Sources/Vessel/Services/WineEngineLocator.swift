@@ -57,11 +57,15 @@ enum WineEngineLocator {
     /// wineserver). Si no está instalado, se cae a GPTK/D3DMetal (que no corre el CEF moderno).
     static let d3dmetalEngineName = "wine-d3dmetal"
 
-    /// Motor DEDICADO y APARTE para "Abrir Steam (como CrossOver)": clon del unificado (mismo Wine 11
-    /// que SÍ renderiza el CEF: cliente + biblioteca) con un `winemac.so` propio que compone TODAS las
-    /// sub-superficies del CEF (CW HACK 22435) para que la **TIENDA** también se vea. Es EXCLUSIVO del
-    /// cliente de Steam; NO toca los motores de juegos del modo Vessel. La única unión es la biblioteca
-    /// instalada (steamapps del prefijo). Si no está, `openSteamClient` cae al unificado normal.
+    /// Variante aislada para juegos D3D12 que importan Media Foundation. Parte del núcleo FOSS
+    /// `wine-full`, superpone el par PE/Unix de D3DMetal y añade winegstreamer con un GStreamer
+    /// privado verificado. No modifica `wine-d3dmetal` ni ningún motor compartido.
+    static let d3dmetalMediaEngineName = "wine-d3dmetal-media"
+
+    /// Motor experimental y aislado del cliente Steam, conservado como laboratorio del compositor
+    /// CEF. La ruta de producción interactiva usa `wine-osx64`: la build moderna de Steam quedó
+    /// validada píxel a píxel con Gcenx + `--disable-gpu --single-process`, mientras este clon del
+    /// unificado reinicia `steamwebhelper` con `0x80000003`. No se usa para el DRM de los juegos.
     static let steamEngineName = "wine-steam"
 
     /// Motor Wine **COMPLETO** de Vessel (`wine-full`): un único Wine moderno "tipo CrossOver"
@@ -221,9 +225,15 @@ enum WineEngineLocator {
         )
     }
 
-    /// True si la ruta de Wine pertenece al motor D3DMetal propio (`wine-d3dmetal`).
+    /// True si la ruta de Wine pertenece a uno de los motores D3DMetal propios.
     static func isD3DMetalEngine(_ winePath: String) -> Bool {
         winePath.contains("/\(d3dmetalEngineName)/")
+            || winePath.contains("/\(d3dmetalMediaEngineName)/")
+    }
+
+    /// True únicamente para el perfil D3DMetal con Media Foundation funcional.
+    static func isD3DMetalMediaEngine(_ winePath: String) -> Bool {
+        winePath.contains("/\(d3dmetalMediaEngineName)/")
     }
 
     /// True si la ruta de Wine pertenece al **GPTK/D3DMetal de Apple** (`gptk-mythic` o su
@@ -253,11 +263,31 @@ enum WineEngineLocator {
         wineBinary(in: d3dmetalEngineName, enginesDirectory: enginesDirectory)
     }
 
+    /// Binario del motor D3DMetal + multimedia, o `nil` si aún no se ha aprovisionado.
+    static func d3dmetalMediaWineBinary(
+        enginesDirectory: String = VesselPaths.enginesDirectory
+    ) -> String? {
+        wineBinary(in: d3dmetalMediaEngineName, enginesDirectory: enginesDirectory)
+    }
+
     /// Binario Wine del motor DEDICADO del cliente de Steam (`wine-steam`), o `nil` si no está.
     /// Es el que usa `openSteamClient` para abrir Steam APARTE (cliente + biblioteca + tienda), sin
     /// tocar los motores de juegos. Si falta, `openSteamClient` cae a `clientWineBinary` (unificado).
     static func steamDedicatedWineBinary(enginesDirectory: String = VesselPaths.enginesDirectory) -> String? {
         wineBinary(in: steamEngineName, enginesDirectory: enginesDirectory)
+    }
+
+    /// Motor del cliente Steam que el usuario debe poder VER y manejar (login, EULA, tienda).
+    ///
+    /// Es deliberadamente distinto de `clientWineBinary`: el cliente invisible de DRM debe correr
+    /// en el mismo wineserver que cada juego, pero CEF solo ha quedado validado con píxeles completos
+    /// en Gcenx (`wine-osx64`) y composición por software. Mantener esta resolución explícita evita
+    /// que instalar `wine-unified` cambie silenciosamente el motor de la interfaz y reintroduzca una
+    /// ventana negra o un webhelper en bucle.
+    static func interactiveSteamWineBinary(
+        enginesDirectory: String = VesselPaths.enginesDirectory
+    ) -> String? {
+        wineBinary(in: portableEngineName, enginesDirectory: enginesDirectory)
     }
 
     /// Binario Wine del motor del CLIENTE de Steam (unificado si está, si no Gcenx).
@@ -286,6 +316,7 @@ enum WineEngineLocator {
         winePath.contains("/\(mousefixEngineName)/") || winePath.contains("/\(dxmtEngineName)/")
             || winePath.contains("/\(unifiedEngineName)/") || winePath.contains("/\(unifiedOpenGLEngineName)/")
             || winePath.contains("/\(unifiedLegacyOpenGLEngineName)/")
+            || winePath.contains("/\(d3dmetalMediaEngineName)/")
     }
 
     static func portableEngineDirectory(enginesDirectory: String = VesselPaths.enginesDirectory) -> URL {

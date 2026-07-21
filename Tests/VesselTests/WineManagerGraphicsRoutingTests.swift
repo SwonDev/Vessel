@@ -1554,6 +1554,9 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             "DXVK_LOG_LEVEL": "info",
             "DXVK_LOG_PATH": "/tmp/game",
             "MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS": "1",
+            "GST_PLUGIN_SYSTEM_PATH": "/tmp/gstreamer/plugins",
+            "GST_PLUGIN_SCANNER": "/tmp/gstreamer/scanner",
+            "GST_REGISTRY": "/tmp/bottle/gstreamer.bin",
             "GITHUB_PERSONAL_ACCESS_TOKEN": "placeholder-secret",
             "OPENAI_API_KEY": "placeholder-secret"
         ]
@@ -1566,6 +1569,9 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(clean["DXVK_LOG_LEVEL"], "info")
         XCTAssertEqual(clean["DXVK_LOG_PATH"], "/tmp/game")
         XCTAssertEqual(clean["MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS"], "1")
+        XCTAssertEqual(clean["GST_PLUGIN_SYSTEM_PATH"], "/tmp/gstreamer/plugins")
+        XCTAssertEqual(clean["GST_PLUGIN_SCANNER"], "/tmp/gstreamer/scanner")
+        XCTAssertEqual(clean["GST_REGISTRY"], "/tmp/bottle/gstreamer.bin")
         XCTAssertNil(clean["GITHUB_PERSONAL_ACCESS_TOKEN"])
         XCTAssertNil(clean["OPENAI_API_KEY"])
     }
@@ -1579,6 +1585,47 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             WineManager.fullEngineLaunchAgentLabel(arguments: ["/tmp/games/online-engine.exe"]),
             "com.swondev.vessel.fullgamelauncher"
         )
+    }
+
+    func testManagedMediaEngineDetachesOnlyItsSteamClient() {
+        let mediaWine = "/tmp/Vessel/Engines/wine-d3dmetal-media/bin/wine64"
+        let fullWine = "/tmp/Vessel/Engines/wine-full/bin/wine64"
+
+        XCTAssertTrue(WineManager.requiresDetachedSteamLaunchContext(
+            winePath: mediaWine,
+            arguments: ["/tmp/prefix/drive_c/Steam/steam.exe", "-silent"]
+        ))
+        XCTAssertFalse(WineManager.requiresDetachedSteamLaunchContext(
+            winePath: mediaWine,
+            arguments: ["reg", "add", #"HKCU\\Software\\Wine"#]
+        ))
+        XCTAssertTrue(WineManager.requiresDetachedSteamLaunchContext(
+            winePath: fullWine,
+            arguments: ["reg", "add", #"HKCU\\Software\\Wine"#]
+        ))
+    }
+
+    func testManagedMediaControlCommandsMatchThePersistentSteamWineserver() {
+        let environment = WineManager.wineControlEnvironment(
+            prefix: "/tmp/vessel-bottle",
+            wine: "/tmp/Vessel/Engines/wine-d3dmetal-media/bin/wine64"
+        )
+
+        XCTAssertEqual(environment["WINEMSYNC"], "1")
+        XCTAssertEqual(environment["WINEESYNC"], "1")
+        XCTAssertEqual(environment["WINEFSYNC"], "1")
+    }
+
+    func testSystemNotificationsRequireAnApplicationBundle() {
+        XCTAssertTrue(NotificationService.canPostSystemNotifications(
+            bundleURL: URL(fileURLWithPath: "/Applications/Vessel.app", isDirectory: true)
+        ))
+        XCTAssertFalse(NotificationService.canPostSystemNotifications(
+            bundleURL: URL(fileURLWithPath: "/tmp/VesselPackageTests.xctest")
+        ))
+        XCTAssertFalse(NotificationService.canPostSystemNotifications(
+            bundleURL: URL(fileURLWithPath: "/tmp/Vessel")
+        ))
     }
 
     func testPE32SDL2OpenGLDisablesLegacyRetinaScaling() throws {
@@ -1985,6 +2032,22 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         ))
     }
 
+    func testLaunchAgentHelperPatternDoesNotMatchMacOSCrashReporter() throws {
+        let pattern = WineManager.selfExcludingProcessPattern("CrashReport.exe")
+        let regex = try NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        let gameHelper = #"C:\Games\Example\CrashReport.exe"#
+        let macOSHelper = "/System/Library/CoreServices/CrashReporterSupportHelper server-init"
+
+        XCTAssertNotNil(regex.firstMatch(
+            in: gameHelper,
+            range: NSRange(gameHelper.startIndex..., in: gameHelper)
+        ))
+        XCTAssertNil(regex.firstMatch(
+            in: macOSHelper,
+            range: NSRange(macOSHelper.startIndex..., in: macOSHelper)
+        ))
+    }
+
     func testWindowsProcessLookupIgnoresExecutableCapitalization() throws {
         XCTAssertEqual(
             WineManager.pgrepProcessLookupArguments(matching: "limbo.exe"),
@@ -2057,6 +2120,32 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             WineManager.enablingManagedRuntime(in: "mscoree=d;winemenubuilder.exe=d"),
             "winemenubuilder.exe=d"
         )
+    }
+
+    func testD3D12MediaProfileIsDetectedFromPEImports() {
+        XCTAssertTrue(WineManager.requiresManagedD3D12Media(
+            importedLibraries: ["D3D12.dll", "MFPlat.DLL", "MFReadWrite.dll"],
+            isD3D12: true
+        ))
+        XCTAssertTrue(WineManager.requiresManagedD3D12Media(
+            importedLibraries: ["d3d12.dll", "mfplat.dll", "mf.dll"],
+            isD3D12: true
+        ))
+    }
+
+    func testMediaImportsDoNotRerouteD3D11OrGamesWithoutAReader() {
+        XCTAssertFalse(WineManager.requiresManagedD3D12Media(
+            importedLibraries: ["d3d11.dll", "mfplat.dll", "mfreadwrite.dll"],
+            isD3D12: false
+        ))
+        XCTAssertFalse(WineManager.requiresManagedD3D12Media(
+            importedLibraries: ["d3d12.dll", "mfplat.dll"],
+            isD3D12: true
+        ))
+        XCTAssertFalse(WineManager.requiresManagedD3D12Media(
+            importedLibraries: ["d3d12.dll", "mfreadwrite.dll"],
+            isD3D12: true
+        ))
     }
 
     func testEpicLaunchArgumentsAreRedacted() {
@@ -2178,6 +2267,45 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             windowName: "Steam",
             width: 1,
             height: 1
+        ))
+    }
+
+    func testSteamClientRolesRestartOnlyWhenTheTransitionRequiresIt() {
+        XCTAssertFalse(WineManager.shouldRestartSteamClient(
+            steamRunning: false,
+            currentEngineID: nil,
+            targetEngineID: "wine-osx64",
+            role: .interactive,
+            wrapperInstalled: false
+        ))
+        XCTAssertTrue(WineManager.shouldRestartSteamClient(
+            steamRunning: true,
+            currentEngineID: "wine-d3dmetal",
+            targetEngineID: "wine-osx64",
+            role: .interactive,
+            wrapperInstalled: false
+        ))
+        XCTAssertTrue(WineManager.shouldRestartSteamClient(
+            steamRunning: true,
+            currentEngineID: "wine-osx64",
+            targetEngineID: "wine-osx64",
+            role: .interactive,
+            wrapperInstalled: false
+        ))
+        XCTAssertFalse(WineManager.shouldRestartSteamClient(
+            steamRunning: true,
+            currentEngineID: "wine-osx64",
+            targetEngineID: "wine-osx64",
+            role: .interactive,
+            wrapperInstalled: true
+        ))
+        // Un cliente visible conectado puede servir como DRM si el juego usa el mismo motor.
+        XCTAssertFalse(WineManager.shouldRestartSteamClient(
+            steamRunning: true,
+            currentEngineID: "wine-unified",
+            targetEngineID: "wine-unified",
+            role: .backgroundDRM,
+            wrapperInstalled: true
         ))
     }
 

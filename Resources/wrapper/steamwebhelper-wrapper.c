@@ -11,17 +11,18 @@
 #include <string.h>
 #include <wchar.h>
 
-/* `--single-process` (SIN `--disable-gpu`): el CEF de la build MODERNA de Steam (Chrome 126+,
- * jul-2026) renderiza su UI por **ANGLE→D3D11**, y en el motor unificado ese D3D11 es **DXMT→Metal**.
- * En MULTIPROCESO cada proceso (renderer/gpu) abre su propio swapchain D3D11 cross-process, que
- * DXMT no soporta (bug Issue #141) → `SwapChain11 … EGL_BAD_ALLOC` → ventana NEGRA. Con
- * `--single-process` el swapchain D3D11/DXMT vive en UN solo proceso → DXMT renderiza el CEF a
- * `D3D_FEATURE_LEVEL_11_1` y el login/biblioteca se pintan (VERIFICADO in-vivo 2026-07-02 23:31:
- * pantalla "Iniciando sesión" + `Logged On`). NO usar `--disable-gpu`: forzaría el software
- * (SwiftShader), que en la build nueva CRASHEA el proceso (0x80000003) bajo este Wine. NO usar
- * `--use-gl/--use-angle=swiftshader`: chocan con el `swiftshader-webgl` de Steam y dan negro.
- * (Requiere el `win32u.so` del build wow64, no el que hace dlopen directo de MoltenVK.) */
-#define EXTRA_FLAGS  L"--single-process"
+/* Cliente Steam INTERACTIVO (Chrome 126+, build 1782866176): `--disable-gpu`
+ * fuerza rasterización Skia por CPU y `--single-process` mantiene navegador,
+ * renderer y servicios en el único proceso que Wine macOS puede componer de forma
+ * estable. Validado in-vivo el 2026-07-21 con Gcenx wine-osx64 11.10: tienda,
+ * biblioteca, imágenes y navegación completas. Sin `--disable-gpu`, Gcenx solo
+ * dibuja la franja superior y deja el resto negro; en wine-unified ambas variantes
+ * pueden terminar en 0x80000003, por lo que ese motor no se usa para este rol.
+ *
+ * El cliente de DRM en segundo plano NO carga este wrapper: WineManager restaura
+ * el webhelper original multiproceso antes de lanzarlo en el mismo motor que el
+ * juego. Así este ajuste no modifica ninguna ruta gráfica ya validada. */
+#define EXTRA_FLAGS  L"--disable-gpu --single-process"
 #define REAL_BINARY  L"steamwebhelper_real.exe"
 
 static FILE *dbg = NULL;

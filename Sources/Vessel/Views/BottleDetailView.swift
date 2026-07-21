@@ -839,6 +839,7 @@ struct BottleDetailView: View {
             currentLayer: usedLayer, attempt: attempt,
             fallbackLayers: wineManager.fallbackLayers(forExecutable: exePath, effective: eff),
             usesRealSteam: usesRealSteamLaunch,
+            steamAppId: game.steamAppId,
             launchStartedAt: launchStartedAt,
             isRunning: { GameLaunchTracker.shared.state(trackId) == .running },
             hasVisibleWindow: {
