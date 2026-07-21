@@ -874,7 +874,8 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         to url: URL,
         is64Bit: Bool,
         imports: [String],
-        marker: String
+        marker: String,
+        exports: [String] = []
     ) throws {
         var data = Data(repeating: 0, count: 0x800)
         let peOffset = 0x80
@@ -919,6 +920,37 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
                 let bytes = Data(library.utf8) + Data([0])
                 data.replaceSubrange(nameOffset..<(nameOffset + bytes.count), with: bytes)
                 nameOffset += bytes.count
+            }
+        }
+
+        if !exports.isEmpty {
+            let exportDirectoryOffset = 0x300
+            let functionTableOffset = 0x340
+            let nameTableOffset = 0x380
+            let ordinalTableOffset = 0x3c0
+            writeUInt32(0x1100, to: &data, at: directoryOffset)
+            writeUInt32(0x100, to: &data, at: directoryOffset + 4)
+            writeUInt32(UInt32(exports.count), to: &data, at: exportDirectoryOffset + 20)
+            writeUInt32(UInt32(exports.count), to: &data, at: exportDirectoryOffset + 24)
+            writeUInt32(0x1140, to: &data, at: exportDirectoryOffset + 28)
+            writeUInt32(0x1180, to: &data, at: exportDirectoryOffset + 32)
+            writeUInt32(0x11c0, to: &data, at: exportDirectoryOffset + 36)
+
+            var exportNameOffset = 0x600
+            for (index, symbol) in exports.enumerated() {
+                writeUInt32(0x1000, to: &data, at: functionTableOffset + index * 4)
+                writeUInt32(
+                    UInt32(0x1000 + exportNameOffset - rawSectionOffset),
+                    to: &data,
+                    at: nameTableOffset + index * 4
+                )
+                writeUInt16(UInt16(index), to: &data, at: ordinalTableOffset + index * 2)
+                let bytes = Data(symbol.utf8) + Data([0])
+                data.replaceSubrange(
+                    exportNameOffset..<(exportNameOffset + bytes.count),
+                    with: bytes
+                )
+                exportNameOffset += bytes.count
             }
         }
 
@@ -2144,6 +2176,55 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         ))
         XCTAssertFalse(WineManager.requiresManagedD3D12Media(
             importedLibraries: ["d3d12.dll", "mfreadwrite.dll"],
+            isD3D12: true
+        ))
+    }
+
+    func testMixedD3D11D3D12GPUProbeSelectsCoherentD3DMetalEngine() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-gpu-probe-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let executable = root.appendingPathComponent("custom-dragon-engine.exe")
+        try writePE(
+            to: executable,
+            is64Bit: true,
+            imports: ["d3d12.dll"],
+            marker: ""
+        )
+        let module = root.appendingPathComponent("gpu_info.dll")
+        try writePE(
+            to: module,
+            is64Bit: true,
+            imports: ["D3D11.dll", "D3D12.dll", "DXGI.dll"],
+            marker: "",
+            exports: ["GPUInfo_GetInterface"]
+        )
+
+        XCTAssertEqual(PEImportScanner.exportedSymbols(atPath: module.path), [
+            "gpuinfo_getinterface"
+        ])
+        XCTAssertTrue(WineManager().requiresCoherentD3DMetalGPUProbeEngine(executable.path))
+    }
+
+    func testGPUProbeSignatureRejectsIncompleteOrUnrelatedModules() {
+        XCTAssertFalse(WineManager.requiresCoherentD3DMetalGPUProbe(
+            moduleName: "gpu_info.dll",
+            importedLibraries: ["d3d11.dll", "dxgi.dll"],
+            exportedSymbols: ["GPUInfo_GetInterface"],
+            isD3D12: true
+        ))
+        XCTAssertFalse(WineManager.requiresCoherentD3DMetalGPUProbe(
+            moduleName: "gpu_info.dll",
+            importedLibraries: ["d3d11.dll", "d3d12.dll", "dxgi.dll"],
+            exportedSymbols: ["GPUInfo_GetInterface"],
+            isD3D12: false
+        ))
+        XCTAssertFalse(WineManager.requiresCoherentD3DMetalGPUProbe(
+            moduleName: "telemetry.dll",
+            importedLibraries: ["d3d11.dll", "d3d12.dll", "dxgi.dll"],
+            exportedSymbols: ["GPUInfo_GetInterface"],
             isD3D12: true
         ))
     }

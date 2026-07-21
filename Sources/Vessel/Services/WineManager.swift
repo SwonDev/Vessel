@@ -671,6 +671,43 @@ final class WineManager {
         )
     }
 
+    /// Firma del sondeo GPU mixto usado por algunos motores D3D12: un módulo auxiliar enumera el
+    /// adaptador primero por D3D11/DXGI y después valida D3D12. El motor `wine-d3dmetal` combina su
+    /// D3D11/winemetal con el DXGI de Apple y esa enumeración devuelve cero adaptadores, aunque
+    /// D3D12 exponga FL12_2. El perfil D3DMetal aislado aporta el trío coherente de Apple
+    /// (`d3d11` + `d3d12` + `dxgi`).
+    ///
+    /// Se reconoce por contrato PE real —nombre de módulo, export e imports—, nunca por título ni
+    /// AppID. Así otros juegos D3D12 conservan su ruta validada y no se modifica el motor compartido.
+    nonisolated static func requiresCoherentD3DMetalGPUProbe(
+        moduleName: String,
+        importedLibraries: Set<String>,
+        exportedSymbols: Set<String>,
+        isD3D12: Bool
+    ) -> Bool {
+        guard isD3D12, moduleName.lowercased() == "gpu_info.dll" else { return false }
+        let imports = Set(importedLibraries.map { $0.lowercased() })
+        let exports = Set(exportedSymbols.map { $0.lowercased() })
+        return exports.contains("gpuinfo_getinterface")
+            && imports.isSuperset(of: ["d3d11.dll", "d3d12.dll", "dxgi.dll"])
+    }
+
+    func requiresCoherentD3DMetalGPUProbeEngine(_ executable: String) -> Bool {
+        guard detectGraphicsAPI(forExecutable: executable) == .d3d12 else { return false }
+        let directory = (executable as NSString).deletingLastPathComponent
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory),
+              let moduleName = names.first(where: { $0.lowercased() == "gpu_info.dll" }) else {
+            return false
+        }
+        let module = (directory as NSString).appendingPathComponent(moduleName)
+        return Self.requiresCoherentD3DMetalGPUProbe(
+            moduleName: moduleName,
+            importedLibraries: PEImportScanner.importedLibraries(atPath: module),
+            exportedSymbols: PEImportScanner.exportedSymbols(atPath: module),
+            isD3D12: true
+        )
+    }
+
     /// Auto-detecta la API gráfica del juego. Lo más fiable es mirar las DLL que
     /// **importa el propio .exe** (tabla de imports del PE), con respaldo en la
     /// estructura de carpetas:
@@ -5031,13 +5068,22 @@ final class WineManager {
         let unity6NeedsAppleD3D11 = isUnity6OrNewer(executable)
             && detectGraphicsAPI(forExecutable: executable) != .d3d12
         let needsManagedMedia = requiresManagedD3D12MediaEngine(executable)
-        let preferGPTK = !needsManagedMedia && (forceGPTK || unity6NeedsAppleD3D11)
+        let needsCoherentGPUProbe = requiresCoherentD3DMetalGPUProbeEngine(executable)
+        let needsIsolatedD3DMetalEngine = needsManagedMedia || needsCoherentGPUProbe
+        let preferGPTK = !needsIsolatedD3DMetalEngine && (forceGPTK || unity6NeedsAppleD3D11)
         let mediaWine: String?
-        if needsManagedMedia {
-            log.log(
-                "D3D12 + Media Foundation detectado: preparando el motor multimedia aislado…",
-                level: .info
-            )
+        if needsIsolatedD3DMetalEngine {
+            if needsManagedMedia {
+                log.log(
+                    "D3D12 + Media Foundation detectado: preparando el motor multimedia aislado…",
+                    level: .info
+                )
+            } else {
+                log.log(
+                    "Sondeo GPU D3D11+D3D12 detectado: preparando un conjunto D3DMetal coherente…",
+                    level: .info
+                )
+            }
             mediaWine = try await dependencyManager.ensureD3DMetalMediaEngine { msg, pct in
                 Task { @MainActor in
                     LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info)
@@ -5052,7 +5098,9 @@ final class WineManager {
         if let mediaWine {
             d3d12Wine = mediaWine
             log.log(
-                "Motor D3DMetal multimedia listo (Wine 11 FOSS + GStreamer oficial).",
+                needsManagedMedia
+                    ? "Motor D3DMetal multimedia listo (Wine 11 FOSS + GStreamer oficial)."
+                    : "Motor D3DMetal aislado listo (D3D11/D3D12/DXGI de Apple).",
                 level: .info
             )
         } else if useD3DMetalEngine, let w = WineEngineLocator.d3dmetalWineBinary() {
@@ -5117,7 +5165,7 @@ final class WineManager {
 
         // 5) Lanzar el juego con el entorno de D3DMetal (del motor propio o de GPTK).
         var env: [String: String]
-        if needsManagedMedia {
+        if needsIsolatedD3DMetalEngine {
             env = D3DMetalMediaEngineProvisioner.mediaEnvironment(
                 winePath: d3d12Wine,
                 prefix: bottle.prefixPath
@@ -5141,8 +5189,10 @@ final class WineManager {
         // igual que el resto de paths Unity — el fullscreen EXCLUSIVO revienta el swapchain y el
         // multihilo casca en Unity 6 + EOS (Dragon Is Dead). Para D3D12 no-Unity (FFT), vacío.
         let unityArgs = preferGPTK ? unityLaunchArguments(forExecutable: executable, singleThreaded: true) : []
-        let engineLbl = needsManagedMedia
-            ? "motor D3DMetal multimedia (Wine 11 FOSS)"
+        let engineLbl = needsIsolatedD3DMetalEngine
+            ? (needsManagedMedia
+                ? "motor D3DMetal multimedia (Wine 11 FOSS)"
+                : "motor D3DMetal aislado (trío gráfico coherente)")
             : (useD3DMetalEngine ? "motor D3DMetal Vessel (WineHQ 11.10)" : "GPTK/D3DMetal")
         log.log("Lanzando juego D3D12 con \(engineLbl): \((executable as NSString).lastPathComponent)", level: .info)
         return try await launchWineProcess(
@@ -5963,8 +6013,11 @@ final class WineManager {
         // (AppID 1004640) supera el DRM, carga D3DMetal y renderiza (solo lo frena su anti-tamper
         // Denuvo); juegos D3D12 SIN Denuvo funcionan de principio a fin.
         let needsManagedMedia = isD3D12 && requiresManagedD3D12MediaEngine(executable)
+        let needsCoherentGPUProbe = isD3D12
+            && requiresCoherentD3DMetalGPUProbeEngine(executable)
+        let needsIsolatedD3DMetalEngine = needsManagedMedia || needsCoherentGPUProbe
         let selectedD3DMetalWine: String?
-        if needsManagedMedia {
+        if needsIsolatedD3DMetalEngine {
             selectedD3DMetalWine = try await dependencyManager.ensureD3DMetalMediaEngine { msg, pct in
                 Task { @MainActor in
                     LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info)
@@ -5989,12 +6042,15 @@ final class WineManager {
                     enabled: false
                 )
             }
-            log.log(
-                needsManagedMedia
-                    ? "Modo Steam real (D3DMetal + multimedia): preparando el cliente Steam conectado…"
-                    : "Modo Steam real (motor D3DMetal): preparando el cliente Steam conectado…",
-                level: .info
-            )
+            let steamPreparationMessage: String
+            if needsManagedMedia {
+                steamPreparationMessage = "Modo Steam real (D3DMetal + multimedia): preparando el cliente Steam conectado…"
+            } else if needsCoherentGPUProbe {
+                steamPreparationMessage = "Modo Steam real (D3DMetal coherente D3D11+D3D12): preparando el cliente Steam conectado…"
+            } else {
+                steamPreparationMessage = "Modo Steam real (motor D3DMetal): preparando el cliente Steam conectado…"
+            }
+            log.log(steamPreparationMessage, level: .info)
             // Cliente en 2º plano (multiproceso -silent → loguea por JWT sin ventana). El motor
             // D3DMetal corre el CEF igual que el unificado (WINEMSYNC=0, wrapper SwiftShader).
             let connected = await ensureSteamConnected(in: bottle, clientWine: d3dmWine, timeoutSeconds: 120, background: true)
@@ -6054,7 +6110,7 @@ final class WineManager {
                     )
                 }
             }
-            var env = needsManagedMedia
+            var env = needsIsolatedD3DMetalEngine
                 ? D3DMetalMediaEngineProvisioner.mediaEnvironment(
                     winePath: d3dmWine,
                     prefix: bottle.prefixPath
