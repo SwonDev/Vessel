@@ -2188,6 +2188,91 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [.gptk])
     }
 
+    func testDecimaDynamicD3D12ContractRoutesToGPTK() throws {
+        let executable = try makePE64(
+            named: "ProprietaryGame.exe",
+            marker: """
+            DecimaTexture
+            DecimaLogo
+            OnFinishDecimaLogo
+            d3d12.dll
+            D3D12SerializeRootSignature
+            CreateDXGIFactory2
+            ED3D12CommandListType
+            """,
+            imports: ["KERNEL32.dll", "USER32.dll", "D3DCOMPILER_47.dll"]
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for library in [
+            "dxcompiler.dll",
+            "d3dcompiler_47.dll",
+            "oo2core_8_win64.dll",
+            "bink2w64.dll"
+        ] {
+            try Data(library.utf8).write(to: directory.appendingPathComponent(library))
+        }
+
+        let manager = WineManager()
+        XCTAssertTrue(manager.isDecimaD3D12Engine(executable.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .d3d12)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .gptk)
+        XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [.gptk])
+    }
+
+    func testIncompleteDecimaContractCannotChangeGraphicsRouting() throws {
+        let executable = try makePE64(
+            named: "IncompleteEngine.exe",
+            marker: """
+            DecimaTexture
+            DecimaLogo
+            OnFinishDecimaLogo
+            d3d12.dll
+            D3D12SerializeRootSignature
+            CreateDXGIFactory2
+            ED3D12CommandListType
+            """,
+            imports: ["KERNEL32.dll", "D3DCOMPILER_47.dll"]
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // Falta el runtime Oodle: los textos internos por sí solos no habilitan la ruta D3D12.
+        for library in ["dxcompiler.dll", "d3dcompiler_47.dll", "bink2w64.dll"] {
+            try Data(library.utf8).write(to: directory.appendingPathComponent(library))
+        }
+
+        let manager = WineManager()
+        XCTAssertFalse(manager.isDecimaD3D12Engine(executable.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .other)
+    }
+
+    func testGenericDynamicD3D12BundleIsNotMistakenForDecima() throws {
+        let executable = try makePE64(
+            named: "GenericDynamicGame.exe",
+            marker: """
+            d3d12.dll
+            D3D12SerializeRootSignature
+            CreateDXGIFactory2
+            ED3D12CommandListType
+            """,
+            imports: ["KERNEL32.dll", "D3DCOMPILER_47.dll"]
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for library in [
+            "dxcompiler.dll",
+            "d3dcompiler_47.dll",
+            "oo2core_7_win64.dll",
+            "bink2w64.dll"
+        ] {
+            try Data(library.utf8).write(to: directory.appendingPathComponent(library))
+        }
+
+        let manager = WineManager()
+        XCTAssertFalse(manager.isDecimaD3D12Engine(executable.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .other)
+    }
+
     func testUnverifiedCryEngineSiblingCannotChangeGraphicsRouting() throws {
         let executable = try makePE64(
             named: "CustomLauncher.exe",

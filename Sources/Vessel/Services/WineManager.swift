@@ -2519,6 +2519,12 @@ final class WineManager {
             return .d3d9
         }
         if linkedSiblingImports.contains("opengl32.dll") { return .opengl }
+        // Decima enlaza únicamente el compilador de shaders y resuelve D3D12/DXGI en runtime.
+        // Por eso Death Stranding, y otras builds del mismo motor, no exponen la API gráfica en la
+        // tabla PE ni mediante una dependencia hermana enlazada. La firma estructural exige a la
+        // vez el contrato interno del motor, sus símbolos de carga D3D12 y el paquete de runtime;
+        // no depende del título/AppID ni convierte cualquier juego con `dxcompiler.dll` en Decima.
+        if isDecimaD3D12Engine(executable) { return .d3d12 }
         // CryEngine moderno mantiene un launcher PE mínimo y carga dinámicamente el módulo del
         // juego (`*Game.dll`), que también contiene el renderer monolítico. El launcher no enlaza
         // esa DLL ni D3D, por lo que el salto PE directo no puede descubrirla. La firma exige los
@@ -2742,6 +2748,51 @@ final class WineManager {
         if paths.contains(where: { exeImports($0, anyOf: ["d3d9.dll", "d3d8.dll", "ddraw.dll"]) }) { return .d3d9 }
         if paths.contains(where: { exeImports($0, anyOf: ["opengl32.dll"]) }) { return .opengl }
         return nil
+    }
+
+    /// Reconoce builds PE64 de Decima que cargan D3D12 y DXGI dinámicamente.
+    ///
+    /// El motor no importa `d3d12.dll` desde el ejecutable, así que una detección basada solo en la
+    /// tabla PE lo clasificaría como `.other` y lo lanzaría por wined3d. Se valida una combinación
+    /// inseparable de marcadores internos y componentes de distribución para mantener la regla
+    /// genérica, automática y suficientemente estricta ante DLLs opcionales de otros motores.
+    func isDecimaD3D12Engine(_ executable: String) -> Bool {
+        guard isExecutable64Bit(executable) else { return false }
+
+        let imports = peImportedLibraries(forExecutable: executable)
+        let explicitGraphicsImports: Set<String> = [
+            "d3d12.dll", "d3d11.dll", "d3d10.dll", "d3d10core.dll", "dxgi.dll",
+            "d3d9.dll", "d3d8.dll", "ddraw.dll", "vulkan-1.dll", "opengl32.dll"
+        ]
+        guard imports.isDisjoint(with: explicitGraphicsImports) else { return false }
+
+        let engineMarkers = ["DecimaTexture", "DecimaLogo", "OnFinishDecimaLogo"]
+        guard engineMarkers.allSatisfy({ exeContains(executable, anyOf: [$0]) }) else {
+            return false
+        }
+
+        let dynamicD3D12Markers = [
+            "d3d12.dll",
+            "D3D12SerializeRootSignature",
+            "CreateDXGIFactory2",
+            "ED3D12CommandListType"
+        ]
+        guard dynamicD3D12Markers.allSatisfy({ exeContains(executable, anyOf: [$0]) }) else {
+            return false
+        }
+
+        let directory = (executable as NSString).deletingLastPathComponent
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: directory) else {
+            return false
+        }
+        let files = Set(entries.map { $0.lowercased() })
+        let hasOodleRuntime = files.contains {
+            $0.hasPrefix("oo2core_") && $0.hasSuffix("_win64.dll")
+        }
+        return files.contains("dxcompiler.dll")
+            && files.contains("d3dcompiler_47.dll")
+            && files.contains("bink2w64.dll")
+            && hasOodleRuntime
     }
 
     private func cryEngineGameModuleGraphicsAPI(
