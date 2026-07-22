@@ -2303,7 +2303,7 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .other)
     }
 
-    func testFourAEnhancedDynamicD3D12ContractRoutesToGPTK() throws {
+    func testFourAEnhancedDynamicD3D12ContractSelectsD3D12Layer() throws {
         let executable = try makePE64(
             named: "EnhancedGame.exe",
             marker: """
@@ -2932,6 +2932,32 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             importedLibraries: ["d3d11.dll", "d3d12.dll", "dxgi.dll"],
             exportedSymbols: ["GPUInfo_GetInterface"],
             isD3D12: true
+        ))
+    }
+
+    func testFourAWindowingSelectsIsolatedD3DMetalRuntime() {
+        XCTAssertTrue(WineManager.requiresIsolatedD3DMetalRuntime(
+            managedMedia: false,
+            coherentGPUProbe: false,
+            stableMacFullscreen: true
+        ))
+    }
+
+    func testGenericD3D12KeepsItsExistingRuntimeSelection() {
+        XCTAssertFalse(WineManager.requiresIsolatedD3DMetalRuntime(
+            managedMedia: false,
+            coherentGPUProbe: false,
+            stableMacFullscreen: false
+        ))
+        XCTAssertTrue(WineManager.requiresIsolatedD3DMetalRuntime(
+            managedMedia: true,
+            coherentGPUProbe: false,
+            stableMacFullscreen: false
+        ))
+        XCTAssertTrue(WineManager.requiresIsolatedD3DMetalRuntime(
+            managedMedia: false,
+            coherentGPUProbe: true,
+            stableMacFullscreen: false
         ))
     }
 

@@ -692,6 +692,21 @@ final class WineManager {
             && imports.isSuperset(of: ["d3d11.dll", "d3d12.dll", "dxgi.dll"])
     }
 
+    /// Determina cuándo un juego D3D12 necesita el runtime D3DMetal moderno y aislado.
+    ///
+    /// Además de los contratos de Media Foundation y del sondeo mixto de GPU, 4A Enhanced
+    /// necesita el compositor de ventanas de Wine 11. El `winemac` de GPTK/Wine 9 vuelve a
+    /// interpretar el fullscreen al recuperar el foco y puede convertir una superficie lógica
+    /// de 1512×982 en una ventana 2× o dejar visible sólo un cuadrante. Mantener esta decisión
+    /// como entrada explícita permite probar que un D3D12 genérico conserva su ruta anterior.
+    nonisolated static func requiresIsolatedD3DMetalRuntime(
+        managedMedia: Bool,
+        coherentGPUProbe: Bool,
+        stableMacFullscreen: Bool
+    ) -> Bool {
+        managedMedia || coherentGPUProbe || stableMacFullscreen
+    }
+
     func requiresCoherentD3DMetalGPUProbeEngine(_ executable: String) -> Bool {
         guard detectGraphicsAPI(forExecutable: executable) == .d3d12 else { return false }
         let directory = (executable as NSString).deletingLastPathComponent
@@ -5478,13 +5493,23 @@ final class WineManager {
             && detectGraphicsAPI(forExecutable: executable) != .d3d12
         let needsManagedMedia = requiresManagedD3D12MediaEngine(executable)
         let needsCoherentGPUProbe = requiresCoherentD3DMetalGPUProbeEngine(executable)
-        let needsIsolatedD3DMetalEngine = needsManagedMedia || needsCoherentGPUProbe
+        let needsStableFourAWindowing = isFourAEnhancedD3D12Engine(executable)
+        let needsIsolatedD3DMetalEngine = Self.requiresIsolatedD3DMetalRuntime(
+            managedMedia: needsManagedMedia,
+            coherentGPUProbe: needsCoherentGPUProbe,
+            stableMacFullscreen: needsStableFourAWindowing
+        )
         let preferGPTK = !needsIsolatedD3DMetalEngine && (forceGPTK || unity6NeedsAppleD3D11)
         let mediaWine: String?
         if needsIsolatedD3DMetalEngine {
             if needsManagedMedia {
                 log.log(
                     "D3D12 + Media Foundation detectado: preparando el motor multimedia aislado…",
+                    level: .info
+                )
+            } else if needsStableFourAWindowing {
+                log.log(
+                    "4A Enhanced detectado: preparando Wine 11 + D3DMetal aislado para estabilizar sus transiciones de pantalla…",
                     level: .info
                 )
             } else {
@@ -5509,6 +5534,8 @@ final class WineManager {
             log.log(
                 needsManagedMedia
                     ? "Motor D3DMetal multimedia listo (Wine 11 FOSS + GStreamer oficial)."
+                    : needsStableFourAWindowing
+                    ? "Motor D3DMetal 4A aislado listo (Wine 11 FOSS + compositor moderno)."
                     : "Motor D3DMetal aislado listo (D3D11/D3D12/DXGI de Apple).",
                 level: .info
             )
@@ -5680,6 +5707,8 @@ final class WineManager {
         let engineLbl = needsIsolatedD3DMetalEngine
             ? (needsManagedMedia
                 ? "motor D3DMetal multimedia (Wine 11 FOSS)"
+                : needsStableFourAWindowing
+                ? "motor D3DMetal 4A aislado (Wine 11 FOSS)"
                 : "motor D3DMetal aislado (trío gráfico coherente)")
             : (useD3DMetalEngine ? "motor D3DMetal Vessel (WineHQ 11.10)" : "GPTK/D3DMetal")
         log.log("Lanzando juego D3D12 con \(engineLbl): \((executable as NSString).lastPathComponent)", level: .info)

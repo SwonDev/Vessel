@@ -126,6 +126,7 @@ Vessel enruta **cada juego a su motor y sus parches**, de forma aislada: un arre
 | Unity (D3D11 / D3D12) | AK-xolotl, Palworld | DXMT / D3DMetal |
 | Cobra (Frontier) | Jurassic World Evolution 2 | D3DMetal |
 | Decima (D3D12 dinámico) | Death Stranding | D3DMetal |
+| 4A Engine Enhanced | Metro Exodus Enhanced Edition | D3DMetal aislado |
 | Java / JVM | Wurm Unlimited | Metal |
 | DirectDraw (clásicos de los 90) | War Wind | Parche propio |
 
