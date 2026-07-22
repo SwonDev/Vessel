@@ -3374,7 +3374,8 @@ final class WineManager {
         let displayRepair = GameDisplayStateRepair.repairBeforeLaunch(
             appId: steamAppId,
             executable: executable,
-            prefix: bottle.prefixPath
+            prefix: bottle.prefixPath,
+            isFourAEnhanced: isFourAEnhancedD3D12Engine(executable)
         )
         if displayRepair.didRepair {
             log.log(

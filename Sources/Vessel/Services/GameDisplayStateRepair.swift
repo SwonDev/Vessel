@@ -32,6 +32,8 @@ enum GameDisplayStateRepair {
     private static let kunitsuGamiDemoAppID = "2842890"
     private static let kunitsuGamiDemoExecutable = "KunitsuGamiDemo.exe"
     private static let kunitsuGamiConfigName = "config.ini"
+    private static let fourAEnhancedConfigRelativePath = "Saved Games/metro exodus"
+    private static let fourAEnhancedConfigName = "user.cfg"
     private static let displayBackupSuffix = ".vessel-display-backup"
 
     /// Liquid Engine crea su ventana D3D11 con coordenadas físicas aun cuando Wine expone un
@@ -140,8 +142,16 @@ enum GameDisplayStateRepair {
         executable: String,
         prefix: String,
         fileManager: FileManager = .default,
-        displayMetrics: DisplayMetrics? = nil
+        displayMetrics: DisplayMetrics? = nil,
+        isFourAEnhanced: Bool = false
     ) -> Report {
+        if isFourAEnhanced {
+            return repairFourAEnhancedProfiles(
+                prefix: prefix,
+                fileManager: fileManager,
+                displayMetrics: displayMetrics ?? currentDisplayMetrics()
+            )
+        }
         let executableName = (executable as NSString).lastPathComponent
         if appId == tinkerlandsAppID,
            executableName.caseInsensitiveCompare("tinkerlands.exe") == .orderedSame {
@@ -160,6 +170,86 @@ enum GameDisplayStateRepair {
             )
         }
         return Report()
+    }
+
+    /// 4A Enhanced conserva la resolución del framebuffer en `user.cfg`. Tras pasar Wine a
+    /// coordenadas 1×, una preferencia anterior como 1920×1200 sigue dibujándose dentro de un
+    /// contenedor de 1512×982 y el contenido queda recortado durante los cambios de escena. Sólo se
+    /// normalizan valores que exceden la pantalla lógica actual; el modo de pantalla completa y las
+    /// resoluciones válidas del usuario se conservan sin cambios.
+    nonisolated static func repairedFourAEnhancedConfig(
+        _ original: String,
+        displayMetrics: DisplayMetrics
+    ) -> String? {
+        guard let width = spaceSeparatedInteger(for: "r_res_hor", in: original),
+              let height = spaceSeparatedInteger(for: "r_res_vert", in: original),
+              width > 0,
+              height > 0 else { return nil }
+
+        let targetWidth = max(1, displayMetrics.logicalWidth)
+        let targetHeight = max(1, displayMetrics.logicalHeight)
+        guard width > targetWidth || height > targetHeight else { return nil }
+
+        var repaired = replacingSpaceSeparatedInteger(
+            in: original,
+            key: "r_res_hor",
+            value: targetWidth
+        )
+        repaired = replacingSpaceSeparatedInteger(
+            in: repaired,
+            key: "r_res_vert",
+            value: targetHeight
+        )
+        return repaired == original ? nil : repaired
+    }
+
+    private nonisolated static func repairFourAEnhancedProfiles(
+        prefix: String,
+        fileManager: FileManager,
+        displayMetrics: DisplayMetrics
+    ) -> Report {
+        let usersDirectory = "\(prefix)/drive_c/users"
+        guard let users = try? fileManager.contentsOfDirectory(atPath: usersDirectory) else {
+            return Report()
+        }
+
+        var report = Report()
+        for user in users.sorted() {
+            let profilesDirectory = "\(usersDirectory)/\(user)/\(fourAEnhancedConfigRelativePath)"
+            guard let profiles = try? fileManager.contentsOfDirectory(atPath: profilesDirectory)
+            else { continue }
+
+            for profile in profiles.sorted() {
+                let path = "\(profilesDirectory)/\(profile)/\(fourAEnhancedConfigName)"
+                guard let original = try? String(contentsOfFile: path, encoding: .utf8),
+                      let repaired = repairedFourAEnhancedConfig(
+                        original,
+                        displayMetrics: displayMetrics
+                      ) else { continue }
+
+                let backupPath = path + displayBackupSuffix
+                if !fileManager.fileExists(atPath: backupPath) {
+                    do {
+                        try fileManager.copyItem(atPath: path, toPath: backupPath)
+                        report.backupFiles.append(backupPath)
+                    } catch {
+                        // La preferencia sólo se toca cuando existe una copia recuperable.
+                        continue
+                    }
+                }
+
+                do {
+                    try Data(repaired.utf8).write(
+                        to: URL(fileURLWithPath: path),
+                        options: .atomic
+                    )
+                    report.repairedFiles.append(path)
+                } catch {
+                    continue
+                }
+            }
+        }
+        return report
     }
 
     private nonisolated static func repairTinkerlands(
@@ -453,6 +543,36 @@ enum GameDisplayStateRepair {
               let width = Double(value[widthRange]),
               let height = Double(value[heightRange]) else { return nil }
         return (width, height)
+    }
+
+    private nonisolated static func spaceSeparatedInteger(
+        for key: String,
+        in text: String
+    ) -> Int? {
+        let escapedKey = NSRegularExpression.escapedPattern(for: key)
+        let pattern = "(?mi)^[ \\t]*\(escapedKey)[ \\t]+([0-9]+)[ \\t]*\\r?$"
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(
+                in: text,
+                range: NSRange(text.startIndex..., in: text)
+              ),
+              let valueRange = Range(match.range(at: 1), in: text) else { return nil }
+        return Int(text[valueRange])
+    }
+
+    private nonisolated static func replacingSpaceSeparatedInteger(
+        in text: String,
+        key: String,
+        value: Int
+    ) -> String {
+        let escapedKey = NSRegularExpression.escapedPattern(for: key)
+        let pattern = "(?mi)^([ \\t]*\(escapedKey)[ \\t]+)[0-9]+([ \\t]*\\r?)$"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+        return regex.stringByReplacingMatches(
+            in: text,
+            range: NSRange(text.startIndex..., in: text),
+            withTemplate: "$1\(value)$2"
+        )
     }
 
     private nonisolated static func setting(

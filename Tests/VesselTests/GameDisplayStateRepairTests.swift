@@ -94,6 +94,89 @@ final class GameDisplayStateRepairTests: XCTestCase {
         )
     }
 
+    func testFourAEnhancedRepairsOnlyOverflowingResolutionAndPreservesFullscreen() throws {
+        let original = [
+            "r_fullscreen on",
+            "r_res_hor 1920",
+            "r_res_vert 1200",
+            "r_vsync 0",
+            ""
+        ].joined(separator: "\r\n")
+
+        let repaired = try XCTUnwrap(GameDisplayStateRepair.repairedFourAEnhancedConfig(
+            original,
+            displayMetrics: retinaDisplay
+        ))
+
+        XCTAssertTrue(repaired.contains("r_fullscreen on\r\n"))
+        XCTAssertTrue(repaired.contains("r_res_hor 1512\r\n"))
+        XCTAssertTrue(repaired.contains("r_res_vert 982\r\n"))
+        XCTAssertTrue(repaired.contains("r_vsync 0\r\n"))
+        XCTAssertFalse(repaired.replacingOccurrences(of: "\r\n", with: "").contains("\n"))
+        XCTAssertNil(GameDisplayStateRepair.repairedFourAEnhancedConfig(
+            "r_res_hor 1280\nr_res_vert 800\n",
+            displayMetrics: retinaDisplay
+        ))
+    }
+
+    func testFourAEnhancedRepairIsStructuralBackedUpAndIdempotent() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-foura-display-repair-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let executable = root.appendingPathComponent("MetroExodus.exe")
+        try Data().write(to: executable)
+        let configDirectory = root.appendingPathComponent(
+            "drive_c/users/crossover/Saved Games/metro exodus/profile-id",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: configDirectory,
+            withIntermediateDirectories: true
+        )
+        let config = configDirectory.appendingPathComponent("user.cfg")
+        let original = "r_fullscreen on\nr_res_hor 1920\nr_res_vert 1200\n"
+        try original.write(to: config, atomically: true, encoding: .utf8)
+
+        let unrelated = GameDisplayStateRepair.repairBeforeLaunch(
+            appId: nil,
+            executable: executable.path,
+            prefix: root.path,
+            displayMetrics: retinaDisplay
+        )
+        XCTAssertFalse(unrelated.didRepair)
+        XCTAssertEqual(try String(contentsOf: config, encoding: .utf8), original)
+
+        let first = GameDisplayStateRepair.repairBeforeLaunch(
+            appId: nil,
+            executable: executable.path,
+            prefix: root.path,
+            displayMetrics: retinaDisplay,
+            isFourAEnhanced: true
+        )
+        XCTAssertEqual(first.repairedFiles, [config.path])
+        XCTAssertEqual(first.backupFiles, [config.path + ".vessel-display-backup"])
+        XCTAssertTrue(try String(contentsOf: config, encoding: .utf8).contains("r_res_hor 1512"))
+        XCTAssertEqual(
+            try String(
+                contentsOfFile: config.path + ".vessel-display-backup",
+                encoding: .utf8
+            ),
+            original
+        )
+
+        let second = GameDisplayStateRepair.repairBeforeLaunch(
+            appId: nil,
+            executable: executable.path,
+            prefix: root.path,
+            displayMetrics: retinaDisplay,
+            isFourAEnhanced: true
+        )
+        XCTAssertFalse(second.didRepair)
+        XCTAssertTrue(second.backupFiles.isEmpty)
+    }
+
     func testRepairsOnlyOverflowingKunitsuNormalWindowAndPreservesCRLF() throws {
         let original = [
             "[Render]",
