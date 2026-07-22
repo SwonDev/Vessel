@@ -122,6 +122,36 @@ struct SteamCMDManagerParsingTests {
         ))
     }
 
+    @Test("Detecta solo la misma instalación SteamCMD ya activa")
+    func matchesOnlyTheExactLiveInstall() {
+        let installDir = "/Bottle/Steam/steamapps/common/DOOM"
+        let matching = """
+        /Cache/steamcmd/steamcmd +@sSteamCmdForcePlatformType windows \
+        +force_install_dir \(installDir) +login testuser +app_update 379720 validate +quit
+        """
+
+        #expect(SteamCMDManager.hasLiveInstallProcess(
+            appId: "379720",
+            installDir: installDir,
+            processCommands: matching
+        ))
+        #expect(!SteamCMDManager.hasLiveInstallProcess(
+            appId: "37972",
+            installDir: installDir,
+            processCommands: matching
+        ))
+        #expect(!SteamCMDManager.hasLiveInstallProcess(
+            appId: "379720",
+            installDir: "/Bottle/Steam/steamapps/common/Another Game",
+            processCommands: matching
+        ))
+        #expect(!SteamCMDManager.hasLiveInstallProcess(
+            appId: "379720",
+            installDir: installDir,
+            processCommands: "/Applications/Steam.app/Contents/MacOS/steam_osx -silent"
+        ))
+    }
+
     private func manifest(buildID: String, stateFlags: Int) -> String {
         #"""
         "AppState"

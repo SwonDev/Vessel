@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import AppKit
 
 /// Registro mínimo y thread-safe de procesos largos que necesitan cancelación cooperativa desde
 /// Swift Concurrency. `withTaskCancellationHandler` ejecuta `onCancel` en un hilo arbitrario, por
@@ -13,6 +14,26 @@ final class ManagedProcessRegistry: @unchecked Sendable {
     private let lock = NSLock()
     private var processes: [String: Entry] = [:]
     private var cancellationRequests: Set<String> = []
+    private var terminationObserver: NSObjectProtocol?
+
+    init() {
+        // Un `Process` no muere necesariamente con su padre: al cerrar Vessel, SteamCMD puede
+        // quedar reparentado a launchd y seguir escribiendo el depot. La siguiente apertura
+        // restauraría la cola y podría lanzar una segunda descarga sobre los mismos archivos.
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            self?.cancelAll()
+        }
+    }
+
+    deinit {
+        if let terminationObserver {
+            NotificationCenter.default.removeObserver(terminationObserver)
+        }
+    }
 
     /// Limpia restos de una ejecución anterior antes de reutilizar el mismo identificador.
     func prepare(_ id: String) {
@@ -41,6 +62,16 @@ final class ManagedProcessRegistry: @unchecked Sendable {
             return processes[id]
         }
         if let entry { terminate(entry) }
+    }
+
+    /// Finaliza todos los grupos administrados antes de que termine la aplicación. Conserva las
+    /// entradas hasta que sus esperas recojan el código de salida, igual que `cancel(_:)`.
+    func cancelAll() {
+        let entries = lock.withLock { () -> [Entry] in
+            cancellationRequests.formUnion(processes.keys)
+            return Array(processes.values)
+        }
+        for entry in entries { terminate(entry) }
     }
 
     /// Retira el proceso y devuelve si su finalización fue provocada por una cancelación solicitada.

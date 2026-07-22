@@ -95,6 +95,17 @@ final class SteamCMDManager {
     ) async -> Bool {
         try? FileManager.default.createDirectory(atPath: installDir, withIntermediateDirectories: true)
         let executionID = operationID ?? "steamcmd-\(UUID().uuidString)"
+
+        // Una instancia anterior de Vessel puede haber terminado sin alcanzar la notificación de
+        // cierre (crash/kill), dejando SteamCMD reparentado y todavía activo. Esperar esa operación
+        // exacta evita que dos procesos escriban simultáneamente el mismo staging. Después se
+        // ejecuta SteamCMD con normalidad: confirma el resultado y retoma cualquier tramo pendiente.
+        guard await waitForExistingInstall(
+            appId: appId,
+            installDir: installDir,
+            onProgress: onProgress
+        ) else { return false }
+
         processRegistry.prepare(executionID)
         let args = [
             "+@sSteamCmdForcePlatformType windows",
@@ -146,6 +157,41 @@ final class SteamCMDManager {
         guard !Task.isCancelled else { return false }
         success = Self.appUpdateSucceeded(in: output, exitCode: code)
         return success
+    }
+
+    /// Espera únicamente un SteamCMD que esté actualizando el mismo AppID en el mismo destino.
+    /// Nunca mira procesos de Steam nativo ni otras descargas de Vessel.
+    private func waitForExistingInstall(
+        appId: String,
+        installDir: String,
+        onProgress: @escaping @MainActor (Double, String) -> Void
+    ) async -> Bool {
+        var didReport = false
+        while !Task.isCancelled {
+            let commands = await Task.detached(priority: .utility) {
+                Self.runningSteamCMDCommands()
+            }.value
+            guard Self.hasLiveInstallProcess(
+                appId: appId,
+                installDir: installDir,
+                processCommands: commands
+            ) else { return true }
+
+            if !didReport {
+                didReport = true
+                log.log(
+                    "SteamCMD: esperando una operación previa ya activa para la misma instalación.",
+                    level: .info
+                )
+                onProgress(0, "Retomando la descarga que ya estaba activa…")
+            }
+            do {
+                try await Task.sleep(for: .seconds(2))
+            } catch {
+                return false
+            }
+        }
+        return false
     }
 
     /// Interrumpe una operación concreta. SteamCMD conserva su staging y una ejecución posterior
@@ -359,6 +405,71 @@ final class SteamCMDManager {
             return err.trimmingCharacters(in: .whitespaces)
         }
         return "No se pudo completar la operación de SteamCMD."
+    }
+
+    /// Determina si la lista acotada de procesos SteamCMD contiene la misma instalación. Comparar
+    /// AppID y ruta completa evita bloquear otra descarga legítima o el cliente Steam de macOS.
+    nonisolated static func hasLiveInstallProcess(
+        appId: String,
+        installDir: String,
+        processCommands: String
+    ) -> Bool {
+        guard !appId.isEmpty, appId.allSatisfy(\.isNumber), !installDir.isEmpty else { return false }
+        let updateToken = "+app_update \(appId)"
+        return processCommands.split(whereSeparator: \.isNewline).contains { rawLine in
+            let line = String(rawLine)
+            guard line.contains("steamcmd"),
+                  line.contains("+force_install_dir"),
+                  line.contains(installDir),
+                  let range = line.range(of: updateToken) else { return false }
+            guard range.upperBound < line.endIndex else { return true }
+            return line[range.upperBound].isWhitespace
+        }
+    }
+
+    /// Lee solo argumentos de procesos cuyo nombre es exactamente `steamcmd`; no vuelca ni registra
+    /// la tabla de procesos completa, que podría contener datos ajenos a Vessel.
+    nonisolated private static func runningSteamCMDCommands() -> String {
+        let pgrep = Process()
+        pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        pgrep.arguments = ["-x", "steamcmd"]
+        let pidPipe = Pipe()
+        pgrep.standardOutput = pidPipe
+        pgrep.standardError = FileHandle.nullDevice
+        do {
+            try pgrep.run()
+            pgrep.waitUntilExit()
+        } catch {
+            return ""
+        }
+        guard pgrep.terminationStatus == 0,
+              let pidText = String(
+                data: pidPipe.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8
+              ) else { return "" }
+        let pids = pidText.split(whereSeparator: \.isNewline)
+            .compactMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            .filter { $0 > 1 }
+            .prefix(64)
+        guard !pids.isEmpty else { return "" }
+
+        let ps = Process()
+        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+        ps.arguments = ["-p", pids.map(String.init).joined(separator: ","), "-o", "command="]
+        let commandPipe = Pipe()
+        ps.standardOutput = commandPipe
+        ps.standardError = FileHandle.nullDevice
+        do {
+            try ps.run()
+            ps.waitUntilExit()
+            guard ps.terminationStatus == 0 else { return "" }
+            return String(
+                data: commandPipe.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8
+            ) ?? ""
+        } catch {
+            return ""
+        }
     }
 
     /// SteamCMD puede devolver código 0 incluso ante algunos errores de contenido, por lo que el
