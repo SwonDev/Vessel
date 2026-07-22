@@ -1,6 +1,20 @@
 import Foundation
 import AppKit
 
+enum EpicLaunchDelegationError: LocalizedError {
+    case unsupported
+    case launchFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupported:
+            return "Este motor necesita la ruta de lanzamiento protegida de Vessel."
+        case .launchFailed:
+            return "Legendary no pudo iniciar la sesión de Epic Games."
+        }
+    }
+}
+
 /// Gestiona la instalación y uso de **Legendary** (cliente CLI de Epic Games).
 ///
 /// Legendary se auto-descarga del repositorio `derrod/legendary` (binario macOS standalone).
@@ -434,6 +448,80 @@ final class LegendaryManager {
                 "Epic Games no pudo preparar una sesión válida para este juego. Vuelve a conectar tu cuenta e inténtalo de nuevo."])
         }
         return context
+    }
+
+    /// Construye la orden que conserva a Legendary como propietario del arranque de Epic. Las
+    /// opciones de Legendary van antes de `--`; todo lo posterior son parámetros del juego y nunca
+    /// puede ser reinterpretado como una opción del launcher.
+    nonisolated static func delegatedLaunchArguments(
+        appName: String,
+        winePath: String,
+        prefix: String,
+        installedExecutable: String,
+        effectiveExecutable: String,
+        installPath: String?,
+        gameArguments: [String]
+    ) -> [String]? {
+        var arguments = [
+            "launch", appName,
+            "--wine", winePath,
+            "--wine-prefix", prefix
+        ]
+
+        let installed = URL(fileURLWithPath: installedExecutable).standardizedFileURL.path
+        let effective = URL(fileURLWithPath: effectiveExecutable).standardizedFileURL.path
+        if installedExecutable.isEmpty || installed != effective {
+            guard let installPath, !installPath.isEmpty else { return nil }
+            let root = URL(fileURLWithPath: installPath).standardizedFileURL.path
+            let rootWithSeparator = root.hasSuffix("/") ? root : root + "/"
+            guard effective.hasPrefix(rootWithSeparator) else { return nil }
+            arguments += ["--override-exe", String(effective.dropFirst(rootWithSeparator.count))]
+        }
+
+        if !gameArguments.isEmpty {
+            arguments.append("--")
+            arguments.append(contentsOf: gameArguments)
+        }
+        return arguments
+    }
+
+    /// Ejecuta `legendary launch` de verdad, como Mythic, dejando que Legendary obtenga el token
+    /// efímero, combine los parámetros del catálogo y cree el hijo Wine. Vessel sigue controlando
+    /// el motor, el prefijo y el entorno ya preparado. La salida se descarta deliberadamente para
+    /// que ningún token de intercambio llegue a logs o diagnósticos.
+    func launchDelegatedGame(
+        arguments: [String],
+        environment: [String: String],
+        workingDirectory: String?
+    ) throws -> Process {
+        guard FileManager.default.isExecutableFile(atPath: Self.binaryPath) else {
+            throw EpicLaunchDelegationError.launchFailed
+        }
+
+        var launchEnvironment = environment
+        launchEnvironment["LEGENDARY_CONFIG_PATH"] = Self.configDir
+        launchEnvironment["__CFBundleIdentifier"] = nil
+        launchEnvironment["XPC_SERVICE_NAME"] = nil
+        launchEnvironment["XPC_FLAGS"] = nil
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: Self.binaryPath)
+        process.arguments = arguments
+        process.environment = launchEnvironment
+        if let workingDirectory,
+           FileManager.default.fileExists(atPath: workingDirectory) {
+            process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory, isDirectory: true)
+        }
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            throw EpicLaunchDelegationError.launchFailed
+        }
+        log.log("Epic: sesión delegada a Legendary con prefijo y motor gestionados por Vessel.", level: .info)
+        return process
     }
 
     /// Arranca la build de macOS mediante LaunchServices y devuelve su aplicación REAL. Esta es la

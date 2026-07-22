@@ -14,6 +14,10 @@ struct Bottle: Identifiable, Codable, Hashable, Sendable {
     var lastUsedAt: Date
     var notes: String
     var games: [GameInstall] = []
+    /// Propiedad técnica opcional de una tienda conectada. Permite aislar un prefijo por juego
+    /// sin exponer bottles al usuario ni depender del título visible, que puede cambiar.
+    var managedStore: String?
+    var managedGameID: String?
 
     init(
         id: UUID = UUID(),
@@ -24,7 +28,9 @@ struct Bottle: Identifiable, Codable, Hashable, Sendable {
         dxmtEnabled: Bool = false,
         gptkEnabled: Bool = true,
         winePath: String = "/opt/homebrew/bin/wine64",
-        notes: String = ""
+        notes: String = "",
+        managedStore: String? = nil,
+        managedGameID: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -37,6 +43,8 @@ struct Bottle: Identifiable, Codable, Hashable, Sendable {
         self.createdAt = Date()
         self.lastUsedAt = Date()
         self.notes = notes
+        self.managedStore = managedStore
+        self.managedGameID = managedGameID
     }
 
     var prefixPath: String {

@@ -20,7 +20,7 @@ final class EpicStore {
     private let wineManager = WineManager()
     private let dependencyManager = DependencyManager()
     private let store = BottleStore.shared
-    private var epicBottle: Bottle?
+    private var epicBottles: [String: Bottle] = [:]
 
     /// Estado de instalación en curso por juego (para los botones de las tarjetas).
     let operations = LibraryOperationQueue(storageKey: "epic")
@@ -114,18 +114,20 @@ final class EpicStore {
     /// `appName`s con actualización disponible (detección por `legendary --check-updates`).
     var updatesAvailable: Set<String> = []
 
-    /// Obtiene (o crea) el bottle dedicado de Epic, con el motor Wine portable instalado.
-    private func ensureBottle() async throws -> Bottle {
-        if let b = epicBottle { return b }
-        if let existing = store.bottles.first(where: { $0.name == "Epic Games" }) {
-            epicBottle = existing
+    /// Obtiene (o crea) el bottle AISLADO de este juego de Epic. Una instalación anterior que ya
+    /// vive en el prefijo común continúa allí para no perder partidas ni registro; las instalaciones
+    /// nuevas nunca comparten DLL, runtimes ni configuración Wine con otro título.
+    private func ensureBottle(for game: LegendaryManager.EpicGame) async throws -> Bottle {
+        if let cached = epicBottles[game.appName] { return cached }
+        if let existing = EpicBottleResolver.existingBottle(for: game, in: store.bottles) {
+            epicBottles[game.appName] = existing
             return existing
         }
         let gcenx = try await dependencyManager.ensureWinePortableInstalled { _, _ in }
-        let nb = Bottle(name: "Epic Games", winePath: gcenx)
-        store.add(nb)
+        let nb = EpicBottleResolver.makeBottle(for: game, winePath: gcenx)
         try await wineManager.createBottle(at: nb.prefixPath, winePath: gcenx)
-        epicBottle = nb
+        store.add(nb)
+        epicBottles[game.appName] = nb
         return nb
     }
 
@@ -201,7 +203,7 @@ final class EpicStore {
             if platform == .mac {
                 basePath = "\(VesselPaths.nativeGamesDirectory)/Epic"
             } else {
-                let bottle = try await ensureBottle()
+                let bottle = try await ensureBottle(for: game)
                 basePath = "\(bottle.prefixPath)/drive_c/Games"
             }
             let operationID = "epic:\(operation.id)"
@@ -259,7 +261,10 @@ final class EpicStore {
         }
     }
 
-    /// Lanza un juego de Epic ya instalado con el motor de juegos (wine-dxmt), igual que Steam.
+    /// Lanza un juego de Epic con toda la preparación de motores de Vessel, pero conserva a
+    /// Legendary como propietario de la sesión/EOS cuando el motor admite esa ruta. Los motores que
+    /// necesitan LaunchAgent o un entorno protegido vuelven automáticamente a la ruta directa ya
+    /// validada, sin pedir parámetros al usuario.
     /// `forcedLayer`/`attempt` los usa el fallback automático de motor (relanzar con otra capa).
     func play(_ game: LegendaryManager.EpicGame, forcedLayer: GameConfig.GraphicsLayer? = nil, attempt: Int = 0) async {
         var cfg = GameConfigStore.load(game.appName)
@@ -287,7 +292,7 @@ final class EpicStore {
         )
         // Resolvemos el bottle antes de track para tener la ruta del prefijo (aviso de compat).
         let bottle: Bottle
-        do { bottle = try await ensureBottle() }
+        do { bottle = try await ensureBottle(for: game) }
         catch {
             log.log("Epic: no se pudo preparar el entorno para \(game.title): \(error.localizedDescription)", level: .error)
             return
@@ -302,6 +307,11 @@ final class EpicStore {
             eff.graphicsOverride = forcedLayer
             eff.graphicsOverrideWasLearned = false
         }
+        eff.epicLaunchOwnership = .init(
+            appName: game.appName,
+            installedExecutable: detectedExecutable,
+            installPath: installRoot
+        )
         // Motor REAL que se usará (no `.auto`), para que el fallback recorra los 3 motores.
         let usedLayer = wineManager.resolvedGraphicsLayer(forExecutable: exe, effective: eff)
         let trackingTarget = wineManager.launchTrackingTarget(for: exe, basePrefix: prefix)
@@ -333,25 +343,40 @@ final class EpicStore {
             await legendary.syncSaves(appName: game.appName, direction: .download)
             await SaveBackupManager.shared.restoreIfNewer(store: .epic, id: game.appName, title: game.title, steamId: nil, prefix: prefix, installPath: gameDir)
 
-            // Epic entrega un código de intercambio efímero y de un solo uso (`-AUTH_PASSWORD`).
-            // Hay que pedirlo DESPUÉS de sincronizar partidas y preparar el prefijo, en el último
-            // instante antes de Wine. Mantenerlo durante esos pasos puede hacerlo caducar o dejarlo
-            // invalidado antes de que el juego lo canjee. Solo vive en memoria.
+            // La ruta primaria deja que Legendary obtenga y consuma el token efímero en el mismo
+            // proceso de lanzamiento. Si el motor necesita el spawn protegido de Vessel, se solicita
+            // un contexto de un solo uso justo aquí y se repite automáticamente por la ruta directa.
             NotificationService.shared.status("Preparando sesión de Epic…")
             do {
-                let epicContext = try await legendary.launchContext(appName: game.appName)
-                var launchEffective = eff
-                for (key, value) in epicContext.environment {
-                    launchEffective.extraEnv[key] = value
-                }
                 launchStartedAt = Date()
-                NotificationService.shared.status(nil)
-                return try await wineManager.launch(
-                    executable: exe,
-                    in: bottle,
-                    arguments: epicContext.arguments,
-                    effective: launchEffective
-                )
+                do {
+                    let process = try await wineManager.launch(
+                        executable: exe,
+                        in: bottle,
+                        effective: eff
+                    )
+                    NotificationService.shared.status(nil)
+                    return process
+                } catch is EpicLaunchDelegationError {
+                    log.log(
+                        "Epic · \(game.title): el motor requiere el spawn protegido; se usa el contexto oficial directo como fallback automático.",
+                        level: .info
+                    )
+                    let epicContext = try await legendary.launchContext(appName: game.appName)
+                    var directEffective = eff
+                    directEffective.epicLaunchOwnership = nil
+                    for (key, value) in epicContext.environment {
+                        directEffective.extraEnv[key] = value
+                    }
+                    let process = try await wineManager.launch(
+                        executable: exe,
+                        in: bottle,
+                        arguments: epicContext.arguments,
+                        effective: directEffective
+                    )
+                    NotificationService.shared.status(nil)
+                    return process
+                }
             } catch {
                 NotificationService.shared.status(nil)
                 log.log(

@@ -185,6 +185,15 @@ struct CompatProfile: Codable, Equatable, Identifiable, Sendable {
 /// `WineManager.launch` la consume para aplicar overrides de DLL, env, args, versión
 /// de Windows y sincronización sin romper el enrutado por API ya validado.
 struct EffectiveLaunchConfig: Sendable {
+    /// Epic puede conservar la preparación exhaustiva de Wine de Vessel y, en el último salto,
+    /// dejar que Legendary sea dueño de la sesión/EOS como hace Mythic. No se persiste: contiene
+    /// únicamente identidad y rutas de la instalación que ya están en el catálogo local.
+    struct EpicLaunchOwnership: Sendable {
+        let appName: String
+        let installedExecutable: String
+        let installPath: String?
+    }
+
     /// Capa gráfica para el enrutado de `launch()` (auto/dxmt/gptk).
     var graphicsOverride: GameConfig.GraphicsLayer = .auto
     /// `true` únicamente cuando el override procede del autoaprendizaje local. Permite invalidar
@@ -208,6 +217,7 @@ struct EffectiveLaunchConfig: Sendable {
     var retina: Bool = true
     /// HUD de rendimiento de Metal (FPS / tiempos de frame) superpuesto. Ajuste del usuario.
     var metalHUD: Bool = false
+    var epicLaunchOwnership: EpicLaunchOwnership? = nil
 
     /// Procedencia (para logs/UI): de dónde salió la config aplicada.
     var rating: CompatProfile.Rating? = nil

@@ -9672,6 +9672,36 @@ final class WineManager {
         if enableManagedRuntime, let overrides = fullEnv["WINEDLLOVERRIDES"] {
             fullEnv["WINEDLLOVERRIDES"] = Self.enablingManagedRuntime(in: overrides)
         }
+        if let ownership = effective?.epicLaunchOwnership {
+            let effectiveExecutable = arguments.first ?? ownership.installedExecutable
+            let requiresVesselProtectedSpawn = forceCleanEnv
+                || d3dMetalGame
+                || isDotNetCoreGame(effectiveExecutable)
+                || WineEngineLocator.isGPTKEngine(winePath)
+                || WineEngineLocator.isD3DMetalEngine(winePath)
+                || Self.requiresDetachedSteamLaunchContext(
+                    winePath: winePath,
+                    arguments: arguments
+                )
+                || effective?.useRealSteam == true
+            guard !requiresVesselProtectedSpawn,
+                  let legendaryArguments = LegendaryManager.delegatedLaunchArguments(
+                    appName: ownership.appName,
+                    winePath: winePath,
+                    prefix: prefix,
+                    installedExecutable: ownership.installedExecutable,
+                    effectiveExecutable: effectiveExecutable,
+                    installPath: ownership.installPath,
+                    gameArguments: Array(arguments.dropFirst())
+                  ) else {
+                throw EpicLaunchDelegationError.unsupported
+            }
+            return try LegendaryManager().launchDelegatedGame(
+                arguments: legendaryArguments,
+                environment: fullEnv,
+                workingDirectory: workingDirectory
+            )
+        }
         // Juegos **.NET Core**: lanzar vía `/usr/bin/env -i` con el entorno construido, para ROMPER
         // el contexto de la app GUI. Vessel es una `.app`: CoreFoundation inyecta en sus hijos
         // `__CFBundleIdentifier` (= com.swondev.vessel) + `XPC_*` (identidad de bundle), y macOS
