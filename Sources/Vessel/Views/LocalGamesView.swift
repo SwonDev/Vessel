@@ -710,11 +710,17 @@ struct LocalGamesView: View {
         }
         guard let bottle = bottle(for: game) else { return }
         let id = game.id.uuidString
-        let cfg = GameConfigStore.load(id)
+        var cfg = GameConfigStore.load(id)
         let exe = GameExecutableOverride.resolve(
             configuredPath: cfg.executableOverride,
             installRoot: folder(of: game),
             fallback: game.executablePath
+        )
+        cfg = GameConfigStore.validatedForLaunch(
+            cfg,
+            id: id,
+            executable: exe,
+            wineManager: wineManager
         )
         let installDir = (exe as NSString).deletingLastPathComponent
         Task {
@@ -729,7 +735,10 @@ struct LocalGamesView: View {
             }
             let profile = CompatService.shared.profile(steam: nil, title: game.name)
             var eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
-            if let forcedLayer { eff.graphicsOverride = forcedLayer }
+            if let forcedLayer {
+                eff.graphicsOverride = forcedLayer
+                eff.graphicsOverrideWasLearned = false
+            }
             let usedLayer = wineManager.resolvedGraphicsLayer(forExecutable: exe, effective: eff)
             let trackingTarget = wineManager.launchTrackingTarget(
                 for: exe,
@@ -771,7 +780,10 @@ struct LocalGamesView: View {
                     )
                 },
                 persistWinningLayer: { winLayer in
-                    var c = GameConfigStore.load(id); c.graphicsLayer = winLayer; GameConfigStore.save(id, c)
+                    var c = GameConfigStore.load(id)
+                    c.graphicsLayer = winLayer
+                    c.graphicsLayerOrigin = .learned
+                    GameConfigStore.save(id, c)
                     DiscoveredFixesStore.shared.record(id: id, title: game.name, store: "local", storeId: nil,
                                                        graphicsLayer: winLayer.rawValue, useRealSteam: false)
                 },

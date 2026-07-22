@@ -57,6 +57,14 @@ final class DiscoveredFixesStore {
         save()
     }
 
+    /// Elimina un arreglo que una firma estructural posterior ha demostrado inválido.
+    /// No afecta a otros juegos ni a configuraciones elegidas explícitamente por el usuario.
+    func remove(id: String) {
+        guard let idx = fixes.firstIndex(where: { $0.id == id }) else { return }
+        fixes.remove(at: idx)
+        save()
+    }
+
     /// Nº de arreglos aún sin compartir (para el badge de Ajustes).
     var unsharedCount: Int { fixes.filter { !$0.shared }.count }
 

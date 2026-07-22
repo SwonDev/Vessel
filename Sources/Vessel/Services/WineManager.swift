@@ -3040,6 +3040,18 @@ final class WineManager {
     /// DEBE reflejar EXACTAMENTE el enrutado de `launch()`. Juegos de 32-bit (CrossOver) y
     /// D3D9 se reportan como `.gcenx`: launch() los re-fuerza a su motor pase lo que pase,
     /// así que el valor solo sirve para arrancar el ciclo de fallback.
+    private func effectiveGraphicsOverride(
+        forExecutable executable: String,
+        effective eff: EffectiveLaunchConfig
+    ) -> GameConfig.GraphicsLayer {
+        if eff.graphicsOverrideWasLearned,
+           eff.graphicsOverride != .auto,
+           isNativeVulkanGame(executable) {
+            return .auto
+        }
+        return eff.graphicsOverride
+    }
+
     func resolvedGraphicsLayer(forExecutable executable: String, effective eff: EffectiveLaunchConfig = EffectiveLaunchConfig()) -> GameConfig.GraphicsLayer {
         // Chromium necesita el swapchain de DXMT en el mismo proceso; otras rutas producen una
         // ventana negra aunque el proceso sobreviva. Es una restricción del motor, no una preferencia.
@@ -3049,7 +3061,8 @@ final class WineManager {
         if isLegacyMoaiOpenGLGame(executable) { return .gcenx }
         if isRTsoftProtonOpenGLEngine(executable) { return .gcenx }
         if isClassicVirtoolsDirectDrawEngine(executable) { return .gcenx }
-        let go = eff.graphicsOverride
+        let go = effectiveGraphicsOverride(forExecutable: executable, effective: eff)
+        if go == .auto, isNativeVulkanGame(executable) { return .gcenx }
         if go == .gcenx { return .gcenx }
         let api = detectGraphicsAPI(forExecutable: executable)
         if go == .gptk || (go == .auto && api == .d3d12) { return .gptk }
@@ -3083,7 +3096,9 @@ final class WineManager {
         // Virtools DX7 depende de un modo exclusivo emulado y de su rasterizador local. Cambiar de
         // traductor no crea ese modo y solo reiniciaría un juego que ya tiene una ruta determinista.
         if isClassicVirtoolsDirectDrawEngine(executable) { return [] }
-        switch eff.graphicsOverride {
+        let graphicsOverride = effectiveGraphicsOverride(forExecutable: executable, effective: eff)
+        if graphicsOverride == .auto, isNativeVulkanGame(executable) { return [.gcenx] }
+        switch graphicsOverride {
         case .gptk:  return [.gptk]
         case .dxmt:  return [.dxmt]
         case .gcenx: return [.gcenx]
@@ -3217,6 +3232,18 @@ final class WineManager {
             // una vista Metal real. ANGLE necesita además el compilador HLSL nativo de Microsoft.
             eff.graphicsOverride = .dxmt
             eff.dllOverrides["d3dcompiler_47"] = "n,b"
+        }
+        let normalizedGraphicsOverride = effectiveGraphicsOverride(
+            forExecutable: executable,
+            effective: eff
+        )
+        if normalizedGraphicsOverride != eff.graphicsOverride {
+            log.log(
+                "Override aprendido incompatible ignorado: el ejecutable usa Vulkan nativo y vuelve al motor completo.",
+                level: .info
+            )
+            eff.graphicsOverride = normalizedGraphicsOverride
+            eff.graphicsOverrideWasLearned = false
         }
         let go = eff.graphicsOverride
         // Orden efectiva ÚNICA: parámetros solicitados + perfil + adaptador automático del motor.
@@ -3525,6 +3552,26 @@ final class WineManager {
             if let appId = steamAppId, !appId.isEmpty {
                 env["SteamAppId"] = appId
                 env["SteamGameId"] = appId
+            }
+            do {
+                let moltenVK = try await moltenVKManager.ensureLibrary()
+                env = Self.modernMoltenVKEnvironment(
+                    from: env,
+                    libraryDirectory: moltenVK,
+                    useMetalArgumentBuffers: true
+                )
+                // Solo errores: si el juego solicita una feature que Metal no puede representar,
+                // el diagnóstico conserva el nombre concreto sin inundar el log normal.
+                env["MVK_CONFIG_LOG_LEVEL"] = "1"
+                log.log(
+                    "Vulkan nativo: MoltenVK \(MoltenVKManager.pinnedVersion) aislado y autogestionado.",
+                    level: .info
+                )
+            } catch {
+                log.log(
+                    "No se pudo preparar MoltenVK moderno; se conserva el runtime incluido: \(error.localizedDescription)",
+                    level: .warn
+                )
             }
             return try await launchWineProcess(
                 winePath: fullEngineWine,
@@ -4163,24 +4210,16 @@ final class WineManager {
                 )
             }
             let moltenVK = try await moltenVKManager.ensureLibrary()
-            let fullEngineLibraries = environment["DYLD_FALLBACK_LIBRARY_PATH"] ?? ""
-            let isolatedLibraries = fullEngineLibraries.isEmpty
-                ? moltenVK
-                : "\(moltenVK):\(fullEngineLibraries)"
-            environment["DYLD_FALLBACK_LIBRARY_PATH"] = isolatedLibraries
-            // `winevulkan` puede traer un @rpath al MoltenVK del propio motor; el fallback solo se
-            // consulta después y no lo reemplaza. La ruta primaria incluye también las librerías
-            // del motor: winevulkan y MoltenVK deben resolver la misma pila dentro del proceso.
-            environment["DYLD_LIBRARY_PATH"] = isolatedLibraries
-            environment["VK_ICD_FILENAMES"] = "\(moltenVK)/MoltenVK_icd.json"
-            environment["VK_DRIVER_FILES"] = "\(moltenVK)/MoltenVK_icd.json"
+            environment = Self.modernMoltenVKEnvironment(
+                from: environment,
+                libraryDirectory: moltenVK,
+                // ANGLE necesita argument buffers para separar alias de recursos. Chowdren usa la
+                // ruta clásica, más estable para sus samplers 2D ya validados.
+                useMetalArgumentBuffers: !chowdrenIsolatedDXVK
+            )
             environment["WINEDLLOVERRIDES"] = "d3d9=n,b;winemenubuilder.exe=d"
             environment["DXVK_LOG_LEVEL"] = "info"
             environment["DXVK_LOG_PATH"] = (executable as NSString).deletingLastPathComponent
-            // ANGLE necesita argument buffers para separar alias de recursos. El backend Chowdren
-            // elimina esa ambigüedad en el traductor y usa la ruta clásica de MoltenVK, más estable
-            // para sus samplers 2D y validada con teclado/ratón en el menú real.
-            environment["MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS"] = chowdrenIsolatedDXVK ? "0" : "1"
             log.log("MoltenVK moderno aislado para DXVK: \(moltenVK)", level: .info)
         }
         if legacyOgre {
@@ -5177,7 +5216,21 @@ final class WineManager {
             environment["WINEESYNC"] = "1"
             environment["WINEFSYNC"] = "1"
         }
+        if WineEngineLocator.isFullEngine(wine) {
+            environment["WINESERVER"] = matchingWineserverPath(forWine: wine)
+        }
         return environment
+    }
+
+    /// Fija el `wineserver` hermano del loader que Vessel ha elegido. Wine suele deducirlo por
+    /// su cuenta, pero hacerlo explícito impide que un hijo o una utilidad de control caigan en el
+    /// server de otro motor presente en el PATH. No se resuelve el symlink `wine64`: ambos loaders
+    /// viven en el mismo `bin`, que es exactamente la identidad de runtime que necesitamos.
+    nonisolated static func matchingWineserverPath(forWine wine: String) -> String {
+        URL(fileURLWithPath: wine)
+            .deletingLastPathComponent()
+            .appendingPathComponent("wineserver")
+            .path
     }
 
     /// Prepara el prefijo para juegos **D3D9 de 32-bit** (ver `launchD3D9Game`):
@@ -7474,6 +7527,22 @@ final class WineManager {
               let bounds = window[kCGWindowBounds as String] as? [String: Any] else {
             return false
         }
+        let title = (window[kCGWindowName as String] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        let diagnosticMarkers = [
+            "unhandled exception",
+            "exception raised",
+            "program error",
+            "wine debugger",
+            "fatal error",
+            "error initializing"
+        ]
+        if diagnosticMarkers.contains(where: title.contains)
+            || title == "console"
+            || title.hasSuffix(" console") {
+            return false
+        }
         let width = bounds["Width"] as? Double ?? 0
         let height = bounds["Height"] as? Double ?? 0
         return width >= 200 && height >= 150
@@ -7928,6 +7997,36 @@ final class WineManager {
         ]
     }
 
+    /// Superpone el MoltenVK oficial versionado sin modificar el motor instalado. El ICD y dyld
+    /// apuntan a la misma copia, mientras las demás bibliotecas siguen resolviéndose desde
+    /// `wine-full`. Así una actualización de Vulkan queda aislada, recuperable y compartida por
+    /// todas las rutas que realmente la necesitan.
+    nonisolated static func modernMoltenVKEnvironment(
+        from environment: [String: String],
+        libraryDirectory: String,
+        useMetalArgumentBuffers: Bool
+    ) -> [String: String] {
+        var result = environment
+        let existingLibraries = environment["DYLD_FALLBACK_LIBRARY_PATH"] ?? ""
+        let isolatedLibraries = existingLibraries.isEmpty
+            ? libraryDirectory
+            : "\(libraryDirectory):\(existingLibraries)"
+        result["DYLD_FALLBACK_LIBRARY_PATH"] = isolatedLibraries
+        // `winevulkan` puede traer un @rpath al MoltenVK del propio motor; dyld y el cargador Vulkan
+        // deben ver primero la misma copia oficial para no mezclar dos implementaciones en el proceso.
+        result["DYLD_LIBRARY_PATH"] = isolatedLibraries
+        result["VK_ICD_FILENAMES"] = "\(libraryDirectory)/MoltenVK_icd.json"
+        result["VK_DRIVER_FILES"] = "\(libraryDirectory)/MoltenVK_icd.json"
+        // `wine-full` carga Vulkan con `dlopen(SONAME_LIBVULKAN)`. Su parche CW HACK 25909 solo
+        // respeta una biblioteca explícita cuando el backend activo es `wined3d`; los dos paths de
+        // dyld y el ICD no bastan si el motor ya aporta otro `libMoltenVK.dylib`. Fijar ambos valores
+        // evita que Wine consulte capacidades en una copia y cree el dispositivo en otra.
+        result["CX_ACTIVE_GRAPHICS_BACKEND"] = "wined3d"
+        result["CX_LIBVULKAN"] = "\(libraryDirectory)/libMoltenVK.dylib"
+        result["MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS"] = useMetalArgumentBuffers ? "1" : "0"
+        return result
+    }
+
     /// Lista blanca del entorno que cruza la frontera `env -i` del motor completo.
     ///
     /// Mantenerla en una función comprobable evita que una ruta prepare un backend gráfico y que
@@ -7939,8 +8038,10 @@ final class WineManager {
     ) -> [String: String] {
         let allowedKeys = [
             "HOME", "USER", "TMPDIR", "WINEPREFIX", "WINEDEBUG", "WINEDLLOVERRIDES",
+            "WINESERVER",
             "DYLD_FALLBACK_LIBRARY_PATH", "DYLD_LIBRARY_PATH",
             "VK_ICD_FILENAMES", "VK_DRIVER_FILES", "DXVK_LOG_LEVEL", "DXVK_LOG_PATH",
+            "CX_ACTIVE_GRAPHICS_BACKEND", "CX_LIBVULKAN",
             "SteamAppId", "SteamGameId",
             "WINEMSYNC", "WINEESYNC", "WINEFSYNC",
             "MVK_CONFIG_LOG_LEVEL", "MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS", "MTL_HUD_ENABLED",
@@ -8337,6 +8438,13 @@ final class WineManager {
             path: "/usr/bin/pkill",
             arguments: ["-9", "-f", prefix]
         )
+        // Primero se cierran los CLIENTES mientras todavía conservan abiertos sus ficheros del
+        // prefijo. Si se mata antes el wineserver, algunos clientes que están mostrando una
+        // excepción pierden esos descriptores antes de que `lsof` pueda atribuirlos al bottle y
+        // sobreviven al cambio de motor. Uno de esos clientes puede volver a levantar SU
+        // wineserver justo cuando arranca el juego siguiente: DOOM (wine-full) llegó a conectarse
+        // así al server de GPTK y winevulkan abortó en `vkWaitForFences` por mezclar dos ABI.
+        await killPrefixWineClients(prefix: prefix, gameWine: gameWine)
         // El WINESERVER NO lleva el prefix en su argv (lo lee de la env `WINEPREFIX`),
         // así que `pkill -f <prefix>` NO lo alcanza y queda ZOMBI. Al cambiar de motor
         // (fallback DXMT→GPTK→Gcenx, o cliente Steam→juego) el nuevo wine —de otra
@@ -8347,13 +8455,12 @@ final class WineManager {
         // SIGKILL. `wineserver -k` no vale aquí porque también dialoga por protocolo y
         // falla igual con el mismatch de versión.
         await killPrefixWineservers(prefix: prefix, gameWine: gameWine)
-        // Los procesos Wine CLIENTE (steam.exe, steamwebhelper…) TAMPOCO llevan el
-        // prefix en su argv: Wine lo reescribe a la línea de comandos de Windows
-        // ("C:\Program Files…\steam.exe"), así que `pkill -f <prefix>` tampoco los
-        // alcanza y sobreviven entre sesiones. Un steam.exe zombi hace que
-        // `launchSteam` crea que "Steam ya está en marcha" y no lo relance jamás.
-        // Igual que con el wineserver: se localizan por `lsof` contra ESTE prefix.
+        // Segunda pasada corta la carrera de cierre: un cliente puede estar terminando mientras
+        // cae el server y reabrirlo durante unos milisegundos. El pequeño yield es asíncrono, no
+        // bloquea la UI, y deja el prefijo realmente sin runtime antes de cambiar de motor.
+        try? await Task.sleep(for: .milliseconds(250))
         await killPrefixWineClients(prefix: prefix, gameWine: gameWine)
+        await killPrefixWineservers(prefix: prefix, gameWine: gameWine)
     }
 
     /// `true` si hay una **descarga de Steam a medias** en este prefijo Y se puede respetar sin
@@ -8626,11 +8733,9 @@ final class WineManager {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: gameWine)
         process.arguments = ["wineboot", "-u"]
-        process.environment = [
-            "WINEPREFIX": prefix,
-            "WINEDEBUG": "-all",
-            "WINEDLLOVERRIDES": "mscoree,mshtml=d;d3d9,d3d8,ddraw=b"
-        ]
+        var resyncEnvironment = Self.wineControlEnvironment(prefix: prefix, wine: gameWine)
+        resyncEnvironment["WINEDLLOVERRIDES"] = "mscoree,mshtml=d;d3d9,d3d8,ddraw=b"
+        process.environment = resyncEnvironment
         process.standardOutput = FileHandle(forWritingAtPath: "/dev/null")
         process.standardError = FileHandle(forWritingAtPath: "/dev/null")
         do {
@@ -8963,9 +9068,19 @@ final class WineManager {
         func shellQuote(_ value: String) -> String {
             "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
         }
-        return "(/bin/sleep 90; /bin/rm -f \(shellQuote(commandFile))) >/dev/null 2>&1 &\n"
+        let attemptMarker = commandFile + ".started"
+        return "(/bin/sleep 90; /bin/rm -f \(shellQuote(commandFile)) \(shellQuote(attemptMarker))) >/dev/null 2>&1 &\n"
+            + "/usr/bin/touch \(shellQuote(attemptMarker))\n"
             + "cd \(shellQuote(workingDirectory))\n"
             + "\(command)\n"
+    }
+
+    /// Comprueba si el LaunchAgent ya consumió su script. En macOS `test` vive en `/bin`, no en
+    /// `/usr/bin`; usar una ruta inexistente hacía que el bucle de recuperación ignorase el marcador
+    /// y relanzase el mismo juego varias veces después de un fallo rápido.
+    nonisolated static func launchAttemptMarkerCheckCommand(_ marker: String) -> String {
+        let quoted = "'" + marker.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        return "/bin/test -f \(quoted)"
     }
 
     /// Coincide con el ejecutable real, pero no con la propia orden de vigilancia que contiene el
@@ -9103,6 +9218,12 @@ final class WineManager {
             fullEnv[key] = value
         }
         for (key, value) in environment { fullEnv[key] = value }
+        // `wine-full` debe levantar siempre el server de SU MISMA distribución. La limpieza del
+        // prefijo evita servidores previos; este pin cubre además los hijos y comandos auxiliares
+        // que Wine pueda crear tras cruzar `env -i`/launchd.
+        if WineEngineLocator.isFullEngine(winePath) {
+            fullEnv["WINESERVER"] = Self.matchingWineserverPath(forWine: winePath)
+        }
         // ⚠️ CRÍTICO — contexto GUI: al ser Vessel una app (.app), CoreFoundation le inyecta
         // `__CFBundleIdentifier` (= com.swondev.vessel) y `XPC_SERVICE_NAME`/`XPC_FLAGS` en su
         // entorno, que el subproceso Wine HEREDA. Bajo la IDENTIDAD DE BUNDLE de Vessel,
@@ -9321,6 +9442,8 @@ final class WineManager {
             let cmdline = ([winePath] + arguments).map { shq($0) }.joined(separator: " ")
             let cwd = workingDirectory ?? (prefix as NSString).deletingLastPathComponent
             let cmdFile = "\(NSHomeDirectory())/Library/Application Support/Vessel/.game-launch.sh"
+            let attemptMarker = cmdFile + ".started"
+            try? FileManager.default.removeItem(atPath: attemptMarker)
             let script = Self.selfRemovingLaunchAgentScript(
                 commandFile: cmdFile,
                 workingDirectory: cwd,
@@ -9369,6 +9492,7 @@ final class WineManager {
                 "/bin/launchctl bootout gui/\(uid)/\(agentLabel) 2>/dev/null; sleep 1; "
                 + "/bin/launchctl bootstrap gui/\(uid) '\(agentPlist)' 2>/dev/null; "
                 + "for r in 1 2 3 4 5 6; do sleep 4; \(pgrepGame) >/dev/null 2>&1 && break; "
+                + "\(Self.launchAttemptMarkerCheckCommand(attemptMarker)) && break; "
                 + "/bin/launchctl kickstart gui/\(uid)/\(agentLabel) 2>/dev/null; done; "
                 // VITAL: el bash devuelto debe VIVIR lo que viva el juego — el tracker
                 // (GameLaunchTracker) y el watchdog miden la vida del juego por ESTE proceso.
@@ -9442,6 +9566,8 @@ final class WineManager {
             } ?? false
             let agentStem = esSteam ? "steamlauncher" : "fullgamelauncher"
             let cmdFile = "\(NSHomeDirectory())/Library/Application Support/Vessel/.\(agentStem)-launch.sh"
+            let attemptMarker = cmdFile + ".started"
+            try? FileManager.default.removeItem(atPath: attemptMarker)
             let cwd = workingDirectory ?? (prefix as NSString).deletingLastPathComponent
             let script = Self.selfRemovingLaunchAgentScript(
                 commandFile: cmdFile,
@@ -9519,6 +9645,7 @@ final class WineManager {
                     "/bin/launchctl bootout gui/\(uid)/\(agentLabel) 2>/dev/null; sleep 1; "
                     + "/bin/launchctl bootstrap gui/\(uid) '\(agentPlist)' 2>/dev/null; "
                     + "for r in 1 2 3 4 5 6; do sleep 4; \(pgrepGame) >/dev/null 2>&1 && break; "
+                    + "\(Self.launchAttemptMarkerCheckCommand(attemptMarker)) && break; "
                     + "/bin/launchctl kickstart gui/\(uid)/\(agentLabel) 2>/dev/null; done; "
                     + "while \(pgrepGame) >/dev/null 2>&1; do sleep 5; done"
             }

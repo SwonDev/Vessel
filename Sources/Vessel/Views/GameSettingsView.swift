@@ -25,7 +25,14 @@ struct GameConfig: Codable, Equatable {
             }
         }
     }
+    /// Distingue una elección explícita del usuario de una capa aprendida por el diagnóstico.
+    /// Solo las aprendidas pueden invalidarse automáticamente cuando una firma estructural más
+    /// fuerte demuestra que pertenecen a otra API gráfica.
+    enum GraphicsLayerOrigin: String, Codable {
+        case user, learned
+    }
     var graphicsLayer: GraphicsLayer = .auto
+    var graphicsLayerOrigin: GraphicsLayerOrigin? = nil
     /// Campo legado conservado únicamente para decodificar configuraciones antiguas. La UI ya no
     /// lo expone y CompatService no lo aplica: la compatibilidad se resuelve en el motor/perfil.
     var launchArguments: String = ""
@@ -51,7 +58,7 @@ struct GameConfig: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case graphicsLayer, launchArguments, esync, fsync, metalHUD, useRealSteam, steamCloudSync
-        case executableOverride
+        case executableOverride, graphicsLayerOrigin
     }
 
     /// Decodificación TOLERANTE: los campos ausentes usan su valor por defecto. El decoder
@@ -60,6 +67,10 @@ struct GameConfig: Codable, Equatable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         graphicsLayer = try c.decodeIfPresent(GraphicsLayer.self, forKey: .graphicsLayer) ?? .auto
+        graphicsLayerOrigin = try c.decodeIfPresent(
+            GraphicsLayerOrigin.self,
+            forKey: .graphicsLayerOrigin
+        )
         launchArguments = try c.decodeIfPresent(String.self, forKey: .launchArguments) ?? ""
         esync = try c.decodeIfPresent(Bool.self, forKey: .esync) ?? true
         fsync = try c.decodeIfPresent(Bool.self, forKey: .fsync) ?? true
@@ -75,8 +86,43 @@ struct GameConfig: Codable, Equatable {
 enum GameConfigStore {
     static func load(_ id: String) -> GameConfig {
         guard let data = UserDefaults.standard.data(forKey: "gameconfig.\(id)"),
-              let cfg = try? JSONDecoder().decode(GameConfig.self, from: data) else { return GameConfig() }
+              var cfg = try? JSONDecoder().decode(GameConfig.self, from: data) else { return GameConfig() }
+        // Migración de configuraciones anteriores al campo de procedencia. El registro de arreglos
+        // se escribió atómicamente junto al override aprendido, por lo que permite distinguirlo de
+        // una elección manual sin resetear ajustes legítimos de otros juegos.
+        if cfg.graphicsLayerOrigin == nil,
+           cfg.graphicsLayer != .auto,
+           DiscoveredFixesStore.shared.fixes.contains(where: {
+               $0.id == id && $0.graphicsLayer == cfg.graphicsLayer.rawValue
+           }) {
+            cfg.graphicsLayerOrigin = .learned
+            save(id, cfg)
+        }
         return cfg
+    }
+
+    /// Invalida únicamente un override APRENDIDO que contradiga la firma Vulkan nativa del PE.
+    /// Una elección manual nunca se toca. La configuración restante (sync, HUD, ejecutable, nube)
+    /// se conserva íntegra.
+    static func validatedForLaunch(
+        _ config: GameConfig,
+        id: String,
+        executable: String,
+        wineManager: WineManager
+    ) -> GameConfig {
+        guard config.graphicsLayerOrigin == .learned,
+              config.graphicsLayer != .auto,
+              wineManager.isNativeVulkanGame(executable) else { return config }
+        var repaired = config
+        repaired.graphicsLayer = .auto
+        repaired.graphicsLayerOrigin = nil
+        save(id, repaired)
+        DiscoveredFixesStore.shared.remove(id: id)
+        LogStore.shared.log(
+            "Override aprendido incompatible eliminado: el ejecutable importa Vulkan nativo y vuelve al motor wine-full.",
+            level: .info
+        )
+        return repaired
     }
     static func save(_ id: String, _ config: GameConfig) {
         if let data = try? JSONEncoder().encode(config) {
@@ -334,6 +380,10 @@ struct GameSettingsView: View {
             // `config` ya se cargó en el init (sin flash). Aquí solo lo que no bloquea el primer frame.
             profile = CompatService.shared.profile(steam: game.steamAppId, title: game.title)
             saveBackupDate = SaveBackupManager.shared.lastBackupDate(store: sbStore, id: sbId)
+        }
+        .onChange(of: config.graphicsLayer) { old, new in
+            guard old != new else { return }
+            config.graphicsLayerOrigin = .user
         }
         .onChange(of: config) { _, new in GameConfigStore.save(game.id, new) }
     }

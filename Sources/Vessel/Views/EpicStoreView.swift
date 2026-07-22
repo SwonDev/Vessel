@@ -262,7 +262,7 @@ final class EpicStore {
     /// Lanza un juego de Epic ya instalado con el motor de juegos (wine-dxmt), igual que Steam.
     /// `forcedLayer`/`attempt` los usa el fallback automático de motor (relanzar con otra capa).
     func play(_ game: LegendaryManager.EpicGame, forcedLayer: GameConfig.GraphicsLayer? = nil, attempt: Int = 0) async {
-        let cfg = GameConfigStore.load(game.appName)
+        var cfg = GameConfigStore.load(game.appName)
         let detectedExecutable = game.executablePath ?? ""
         let installRoot = game.installPath
             ?? (detectedExecutable.isEmpty ? nil : (detectedExecutable as NSString).deletingLastPathComponent)
@@ -279,6 +279,12 @@ final class EpicStore {
             await playNative(game, executable: exe)
             return
         }
+        cfg = GameConfigStore.validatedForLaunch(
+            cfg,
+            id: game.appName,
+            executable: exe,
+            wineManager: wineManager
+        )
         // Resolvemos el bottle antes de track para tener la ruta del prefijo (aviso de compat).
         let bottle: Bottle
         do { bottle = try await ensureBottle() }
@@ -292,7 +298,10 @@ final class EpicStore {
         // la capa gráfica usada y poder reintentar con otra si falla el arranque.
         let profile = CompatService.shared.profile(epic: game.appName, title: game.title)
         var eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
-        if let forcedLayer { eff.graphicsOverride = forcedLayer }
+        if let forcedLayer {
+            eff.graphicsOverride = forcedLayer
+            eff.graphicsOverrideWasLearned = false
+        }
         // Motor REAL que se usará (no `.auto`), para que el fallback recorra los 3 motores.
         let usedLayer = wineManager.resolvedGraphicsLayer(forExecutable: exe, effective: eff)
         let trackingTarget = wineManager.launchTrackingTarget(for: exe, basePrefix: prefix)
@@ -373,6 +382,7 @@ final class EpicStore {
             persistWinningLayer: { winLayer in
                 var c = GameConfigStore.load(game.appName)
                 c.graphicsLayer = winLayer
+                c.graphicsLayerOrigin = .learned
                 GameConfigStore.save(game.appName, c)
                 DiscoveredFixesStore.shared.record(id: game.appName, title: game.title, store: "epic",
                                                    storeId: game.appName, graphicsLayer: winLayer.rawValue,

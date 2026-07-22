@@ -187,6 +187,9 @@ struct CompatProfile: Codable, Equatable, Identifiable, Sendable {
 struct EffectiveLaunchConfig: Sendable {
     /// Capa gráfica para el enrutado de `launch()` (auto/dxmt/gptk).
     var graphicsOverride: GameConfig.GraphicsLayer = .auto
+    /// `true` únicamente cuando el override procede del autoaprendizaje local. Permite invalidar
+    /// una reparación obsoleta ante una firma estructural más fuerte sin tocar elecciones manuales.
+    var graphicsOverrideWasLearned: Bool = false
     /// Variables de entorno extra (perfil + usuario), pisan al entorno base.
     var extraEnv: [String: String] = [:]
     /// Overrides de DLL a fusionar en `WINEDLLOVERRIDES` (p. ej. d3d11=native).

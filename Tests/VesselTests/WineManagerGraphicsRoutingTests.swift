@@ -857,6 +857,10 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(environment["WINEMSYNC"], "1")
         XCTAssertEqual(environment["WINEESYNC"], "1")
         XCTAssertEqual(environment["WINEFSYNC"], "1")
+        XCTAssertEqual(
+            environment["WINESERVER"],
+            "/tmp/Vessel/Engines/wine-full/bin/wineserver"
+        )
     }
 
     func testOtherEngineControlCommandsKeepTheirLaunchSynchronizationUndecided() {
@@ -868,6 +872,7 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertNil(environment["WINEMSYNC"])
         XCTAssertNil(environment["WINEESYNC"])
         XCTAssertNil(environment["WINEFSYNC"])
+        XCTAssertNil(environment["WINESERVER"])
     }
 
     func testLaunchAgentKeepsItsPrivateCommandAcrossRecoveryKickstarts() {
@@ -878,10 +883,20 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         )
 
         XCTAssertTrue(script.hasPrefix(
-            "(/bin/sleep 90; /bin/rm -f '/tmp/Vessel'\\''s private launch.sh') >/dev/null 2>&1 &\n"
+            "(/bin/sleep 90; /bin/rm -f '/tmp/Vessel'\\''s private launch.sh' '/tmp/Vessel'\\''s private launch.sh.started') >/dev/null 2>&1 &\n"
         ))
+        XCTAssertTrue(script.contains("/usr/bin/touch '/tmp/Vessel'\\''s private launch.sh.started'\n"))
         XCTAssertTrue(script.contains("cd '/tmp/Game Folder'\n"))
         XCTAssertTrue(script.hasSuffix("wine game.exe\n"))
+    }
+
+    func testLaunchAgentChecksAttemptMarkerWithExistingMacOSTestBinary() {
+        XCTAssertEqual(
+            WineManager.launchAttemptMarkerCheckCommand("/tmp/Vessel's private launch.sh.started"),
+            "/bin/test -f '/tmp/Vessel'\\''s private launch.sh.started'"
+        )
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: "/bin/test"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: "/usr/bin/test"))
     }
 
     private func writeUInt16(_ value: UInt16, to data: inout Data, at offset: Int) {
@@ -1602,14 +1617,38 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertNil(environment["CX_GRAPHICS_BACKEND"])
     }
 
+    func testModernMoltenVKOverlayKeepsTheFullEngineLibrariesIsolated() {
+        let environment = WineManager.modernMoltenVKEnvironment(
+            from: [
+                "WINEPREFIX": "/tmp/vessel-bottle",
+                "DYLD_FALLBACK_LIBRARY_PATH": "/tmp/vessel-wine-full/lib"
+            ],
+            libraryDirectory: "/tmp/moltenvk/1.4.1",
+            useMetalArgumentBuffers: true
+        )
+
+        let libraries = "/tmp/moltenvk/1.4.1:/tmp/vessel-wine-full/lib"
+        XCTAssertEqual(environment["WINEPREFIX"], "/tmp/vessel-bottle")
+        XCTAssertEqual(environment["DYLD_FALLBACK_LIBRARY_PATH"], libraries)
+        XCTAssertEqual(environment["DYLD_LIBRARY_PATH"], libraries)
+        XCTAssertEqual(environment["VK_ICD_FILENAMES"], "/tmp/moltenvk/1.4.1/MoltenVK_icd.json")
+        XCTAssertEqual(environment["VK_DRIVER_FILES"], "/tmp/moltenvk/1.4.1/MoltenVK_icd.json")
+        XCTAssertEqual(environment["CX_ACTIVE_GRAPHICS_BACKEND"], "wined3d")
+        XCTAssertEqual(environment["CX_LIBVULKAN"], "/tmp/moltenvk/1.4.1/libMoltenVK.dylib")
+        XCTAssertEqual(environment["MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS"], "1")
+    }
+
     func testFullEngineCleanEnvironmentPreservesIsolatedGraphicsRuntimeOnly() {
         let environment = [
             "HOME": "/Users/example",
             "WINEPREFIX": "/tmp/vessel-bottle",
+            "WINESERVER": "/tmp/wine-full/bin/wineserver",
             "DYLD_FALLBACK_LIBRARY_PATH": "/tmp/moltenvk:/tmp/wine-full/lib",
             "DYLD_LIBRARY_PATH": "/tmp/moltenvk",
             "VK_ICD_FILENAMES": "/tmp/moltenvk/MoltenVK_icd.json",
             "VK_DRIVER_FILES": "/tmp/moltenvk/MoltenVK_icd.json",
+            "CX_ACTIVE_GRAPHICS_BACKEND": "wined3d",
+            "CX_LIBVULKAN": "/tmp/moltenvk/libMoltenVK.dylib",
             "DXVK_LOG_LEVEL": "info",
             "DXVK_LOG_PATH": "/tmp/game",
             "MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS": "1",
@@ -1622,9 +1661,12 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
 
         let clean = WineManager.fullEngineCleanEnvironment(from: environment)
 
+        XCTAssertEqual(clean["WINESERVER"], "/tmp/wine-full/bin/wineserver")
         XCTAssertEqual(clean["DYLD_LIBRARY_PATH"], "/tmp/moltenvk")
         XCTAssertEqual(clean["VK_ICD_FILENAMES"], "/tmp/moltenvk/MoltenVK_icd.json")
         XCTAssertEqual(clean["VK_DRIVER_FILES"], "/tmp/moltenvk/MoltenVK_icd.json")
+        XCTAssertEqual(clean["CX_ACTIVE_GRAPHICS_BACKEND"], "wined3d")
+        XCTAssertEqual(clean["CX_LIBVULKAN"], "/tmp/moltenvk/libMoltenVK.dylib")
         XCTAssertEqual(clean["DXVK_LOG_LEVEL"], "info")
         XCTAssertEqual(clean["DXVK_LOG_PATH"], "/tmp/game")
         XCTAssertEqual(clean["MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS"], "1")
@@ -2009,6 +2051,32 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertFalse(WineManager.isUsableGameWindow(tiny, ownedBy: [ownerPID]))
     }
 
+    func testDiagnosticWineWindowsNeverCountAsRenderedGames() {
+        let ownerPID: pid_t = 12_345
+        func window(title: String, width: Double, height: Double) -> [String: Any] {
+            [
+                kCGWindowOwnerPID as String: ownerPID,
+                kCGWindowName as String: title,
+                kCGWindowLayer as String: 0,
+                kCGWindowAlpha as String: 1.0,
+                kCGWindowBounds as String: ["Width": width, "Height": height]
+            ]
+        }
+
+        XCTAssertFalse(WineManager.isUsableGameWindow(
+            window(title: "DOOM Console", width: 271, height: 254),
+            ownedBy: [ownerPID]
+        ))
+        XCTAssertFalse(WineManager.isUsableGameWindow(
+            window(title: "DOOM Unhandled Exception", width: 640, height: 480),
+            ownedBy: [ownerPID]
+        ))
+        XCTAssertTrue(WineManager.isUsableGameWindow(
+            window(title: "Legitimate Retro Game", width: 320, height: 240),
+            ownedBy: [ownerPID]
+        ))
+    }
+
     func testForcedDXMTIsReportedAsDXMTForDynamic64BitGame() throws {
         let executable = try makePE64(named: "dynamic.exe")
         defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
@@ -2324,6 +2392,39 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
 
         let manager = WineManager()
         XCTAssertTrue(manager.isNativeVulkanGame(executable.path))
+    }
+
+    func testNativeVulkanInvalidatesOnlyLearnedDirect3DOverride() throws {
+        let executable = try makePE64(
+            named: "NativeVulkan.exe",
+            imports: ["vulkan-1.dll"]
+        )
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+
+        let manager = WineManager()
+        var learned = EffectiveLaunchConfig()
+        learned.graphicsOverride = .gptk
+        learned.graphicsOverrideWasLearned = true
+
+        XCTAssertEqual(
+            manager.resolvedGraphicsLayer(forExecutable: executable.path, effective: learned),
+            .gcenx
+        )
+        XCTAssertEqual(
+            manager.fallbackLayers(forExecutable: executable.path, effective: learned),
+            [.gcenx]
+        )
+
+        var manual = learned
+        manual.graphicsOverrideWasLearned = false
+        XCTAssertEqual(
+            manager.resolvedGraphicsLayer(forExecutable: executable.path, effective: manual),
+            .gptk
+        )
+        XCTAssertEqual(
+            manager.fallbackLayers(forExecutable: executable.path, effective: manual),
+            [.gptk]
+        )
     }
 
     func testEOSCompatibilityEngineIsScopedToUnity() throws {
@@ -2822,5 +2923,20 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         let effective = CompatService.shared.effectiveConfig(profile: nil, user: user)
 
         XCTAssertTrue(effective.launchArgs.isEmpty)
+    }
+
+    func testEffectiveConfigPreservesLearnedGraphicsProvenance() {
+        var user = GameConfig()
+        user.graphicsLayer = .gptk
+        user.graphicsLayerOrigin = .learned
+
+        let learned = CompatService.shared.effectiveConfig(profile: nil, user: user)
+        XCTAssertEqual(learned.graphicsOverride, .gptk)
+        XCTAssertTrue(learned.graphicsOverrideWasLearned)
+
+        user.graphicsLayerOrigin = .user
+        let manual = CompatService.shared.effectiveConfig(profile: nil, user: user)
+        XCTAssertEqual(manual.graphicsOverride, .gptk)
+        XCTAssertFalse(manual.graphicsOverrideWasLearned)
     }
 }

@@ -791,7 +791,7 @@ struct BottleDetailView: View {
             log.log("Ejecutable re-resuelto al lanzar \(game.name): \((resolved as NSString).lastPathComponent)", level: .info)
         }
         // Config efectiva resuelta ANTES de track para saber la capa gráfica usada y reintentar.
-        let cfg = GameConfigStore.load(trackId)
+        var cfg = GameConfigStore.load(trackId)
         let installRoot = game.installPath.isEmpty
             ? (game.executablePath as NSString).deletingLastPathComponent
             : game.installPath
@@ -800,9 +800,18 @@ struct BottleDetailView: View {
             installRoot: installRoot,
             fallback: exePath
         )
+        cfg = GameConfigStore.validatedForLaunch(
+            cfg,
+            id: trackId,
+            executable: exePath,
+            wineManager: wineManager
+        )
         let profile = CompatService.shared.profile(steam: game.steamAppId, title: game.name)
         var eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
-        if let forcedLayer { eff.graphicsOverride = forcedLayer }
+        if let forcedLayer {
+            eff.graphicsOverride = forcedLayer
+            eff.graphicsOverrideWasLearned = false
+        }
         let trackingTarget = wineManager.launchTrackingTarget(
             for: exePath,
             basePrefix: localBottle.prefixPath
@@ -873,6 +882,7 @@ struct BottleDetailView: View {
             persistWinningLayer: { winLayer in
                 var c = GameConfigStore.load(trackId)
                 c.graphicsLayer = winLayer
+                c.graphicsLayerOrigin = .learned
                 GameConfigStore.save(trackId, c)
                 // Loop de auto-aprendizaje: registra el arreglo para poder compartirlo con la comunidad.
                 DiscoveredFixesStore.shared.record(id: trackId, title: game.name, store: "steam",

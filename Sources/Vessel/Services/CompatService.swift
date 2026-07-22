@@ -149,7 +149,10 @@ final class CompatService {
         }
 
         // Overrides del usuario (ganan). La capa gráfica explícita del usuario manda.
-        if user.graphicsLayer != .auto { cfg.graphicsOverride = user.graphicsLayer }
+        if user.graphicsLayer != .auto {
+            cfg.graphicsOverride = user.graphicsLayer
+            cfg.graphicsOverrideWasLearned = user.graphicsLayerOrigin == .learned
+        }
         cfg.esync = user.esync
         cfg.fsync = user.fsync
         cfg.metalHUD = user.metalHUD

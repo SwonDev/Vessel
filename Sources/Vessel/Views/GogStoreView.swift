@@ -315,7 +315,7 @@ final class GogStore {
         let dir = installDir(bottle, game.appId)
         let prefix = bottle.prefixPath
         // Config efectiva resuelta ANTES de track para saber la capa gráfica usada y reintentar.
-        let cfg = GameConfigStore.load(game.appId)
+        var cfg = GameConfigStore.load(game.appId)
         let detectedLaunch = gogdl.primaryLaunch(appId: game.appId, installDir: dir)
         let executable = GameExecutableOverride.resolve(
             configuredPath: cfg.executableOverride,
@@ -326,10 +326,19 @@ final class GogStore {
             log.log("GOG: no se encontró el ejecutable de \(game.title). Elige uno en Ajustes → Avanzado o reinstala el juego.", level: .warn)
             return
         }
+        cfg = GameConfigStore.validatedForLaunch(
+            cfg,
+            id: game.appId,
+            executable: executable,
+            wineManager: wineManager
+        )
         let launchArguments = executable == detectedLaunch?.executable ? (detectedLaunch?.arguments ?? []) : []
         let profile = CompatService.shared.profile(gog: game.appId, title: game.title)
         var eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
-        if let forcedLayer { eff.graphicsOverride = forcedLayer }
+        if let forcedLayer {
+            eff.graphicsOverride = forcedLayer
+            eff.graphicsOverrideWasLearned = false
+        }
         // Motor REAL que se usará (no `.auto`), para que el fallback recorra los 3 motores.
         let usedLayer = wineManager.resolvedGraphicsLayer(forExecutable: executable, effective: eff)
         let trackingTarget = wineManager.launchTrackingTarget(
@@ -384,6 +393,7 @@ final class GogStore {
             persistWinningLayer: { winLayer in
                 var c = GameConfigStore.load(game.appId)
                 c.graphicsLayer = winLayer
+                c.graphicsLayerOrigin = .learned
                 GameConfigStore.save(game.appId, c)
                 DiscoveredFixesStore.shared.record(id: game.appId, title: game.title, store: "gog",
                                                    storeId: game.appId, graphicsLayer: winLayer.rawValue,
