@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Gestiona una copia oficial y aislada de MoltenVK para rutas DXVK que no pueden usar la
@@ -6,6 +7,7 @@ import Foundation
 final class MoltenVKManager {
     enum MoltenVKError: LocalizedError {
         case downloadFailed(String)
+        case checksumMismatch
         case extractionFailed(String)
         case invalidRuntime
 
@@ -13,6 +15,8 @@ final class MoltenVKManager {
             switch self {
             case .downloadFailed(let message):
                 return "Descarga de MoltenVK falló: \(message)"
+            case .checksumMismatch:
+                return "La verificación de integridad de MoltenVK falló."
             case .extractionFailed(let message):
                 return "Extracción de MoltenVK falló: \(message)"
             case .invalidRuntime:
@@ -25,6 +29,9 @@ final class MoltenVKManager {
     static let pinnedDownloadURL = URL(
         string: "https://github.com/KhronosGroup/MoltenVK/releases/download/v1.4.1/MoltenVK-macos.tar"
     )!
+    /// Digest publicado por GitHub para el asset oficial de la release v1.4.1.
+    static let pinnedArchiveSHA256 =
+        "5ea0c259df7ded9a275444820f09cced54d6e5a7c7a31d262de62a5cdb7e15cf"
     static let archiveRuntimePath = "MoltenVK/MoltenVK/dynamic/dylib/macOS"
 
     private let cacheRoot: String
@@ -64,6 +71,11 @@ final class MoltenVKManager {
         defer {
             try? fm.removeItem(atPath: staging)
             try? fm.removeItem(at: archive)
+        }
+
+        let archiveData = try Data(contentsOf: archive, options: .mappedIfSafe)
+        guard Self.sha256(archiveData) == Self.pinnedArchiveSHA256 else {
+            throw MoltenVKError.checksumMismatch
         }
 
         progress("Extrayendo MoltenVK…", 0.65)
@@ -114,6 +126,10 @@ final class MoltenVKManager {
         } catch {
             return false
         }
+    }
+
+    nonisolated static func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     private nonisolated static func removeQuarantine(at path: String) {

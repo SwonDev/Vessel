@@ -23,4 +23,15 @@ final class MoltenVKManagerTests: XCTestCase {
             "MoltenVK/MoltenVK/dynamic/dylib/macOS"
         )
     }
+
+    func testPinnedArchiveDigestMatchesTheOfficialReleaseAsset() {
+        XCTAssertEqual(
+            MoltenVKManager.pinnedArchiveSHA256,
+            "5ea0c259df7ded9a275444820f09cced54d6e5a7c7a31d262de62a5cdb7e15cf"
+        )
+        XCTAssertEqual(
+            MoltenVKManager.sha256(Data("abc".utf8)),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        )
+    }
 }
