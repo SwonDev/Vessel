@@ -9,6 +9,61 @@ import XCTest
 @MainActor
 final class ExecutableResolverTests: XCTestCase {
 
+    private func writeUInt16(_ value: UInt16, to data: inout Data, at offset: Int) {
+        data[offset] = UInt8(value & 0xff)
+        data[offset + 1] = UInt8((value >> 8) & 0xff)
+    }
+
+    private func writeUInt32(_ value: UInt32, to data: inout Data, at offset: Int) {
+        for index in 0..<4 { data[offset + index] = UInt8((value >> (index * 8)) & 0xff) }
+    }
+
+    private func writeUInt64(_ value: UInt64, to data: inout Data, at offset: Int) {
+        for index in 0..<8 { data[offset + index] = UInt8((value >> (index * 8)) & 0xff) }
+    }
+
+    private func pe64Fixture(imports: [String]) -> Data {
+        var data = Data(repeating: 0, count: 0x800)
+        let peOffset = 0x80
+        let optionalOffset = peOffset + 24
+        let optionalSize = 0xf0
+        let directoryOffset = optionalOffset + 112
+        let sectionOffset = optionalOffset + optionalSize
+        let rawSectionOffset = 0x200
+
+        data[0] = 0x4d
+        data[1] = 0x5a
+        writeUInt32(UInt32(peOffset), to: &data, at: 0x3c)
+        data[peOffset] = 0x50
+        data[peOffset + 1] = 0x45
+        writeUInt16(0x8664, to: &data, at: peOffset + 4)
+        writeUInt16(1, to: &data, at: peOffset + 6)
+        writeUInt16(UInt16(optionalSize), to: &data, at: peOffset + 20)
+        writeUInt16(0x020b, to: &data, at: optionalOffset)
+        writeUInt64(0x0000_0001_4000_0000, to: &data, at: optionalOffset + 24)
+        writeUInt32(0x200, to: &data, at: optionalOffset + 60)
+        writeUInt32(16, to: &data, at: optionalOffset + 108)
+
+        data.replaceSubrange(sectionOffset..<(sectionOffset + 8), with: Data(".rdata\0\0".utf8))
+        writeUInt32(0x600, to: &data, at: sectionOffset + 8)
+        writeUInt32(0x1000, to: &data, at: sectionOffset + 12)
+        writeUInt32(0x600, to: &data, at: sectionOffset + 16)
+        writeUInt32(UInt32(rawSectionOffset), to: &data, at: sectionOffset + 20)
+
+        writeUInt32(0x1000, to: &data, at: directoryOffset + 8)
+        writeUInt32(UInt32((imports.count + 1) * 20), to: &data, at: directoryOffset + 12)
+        var nameOffset = 0x400
+        for (index, library) in imports.enumerated() {
+            let descriptor = rawSectionOffset + index * 20
+            writeUInt32(UInt32(0x1000 + nameOffset - rawSectionOffset),
+                        to: &data, at: descriptor + 12)
+            let bytes = Data(library.utf8) + Data([0])
+            data.replaceSubrange(nameOffset..<(nameOffset + bytes.count), with: bytes)
+            nameOffset += bytes.count
+        }
+        return data
+    }
+
     private func makeTree(_ root: String, files: [String], dirs: [String]) throws {
         let fm = FileManager.default
         for d in dirs {
@@ -182,6 +237,29 @@ final class ExecutableResolverTests: XCTestCase {
 
         let exe = SteamLibraryImporter.mainGameExecutable(in: dir)
         XCTAssertEqual(exe, "\(dir)/x64Vk/Hades.exe")
+    }
+
+    /// id Tech 6 distribuye OpenGL y Vulkan como hermanos en la raíz. El nombre `…vk` no basta:
+    /// debe existir el ejecutable base y la variante tiene que importar Vulkan de verdad.
+    func testPrefersConfirmedVulkanSiblingExecutable() throws {
+        let dir = tempDir("DOOM")
+        try makeTree(dir, files: ["DOOMx64.exe", "DOOMx64vk.exe"], dirs: [])
+        try pe64Fixture(imports: ["vulkan-1.dll"])
+            .write(to: URL(fileURLWithPath: "\(dir)/DOOMx64vk.exe"))
+        defer { try? FileManager.default.removeItem(atPath: (dir as NSString).deletingLastPathComponent) }
+
+        let exe = SteamLibraryImporter.mainGameExecutable(in: dir)
+        XCTAssertEqual(exe, "\(dir)/DOOMx64vk.exe")
+    }
+
+    /// Conserva el desempate estable si el hermano con sufijo Vulkan no lo confirma en su tabla PE.
+    func testDoesNotPreferUnconfirmedVulkanSiblingExecutable() throws {
+        let dir = tempDir("Stable Game")
+        try makeTree(dir, files: ["StableGame.exe", "StableGamevk.exe"], dirs: [])
+        defer { try? FileManager.default.removeItem(atPath: (dir as NSString).deletingLastPathComponent) }
+
+        let exe = SteamLibraryImporter.mainGameExecutable(in: dir)
+        XCTAssertEqual(exe, "\(dir)/StableGame.exe")
     }
 
     /// Un depot puede traer el mismo motor en dos árboles: uno envuelto con SteamStub y otro

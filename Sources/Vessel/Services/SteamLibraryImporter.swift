@@ -158,6 +158,43 @@ final class SteamLibraryImporter: Sendable {
         return false
     }
 
+    /// Ejecutables Vulkan paralelos en la misma carpeta (`Game.exe` + `GameVk.exe`, o
+    /// `Game.exe` + `Game_Vulkan.exe`). Algunos motores, como id Tech 6, distribuyen así sus dos
+    /// renderizadores oficiales en lugar de separarlos en carpetas `x64`/`x64Vk`.
+    ///
+    /// El sufijo por sí solo no es evidencia: exigimos tanto el ejecutable base hermano como un
+    /// import PE real de `vulkan-1.dll`. Así no se premian por accidente juegos cuyo nombre termine
+    /// en «vk», herramientas auxiliares ni binarios que solo mencionen Vulkan en mensajes de texto.
+    private static func confirmedVulkanSiblingExecutables(
+        in candidates: [(rel: String, full: String)]
+    ) -> Set<String> {
+        let suffixes = ["_vulkan", "-vulkan", "vulkan", "_vk", "-vk", "vk"]
+        let stemsByDirectory = Dictionary(grouping: candidates) { candidate in
+            (candidate.rel as NSString).deletingLastPathComponent
+        }.mapValues { directoryCandidates in
+            Set(directoryCandidates.map {
+                (($0.rel as NSString).lastPathComponent as NSString)
+                    .deletingPathExtension.lowercased()
+            })
+        }
+
+        var confirmed: Set<String> = []
+        for candidate in candidates {
+            let directory = (candidate.rel as NSString).deletingLastPathComponent
+            let stem = (((candidate.rel as NSString).lastPathComponent as NSString)
+                .deletingPathExtension).lowercased()
+            guard let suffix = suffixes.first(where: {
+                stem.hasSuffix($0) && stem.count > $0.count
+            }) else { continue }
+            let baseStem = String(stem.dropLast(suffix.count))
+            guard stemsByDirectory[directory]?.contains(baseStem) == true,
+                  PEImportScanner.importedLibraries(atPath: candidate.full)
+                    .contains("vulkan-1.dll") else { continue }
+            confirmed.insert(candidate.full)
+        }
+        return confirmed
+    }
+
     /// Confirma una variante *standalone* oficial incluida junto al ejecutable protegido.
     ///
     /// Algunos juegos distribuyen dos árboles paralelos dentro del mismo depot, por ejemplo
@@ -398,6 +435,7 @@ final class SteamLibraryImporter: Sendable {
         }
         guard !exes.isEmpty else { return nil }
         let configuredLauncherPayloads = launcherConfiguredPayloads(in: dir, candidates: exes)
+        let confirmedVulkanSiblings = confirmedVulkanSiblingExecutables(in: exes)
 
         func score(_ rel: String, _ full: String) -> Int {
             var s = 0
@@ -474,6 +512,9 @@ final class SteamLibraryImporter: Sendable {
             let vulkanDirectory = rendererDirectory.contains("vulkan")
                 || rendererDirectory.hasSuffix("vk")
             if vulkanDirectory, isConfirmedVulkanVariant(full) { s += 260 }
+            // Renderers paralelos en la misma carpeta. La lista se precalcula para no releer varias
+            // veces ejecutables grandes durante las comparaciones del `max`.
+            if confirmedVulkanSiblings.contains(full) { s += 260 }
             // Si el depot incluye una edición oficial paralela sin SteamStub, esa es la ruta más
             // autónoma y segura. La evidencia estructural supera preferencias de profundidad/64-bit.
             if isConfirmedOfficialStandaloneVariant(
