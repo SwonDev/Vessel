@@ -51,4 +51,31 @@ struct GameDetailParallaxTests {
         #expect(GameDetailScrollBehavior.screenshotIndex(current: 3, movingBy: 1, count: 4) == 3)
         #expect(GameDetailScrollBehavior.screenshotIndex(current: 0, movingBy: 1, count: 0) == nil)
     }
+
+    @Test("El tamaño local se invalida al instalar, desinstalar o cambiar de ruta")
+    func diskSizeMeasurementTracksLiveInstallationState() {
+        let installed = GameDetailDiskSize.taskID(
+            gameID: "1091500",
+            installed: true,
+            installPath: "/Games/Cyberpunk 2077"
+        )
+        let uninstalled = GameDetailDiskSize.taskID(
+            gameID: "1091500",
+            installed: false,
+            installPath: nil
+        )
+        let moved = GameDetailDiskSize.taskID(
+            gameID: "1091500",
+            installed: true,
+            installPath: "/External/Cyberpunk 2077"
+        )
+
+        #expect(installed != uninstalled)
+        #expect(installed != moved)
+        #expect(uninstalled == GameDetailDiskSize.taskID(
+            gameID: "1091500",
+            installed: false,
+            installPath: nil
+        ))
+    }
 }

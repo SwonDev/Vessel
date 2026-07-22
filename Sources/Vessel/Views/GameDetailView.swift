@@ -62,6 +62,14 @@ enum GameDetailScrollBehavior {
     }
 }
 
+/// Identidad de la medición local. Incluye el estado y la ruta para que SwiftUI cancele una
+/// medición obsoleta y limpie el tamaño inmediatamente al instalar o desinstalar sin navegar.
+enum GameDetailDiskSize {
+    static func taskID(gameID: String, installed: Bool, installPath: String?) -> String {
+        "\(gameID)|\(installed)|\(installPath ?? "")"
+    }
+}
+
 struct GameDetailView: View {
     let game: StoreGame
     let tint: Color
@@ -198,6 +206,11 @@ struct GameDetailView: View {
             Text("Se forzará el cierre del juego. Podrías perder el progreso no guardado.")
         }
         .task(id: game.id) { await loadDetails() }
+        .task(id: GameDetailDiskSize.taskID(
+            gameID: game.id,
+            installed: game.installed,
+            installPath: game.installPath
+        )) { await loadDiskSize() }
         .task(id: game.steamAppId) { await loadDRMVerdict() }
         .onChange(of: steamApiKeyObserver) { _, _ in
             if store == .steam, let appId = game.steamAppId, !appId.isEmpty {
@@ -1290,12 +1303,7 @@ struct GameDetailView: View {
     }
 
     @MainActor private func loadDetails() async {
-        details = nil; dlcs = []; achievements = nil; detailsLoadFailed = false; diskSize = nil
-        if let path = game.installPath, !path.isEmpty, game.installed {
-            // Medir la carpeta en segundo plano (los árboles UE pesan decenas de GB; no bloquear).
-            let measured = await Task.detached(priority: .utility) { Self.folderSize(atPath: path) }.value
-            diskSize = measured > 0 ? measured : nil
-        }
+        details = nil; dlcs = []; achievements = nil; detailsLoadFailed = false
         if let appId = game.steamAppId, !appId.isEmpty {
             await loadSteamDetails(appId)
             await loadAchievements(appId)
@@ -1307,6 +1315,18 @@ struct GameDetailView: View {
             let ownedDLCs = await loadStoreDLCs()
             if !ownedDLCs.isEmpty { dlcs = ownedDLCs }
         }
+    }
+
+    @MainActor private func loadDiskSize() async {
+        diskSize = nil
+        guard game.installed, let path = game.installPath, !path.isEmpty else { return }
+
+        // Medir la carpeta en segundo plano (los árboles UE pesan decenas de GB; no bloquear).
+        // Si cambia el estado o la ruta, `.task(id:)` cancela esta medición y evita reinyectar un
+        // tamaño perteneciente a la instalación anterior.
+        let measured = await Task.detached(priority: .utility) { Self.folderSize(atPath: path) }.value
+        guard !Task.isCancelled else { return }
+        diskSize = measured > 0 ? measured : nil
     }
 
     /// Estado REAL de logros (desbloqueado/bloqueado) del juego de Steam para el usuario logueado.
