@@ -67,10 +67,10 @@ invisible) y la estética premium (DESIGN.md). Basado en auditoría de huecos fr
    indexable y preparación explícita para evitar tráfico remoto al filtrar.
 
 ### Integración nativa con macOS
-10. **Identidad de proceso por juego en el Dock**: el launcher común debe presentar el nombre y el
-    icono reales del título durante cada sesión, en lugar de heredar la etiqueta genérica `wine`.
-    Resolverlo una sola vez para Steam, Epic, GOG y DRM‑free, incluidos procesos desacoplados y
-    relanzamientos automáticos, sin exigir configuración ni parámetros al usuario.
+10. ~~**Identidad de proceso por juego en el Dock**~~ ✅ HECHO: el launcher común presenta el
+    nombre real del título en Steam, Epic, GOG y DRM‑free. CrossOver/GPTK usa su identidad nativa y
+    WineHQ recibe un helper firmado y aislado que conserva el nombre a través de procesos
+    desacoplados y relanzamientos automáticos, sin configuración ni parámetros del usuario.
 
 ## 🧪 Validación manual pendiente
 
