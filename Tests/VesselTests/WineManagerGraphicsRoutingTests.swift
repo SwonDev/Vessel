@@ -1759,6 +1759,58 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertFalse(manager.usesLegacySDL2OpenGLScaling(executable.path))
     }
 
+    func testLiquidEngineD3D11RequiresOneXWindowCoordinates() throws {
+        let executable = try makePE64(
+            named: "proprietary-city-builder.exe",
+            marker: #"d:\game\liquidengine\core\coreconfig.h"#
+                + "\0"
+                + #"d:\game\liquidengine\engine\liquidrenderer.cpp"#
+                + "\0"
+                + #"d:\game\liquidengine\engine\renderwindowmanager.cpp"#
+                + "\0LiquidRenderer::Init",
+            imports: ["d3d11.dll", "dxgi.dll"]
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        XCTAssertTrue(GameDisplayStateRepair.requiresOneXWindowCoordinates(
+            appId: nil,
+            executable: executable.path
+        ))
+    }
+
+    func testLiquidEngineScalingRuleRejectsWeakOrNonD3D11Markers() throws {
+        let weakExecutable = try makePE64(
+            named: "unrelated-d3d11.exe",
+            marker: #"liquidengine\engine\liquidrenderer.cpp"#,
+            imports: ["d3d11.dll"]
+        )
+        let weakDirectory = weakExecutable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: weakDirectory) }
+
+        let nonD3D11Executable = try makePE64(
+            named: "offline-tool.exe",
+            marker: #"d:\tool\liquidengine\core\coreconfig.h"#
+                + "\0"
+                + #"d:\tool\liquidengine\engine\liquidrenderer.cpp"#
+                + "\0"
+                + #"d:\tool\liquidengine\engine\renderwindowmanager.cpp"#
+                + "\0LiquidRenderer::Init",
+            imports: ["opengl32.dll"]
+        )
+        let nonD3D11Directory = nonD3D11Executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: nonD3D11Directory) }
+
+        XCTAssertFalse(GameDisplayStateRepair.requiresOneXWindowCoordinates(
+            appId: nil,
+            executable: weakExecutable.path
+        ))
+        XCTAssertFalse(GameDisplayStateRepair.requiresOneXWindowCoordinates(
+            appId: nil,
+            executable: nonD3D11Executable.path
+        ))
+    }
+
     func testContentDrivenSDL2FMODStudioEngineDisablesRetinaAt64Bit() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("vessel-content-fmod-\(UUID().uuidString)", isDirectory: true)

@@ -5451,6 +5451,23 @@ final class WineManager {
         try? await terminateWineProcesses(winePath: d3d12Wine, prefix: bottle.prefixPath)
         try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: d3d12Wine)
         await resyncGamePrefix(gameWine: d3d12Wine, prefix: bottle.prefixPath)
+        // Esta ruta también puede recibir juegos D3D11 tras un fallback aprendido a GPTK. Escribe
+        // SIEMPRE el estado Retina después de sincronizar el prefijo para que no herede la escala
+        // del juego anterior. Liquid Engine necesita coordenadas 1×: con Retina convierte el
+        // framebuffer físico 3024×1964 en puntos y desborda un escritorio lógico 1512×982.
+        let requiresOneXWindowCoordinates = GameDisplayStateRepair
+            .requiresOneXWindowCoordinates(appId: steamAppId, executable: executable)
+        await setMacDriverRetinaMode(
+            prefix: bottle.prefixPath,
+            wine: d3d12Wine,
+            enabled: requiresOneXWindowCoordinates ? false : effective.retina
+        )
+        if requiresOneXWindowCoordinates {
+            log.log(
+                "Motor con coordenadas físicas detectado: escala nativa 1× para mantener ventana e input dentro del escritorio.",
+                level: .info
+            )
+        }
         if needsManagedMedia {
             await enableManagedMediaFoundation(
                 for: executable,

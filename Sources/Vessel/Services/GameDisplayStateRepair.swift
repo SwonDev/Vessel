@@ -4,9 +4,9 @@ import CoreGraphics
 /// Repara estados de pantalla conocidos que el propio juego o una sincronización antigua pueden
 /// restaurar y que, bajo Wine + Retina, dejan la ventana fuera de escala.
 ///
-/// Las reglas son deliberadamente estrechas: una corrección solo se aplica a un AppID y a una
-/// combinación de valores comprobada en vivo. No cambia el motor, la capa gráfica ni una preferencia
-/// de ventana válida del usuario.
+/// Las reglas son deliberadamente estrechas: las reparaciones persistentes exigen un AppID y una
+/// combinación comprobada en vivo; las decisiones de escala por motor exigen varias huellas
+/// estructurales independientes. No cambia una preferencia de ventana válida del usuario.
 enum GameDisplayStateRepair {
     struct DisplayMetrics: Equatable, Sendable {
         let logicalWidth: Int
@@ -34,16 +34,78 @@ enum GameDisplayStateRepair {
     private static let kunitsuGamiConfigName = "config.ini"
     private static let displayBackupSuffix = ".vessel-display-backup"
 
-    /// Esta build de RE Engine crea la ventana con las coordenadas que guarda en
-    /// `NormalWindowResolution`, incluso cuando Wine expone un framebuffer Retina. Con Retina
-    /// activo, el juego persistía 2704×1756 y macOS terminaba creando una ventana de ese tamaño en
-    /// puntos: el contenido quedaba al doble, desbordado y con el ratón desalineado. La excepción es
-    /// deliberadamente estrecha y además valida las huellas estructurales de la instalación.
+    /// Liquid Engine crea su ventana D3D11 con coordenadas físicas aun cuando Wine expone un
+    /// escritorio Retina en puntos. En una pantalla 2×, una superficie de 3024×1964 termina así
+    /// ocupando 3024×1964 puntos sobre un escritorio lógico de 1512×982. La detección no depende
+    /// del título ni de la tienda: exige un PE64 D3D11 y tres huellas independientes del renderer.
+    private nonisolated static func isLiquidEngineD3D11Executable(
+        _ executable: String,
+        fileManager: FileManager
+    ) -> Bool {
+        guard fileManager.fileExists(atPath: executable),
+              let data = try? Data(
+                contentsOf: URL(fileURLWithPath: executable),
+                options: .mappedIfSafe
+              ),
+              isPE64(data),
+              containsAnyASCII(data, ["d3d11.dll", "D3D11.dll", "D3D11.DLL"])
+        else { return false }
+
+        let rendererMarkers = [
+            #"\liquidengine\core\coreconfig.h"#,
+            #"\liquidengine\engine\liquidrenderer.cpp"#,
+            #"\liquidengine\engine\renderwindowmanager.cpp"#,
+            "LiquidRenderer::Init"
+        ]
+        let matches = rendererMarkers.reduce(into: 0) { count, marker in
+            if data.range(of: Data(marker.utf8)) != nil { count += 1 }
+        }
+        return matches >= 3
+    }
+
+    private nonisolated static func containsAnyASCII(_ data: Data, _ needles: [String]) -> Bool {
+        needles.contains { data.range(of: Data($0.utf8)) != nil }
+    }
+
+    private nonisolated static func isPE64(_ data: Data) -> Bool {
+        guard data.count >= 0x40,
+              data[0] == 0x4d,
+              data[1] == 0x5a,
+              let peOffset = littleEndianUInt32(data, at: 0x3c).map(Int.init),
+              peOffset >= 0,
+              peOffset + 6 <= data.count,
+              data[peOffset] == 0x50,
+              data[peOffset + 1] == 0x45,
+              data[peOffset + 2] == 0,
+              data[peOffset + 3] == 0,
+              littleEndianUInt16(data, at: peOffset + 4) == 0x8664
+        else { return false }
+        return true
+    }
+
+    private nonisolated static func littleEndianUInt16(_ data: Data, at offset: Int) -> UInt16? {
+        guard offset >= 0, offset + 2 <= data.count else { return nil }
+        return UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8)
+    }
+
+    private nonisolated static func littleEndianUInt32(_ data: Data, at offset: Int) -> UInt32? {
+        guard offset >= 0, offset + 4 <= data.count else { return nil }
+        return UInt32(data[offset])
+            | (UInt32(data[offset + 1]) << 8)
+            | (UInt32(data[offset + 2]) << 16)
+            | (UInt32(data[offset + 3]) << 24)
+    }
+
+    /// Determina si el motor necesita coordenadas 1×. Liquid Engine se reconoce por su estructura
+    /// binaria; la excepción de RE Engine se limita a la build y AppID comprobados en vivo.
     nonisolated static func requiresOneXWindowCoordinates(
         appId: String?,
         executable: String,
         fileManager: FileManager = .default
     ) -> Bool {
+        if isLiquidEngineD3D11Executable(executable, fileManager: fileManager) {
+            return true
+        }
         guard appId == kunitsuGamiDemoAppID,
               (executable as NSString).lastPathComponent
                 .caseInsensitiveCompare(kunitsuGamiDemoExecutable) == .orderedSame
