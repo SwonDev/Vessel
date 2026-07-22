@@ -267,6 +267,24 @@ final class EpicStore {
     /// validada, sin pedir parámetros al usuario.
     /// `forcedLayer`/`attempt` los usa el fallback automático de motor (relanzar con otra capa).
     func play(_ game: LegendaryManager.EpicGame, forcedLayer: GameConfig.GraphicsLayer? = nil, attempt: Int = 0) async {
+        if let current = LegendaryManager.localInstalledState(appName: game.appName) {
+            let stateChanged = game.needsVerification != current.needsVerification
+                || game.canRunOffline != current.canRunOffline
+                || game.requiresOnlineToken != current.requiresOnlineToken
+            if stateChanged {
+                var refreshed = game
+                refreshed.needsVerification = current.needsVerification
+                refreshed.canRunOffline = current.canRunOffline
+                refreshed.requiresOnlineToken = current.requiresOnlineToken
+                await play(refreshed, forcedLayer: forcedLayer, attempt: attempt)
+                return
+            }
+        }
+        if game.needsVerification == true {
+            guard let repaired = await repairBeforeLaunch(game) else { return }
+            await play(repaired, forcedLayer: forcedLayer, attempt: attempt)
+            return
+        }
         var cfg = GameConfigStore.load(game.appName)
         let detectedExecutable = game.executablePath ?? ""
         let installRoot = game.installPath
@@ -307,10 +325,15 @@ final class EpicStore {
             eff.graphicsOverride = forcedLayer
             eff.graphicsOverrideWasLearned = false
         }
+        let offline = !(await NetworkReachability.shared.isEpicAccessible())
+        if offline {
+            log.log("Epic · \(game.title): Epic no es accesible; Legendary usará automáticamente el modo offline.", level: .info)
+        }
         eff.epicLaunchOwnership = .init(
             appName: game.appName,
             installedExecutable: detectedExecutable,
-            installPath: installRoot
+            installPath: installRoot,
+            offline: offline
         )
         // Motor REAL que se usará (no `.auto`), para que el fallback recorra los 3 motores.
         let usedLayer = wineManager.resolvedGraphicsLayer(forExecutable: exe, effective: eff)
@@ -362,7 +385,10 @@ final class EpicStore {
                         "Epic · \(game.title): el motor requiere el spawn protegido; se usa el contexto oficial directo como fallback automático.",
                         level: .info
                     )
-                    let epicContext = try await legendary.launchContext(appName: game.appName)
+                    let epicContext = try await legendary.launchContext(
+                        appName: game.appName,
+                        offline: offline
+                    )
                     var directEffective = eff
                     directEffective.epicLaunchOwnership = nil
                     for (key, value) in epicContext.environment {
@@ -427,6 +453,62 @@ final class EpicStore {
         ) { [weak self] next in await self?.play(game, forcedLayer: next, attempt: attempt + 1) }
     }
 
+    /// Legendary no permite lanzar una instalación marcada como incompleta. Vessel la repara en
+    /// el mismo gesto de «Jugar», muestra progreso y solo continúa cuando el catálogo confirma que
+    /// la instalación ha quedado coherente.
+    private func repairBeforeLaunch(
+        _ game: LegendaryManager.EpicGame
+    ) async -> LegendaryManager.EpicGame? {
+        do {
+            let platform = game.effectivePlatform
+            let basePath: String
+            if platform == .mac {
+                basePath = "\(VesselPaths.nativeGamesDirectory)/Epic"
+            } else {
+                let bottle = try await ensureBottle(for: game)
+                basePath = "\(bottle.prefixPath)/drive_c/Games"
+            }
+            NotificationService.shared.status("Reparando \(game.title) antes de jugar…")
+            try await legendary.repairGame(
+                appName: game.appName,
+                basePath: basePath,
+                platform: platform,
+                operationID: "epic-preflight:\(game.appName)"
+            ) { line in
+                guard let percent = LegendaryManager.progressPercent(in: line) else { return }
+                Task { @MainActor in
+                    NotificationService.shared.status(
+                        "Reparando \(game.title)… \(Int(percent))%"
+                    )
+                }
+            }
+            await reloadLibrary()
+            NotificationService.shared.status(nil)
+            guard case .connected(let games) = phase,
+                  let repaired = games.first(where: { $0.appName == game.appName }),
+                  repaired.needsVerification != true else {
+                throw NSError(
+                    domain: "Vessel",
+                    code: 120,
+                    userInfo: [NSLocalizedDescriptionKey:
+                        "Epic Games sigue marcando la instalación como incompleta después de repararla."]
+                )
+            }
+            return repaired
+        } catch {
+            NotificationService.shared.status(nil)
+            log.log(
+                "Epic · \(game.title): la autorreparación previa falló: \(error.localizedDescription)",
+                level: .error
+            )
+            NotificationService.shared.alert(
+                title: "No se pudo reparar \(game.title)",
+                body: error.localizedDescription
+            )
+            return nil
+        }
+    }
+
     /// Ruta nativa de Epic: mantiene el mismo contexto oficial, feedback y estadísticas que Wine,
     /// pero abre el bundle `.app` mediante LaunchServices. No toca bottles, capas gráficas ni DLL.
     private func playNative(_ game: LegendaryManager.EpicGame, executable: String) async {
@@ -438,7 +520,11 @@ final class EpicStore {
             await legendary.syncSaves(appName: game.appName, direction: .download)
             NotificationService.shared.status("Preparando sesión nativa de Epic…")
             do {
-                let context = try await legendary.launchContext(appName: game.appName)
+                let offline = !(await NetworkReachability.shared.isEpicAccessible())
+                let context = try await legendary.launchContext(
+                    appName: game.appName,
+                    offline: offline
+                )
                 let application = try await legendary.launchNativeGame(
                     context: context,
                     fallbackExecutable: executable

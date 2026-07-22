@@ -170,4 +170,83 @@ struct EpicDelegatedLaunchTests {
             gameArguments: ["-vulkan"]
         ) == nil)
     }
+
+    @Test("Activa el modo offline como opción de Legendary y no como argumento del juego")
+    func addsAutomaticOfflineOption() throws {
+        let arguments = try #require(LegendaryManager.delegatedLaunchArguments(
+            appName: "ExampleApp",
+            winePath: "/Engines/wine",
+            prefix: "/Bottles/Example",
+            installedExecutable: "/Games/Example/game.exe",
+            effectiveExecutable: "/Games/Example/game.exe",
+            installPath: "/Games/Example",
+            gameArguments: ["-windowed"],
+            offline: true
+        ))
+
+        #expect(arguments == [
+            "launch", "ExampleApp",
+            "--wine", "/Engines/wine",
+            "--wine-prefix", "/Bottles/Example",
+            "--offline", "-windowed"
+        ])
+    }
+
+    @Test("La ruta directa solicita el mismo contexto offline de un solo uso")
+    func buildsOfflineDirectContextArguments() {
+        #expect(LegendaryManager.launchContextArguments(
+            appName: "ExampleApp",
+            offline: true
+        ) == [
+            "launch", "ExampleApp", "--dry-run", "--json", "--no-wine", "--offline"
+        ])
+    }
+}
+
+@Suite("Estado local de Epic")
+struct EpicInstalledStateTests {
+    @Test("Conserva las señales de reparación, offline y token de Legendary")
+    func parsesLaunchPreflightSignals() throws {
+        let data = try #require(#"""
+        [{
+          "app_name": "ExampleApp",
+          "install_path": "/Games/Example",
+          "executable": "game.exe",
+          "install_size": 1234,
+          "platform": "Windows",
+          "needs_verification": true,
+          "can_run_offline": false,
+          "requires_ot": true
+        }]
+        """#.data(using: .utf8))
+
+        let state = try #require(LegendaryManager.parseInstalledGames(from: data)["ExampleApp"])
+        #expect(state.installPath == "/Games/Example")
+        #expect(state.executable == "game.exe")
+        #expect(state.installSizeBytes == 1234)
+        #expect(state.platform == "Windows")
+        #expect(state.needsVerification)
+        #expect(state.canRunOffline == false)
+        #expect(state.requiresOnlineToken == true)
+    }
+
+    @Test("Admite el diccionario persistido de installed.json aunque falte app_name")
+    func parsesPersistentInstalledDictionary() throws {
+        let data = try #require(#"""
+        {
+          "ExampleApp": {
+            "install_path": "/Games/Example",
+            "executable": "game.exe",
+            "needs_verification": false,
+            "can_run_offline": true,
+            "requires_ot": false
+          }
+        }
+        """#.data(using: .utf8))
+
+        let state = try #require(LegendaryManager.parseInstalledGames(from: data)["ExampleApp"])
+        #expect(!state.needsVerification)
+        #expect(state.canRunOffline == true)
+        #expect(state.requiresOnlineToken == false)
+    }
 }

@@ -46,6 +46,10 @@ final class LegendaryManager {
         /// decodificando. El catálogo se refresca en segundo plano y los completa enseguida.
         var nativeMacAvailable: Bool? = nil
         var installedPlatform: String? = nil
+        /// Legendary marca una instalación parcial o dañada y exige verificarla antes de jugar.
+        var needsVerification: Bool? = nil
+        var canRunOffline: Bool? = nil
+        var requiresOnlineToken: Bool? = nil
         var id: String { appName }
 
         /// Mantiene la plataforma REAL de una instalación existente. Solo las instalaciones
@@ -74,6 +78,16 @@ final class LegendaryManager {
         let installed: Bool
 
         var isInstallable: Bool { appName?.isEmpty == false }
+    }
+
+    struct InstalledGameState: Equatable, Sendable {
+        let installPath: String
+        let executable: String
+        let installSizeBytes: Int64?
+        let platform: String?
+        let needsVerification: Bool
+        let canRunOffline: Bool?
+        let requiresOnlineToken: Bool?
     }
 
     /// Contexto efímero que Epic genera para cada arranque. Incluye los argumentos de
@@ -232,19 +246,12 @@ final class LegendaryManager {
 
         // Juegos instalados localmente (con su ruta de instalación y ejecutable).
         let installedResult = try await runBackground(bin, args: ["list-installed", "--json"])
-        var installed: [String: (installPath: String, executable: String,
-                                 installSizeBytes: Int64?, platform: String?)] = [:]
+        let installed: [String: InstalledGameState]
         if installedResult.exitCode == 0,
-           let data = installedResult.stdout.data(using: .utf8),
-           let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
-            for obj in arr {
-                guard let name = obj["app_name"] as? String else { continue }
-                let rawSize = (obj["install_size"] as? NSNumber)?.int64Value
-                    ?? (obj["install_size"] as? Int64)
-                installed[name] = ((obj["install_path"] as? String) ?? "",
-                                   (obj["executable"] as? String) ?? "", rawSize,
-                                   obj["platform"] as? String)
-            }
+           let data = installedResult.stdout.data(using: .utf8) {
+            installed = Self.parseInstalledGames(from: data)
+        } else {
+            installed = [:]
         }
 
         // Todos los juegos en propiedad. PLATAFORMA WINDOWS: Vessel ejecuta los juegos vía
@@ -435,10 +442,10 @@ final class LegendaryManager {
     /// Pide a Legendary la línea de lanzamiento oficial de Epic sin ejecutarla. Es la vía que
     /// entrega `-AUTH_LOGIN`, `-AUTH_PASSWORD`, `-epicapp`, sandbox, locale y cualquier parámetro
     /// específico del catálogo. Los secretos viven únicamente en memoria durante el arranque.
-    func launchContext(appName: String) async throws -> EpicLaunchContext {
+    func launchContext(appName: String, offline: Bool = false) async throws -> EpicLaunchContext {
         let result = try await runBackground(
             Self.binaryPath,
-            args: ["launch", appName, "--dry-run", "--json", "--no-wine"]
+            args: Self.launchContextArguments(appName: appName, offline: offline)
         )
         guard result.exitCode == 0,
               let context = Self.parseLaunchContext(result.stdout) else {
@@ -448,6 +455,12 @@ final class LegendaryManager {
                 "Epic Games no pudo preparar una sesión válida para este juego. Vuelve a conectar tu cuenta e inténtalo de nuevo."])
         }
         return context
+    }
+
+    nonisolated static func launchContextArguments(appName: String, offline: Bool) -> [String] {
+        var arguments = ["launch", appName, "--dry-run", "--json", "--no-wine"]
+        if offline { arguments.append("--offline") }
+        return arguments
     }
 
     /// Construye la orden que conserva a Legendary como propietario del arranque de Epic.
@@ -462,13 +475,15 @@ final class LegendaryManager {
         installedExecutable: String,
         effectiveExecutable: String,
         installPath: String?,
-        gameArguments: [String]
+        gameArguments: [String],
+        offline: Bool = false
     ) -> [String]? {
         var arguments = [
             "launch", appName,
             "--wine", winePath,
             "--wine-prefix", prefix
         ]
+        if offline { arguments.append("--offline") }
 
         let installed = URL(fileURLWithPath: installedExecutable).standardizedFileURL.path
         let effective = URL(fileURLWithPath: effectiveExecutable).standardizedFileURL.path
@@ -917,8 +932,7 @@ final class LegendaryManager {
     /// Parsea el array JSON de `legendary list --json`.
     /// Admite tanto `title` como `app_title` por compatibilidad entre versiones de Legendary.
     private func parseGames(from data: Data,
-                            installed: [String: (installPath: String, executable: String,
-                                                installSizeBytes: Int64?, platform: String?)]) -> [EpicGame] {
+                            installed: [String: InstalledGameState]) -> [EpicGame] {
         guard let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             return []
         }
@@ -941,9 +955,52 @@ final class LegendaryManager {
                             executablePath: exePath,
                             installSizeBytes: info?.installSizeBytes,
                             nativeMacAvailable: Self.availablePlatforms(in: obj).contains(.mac),
-                            installedPlatform: info?.platform)
+                            installedPlatform: info?.platform,
+                            needsVerification: info?.needsVerification,
+                            canRunOffline: info?.canRunOffline,
+                            requiresOnlineToken: info?.requiresOnlineToken)
         }
         .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    /// Convierte `list-installed --json` en estado tipado sin perder las señales que Legendary usa
+    /// para decidir si puede lanzar, reparar u operar sin conexión.
+    nonisolated static func parseInstalledGames(from data: Data) -> [String: InstalledGameState] {
+        guard let root = try? JSONSerialization.jsonObject(with: data) else {
+            return [:]
+        }
+        let objects: [(fallbackAppName: String?, value: [String: Any])]
+        if let array = root as? [[String: Any]] {
+            objects = array.map { (nil, $0) }
+        } else if let dictionary = root as? [String: [String: Any]] {
+            objects = dictionary.map { ($0.key, $0.value) }
+        } else {
+            return [:]
+        }
+        return objects.reduce(into: [:]) { result, entry in
+            let object = entry.value
+            guard let appName = (object["app_name"] as? String) ?? entry.fallbackAppName,
+                  !appName.isEmpty else { return }
+            let rawSize = (object["install_size"] as? NSNumber)?.int64Value
+                ?? (object["install_size"] as? Int64)
+            result[appName] = InstalledGameState(
+                installPath: (object["install_path"] as? String) ?? "",
+                executable: (object["executable"] as? String) ?? "",
+                installSizeBytes: rawSize,
+                platform: object["platform"] as? String,
+                needsVerification: (object["needs_verification"] as? Bool) ?? false,
+                canRunOffline: object["can_run_offline"] as? Bool,
+                requiresOnlineToken: object["requires_ot"] as? Bool
+            )
+        }
+    }
+
+    /// Lee el preflight persistido por Legendary justo antes de jugar. Así una caché de biblioteca
+    /// de una versión anterior nunca puede ocultar una reparación pendiente durante unos segundos.
+    static func localInstalledState(appName: String) -> InstalledGameState? {
+        let url = URL(fileURLWithPath: "\(configDir)/installed.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return parseInstalledGames(from: data)[appName]
     }
 
     /// Legendary conserva los assets de todas las plataformas dentro de cada entrada del catálogo,

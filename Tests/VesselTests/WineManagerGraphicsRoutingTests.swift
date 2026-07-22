@@ -2659,6 +2659,60 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         )
     }
 
+    func testVoidEngineD3D12AMDDriverGateIsDetectedStructurally() {
+        XCTAssertTrue(WineManager.requiresVoidEngineD3DMetalDriverCompatibility(
+            importedLibraries: ["D3D12.dll", "DXGI.dll", "amd_ags_x64.dll", "EOSSDK-Win64-Shipping.dll"],
+            containsVoidEngineMarker: true,
+            containsAMDDriverGate: true,
+            isD3D12: true
+        ))
+    }
+
+    func testVoidDriverRepairRejectsIncompleteAndUnrelatedSignatures() {
+        XCTAssertFalse(WineManager.requiresVoidEngineD3DMetalDriverCompatibility(
+            importedLibraries: ["d3d12.dll", "dxgi.dll"],
+            containsVoidEngineMarker: true,
+            containsAMDDriverGate: true,
+            isD3D12: true
+        ))
+        XCTAssertFalse(WineManager.requiresVoidEngineD3DMetalDriverCompatibility(
+            importedLibraries: ["d3d12.dll", "dxgi.dll", "amd_ags_x64.dll"],
+            containsVoidEngineMarker: false,
+            containsAMDDriverGate: true,
+            isD3D12: true
+        ))
+        XCTAssertFalse(WineManager.requiresVoidEngineD3DMetalDriverCompatibility(
+            importedLibraries: ["d3d12.dll", "dxgi.dll", "amd_ags_x64.dll"],
+            containsVoidEngineMarker: true,
+            containsAMDDriverGate: true,
+            isD3D12: false
+        ))
+    }
+
+    func testVoidDriverRepairUsesOnlyD3DMetalAdapterIdentity() {
+        let base = ["WINEPREFIX": "/tmp/Vessel/Void", "D3DM_SUPPORT_DXR": "1"]
+        let repaired = WineManager.environmentByApplyingVoidEngineD3DMetalIdentity(
+            base,
+            required: true
+        )
+
+        XCTAssertEqual(repaired["D3DM_VENDOR_ID"], "0x10de")
+        XCTAssertEqual(repaired["D3DM_DEVICE_ID"], "0x2484")
+        XCTAssertEqual(repaired["D3DM_DEVICE_DESCRIPTION"], "NVIDIA GeForce RTX 3070")
+        XCTAssertEqual(repaired["D3DM_SUPPORT_DXR"], "1")
+        XCTAssertEqual(
+            WineManager.environmentByApplyingVoidEngineD3DMetalIdentity(base, required: false),
+            base
+        )
+    }
+
+    func testVoidD3DMetalIdentitySurvivesDetachedLaunchIsolation() {
+        for key in ["D3DM_VENDOR_ID", "D3DM_DEVICE_ID", "D3DM_DEVICE_DESCRIPTION"] {
+            XCTAssertTrue(WineManager.d3dMetalGameCleanEnvironmentKeys.contains(key))
+            XCTAssertTrue(WineManager.gptkGameCleanEnvironmentKeys.contains(key))
+        }
+    }
+
     func testSiblingEngineDLLConfirmsNativeVulkanRenderer() throws {
         let executable = try makePE64(named: "Hades.exe")
         let directory = executable.deletingLastPathComponent()

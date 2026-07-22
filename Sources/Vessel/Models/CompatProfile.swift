@@ -192,6 +192,7 @@ struct EffectiveLaunchConfig: Sendable {
         let appName: String
         let installedExecutable: String
         let installPath: String?
+        let offline: Bool
     }
 
     /// Capa gráfica para el enrutado de `launch()` (auto/dxmt/gptk).

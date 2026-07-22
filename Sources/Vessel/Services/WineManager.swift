@@ -723,6 +723,60 @@ final class WineManager {
         )
     }
 
+    /// Firma estructural de Void Engine cuando valida el controlador AMD antes de crear el primer
+    /// frame D3D12. D3DMetal expone por DXGI `AMD Compatibility Mode` (vendor 0x1002), pero no una
+    /// versión UMD consultable; Void interpreta ese contrato de traducción como un driver AMD real
+    /// obsoleto y abre un `MessageBox` preventivo aunque el dispositivo FL12_0 ya sea válido.
+    ///
+    /// Se exige la combinación completa de imports y marcadores del sistema de cvars del motor para
+    /// no afectar a otros ejecutables que simplemente usen AGS o D3D12. No intervienen título ni
+    /// AppID, por lo que cubre otras compilaciones del mismo motor sin crear perfiles manuales.
+    nonisolated static func requiresVoidEngineD3DMetalDriverCompatibility(
+        importedLibraries: Set<String>,
+        containsVoidEngineMarker: Bool,
+        containsAMDDriverGate: Bool,
+        isD3D12: Bool
+    ) -> Bool {
+        guard isD3D12, containsVoidEngineMarker, containsAMDDriverGate else { return false }
+        let imports = Set(importedLibraries.map { $0.lowercased() })
+        return imports.isSuperset(of: ["d3d12.dll", "dxgi.dll", "amd_ags_x64.dll"])
+    }
+
+    func requiresVoidEngineD3DMetalDriverCompatibility(_ executable: String) -> Bool {
+        Self.requiresVoidEngineD3DMetalDriverCompatibility(
+            importedLibraries: peImportedLibraries(forExecutable: executable),
+            containsVoidEngineMarker: exeContains(executable, anyOf: ["VoidEngine"]),
+            containsAMDDriverGate: exeContains(
+                executable,
+                anyOf: [
+                    "r_minRecommendedAMDDriverMajorVersion",
+                    "r_minAMDDriverMajorVersion"
+                ]
+            ),
+            isD3D12: detectGraphicsAPI(forExecutable: executable) == .d3d12
+        )
+    }
+
+    /// Alinea la identidad DXGI con el contrato de versión que D3DMetal publica. El framework de
+    /// Apple incluye una versión UMD de estilo NVIDIA (30.0.15.1233 → 512.33), pero por defecto
+    /// anuncia vendor AMD; Void combina ambas ramas y muestra un aviso preventivo falso. Las
+    /// variables `D3DM_*` son capacidades nativas del propio traductor y no parámetros del juego.
+    ///
+    /// La emulación escogida (RTX 3070) satisface el mínimo D3D12/VRAM del motor sin habilitar ni
+    /// deshabilitar features: D3D12CreateDevice y todos los feature checks siguen pasando por la GPU
+    /// Apple real y por D3DMetal. Solo se corrige la etiqueta que usa el validador del driver.
+    nonisolated static func environmentByApplyingVoidEngineD3DMetalIdentity(
+        _ environment: [String: String],
+        required: Bool
+    ) -> [String: String] {
+        guard required else { return environment }
+        var resolved = environment
+        resolved["D3DM_VENDOR_ID"] = "0x10de"
+        resolved["D3DM_DEVICE_ID"] = "0x2484"
+        resolved["D3DM_DEVICE_DESCRIPTION"] = "NVIDIA GeForce RTX 3070"
+        return resolved
+    }
+
     /// Auto-detecta la API gráfica del juego. Lo más fiable es mirar las DLL que
     /// **importa el propio .exe** (tabla de imports del PE), con respaldo en la
     /// estructura de carpetas:
@@ -5493,6 +5547,7 @@ final class WineManager {
             && detectGraphicsAPI(forExecutable: executable) != .d3d12
         let needsManagedMedia = requiresManagedD3D12MediaEngine(executable)
         let needsCoherentGPUProbe = requiresCoherentD3DMetalGPUProbeEngine(executable)
+        let needsVoidDriverCompatibility = requiresVoidEngineD3DMetalDriverCompatibility(executable)
         let needsStableFourAWindowing = isFourAEnhancedD3D12Engine(executable)
         let needsIsolatedD3DMetalEngine = Self.requiresIsolatedD3DMetalRuntime(
             managedMedia: needsManagedMedia,
@@ -5670,6 +5725,10 @@ final class WineManager {
             env,
             executable: executable
         )
+        env = Self.environmentByApplyingVoidEngineD3DMetalIdentity(
+            env,
+            required: needsVoidDriverCompatibility
+        )
         if runtimeDependencies.contains(.dotNet) {
             log.log(
                 "D3D12: runtime administrado importado por el ejecutable o una DLL del motor; mscoree habilitado de forma aislada.",
@@ -5679,6 +5738,12 @@ final class WineManager {
         if env["D3DM_SUPPORT_DXR"] == "1" {
             log.log(
                 "D3D12: el motor exige DXR; soporte de ray tracing de D3DMetal habilitado automáticamente.",
+                level: .info
+            )
+        }
+        if needsVoidDriverCompatibility {
+            log.log(
+                "Void Engine + D3DMetal: identidad DXGI alineada con el driver virtual del traductor; se evita el falso aviso previo.",
                 level: .info
             )
         }
@@ -9446,6 +9511,7 @@ final class WineManager {
             "WINEMSYNC", "WINEESYNC", "WINEFSYNC", "CX_FWD_COMPAT_GL_CTX",
             "VESSEL_FORCE_CORE_GL_CTX", "VESSEL_WINE_FIBER_GS_REWRITE",
             "MTL_HUD_ENABLED", "D3DM_SUPPORT_DXR", "ROSETTA_ADVERTISE_AVX",
+            "D3DM_VENDOR_ID", "D3DM_DEVICE_ID", "D3DM_DEVICE_DESCRIPTION",
             "GST_PLUGIN_SYSTEM_PATH", "GST_PLUGIN_PATH", "GST_PLUGIN_SCANNER",
             "GST_REGISTRY", "GIO_EXTRA_MODULES",
             "SDL_RENDER_DRIVER", "SDL_FRAMEBUFFER_ACCELERATION",
@@ -9463,6 +9529,7 @@ final class WineManager {
             "WINEDLLOVERRIDES", "DYLD_FALLBACK_LIBRARY_PATH", "SteamAppId", "SteamGameId",
             "WINEMSYNC", "WINEESYNC", "WINEFSYNC", "CX_FWD_COMPAT_GL_CTX", "MTL_HUD_ENABLED",
             "D3DM_SUPPORT_DXR", "ROSETTA_ADVERTISE_AVX", "SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS",
+            "D3DM_VENDOR_ID", "D3DM_DEVICE_ID", "D3DM_DEVICE_DESCRIPTION",
             "SDL_JOYSTICK_HIDAPI", "SDL_JOYSTICK_HIDAPI_PS4", "SDL_JOYSTICK_HIDAPI_PS4_RUMBLE",
             "SDL_JOYSTICK_HIDAPI_PS5", "SDL_JOYSTICK_HIDAPI_PS5_RUMBLE", "SDL_JOYSTICK_HIDAPI_SWITCH"
         ]
@@ -9692,7 +9759,8 @@ final class WineManager {
                     installedExecutable: ownership.installedExecutable,
                     effectiveExecutable: effectiveExecutable,
                     installPath: ownership.installPath,
-                    gameArguments: Array(arguments.dropFirst())
+                    gameArguments: Array(arguments.dropFirst()),
+                    offline: ownership.offline
                   ) else {
                 throw EpicLaunchDelegationError.unsupported
             }
