@@ -8326,6 +8326,7 @@ final class WineManager {
         let allowedKeys = [
             "HOME", "USER", "TMPDIR", "WINEPREFIX", "WINEDEBUG", "WINEDLLOVERRIDES",
             "WINESERVER",
+            "WINEPRELOADERAPPNAME",
             "DYLD_FALLBACK_LIBRARY_PATH", "DYLD_LIBRARY_PATH",
             "VK_ICD_FILENAMES", "VK_DRIVER_FILES", "DXVK_LOG_LEVEL", "DXVK_LOG_PATH",
             "CX_ACTIVE_GRAPHICS_BACKEND", "CX_LIBVULKAN",
@@ -9508,6 +9509,8 @@ final class WineManager {
         [
             "HOME", "USER", "TMPDIR", "WINEPREFIX", "WINEDEBUG", "MVK_CONFIG_LOG_LEVEL",
             "WINEDLLOVERRIDES", "DYLD_FALLBACK_LIBRARY_PATH", "SteamAppId", "SteamGameId",
+            "WINEPRELOADERAPPNAME", "VESSEL_DOCK_APP_NAME",
+            "VESSEL_DOCK_PRELOADER_ALIAS", "DYLD_INSERT_LIBRARIES",
             "WINEMSYNC", "WINEESYNC", "WINEFSYNC", "CX_FWD_COMPAT_GL_CTX",
             "VESSEL_FORCE_CORE_GL_CTX", "VESSEL_WINE_FIBER_GS_REWRITE",
             "MTL_HUD_ENABLED", "D3DM_SUPPORT_DXR", "ROSETTA_ADVERTISE_AVX",
@@ -9527,6 +9530,7 @@ final class WineManager {
         [
             "HOME", "USER", "TMPDIR", "WINEPREFIX", "WINEDEBUG", "MVK_CONFIG_LOG_LEVEL",
             "WINEDLLOVERRIDES", "DYLD_FALLBACK_LIBRARY_PATH", "SteamAppId", "SteamGameId",
+            "WINEPRELOADERAPPNAME",
             "WINEMSYNC", "WINEESYNC", "WINEFSYNC", "CX_FWD_COMPAT_GL_CTX", "MTL_HUD_ENABLED",
             "D3DM_SUPPORT_DXR", "ROSETTA_ADVERTISE_AVX", "SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS",
             "D3DM_VENDOR_ID", "D3DM_DEVICE_ID", "D3DM_DEVICE_DESCRIPTION",
@@ -9562,6 +9566,151 @@ final class WineManager {
             let upper = key.uppercased()
             return !sensitiveFragments.contains(where: upper.contains)
                 && !developmentPrefixes.contains(where: upper.hasPrefix)
+        }
+    }
+
+    /// Normaliza el título que macOS mostrará como identidad del proceso Wine. Se conserva Unicode,
+    /// pero se eliminan controles y separadores de ruta porque el mismo valor nombra un hard link
+    /// temporal al preloader. El límite evita nombres de Dock patológicos y cabe en el plist
+    /// embebido de los cargadores WineHQ más antiguos.
+    nonisolated static func normalizedDockDisplayName(_ rawValue: String?) -> String? {
+        guard let rawValue else { return nil }
+        let sanitizedScalars = rawValue.unicodeScalars.map { scalar -> String in
+            if CharacterSet.controlCharacters.contains(scalar) { return " " }
+            switch scalar.value {
+            case 0x2F: return "∕" // `/` separaría componentes POSIX.
+            case 0x3A: return "꞉" // `:` es ambiguo para Finder/HFS.
+            default: return String(scalar)
+            }
+        }.joined()
+        let collapsed = sanitizedScalars
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+        guard !collapsed.isEmpty else { return nil }
+        return String(collapsed.prefix(64))
+    }
+
+    /// Composición pura y comprobable del entorno de identidad. Los motores CrossOver/GPTK ya
+    /// implementan `WINEPRELOADERAPPNAME`; WineHQ recibe además el helper de Vessel que replica ese
+    /// comportamiento y ejecuta el preloader mediante un alias con el título real del juego.
+    nonisolated static func dockIdentityEnvironment(
+        from environment: [String: String],
+        displayName: String?,
+        nativeOverrideAvailable: Bool,
+        injectionLibraryPath: String? = nil,
+        preloaderAliasPath: String? = nil
+    ) -> [String: String] {
+        var result = environment
+        for key in [
+            "WINEPRELOADERAPPNAME", "VESSEL_DOCK_APP_NAME",
+            "VESSEL_DOCK_PRELOADER_ALIAS", "DYLD_INSERT_LIBRARIES"
+        ] {
+            result[key] = nil
+        }
+        guard let name = normalizedDockDisplayName(displayName) else { return result }
+        result["WINEPRELOADERAPPNAME"] = name
+        guard !nativeOverrideAvailable,
+              let injectionLibraryPath,
+              !injectionLibraryPath.isEmpty,
+              let preloaderAliasPath,
+              !preloaderAliasPath.isEmpty else { return result }
+        result["VESSEL_DOCK_APP_NAME"] = name
+        result["VESSEL_DOCK_PRELOADER_ALIAS"] = preloaderAliasPath
+        // Es una biblioteca controlada y firmada por Vessel. No se propaga una inyección heredada
+        // del entorno anfitrión ni una posible sustitución declarada por un perfil externo.
+        result["DYLD_INSERT_LIBRARIES"] = injectionLibraryPath
+        return result
+    }
+
+    private func loaderSupportsNativeDockIdentity(winePath: String) -> Bool {
+        if WineEngineLocator.isFullEngine(winePath)
+            || WineEngineLocator.isGPTKEngine(winePath)
+            || WineEngineLocator.isD3DMetalMediaEngine(winePath) {
+            return true
+        }
+
+        var candidates = [URL(fileURLWithPath: winePath)]
+        if let root = WineEngineLocator.engineRoot(
+            forWineExecutable: URL(fileURLWithPath: winePath)
+        ) {
+            candidates += [
+                root.appendingPathComponent("bin/wine"),
+                root.appendingPathComponent("bin/wine64"),
+                root.appendingPathComponent("wine/bin/wine"),
+                root.appendingPathComponent("lib/wine/x86_64-unix/wine")
+            ]
+        }
+        let marker = Data("WINEPRELOADERAPPNAME".utf8)
+        return Set(candidates.map(\.standardizedFileURL)).contains { candidate in
+            guard let data = try? Data(contentsOf: candidate, options: .mappedIfSafe) else {
+                return false
+            }
+            return data.range(of: marker) != nil
+        }
+    }
+
+    private func environmentByApplyingDockIdentity(
+        _ environment: [String: String],
+        displayName: String?,
+        winePath: String
+    ) -> [String: String] {
+        guard let name = Self.normalizedDockDisplayName(displayName) else {
+            return Self.dockIdentityEnvironment(
+                from: environment,
+                displayName: nil,
+                nativeOverrideAvailable: true
+            )
+        }
+        let nativeOverrideAvailable = loaderSupportsNativeDockIdentity(winePath: winePath)
+        guard !nativeOverrideAvailable else {
+            return Self.dockIdentityEnvironment(
+                from: environment,
+                displayName: name,
+                nativeOverrideAvailable: true
+            )
+        }
+        guard let helper = VesselPaths.bundledResource(
+            "dock-identity/libVesselDockIdentity.dylib"
+        ) else {
+            log.log("No se encontró el helper de identidad del Dock; se conserva el fallback nativo de Wine.", level: .warn)
+            return Self.dockIdentityEnvironment(
+                from: environment,
+                displayName: name,
+                nativeOverrideAvailable: true
+            )
+        }
+
+        let digest = SHA256.hash(data: Data(winePath.utf8))
+            .prefix(8)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let aliasDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("VesselDockIdentity", isDirectory: true)
+            .appendingPathComponent(digest, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(
+                at: aliasDirectory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            let alias = aliasDirectory.appendingPathComponent(name, isDirectory: false)
+            if FileManager.default.fileExists(atPath: alias.path) {
+                try FileManager.default.removeItem(at: alias)
+            }
+            return Self.dockIdentityEnvironment(
+                from: environment,
+                displayName: name,
+                nativeOverrideAvailable: false,
+                injectionLibraryPath: helper.path,
+                preloaderAliasPath: alias.path
+            )
+        } catch {
+            log.log("No se pudo preparar la identidad del Dock para \(name): \(error.localizedDescription)", level: .warn)
+            return Self.dockIdentityEnvironment(
+                from: environment,
+                displayName: name,
+                nativeOverrideAvailable: true
+            )
         }
     }
 
@@ -9736,6 +9885,11 @@ final class WineManager {
                 await applyWinetricksVerbs(eff.winetricksVerbs, prefix: prefix, wine: winePath)
             }
         }
+        fullEnv = environmentByApplyingDockIdentity(
+            fullEnv,
+            displayName: effective?.gameDisplayName,
+            winePath: winePath
+        )
         if enableManagedRuntime, let overrides = fullEnv["WINEDLLOVERRIDES"] {
             fullEnv["WINEDLLOVERRIDES"] = Self.enablingManagedRuntime(in: overrides)
         }
@@ -9791,6 +9945,8 @@ final class WineManager {
             var clean: [String: String] = [:]
             for k in ["HOME", "USER", "TMPDIR", "WINEPREFIX", "WINEDEBUG", "WINEDLLOVERRIDES",
                       "DYLD_FALLBACK_LIBRARY_PATH", "SteamAppId", "SteamGameId",
+                      "WINEPRELOADERAPPNAME", "VESSEL_DOCK_APP_NAME",
+                      "VESSEL_DOCK_PRELOADER_ALIAS", "DYLD_INSERT_LIBRARIES",
                       "DOTNET_ReadyToRun", "DOTNET_TieredCompilation", "DOTNET_TieredPGO",
                       "DOTNET_EnableWriteXorExecute", "DOTNET_gcServer"] {
                 if let v = fullEnv[k] { clean[k] = v }

@@ -321,6 +321,7 @@ final class EpicStore {
         // la capa gráfica usada y poder reintentar con otra si falla el arranque.
         let profile = CompatService.shared.profile(epic: game.appName, title: game.title)
         var eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
+        eff.gameDisplayName = game.title
         if let forcedLayer {
             eff.graphicsOverride = forcedLayer
             eff.graphicsOverrideWasLearned = false

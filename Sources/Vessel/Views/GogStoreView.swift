@@ -335,6 +335,7 @@ final class GogStore {
         let launchArguments = executable == detectedLaunch?.executable ? (detectedLaunch?.arguments ?? []) : []
         let profile = CompatService.shared.profile(gog: game.appId, title: game.title)
         var eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
+        eff.gameDisplayName = game.title
         if let forcedLayer {
             eff.graphicsOverride = forcedLayer
             eff.graphicsOverrideWasLearned = false

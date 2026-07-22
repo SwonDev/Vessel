@@ -847,6 +847,73 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertNil(sanitized["SSH_AUTH_SOCK"])
     }
 
+    func testDockDisplayNamePreservesUnicodeAndSanitizesPathComponents() {
+        XCTAssertEqual(
+            WineManager.normalizedDockDisplayName("  NieR/Replicant: ver.1.22\n  edición  "),
+            "NieR∕Replicant꞉ ver.1.22 edición"
+        )
+        XCTAssertNil(WineManager.normalizedDockDisplayName(" \n\t "))
+        XCTAssertEqual(
+            WineManager.normalizedDockDisplayName(String(repeating: "ñ", count: 80))?.count,
+            64
+        )
+    }
+
+    func testDockIdentityUsesNativeOverrideWithoutInjectingIntoCrossOver() {
+        let result = WineManager.dockIdentityEnvironment(
+            from: [
+                "WINEPREFIX": "/tmp/Vessel",
+                "DYLD_INSERT_LIBRARIES": "/tmp/untrusted.dylib"
+            ],
+            displayName: "DEATHLOOP",
+            nativeOverrideAvailable: true,
+            injectionLibraryPath: "/tmp/libVesselDockIdentity.dylib",
+            preloaderAliasPath: "/tmp/DEATHLOOP"
+        )
+
+        XCTAssertEqual(result["WINEPRELOADERAPPNAME"], "DEATHLOOP")
+        XCTAssertNil(result["VESSEL_DOCK_APP_NAME"])
+        XCTAssertNil(result["VESSEL_DOCK_PRELOADER_ALIAS"])
+        XCTAssertNil(result["DYLD_INSERT_LIBRARIES"])
+    }
+
+    func testDockIdentityControlsWineHQInjectionAndSurvivesCleanLaunches() {
+        let result = WineManager.dockIdentityEnvironment(
+            from: [
+                "WINEPREFIX": "/tmp/Vessel",
+                "DYLD_INSERT_LIBRARIES": "/tmp/untrusted.dylib"
+            ],
+            displayName: "20 Minutes Till Dawn",
+            nativeOverrideAvailable: false,
+            injectionLibraryPath: "/Vessel/libVesselDockIdentity.dylib",
+            preloaderAliasPath: "/tmp/VesselDockIdentity/20 Minutes Till Dawn"
+        )
+
+        XCTAssertEqual(result["WINEPRELOADERAPPNAME"], "20 Minutes Till Dawn")
+        XCTAssertEqual(result["VESSEL_DOCK_APP_NAME"], "20 Minutes Till Dawn")
+        XCTAssertEqual(
+            result["VESSEL_DOCK_PRELOADER_ALIAS"],
+            "/tmp/VesselDockIdentity/20 Minutes Till Dawn"
+        )
+        XCTAssertEqual(
+            result["DYLD_INSERT_LIBRARIES"],
+            "/Vessel/libVesselDockIdentity.dylib"
+        )
+        for key in [
+            "WINEPRELOADERAPPNAME", "VESSEL_DOCK_APP_NAME",
+            "VESSEL_DOCK_PRELOADER_ALIAS", "DYLD_INSERT_LIBRARIES"
+        ] {
+            XCTAssertTrue(WineManager.d3dMetalGameCleanEnvironmentKeys.contains(key))
+        }
+        XCTAssertTrue(WineManager.gptkGameCleanEnvironmentKeys.contains("WINEPRELOADERAPPNAME"))
+        XCTAssertEqual(
+            WineManager.fullEngineCleanEnvironment(from: result)["WINEPRELOADERAPPNAME"],
+            result["WINEPRELOADERAPPNAME"]
+        )
+        XCTAssertNil(WineManager.fullEngineCleanEnvironment(from: result)["DYLD_INSERT_LIBRARIES"])
+        XCTAssertFalse(WineManager.gptkGameCleanEnvironmentKeys.contains("DYLD_INSERT_LIBRARIES"))
+    }
+
     func testFullEngineControlCommandsMatchSteamSynchronization() {
         let environment = WineManager.wineControlEnvironment(
             prefix: "/tmp/vessel-prefix",

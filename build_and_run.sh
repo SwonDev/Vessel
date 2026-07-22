@@ -94,6 +94,14 @@ fi
 # Se superponen únicamente al motor D3D12 multimedia aislado; `wine-full` queda sin cambios.
 [ -d "Resources/engine-fiberfix" ] && cp -R "Resources/engine-fiberfix" "$APP_BUNDLE/Contents/Resources/engine-fiberfix"
 
+# Identidad nativa por juego para cargadores WineHQ: cambia el nombre del proceso que macOS muestra
+# en el Dock sin modificar el motor instalado. Es x86_64 porque se inyecta en el loader bajo Rosetta.
+if [ -f "Resources/dock-identity/libVesselDockIdentity.dylib" ]; then
+    mkdir -p "$APP_BUNDLE/Contents/Resources/dock-identity"
+    cp "Resources/dock-identity/libVesselDockIdentity.dylib" "$APP_BUNDLE/Contents/Resources/dock-identity/"
+    codesign --force --sign - "$APP_BUNDLE/Contents/Resources/dock-identity/libVesselDockIdentity.dylib" 2>/dev/null
+fi
+
 cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

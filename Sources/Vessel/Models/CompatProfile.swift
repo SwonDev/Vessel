@@ -218,6 +218,9 @@ struct EffectiveLaunchConfig: Sendable {
     var retina: Bool = true
     /// HUD de rendimiento de Metal (FPS / tiempos de frame) superpuesto. Ajuste del usuario.
     var metalHUD: Bool = false
+    /// Nombre visible del juego para la identidad nativa del proceso en macOS (Dock y menú).
+    /// Es efímero y lo aporta la biblioteca activa; nunca procede de parámetros manuales.
+    var gameDisplayName: String? = nil
     var epicLaunchOwnership: EpicLaunchOwnership? = nil
 
     /// Procedencia (para logs/UI): de dónde salió la config aplicada.

@@ -735,6 +735,7 @@ struct LocalGamesView: View {
             }
             let profile = CompatService.shared.profile(steam: nil, title: game.name)
             var eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
+            eff.gameDisplayName = game.name
             if let forcedLayer {
                 eff.graphicsOverride = forcedLayer
                 eff.graphicsOverrideWasLearned = false

@@ -808,6 +808,7 @@ struct BottleDetailView: View {
         )
         let profile = CompatService.shared.profile(steam: game.steamAppId, title: game.name)
         var eff = CompatService.shared.effectiveConfig(profile: profile, user: cfg)
+        eff.gameDisplayName = game.name
         if let forcedLayer {
             eff.graphicsOverride = forcedLayer
             eff.graphicsOverrideWasLearned = false
