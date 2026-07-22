@@ -124,6 +124,7 @@ Vessel enruta **cada juego a su motor y sus parches**, de forma aislada: un arre
 | id Tech / KEX | DOOM, DOOM II | Metal |
 | Unreal Engine 4 | ASTRONEER | D3DMetal |
 | Unity (D3D11 / D3D12) | AK-xolotl, Palworld | DXMT / D3DMetal |
+| Cobra (Frontier) | Jurassic World Evolution 2 | D3DMetal |
 | Java / JVM | Wurm Unlimited | Metal |
 | DirectDraw (clásicos de los 90) | War Wind | Parche propio |
 

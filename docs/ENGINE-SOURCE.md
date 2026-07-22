@@ -33,6 +33,15 @@ descarga/empaqueta, y detalla los **parches** que aplicamos.
   dotnet4x`), porque arranca el servicio NGen (`mscorsvw.exe`) y `wineboot -u` se bloqueaba
   para siempre en prefijos con .NET real (FEZ/Terraria colgados). El drop-in
   `Resources/engine-net48fix/` aplica el mismo DLL a motores ya instalados.
+- **Reparación aislada de fibras para Cobra/D3D12:** el perfil `wine-d3dmetal-media` clona el motor
+  anterior y superpone únicamente los binarios construidos desde
+  `0006-kernelbase-fibers-use-HasFiberData.patch` y
+  `0007-ntdll-macos-rewrite-fiber-gs.patch`. El primero usa `TEB.HasFiberData` como estado real de
+  las fibras. El segundo, habilitado solo por `VESSEL_WINE_FIBER_GS_REWRITE=1`, reescribe en memoria
+  las lecturas MSVC `GS:0x20` del PE principal para obtener `FiberData` desde el TEB que Wine refleja
+  en `GS:0x30`; el ejecutable del juego no se modifica. Los objetos reproducibles están en
+  `Resources/engine-fiberfix/`, se validan por SHA-256 y cualquier alteración fuerza la reconstrucción
+  atómica del perfil. `wine-full` y los demás motores permanecen sin cambios.
 - **Excluido a propósito** (propietario, NO está en las fuentes públicas): `winewrapper.exe`,
   `cxcompatdb.so`/su `.dat`, `apple_gptk`/D3DMetal, las herramientas `cx*`. Sin ellas el motor
   es 100 % FOSS. Consecuencia: el **cliente de Steam** (CEF) no se enruta a esta build (va a
@@ -42,6 +51,8 @@ descarga/empaqueta, y detalla los **parches** que aplicamos.
 - **Validación** (2026-07-17, lanzando desde el botón de la app): FEZ (FNA), Terraria (XNA),
   Portal (Source, D3D9 32-bit), Halls of Torment (Godot+Vulkan→MoltenVK), ASTRONEER (UE4) —
   todos renderizan; cliente Steam → `wine-steam` (conecta ✓); regresión Balatro (Love2D) ✓.
+  El 2026-07-22, *Jurassic World Evolution 2* de Epic (Cobra) superó dos arranques consecutivos con
+  D3DMetal, vídeo y ventana ajustada a 1512×982, sin el fallo previo al desreferenciar `0x8ff`.
 
 ---
 
@@ -117,6 +128,12 @@ El motor empaqueta estas librerías en `lib/` (todas `x86_64`, con dependencias 
    `install_name`/deps a `@loader_path`.
 4. Quita *quarantine* (`xattr -d com.apple.quarantine`) y firma ad-hoc (`codesign --sign -`)
    todos los Mach-O.
+5. Para reproducir el perfil de fibras, parte de las fuentes CrossOver 26.2.0, aplica `0006` a
+   `dlls/kernelbase/thread.c` y `0007` a `dlls/ntdll/loader.c`, compila los destinos PE i386/x86_64
+   indicados por `Resources/engine-fiberfix/` y deja que el aprovisionador verifique sus SHA-256.
+   `fsgsbase-rosetta-probe.c` documenta la limitación de FSGSBASE bajo Rosetta y
+   `windows-fiber-gs-probe.c` comprueba que `GS:0x20` coincide con el puntero devuelto por
+   `ConvertThreadToFiber` cuando la reescritura está activa.
 
 ---
 

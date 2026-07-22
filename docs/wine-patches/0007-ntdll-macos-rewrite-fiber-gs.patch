@@ -1,0 +1,219 @@
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -2271,6 +2271,7 @@
+ #endif
+ #ifdef __x86_64__
+ static void apply_fuzzy_binary_patches( WINE_MODREF* wm );
++static void apply_macos_fiber_gs_patches( WINE_MODREF *wm );
+ #endif
+ 
+ /*************************************************************************
+@@ -2884,9 +2885,198 @@
+     {
+         if (after[i] != wildcard_byte)
+             ((char *)addr)[i] = after[i];
++    }
++}
++
++/*
++ * macOS reserves %gs for pthread TSD. Wine mirrors the Windows TEB fields that
++ * can coexist with that layout, but TEB.FiberData at gs:[0x20] overlaps the
++ * host QoS slot. Native Windows binaries generated with GetCurrentFiber() may
++ * therefore read the host priority value instead of the fiber pointer.
++ *
++ * When explicitly enabled by the embedding engine, rewrite the canonical
++ * nine-byte MSVC sequence in the main PE image to call a nearby helper. The
++ * helper reads the mirrored TEB self pointer at gs:[0x30] and then FiberData
++ * from the real TEB. The executable on disk is never modified.
++ */
++static BOOL macos_fiber_gs_patch_enabled(void)
++{
++    static int enabled = -1;
++    WCHAR value[2];
++
++    if (enabled == -1)
++        enabled = get_env( L"VESSEL_WINE_FIBER_GS_REWRITE", value, sizeof(value) )
++                  && value[0] == L'1';
++    return enabled;
++}
++
++static BOOL is_direct_fiber_gs_read( const BYTE *address, SIZE_T remaining,
++                                     unsigned int *register_index )
++{
++    unsigned int index;
++
++    if (remaining < 9 || address[0] != 0x65
++        || (address[1] != 0x48 && address[1] != 0x4c)
++        || address[2] != 0x8b || (address[3] & 0xc7) != 0x04
++        || address[4] != 0x25 || address[5] != 0x20
++        || address[6] || address[7] || address[8])
++        return FALSE;
++    index = ((address[1] & 0x04) ? 8 : 0) + ((address[3] >> 3) & 7);
++    /* A compiler cannot use RSP/R12 as the destination of GetCurrentFiber(). */
++    if (index == 4 || index == 12) return FALSE;
++    if (register_index) *register_index = index;
++    return TRUE;
++}
++
++static ULONG count_direct_fiber_gs_reads( WINE_MODREF *wm )
++{
++    IMAGE_NT_HEADERS *nt = RtlImageNtHeader( wm->ldr.DllBase );
++    IMAGE_SECTION_HEADER *section;
++    ULONG count = 0;
++    unsigned int i;
++
++    if (!nt) return 0;
++    section = IMAGE_FIRST_SECTION( nt );
++    for (i = 0; i < nt->FileHeader.NumberOfSections; i++, section++)
++    {
++        BYTE *start, *cursor;
++        SIZE_T size;
++
++        if (!(section->Characteristics & IMAGE_SCN_MEM_EXECUTE)) continue;
++        if (section->VirtualAddress >= wm->ldr.SizeOfImage) continue;
++        size = section->Misc.VirtualSize ? section->Misc.VirtualSize : section->SizeOfRawData;
++        size = min( size, wm->ldr.SizeOfImage - section->VirtualAddress );
++        start = (BYTE *)wm->ldr.DllBase + section->VirtualAddress;
++        for (cursor = start; cursor < start + size; cursor++)
++            if (is_direct_fiber_gs_read( cursor, start + size - cursor, NULL )) count++;
+     }
++    return count;
+ }
+ 
++static void *allocate_fiber_gs_helpers( WINE_MODREF *wm )
++{
++    const SIZE_T helper_stride = 32;
++    const ULONG_PTR granularity = 0x10000;
++    ULONG_PTR image_end = (ULONG_PTR)wm->ldr.DllBase + wm->ldr.SizeOfImage;
++    ULONG_PTR first = (image_end + granularity - 1) & ~(granularity - 1);
++    unsigned int attempt;
++
++    for (attempt = 0; attempt < 256; attempt++)
++    {
++        void *address = (void *)(first + attempt * granularity);
++        SIZE_T size = page_size;
++        ULONG old_prot;
++
++        if (NtAllocateVirtualMemory( NtCurrentProcess(), &address, 0, &size,
++                                     MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE ))
++            continue;
++        memset( address, 0xcc, size );
++        {
++            unsigned int reg;
++            for (reg = 0; reg < 16; reg++)
++            {
++                BYTE *code = (BYTE *)address + reg * helper_stride;
++                unsigned int low = reg & 7;
++                unsigned int offset = 0;
++
++                if (reg == 4 || reg == 12) continue;
++                code[offset++] = 0x65;
++                code[offset++] = reg >= 8 ? 0x4c : 0x48;
++                code[offset++] = 0x8b;
++                code[offset++] = 0x04 | (low << 3);
++                code[offset++] = 0x25;
++                code[offset++] = 0x30;
++                code[offset++] = 0x00;
++                code[offset++] = 0x00;
++                code[offset++] = 0x00;
++                code[offset++] = reg >= 8 ? 0x4d : 0x48;
++                code[offset++] = 0x8b;
++                code[offset++] = 0x40 | (low << 3) | low;
++                code[offset++] = 0x20;
++                code[offset++] = 0xc3;
++            }
++        }
++        NtFlushInstructionCache( NtCurrentProcess(), address, size );
++        NtProtectVirtualMemory( NtCurrentProcess(), &address, &size,
++                                PAGE_EXECUTE_READ, &old_prot );
++        return address;
++    }
++    return NULL;
++}
++
++static ULONG rewrite_direct_fiber_gs_reads( WINE_MODREF *wm, void *helpers )
++{
++    const SIZE_T helper_stride = 32;
++    IMAGE_NT_HEADERS *nt = RtlImageNtHeader( wm->ldr.DllBase );
++    IMAGE_SECTION_HEADER *section;
++    ULONG patched = 0;
++    unsigned int i;
++
++    if (!nt) return 0;
++    section = IMAGE_FIRST_SECTION( nt );
++    for (i = 0; i < nt->FileHeader.NumberOfSections; i++, section++)
++    {
++        BYTE *start, *cursor;
++        SIZE_T size, protect_size;
++        void *protect_start;
++        ULONG old_prot;
++
++        if (!(section->Characteristics & IMAGE_SCN_MEM_EXECUTE)) continue;
++        if (section->VirtualAddress >= wm->ldr.SizeOfImage) continue;
++        size = section->Misc.VirtualSize ? section->Misc.VirtualSize : section->SizeOfRawData;
++        size = min( size, wm->ldr.SizeOfImage - section->VirtualAddress );
++        start = (BYTE *)wm->ldr.DllBase + section->VirtualAddress;
++        protect_start = start;
++        protect_size = size;
++        if (NtProtectVirtualMemory( NtCurrentProcess(), &protect_start, &protect_size,
++                                    PAGE_EXECUTE_READWRITE, &old_prot ))
++            continue;
++
++        for (cursor = start; cursor < start + size; cursor++)
++        {
++            INT_PTR distance;
++            LONG relative;
++            unsigned int reg;
++
++            if (!is_direct_fiber_gs_read( cursor, start + size - cursor, &reg )) continue;
++            distance = (BYTE *)helpers + reg * helper_stride - (cursor + 5);
++            if (distance < INT_MIN || distance > INT_MAX) continue;
++            relative = distance;
++            cursor[0] = 0xe8;
++            memcpy( cursor + 1, &relative, sizeof(relative) );
++            memset( cursor + 5, 0x90, 4 );
++            patched++;
++            cursor += 8;
++        }
++
++        NtFlushInstructionCache( NtCurrentProcess(), start, size );
++        NtProtectVirtualMemory( NtCurrentProcess(), &protect_start, &protect_size,
++                                old_prot, &old_prot );
++    }
++    return patched;
++}
++
++static void apply_macos_fiber_gs_patches( WINE_MODREF *wm )
++{
++    ULONG expected, patched;
++    void *helpers;
++
++    if (!macos_fiber_gs_patch_enabled()) return;
++    if (!(expected = count_direct_fiber_gs_reads( wm ))) return;
++    if (!(helpers = allocate_fiber_gs_helpers( wm )))
++    {
++        ERR( "could not allocate a nearby helper for %s (%lu direct fiber reads)\n",
++             debugstr_w(wm->ldr.BaseDllName.Buffer), expected );
++        return;
++    }
++    patched = rewrite_direct_fiber_gs_reads( wm, helpers );
++    if (patched != expected)
++        ERR( "rewrote only %lu/%lu direct fiber reads in %s\n", patched, expected,
++             debugstr_w(wm->ldr.BaseDllName.Buffer) );
++    else
++        TRACE( "rewrote %lu direct fiber reads in %s\n", patched,
++               debugstr_w(wm->ldr.BaseDllName.Buffer) );
++}
+ static void apply_fuzzy_binary_patches( WINE_MODREF *wm )
+ {
+     static const char before_cohtml_v1[] =
+@@ -5134,6 +5324,9 @@
+ 
+         wm = build_main_module();
+         build_ntdll_module();
++#ifdef __x86_64__
++        apply_macos_fiber_gs_patches( wm );
++#endif
+ #ifdef __arm64ec__
+         load_arm64ec_module();
+         update_load_config( wm->ldr.DllBase );

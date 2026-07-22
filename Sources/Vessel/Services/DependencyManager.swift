@@ -666,6 +666,26 @@ final class DependencyManager {
                 userInfo: [NSLocalizedDescriptionKey: "No se pudo localizar el núcleo Wine FOSS para el motor multimedia."]
             )
         }
+        guard let fiberFixRoot = Bundle.main.resourceURL?.appendingPathComponent(
+            "engine-fiberfix",
+            isDirectory: true
+        ), D3DMetalMediaEngineProvisioner.fiberFixArchitectures.allSatisfy({ architecture in
+            FileManager.default.fileExists(
+                atPath: fiberFixRoot.appendingPathComponent(
+                    "\(architecture)/kernelbase.dll"
+                ).path
+            )
+        }), FileManager.default.fileExists(
+            atPath: fiberFixRoot.appendingPathComponent(
+                "x86_64-windows/ntdll.dll"
+            ).path
+        ) else {
+            throw NSError(
+                domain: "Vessel",
+                code: 106,
+                userInfo: [NSLocalizedDescriptionKey: "La reparación de fibras del motor multimedia no está incluida o está incompleta."]
+            )
+        }
 
         let gptk = GPTKManager()
         try await gptk.ensureInstalled(progress: progress)
@@ -693,6 +713,7 @@ final class DependencyManager {
             baseEngine: baseEngine,
             gptkWineRoot: gptkWineRoot,
             gcenxEngine: gcenxEngine,
+            fiberFixRoot: fiberFixRoot,
             finalEngine: finalEngine,
             progress: progress
         )

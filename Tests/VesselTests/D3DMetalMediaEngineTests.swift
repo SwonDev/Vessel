@@ -81,7 +81,26 @@ final class D3DMetalMediaEngineTests: XCTestCase {
         let engine = root.appendingPathComponent("wine-d3dmetal-media", isDirectory: true)
         let gptk = root.appendingPathComponent("gptk/wine", isDirectory: true)
         let gcenx = root.appendingPathComponent("wine-osx64", isDirectory: true)
+        let fiberFix = root.appendingPathComponent("engine-fiberfix", isDirectory: true)
         try writeExecutable("#!/bin/sh\nexit 0\n", to: engine.appendingPathComponent("bin/wine"))
+        for architecture in D3DMetalMediaEngineProvisioner.fiberFixArchitectures {
+            try write(
+                "kernelbase-original-\(architecture)",
+                to: engine.appendingPathComponent("lib/wine/\(architecture)/kernelbase.dll")
+            )
+            try write(
+                "kernelbase-fibras-\(architecture)",
+                to: fiberFix.appendingPathComponent("\(architecture)/kernelbase.dll")
+            )
+        }
+        try write(
+            "ntdll-original",
+            to: engine.appendingPathComponent("lib/wine/x86_64-windows/ntdll.dll")
+        )
+        try write(
+            "ntdll-fibras-gs",
+            to: fiberFix.appendingPathComponent("x86_64-windows/ntdll.dll")
+        )
         try write(
             "framework",
             to: gptk.appendingPathComponent("lib/external/D3DMetal.framework/D3DMetal")
@@ -118,7 +137,8 @@ final class D3DMetalMediaEngineTests: XCTestCase {
         try D3DMetalMediaEngineProvisioner.applyOverlayFiles(
             to: engine,
             gptkWineRoot: gptk,
-            gcenxEngine: gcenx
+            gcenxEngine: gcenx,
+            fiberFixRoot: fiberFix
         )
 
         XCTAssertTrue(fileManager.fileExists(
@@ -153,11 +173,26 @@ final class D3DMetalMediaEngineTests: XCTestCase {
         XCTAssertFalse(fileManager.fileExists(
             atPath: engine.appendingPathComponent("lib64/wine/x86_64-unix/cxcompatdb.so").path
         ))
+        for architecture in D3DMetalMediaEngineProvisioner.fiberFixArchitectures {
+            XCTAssertEqual(
+                try String(contentsOf: engine.appendingPathComponent(
+                    "lib/wine/\(architecture)/kernelbase.dll"
+                ), encoding: .utf8),
+                "kernelbase-fibras-\(architecture)"
+            )
+        }
+        XCTAssertEqual(
+            try String(contentsOf: engine.appendingPathComponent(
+                "lib/wine/x86_64-windows/ntdll.dll"
+            ), encoding: .utf8),
+            "ntdll-fibras-gs"
+        )
 
         let identity = try D3DMetalMediaEngineProvisioner.sourceIdentity(
             baseEngine: engine,
             gptkWineRoot: gptk,
-            gcenxEngine: gcenx
+            gcenxEngine: gcenx,
+            fiberFixRoot: fiberFix
         )
         let installedWineGStreamer = engine.appendingPathComponent(
             "lib/wine/x86_64-unix/winegstreamer.so"
@@ -176,6 +211,38 @@ final class D3DMetalMediaEngineTests: XCTestCase {
             at: engine,
             expectedSource: identity
         ))
+
+        try write(
+            "ntdll-alterado",
+            to: engine.appendingPathComponent("lib/wine/x86_64-windows/ntdll.dll")
+        )
+        XCTAssertFalse(
+            D3DMetalMediaEngineProvisioner.isInstallationValid(
+                at: engine,
+                expectedSource: identity
+            ),
+            "El motor debe autorrepararse si el ntdll de fibras cambia o queda corrupto."
+        )
+        try write(
+            "ntdll-fibras-gs",
+            to: engine.appendingPathComponent("lib/wine/x86_64-windows/ntdll.dll")
+        )
+        XCTAssertTrue(D3DMetalMediaEngineProvisioner.isInstallationValid(
+            at: engine,
+            expectedSource: identity
+        ))
+
+        try write(
+            "kernelbase-alterado",
+            to: engine.appendingPathComponent("lib/wine/x86_64-windows/kernelbase.dll")
+        )
+        XCTAssertFalse(
+            D3DMetalMediaEngineProvisioner.isInstallationValid(
+                at: engine,
+                expectedSource: identity
+            ),
+            "El motor debe autorrepararse si el kernelbase de fibras cambia o queda corrupto."
+        )
     }
 
     func testMediaEnvironmentUsesPrivateRuntimeWithoutDisablingMediaFoundation() throws {
@@ -193,6 +260,7 @@ final class D3DMetalMediaEngineTests: XCTestCase {
         )
 
         XCTAssertEqual(environment["WINEDLLOVERRIDES"], "mscoree,mshtml=d")
+        XCTAssertEqual(environment["VESSEL_WINE_FIBER_GS_REWRITE"], "1")
         XCTAssertFalse(environment["WINEDLLOVERRIDES", default: ""].contains("winegstreamer"))
         XCTAssertFalse(environment["WINEDLLOVERRIDES", default: ""].contains("mfplat"))
         XCTAssertEqual(environment["WINEPREFIX"], "/tmp/Vessel/MediaPrefix")
@@ -266,7 +334,13 @@ final class D3DMetalMediaEngineTests: XCTestCase {
         let identity = try D3DMetalMediaEngineProvisioner.sourceIdentity(
             baseEngine: baseEngine,
             gptkWineRoot: gptk,
-            gcenxEngine: gcenx
+            gcenxEngine: gcenx,
+            fiberFixRoot: try XCTUnwrap(
+                Bundle.main.resourceURL?.appendingPathComponent(
+                    "engine-fiberfix",
+                    isDirectory: true
+                )
+            )
         )
 
         XCTAssertEqual(winePath, WineEngineLocator.d3dmetalMediaWineBinary())

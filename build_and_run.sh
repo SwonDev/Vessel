@@ -89,6 +89,11 @@ fi
 # (mscorsvw.exe) y cuelga wineboot -u para siempre. Sin esto, FEZ/Terraria tardan minutos o no abren.
 [ -d "Resources/engine-net48fix" ] && cp -R "Resources/engine-net48fix" "$APP_BUNDLE/Contents/Resources/engine-net48fix"
 
+# kernelbase.dll y ntdll.dll parcheadas (fuentes CrossOver 26.2.0 + docs/wine-patches/0006/0007):
+# corrigen el estado de fibras y traducen en memoria las lecturas MSVC de GS:0x20 al TEB de Wine.
+# Se superponen únicamente al motor D3D12 multimedia aislado; `wine-full` queda sin cambios.
+[ -d "Resources/engine-fiberfix" ] && cp -R "Resources/engine-fiberfix" "$APP_BUNDLE/Contents/Resources/engine-fiberfix"
+
 cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

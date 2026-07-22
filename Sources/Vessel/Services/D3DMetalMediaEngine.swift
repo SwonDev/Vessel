@@ -328,6 +328,7 @@ actor ManagedGStreamerRuntime {
 enum D3DMetalMediaEngineProvisioner {
     nonisolated static let manifestName = ".vessel-d3dmetal-media.json"
     nonisolated static let d3dMetalLibraries = ["d3d11", "d3d12", "dxgi", "atidxx64", "nvapi64"]
+    nonisolated static let fiberFixArchitectures = ["i386-windows", "x86_64-windows"]
     nonisolated static let relativeGStreamerRPath =
         "@loader_path/../../../../\(ManagedGStreamerRuntime.directoryName)/GStreamer.framework/Versions/1.0/lib"
 
@@ -337,6 +338,8 @@ enum D3DMetalMediaEngineProvisioner {
         let d3dMetalFrameworkSHA256: String
         let d3dSharedSHA256: String
         let d3dMetalWindowsSHA256: [String: String]
+        let fiberKernelbaseSHA256: [String: String]
+        let fiberNTDLLSHA256: String
         let wineGStreamerUnixSHA256: String
         let wineGStreamerWindowsSHA256: String
         let gstreamerPackageSHA256: String
@@ -350,10 +353,11 @@ enum D3DMetalMediaEngineProvisioner {
     nonisolated static func sourceIdentity(
         baseEngine: URL,
         gptkWineRoot: URL,
-        gcenxEngine: URL
+        gcenxEngine: URL,
+        fiberFixRoot: URL
     ) throws -> SourceIdentity {
         SourceIdentity(
-            schemaVersion: 2,
+            schemaVersion: 4,
             baseWineSHA256: try ManagedGStreamerRuntime.sha256Hex(
                 of: baseEngine.appendingPathComponent("bin/wine")
             ),
@@ -375,6 +379,17 @@ enum D3DMetalMediaEngineProvisioner {
                     )
                 )
             }),
+            fiberKernelbaseSHA256: try Dictionary(uniqueKeysWithValues: fiberFixArchitectures.map {
+                (
+                    $0,
+                    try ManagedGStreamerRuntime.sha256Hex(
+                        of: fiberFixRoot.appendingPathComponent("\($0)/kernelbase.dll")
+                    )
+                )
+            }),
+            fiberNTDLLSHA256: try ManagedGStreamerRuntime.sha256Hex(
+                of: fiberFixRoot.appendingPathComponent("x86_64-windows/ntdll.dll")
+            ),
             wineGStreamerUnixSHA256: try ManagedGStreamerRuntime.sha256Hex(
                 of: gcenxEngine.appendingPathComponent("lib/wine/x86_64-unix/winegstreamer.so")
             ),
@@ -408,6 +423,9 @@ enum D3DMetalMediaEngineProvisioner {
         let installedWindowsWineGStreamer = engine.appendingPathComponent(
             "lib/wine/x86_64-windows/winegstreamer.dll"
         )
+        let installedFiberNTDLL = engine.appendingPathComponent(
+            "lib/wine/x86_64-windows/ntdll.dll"
+        )
         guard let installedHash = try? ManagedGStreamerRuntime.sha256Hex(of: unixWineGStreamer),
               installedHash == manifest.installedWineGStreamerSHA256,
               fm.isExecutableFile(atPath: installedWine.path),
@@ -418,7 +436,18 @@ enum D3DMetalMediaEngineProvisioner {
               (try? ManagedGStreamerRuntime.sha256Hex(of: installedD3DShared))
                 == expectedSource.d3dSharedSHA256,
               (try? ManagedGStreamerRuntime.sha256Hex(of: installedWindowsWineGStreamer))
-                == expectedSource.wineGStreamerWindowsSHA256 else {
+                == expectedSource.wineGStreamerWindowsSHA256,
+              (try? ManagedGStreamerRuntime.sha256Hex(of: installedFiberNTDLL))
+                == expectedSource.fiberNTDLLSHA256,
+              fiberFixArchitectures.allSatisfy({ architecture in
+                  guard let expectedHash = expectedSource.fiberKernelbaseSHA256[architecture] else {
+                      return false
+                  }
+                  let installed = engine.appendingPathComponent(
+                      "lib/wine/\(architecture)/kernelbase.dll"
+                  )
+                  return (try? ManagedGStreamerRuntime.sha256Hex(of: installed)) == expectedHash
+              }) else {
             return false
         }
 
@@ -450,6 +479,7 @@ enum D3DMetalMediaEngineProvisioner {
         baseEngine: URL,
         gptkWineRoot: URL,
         gcenxEngine: URL,
+        fiberFixRoot: URL,
         finalEngine: URL,
         progress: @escaping @Sendable (String, Double) -> Void = { _, _ in }
     ) async throws -> String {
@@ -458,7 +488,8 @@ enum D3DMetalMediaEngineProvisioner {
             try sourceIdentity(
                 baseEngine: baseEngine,
                 gptkWineRoot: gptkWineRoot,
-                gcenxEngine: gcenxEngine
+                gcenxEngine: gcenxEngine,
+                fiberFixRoot: fiberFixRoot
             )
         }.value
         if isInstallationValid(at: finalEngine, expectedSource: identity) {
@@ -474,7 +505,8 @@ enum D3DMetalMediaEngineProvisioner {
             try applyOverlayFiles(
                 to: staging,
                 gptkWineRoot: gptkWineRoot,
-                gcenxEngine: gcenxEngine
+                gcenxEngine: gcenxEngine,
+                fiberFixRoot: fiberFixRoot
             )
         }.value
 
@@ -519,7 +551,8 @@ enum D3DMetalMediaEngineProvisioner {
     nonisolated static func applyOverlayFiles(
         to engine: URL,
         gptkWineRoot: URL,
-        gcenxEngine: URL
+        gcenxEngine: URL,
+        fiberFixRoot: URL
     ) throws {
         let fm = FileManager.default
         let gptkExternal = gptkWineRoot.appendingPathComponent("lib/external", isDirectory: true)
@@ -529,6 +562,8 @@ enum D3DMetalMediaEngineProvisioner {
             .appendingPathComponent("lib/wine/x86_64-windows", isDirectory: true)
         let targetWindows = engine
             .appendingPathComponent("lib/wine/x86_64-windows", isDirectory: true)
+        let targetI386 = engine
+            .appendingPathComponent("lib/wine/i386-windows", isDirectory: true)
         let targetUnix = engine
             .appendingPathComponent("lib/wine/x86_64-unix", isDirectory: true)
 
@@ -541,15 +576,20 @@ enum D3DMetalMediaEngineProvisioner {
             gcenxEngine.appendingPathComponent(
                 "lib/wine/x86_64-windows/winegstreamer.dll"
             ).path
+        ] + fiberFixArchitectures.map {
+            fiberFixRoot.appendingPathComponent("\($0)/kernelbase.dll").path
+        } + [
+            fiberFixRoot.appendingPathComponent("x86_64-windows/ntdll.dll").path
         ] + d3dMetalLibraries.map {
             gptkWindows.appendingPathComponent("\($0).dll").path
         }
         guard requiredSources.allSatisfy(fm.fileExists) else {
-            throw error(100, "Faltan piezas verificadas de D3DMetal o winegstreamer.")
+            throw error(100, "Faltan piezas verificadas de D3DMetal, Wine o winegstreamer.")
         }
 
         try fm.createDirectory(at: targetExternal, withIntermediateDirectories: true)
         try fm.createDirectory(at: targetWindows, withIntermediateDirectories: true)
+        try fm.createDirectory(at: targetI386, withIntermediateDirectories: true)
         try fm.createDirectory(at: targetUnix, withIntermediateDirectories: true)
         try copyReplacing(
             gptkExternal.appendingPathComponent("D3DMetal.framework"),
@@ -558,6 +598,25 @@ enum D3DMetalMediaEngineProvisioner {
         try copyReplacing(
             gptkExternal.appendingPathComponent("libd3dshared.dylib"),
             to: targetExternal.appendingPathComponent("libd3dshared.dylib")
+        )
+
+        // JWE2 (Cobra) expuso dos incompatibilidades relacionadas con fibras. El kernelbase usa el
+        // bit `TEB.HasFiberData` para responder correctamente a `IsThreadAFiber`. Además, macOS
+        // reserva GS para pthread y `GS:0x20` contiene QoS, mientras MSVC lo usa para FiberData; el
+        // ntdll aislado reescribe esas lecturas directas del PE principal hacia el TEB de Wine en
+        // memoria. Ambas piezas se instalan SOLO aquí: `wine-full` y los motores ya validados
+        // permanecen byte a byte.
+        for architecture in fiberFixArchitectures {
+            try copyReplacing(
+                fiberFixRoot.appendingPathComponent("\(architecture)/kernelbase.dll"),
+                to: engine.appendingPathComponent(
+                    "lib/wine/\(architecture)/kernelbase.dll"
+                )
+            )
+        }
+        try copyReplacing(
+            fiberFixRoot.appendingPathComponent("x86_64-windows/ntdll.dll"),
+            to: targetWindows.appendingPathComponent("ntdll.dll")
         )
 
         for library in d3dMetalLibraries {
@@ -584,8 +643,6 @@ enum D3DMetalMediaEngineProvisioner {
         let sourceI386 = gcenxEngine
             .appendingPathComponent("lib/wine/i386-windows/winegstreamer.dll")
         if fm.fileExists(atPath: sourceI386.path) {
-            let targetI386 = engine.appendingPathComponent("lib/wine/i386-windows")
-            try fm.createDirectory(at: targetI386, withIntermediateDirectories: true)
             try copyReplacing(
                 sourceI386,
                 to: targetI386.appendingPathComponent("winegstreamer.dll")
@@ -628,6 +685,7 @@ enum D3DMetalMediaEngineProvisioner {
             "WINEMSYNC": "1",
             "WINEESYNC": "1",
             "WINEFSYNC": "1",
+            "VESSEL_WINE_FIBER_GS_REWRITE": "1",
             "MVK_CONFIG_LOG_LEVEL": "0",
             "MTL_HUD_ENABLED": "0",
             "WINEDLLOVERRIDES": "mscoree,mshtml=d",
