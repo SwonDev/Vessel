@@ -450,9 +450,11 @@ final class LegendaryManager {
         return context
     }
 
-    /// Construye la orden que conserva a Legendary como propietario del arranque de Epic. Las
-    /// opciones de Legendary van antes de `--`; todo lo posterior son parámetros del juego y nunca
-    /// puede ser reinterpretado como una opción del launcher.
+    /// Construye la orden que conserva a Legendary como propietario del arranque de Epic.
+    /// Legendary usa `parse_known_args`: los argumentos desconocidos llegan al juego, pero su
+    /// parser NO elimina un separador `--` y terminaría entregándoselo literalmente. Cuando un
+    /// argumento puede confundirse con una opción de Legendary, se rechaza la delegación para que
+    /// Vessel use automáticamente su ruta directa con el contexto oficial de un solo uso.
     nonisolated static func delegatedLaunchArguments(
         appName: String,
         winePath: String,
@@ -478,11 +480,31 @@ final class LegendaryManager {
             arguments += ["--override-exe", String(effective.dropFirst(rootWithSeparator.count))]
         }
 
-        if !gameArguments.isEmpty {
-            arguments.append("--")
-            arguments.append(contentsOf: gameArguments)
-        }
+        guard !Self.collidesWithLegendaryOptions(gameArguments) else { return nil }
+        arguments.append(contentsOf: gameArguments)
         return arguments
+    }
+
+    nonisolated private static func collidesWithLegendaryOptions(_ arguments: [String]) -> Bool {
+        let longOptions = [
+            "--full-help", "--debug", "--yes", "--version", "--config-file", "--pretty-json",
+            "--api-timeout", "--help", "--offline", "--skip-version-check", "--override-username",
+            "--dry-run", "--language", "--wrapper", "--set-defaults", "--reset-defaults",
+            "--override-exe", "--origin", "--json", "--wine", "--wine-prefix", "--no-wine",
+            "--crossover", "--crossover-app", "--crossover-bottle"
+        ]
+        let shortOptions = ["-H", "-v", "-y", "-V", "-c", "-J", "-A", "-h"]
+
+        return arguments.contains { argument in
+            if argument == "--" { return true }
+            if argument.hasPrefix("--") {
+                let name = String(argument.split(separator: "=", maxSplits: 1)[0])
+                return longOptions.contains { $0.hasPrefix(name) }
+            }
+            // argparse separa opciones cortas incluso cuando llevan texto pegado: `-vulkan`
+            // se interpretaría como `-v` + `-ulkan`, corrompiendo el parámetro del juego.
+            return shortOptions.contains { argument.hasPrefix($0) }
+        }
     }
 
     /// Ejecuta `legendary launch` de verdad, como Mythic, dejando que Legendary obtenga el token

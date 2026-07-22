@@ -76,7 +76,7 @@ struct EpicBottleResolverTests {
 
 @Suite("Lanzamiento Epic delegado")
 struct EpicDelegatedLaunchTests {
-    @Test("Legendary recibe motor, prefijo y parámetros del juego después del separador")
+    @Test("Legendary recibe motor, prefijo y parámetros sin inyectar un separador al juego")
     func buildsDelegatedArguments() throws {
         let arguments = try #require(LegendaryManager.delegatedLaunchArguments(
             appName: "ExampleApp",
@@ -85,14 +85,14 @@ struct EpicDelegatedLaunchTests {
             installedExecutable: "/Games/Example/game.exe",
             effectiveExecutable: "/Games/Example/game.exe",
             installPath: "/Games/Example",
-            gameArguments: ["--offline", "-windowed"]
+            gameArguments: ["-force-d3d11", "-windowed"]
         ))
 
         #expect(arguments == [
             "launch", "ExampleApp",
             "--wine", "/Engines/wine",
             "--wine-prefix", "/Bottles/Example",
-            "--", "--offline", "-windowed"
+            "-force-d3d11", "-windowed"
         ])
     }
 
@@ -137,6 +137,37 @@ struct EpicDelegatedLaunchTests {
             effectiveExecutable: "/tmp/untrusted.exe",
             installPath: "/Games/Example",
             gameArguments: []
+        ) == nil)
+    }
+
+    @Test("Cae a la ruta directa si un argumento colisiona con Legendary")
+    func rejectsLegendaryOptionCollision() {
+        #expect(LegendaryManager.delegatedLaunchArguments(
+            appName: "ExampleApp",
+            winePath: "/Engines/wine",
+            prefix: "/Bottles/Example",
+            installedExecutable: "/Games/Example/game.exe",
+            effectiveExecutable: "/Games/Example/game.exe",
+            installPath: "/Games/Example",
+            gameArguments: ["--offline"]
+        ) == nil)
+        #expect(LegendaryManager.delegatedLaunchArguments(
+            appName: "ExampleApp",
+            winePath: "/Engines/wine",
+            prefix: "/Bottles/Example",
+            installedExecutable: "/Games/Example/game.exe",
+            effectiveExecutable: "/Games/Example/game.exe",
+            installPath: "/Games/Example",
+            gameArguments: ["--lang=es"]
+        ) == nil)
+        #expect(LegendaryManager.delegatedLaunchArguments(
+            appName: "ExampleApp",
+            winePath: "/Engines/wine",
+            prefix: "/Bottles/Example",
+            installedExecutable: "/Games/Example/game.exe",
+            effectiveExecutable: "/Games/Example/game.exe",
+            installPath: "/Games/Example",
+            gameArguments: ["-vulkan"]
         ) == nil)
     }
 }
