@@ -14,7 +14,10 @@ final class NotificationService {
         case showSteamClient
     }
 
+    typealias SteamAuthorizationResumption = @MainActor () async -> Void
+
     static let shared = NotificationService()
+    private var steamAuthorizationResumptions: [String: SteamAuthorizationResumption] = [:]
     private init() {}
 
     /// `UNUserNotificationCenter.current()` aborta internamente si el proceso no pertenece a un
@@ -52,7 +55,8 @@ final class NotificationService {
         body: String,
         actionTitle: String? = nil,
         action: LaunchAlertAction? = nil,
-        steamAppId: String? = nil
+        steamAppId: String? = nil,
+        resumeAfterSteamAuthorization: SteamAuthorizationResumption? = nil
     ) {
         notify(title: title, body: body)
         var userInfo: [String: Any] = ["title": title, "body": body]
@@ -60,7 +64,15 @@ final class NotificationService {
             userInfo["actionTitle"] = actionTitle
             userInfo["action"] = action.rawValue
         }
-        if let steamAppId { userInfo["steamAppId"] = steamAppId }
+        if let steamAppId {
+            userInfo["steamAppId"] = steamAppId
+            if action == .showSteamClient, let resumeAfterSteamAuthorization {
+                registerSteamAuthorizationResumption(
+                    appId: steamAppId,
+                    action: resumeAfterSteamAuthorization
+                )
+            }
+        }
         NotificationCenter.default.post(
             name: .launchMessage,
             object: nil,
@@ -85,13 +97,33 @@ final class NotificationService {
                     )
                     return
                 }
+                let resumption = steamAppId.flatMap {
+                    self.takeSteamAuthorizationResumption(appId: $0)
+                }
                 await WineManager().openSteamClient(
                     in: bottle,
-                    requestingAppId: steamAppId
+                    requestingAppId: steamAppId,
+                    resumeAfterEULAAcceptance: resumption
                 )
                 Self.focusSteamClientFromUserAction()
             }
         }
+    }
+
+    /// Conserva la continuación del intento original únicamente hasta que el usuario abre el
+    /// cliente interactivo. La acción es de un solo uso: aceptar puede reanudar ese intento, pero
+    /// cancelar o volver a pulsar Jugar nunca debe acumular lanzamientos antiguos.
+    func registerSteamAuthorizationResumption(
+        appId: String,
+        action: @escaping SteamAuthorizationResumption
+    ) {
+        steamAuthorizationResumptions[appId] = action
+    }
+
+    func takeSteamAuthorizationResumption(
+        appId: String
+    ) -> SteamAuthorizationResumption? {
+        steamAuthorizationResumptions.removeValue(forKey: appId)
     }
 
     private static func focusSteamClientFromUserAction() {

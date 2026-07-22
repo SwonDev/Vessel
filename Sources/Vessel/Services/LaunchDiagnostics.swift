@@ -190,6 +190,7 @@ enum LaunchDiagnostics {
         persistWinningLayer: (@MainActor (GameConfig.GraphicsLayer) -> Void)? = nil,
         retryWithRealSteam: (@MainActor () async -> Void)? = nil,
         retryWithRuntimeFix: (@MainActor (String?) async -> Bool)? = nil,
+        resumeAfterSteamEULA: (@MainActor () async -> Void)? = nil,
         relaunch: @escaping @MainActor (GameConfig.GraphicsLayer) async -> Void
     ) {
         Task { @MainActor in
@@ -290,7 +291,10 @@ enum LaunchDiagnostics {
                         body: body,
                         actionTitle: waitingForSteamEULA ? "Abrir Steam" : nil,
                         action: waitingForSteamEULA ? .showSteamClient : nil,
-                        steamAppId: waitingForSteamEULA ? steamAppId : nil
+                        steamAppId: waitingForSteamEULA ? steamAppId : nil,
+                        resumeAfterSteamAuthorization: waitingForSteamEULA
+                            ? resumeAfterSteamEULA
+                            : nil
                     )
                     if waitingForSteamEULA {
                         GameLaunchTracker.shared.stop(gameId)

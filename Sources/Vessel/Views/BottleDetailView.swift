@@ -912,6 +912,12 @@ struct BottleDetailView: View {
                 )
                 if repaired { await launchGame(game, attempt: attempt + 1) }
                 return repaired
+            },
+            // La aceptación legal ocurre exclusivamente dentro de Steam. Cuando SteamUI la
+            // confirma, se repite el intento original: `prepareRealSteamClient` cierra el motor
+            // interactivo, restaura el wineserver DRM del juego y evita que continúe por Gcenx.
+            resumeAfterSteamEULA: {
+                await launchGame(game, attempt: attempt + 1)
             }
         ) { next in await launchGame(game, forcedLayer: next, attempt: attempt + 1) }
     }

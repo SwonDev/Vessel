@@ -7212,7 +7212,11 @@ final class WineManager {
     /// Abre el rol interactivo de Steam. Si `requestingAppId` está presente, vuelve a enviar la
     /// orden oficial `-applaunch` una vez que la interfaz ya es visible, para que Steam muestre la
     /// EULA pendiente dentro de ese cliente en vez de dejarla atrapada en el backend negro de DRM.
-    func openSteamClient(in bottle: Bottle, requestingAppId: String? = nil) async {
+    func openSteamClient(
+        in bottle: Bottle,
+        requestingAppId: String? = nil,
+        resumeAfterEULAAcceptance: NotificationService.SteamAuthorizationResumption? = nil
+    ) async {
         // Serialización: si otro flujo (p. ej. "Iniciar sesión" de la vista) ya está
         // preparando Steam, esperar y reutilizar en vez de pisarnos los procesos.
         let isOwner = await acquireSteamFlowTurn()
@@ -7222,7 +7226,12 @@ final class WineManager {
                 ?? resolveClientWine(for: bottle)
             let ok = await ensureSteamConnected(in: bottle, clientWine: wine)
             if ok, let appId = requestingAppId {
-                await requestSteamAuthorizationUI(appId: appId, in: bottle, wine: wine)
+                await requestSteamAuthorizationUI(
+                    appId: appId,
+                    in: bottle,
+                    wine: wine,
+                    resumeAfterEULAAcceptance: resumeAfterEULAAcceptance
+                )
             }
             log.log(ok ? "Steam abierto y conectado ✓" : "Steam abierto (la conexión se confirmará al iniciar sesión).", level: ok ? .info : .warn)
             return
@@ -7318,7 +7327,12 @@ final class WineManager {
         log.log("Abriendo el cliente Steam completo para gestionar la cuenta y la biblioteca.", level: .info)
         let ok = await ensureSteamConnected(in: bottle, clientWine: wine, timeoutSeconds: 90)
         if ok, let appId = requestingAppId {
-            await requestSteamAuthorizationUI(appId: appId, in: bottle, wine: wine)
+            await requestSteamAuthorizationUI(
+                appId: appId,
+                in: bottle,
+                wine: wine,
+                resumeAfterEULAAcceptance: resumeAfterEULAAcceptance
+            )
         }
         log.log(ok ? "Steam abierto y conectado ✓" : "Steam abierto (la conexión se confirmará al iniciar sesión).", level: ok ? .info : .warn)
     }
@@ -7326,7 +7340,12 @@ final class WineManager {
     /// Reproduce la orden que quedó detenida en `ShowEula`, ahora dentro del cliente interactivo.
     /// Solo muestra el flujo oficial de Steam; Vessel no acepta ni modifica la licencia. No da el
     /// trabajo por terminado hasta que `webhelper_js.txt` confirma que SteamUI renderizó el prompt.
-    private func requestSteamAuthorizationUI(appId: String, in bottle: Bottle, wine: String) async {
+    private func requestSteamAuthorizationUI(
+        appId: String,
+        in bottle: Bottle,
+        wine: String,
+        resumeAfterEULAAcceptance: NotificationService.SteamAuthorizationResumption?
+    ) async {
         guard !appId.isEmpty, appId.allSatisfy(\.isNumber) else {
             log.log("AppID inválido al solicitar la autorización de Steam: \(appId)", level: .warn)
             return
@@ -7383,7 +7402,8 @@ final class WineManager {
                 consoleBaseline: consoleBaseline,
                 acceptanceBaseline: promptBaseline,
                 webBaseline: webBaseline,
-                uiBaseline: uiBaseline
+                uiBaseline: uiBaseline,
+                resumeAfterEULAAcceptance: resumeAfterEULAAcceptance
             )
         }
     }
@@ -7440,7 +7460,8 @@ final class WineManager {
         consoleBaseline: Data,
         acceptanceBaseline: Data,
         webBaseline initialWebBaseline: Data,
-        uiBaseline initialUIBaseline: Data
+        uiBaseline initialUIBaseline: Data,
+        resumeAfterEULAAcceptance: NotificationService.SteamAuthorizationResumption?
     ) async {
         var webBaseline = initialWebBaseline
         var uiBaseline = initialUIBaseline
@@ -7455,6 +7476,13 @@ final class WineManager {
                     appId: appId
                 ) {
                     log.log("SteamUI confirmó la aceptación del EULA de \(appId).", level: .info)
+                    if let resumeAfterEULAAcceptance {
+                        NotificationService.shared.status(
+                            "Licencia aceptada. Preparando el motor correcto del juego…"
+                        )
+                        await resumeAfterEULAAcceptance()
+                        NotificationService.shared.status(nil)
+                    }
                     return
                 }
                 if SteamAuthorizationLog.eulaResolved(
