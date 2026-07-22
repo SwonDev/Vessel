@@ -890,6 +890,36 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertTrue(script.hasSuffix("wine game.exe\n"))
     }
 
+    func testProtectedLaunchAgentKeepsOnlyRedactedTechnicalDiagnostics() {
+        let command = "/usr/bin/env -i WINEPREFIX='/tmp/prefix' wine game.exe"
+        let wrapped = WineManager.launchAgentCommand(
+            command,
+            containsSensitiveArguments: true,
+            diagnosticLogPath: "/tmp/Vessel's protected.log"
+        )
+
+        XCTAssertTrue(wrapped.hasPrefix("umask 077\n"))
+        XCTAssertTrue(wrapped.contains(": > '/tmp/Vessel'\\''s protected.log'\n"))
+        XCTAssertTrue(wrapped.contains("exec \(command) > >(/usr/bin/awk"))
+        XCTAssertTrue(wrapped.contains(":module:"))
+        XCTAssertTrue(wrapped.contains(":loaddll:"))
+        XCTAssertTrue(wrapped.contains("d3d12"))
+        XCTAssertTrue(wrapped.contains("auth_"))
+        XCTAssertTrue(wrapped.contains("access_token"))
+        XCTAssertFalse(wrapped.contains("super-secret-value"))
+    }
+
+    func testOrdinaryLaunchAgentStillExecutesDirectly() {
+        XCTAssertEqual(
+            WineManager.launchAgentCommand(
+                "wine game.exe",
+                containsSensitiveArguments: false,
+                diagnosticLogPath: "/tmp/unused.log"
+            ),
+            "exec wine game.exe"
+        )
+    }
+
     func testLaunchAgentChecksAttemptMarkerWithExistingMacOSTestBinary() {
         XCTAssertEqual(
             WineManager.launchAttemptMarkerCheckCommand("/tmp/Vessel's private launch.sh.started"),
@@ -2273,6 +2303,123 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .other)
     }
 
+    func testFourAEnhancedDynamicD3D12ContractRoutesToGPTK() throws {
+        let executable = try makePE64(
+            named: "EnhancedGame.exe",
+            marker: """
+            4A Engine
+            PC Enhanced version
+            Only DirectX 12 and Vulkan are supported.
+            Graphics device does not support DXR1.1 or above.
+            D3D12CreateDevice
+            D3D12GetDebugInterface
+            D3D12SerializeRootSignature
+            CreateDXGIFactory2
+            """,
+            imports: ["KERNEL32.dll", "MSVCP140.dll", "VCRUNTIME140.dll"]
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for component in [
+            "dxcompiler_pc.dll",
+            "dxil.dll",
+            "NvHairWorksDx12.win64.dll",
+            "content.vfx"
+        ] {
+            try Data(component.utf8).write(to: directory.appendingPathComponent(component))
+        }
+
+        let manager = WineManager()
+        XCTAssertTrue(manager.isFourAEnhancedD3D12Engine(executable.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .d3d12)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .gptk)
+        XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [.gptk])
+        XCTAssertEqual(
+            manager.environmentByEnablingRequiredD3DMetalFeatures(
+                ["WINEPREFIX": "/tmp/VesselPrefix", "D3DM_SUPPORT_DXR": "0"],
+                executable: executable.path
+            ),
+            ["WINEPREFIX": "/tmp/VesselPrefix", "D3DM_SUPPORT_DXR": "1"]
+        )
+        XCTAssertEqual(
+            manager.fourAUncleanExitRegistryRepairArguments(executable: executable.path),
+            [
+                "reg", "add", #"HKCU\Software\4A-Games\Metro Exodus"#,
+                "/v", "BadQuit", "/t", "REG_DWORD", "/d", "0", "/f"
+            ]
+        )
+    }
+
+    func testStandardFourAContractDoesNotForceEnhancedD3D12Route() throws {
+        let executable = try makePE64(
+            named: "StandardGame.exe",
+            marker: """
+            4A Engine
+            DirectX 11 (Obsolete)
+            D3D12CreateDevice
+            D3D12GetDebugInterface
+            D3D12SerializeRootSignature
+            CreateDXGIFactory2
+            """,
+            imports: ["KERNEL32.dll", "MSVCP140.dll"]
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for component in [
+            "dxcompiler_pc.dll",
+            "dxil.dll",
+            "NvHairWorksDx12.win64.dll",
+            "content.vfx"
+        ] {
+            try Data(component.utf8).write(to: directory.appendingPathComponent(component))
+        }
+
+        let manager = WineManager()
+        XCTAssertFalse(manager.isFourAEnhancedD3D12Engine(executable.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .other)
+        let baseEnvironment = ["WINEPREFIX": "/tmp/VesselPrefix", "D3DM_SUPPORT_DXR": "0"]
+        XCTAssertEqual(
+            manager.environmentByEnablingRequiredD3DMetalFeatures(
+                baseEnvironment,
+                executable: executable.path
+            ),
+            baseEnvironment
+        )
+        XCTAssertNil(
+            manager.fourAUncleanExitRegistryRepairArguments(executable: executable.path)
+        )
+    }
+
+    func testIncompleteFourAEnhancedRuntimeCannotChangeGraphicsRouting() throws {
+        let executable = try makePE64(
+            named: "IncompleteEnhancedGame.exe",
+            marker: """
+            4A Engine
+            PC Enhanced version
+            Only DirectX 12 and Vulkan are supported.
+            Graphics device does not support DXR1.1 or above.
+            D3D12CreateDevice
+            D3D12GetDebugInterface
+            D3D12SerializeRootSignature
+            CreateDXGIFactory2
+            """,
+            imports: ["KERNEL32.dll", "MSVCP140.dll"]
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // Sin DXIL no hay contrato completo de la rama Enhanced; los textos no bastan.
+        for component in ["dxcompiler_pc.dll", "NvHairWorksDx12.win64.dll", "content.vfx"] {
+            try Data(component.utf8).write(to: directory.appendingPathComponent(component))
+        }
+
+        let manager = WineManager()
+        XCTAssertFalse(manager.isFourAEnhancedD3D12Engine(executable.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .other)
+        XCTAssertNil(
+            manager.fourAUncleanExitRegistryRepairArguments(executable: executable.path)
+        )
+    }
+
     func testUnverifiedCryEngineSiblingCannotChangeGraphicsRouting() throws {
         let executable = try makePE64(
             named: "CustomLauncher.exe",
@@ -2683,6 +2830,34 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             WineManager.enablingManagedRuntime(in: "mscoree=d;winemenubuilder.exe=d"),
             "winemenubuilder.exe=d"
         )
+    }
+
+    func testD3D12ManagedDependencyReenablesOnlyMSCoreeInItsEnvironment() {
+        let base = [
+            "WINEPREFIX": "/tmp/VesselPrefix",
+            "WINEDLLOVERRIDES": "mscoree,mshtml=d;winegstreamer=d;d3d12,dxgi=b"
+        ]
+
+        let managed = WineManager.environmentByEnablingManagedRuntimeIfNeeded(
+            base,
+            dependencies: [.visualCpp, .dotNet]
+        )
+        XCTAssertEqual(
+            managed["WINEDLLOVERRIDES"],
+            "mshtml=d;winegstreamer=d;d3d12,dxgi=b"
+        )
+        XCTAssertEqual(managed["WINEPREFIX"], "/tmp/VesselPrefix")
+
+        let nativeOnly = WineManager.environmentByEnablingManagedRuntimeIfNeeded(
+            base,
+            dependencies: [.visualCpp]
+        )
+        XCTAssertEqual(nativeOnly, base)
+    }
+
+    func testD3DMetalDetachedLaunchesPreserveRequiredDXRCapability() {
+        XCTAssertTrue(WineManager.d3dMetalGameCleanEnvironmentKeys.contains("D3DM_SUPPORT_DXR"))
+        XCTAssertTrue(WineManager.gptkGameCleanEnvironmentKeys.contains("D3DM_SUPPORT_DXR"))
     }
 
     func testD3D12MediaProfileIsDetectedFromPEImports() {

@@ -68,6 +68,18 @@ final class RuntimeDependencyProvisionerTests: XCTestCase {
         XCTAssertEqual(plan.winetricksVerbs, ["dotnetdesktop8"])
     }
 
+    func testDetectsManagedRuntimeImportedByAdjacentMixedModeDLL() throws {
+        let executable = try writePE32Executable(named: "game.exe", markers: "KERNEL32.dll")
+        _ = try writePE32ExecutableWithImport(
+            named: "BugTrap.dll",
+            library: "mscoree.dll"
+        )
+
+        let dependencies = RuntimeDependencyProvisioner.detect(executable: executable.path)
+
+        XCTAssertTrue(dependencies.contains(.dotNet))
+    }
+
     func testDistinguishesXNA31FromXNA40() throws {
         let executable = try writeExecutable(
             named: "legacy-xna.exe",

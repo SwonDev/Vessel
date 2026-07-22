@@ -2525,6 +2525,10 @@ final class WineManager {
         // vez el contrato interno del motor, sus símbolos de carga D3D12 y el paquete de runtime;
         // no depende del título/AppID ni convierte cualquier juego con `dxcompiler.dll` en Decima.
         if isDecimaD3D12Engine(executable) { return .d3d12 }
+        // La rama Enhanced de 4A Engine también resuelve la API en runtime. Su PE principal no
+        // importa D3D12/DXGI aunque exige D3D12 + DXR 1.1, por lo que necesita D3DMetal desde el
+        // primer intento y no la ruta genérica Gcenx. La detección se basa en el contrato del motor.
+        if isFourAEnhancedD3D12Engine(executable) { return .d3d12 }
         // CryEngine moderno mantiene un launcher PE mínimo y carga dinámicamente el módulo del
         // juego (`*Game.dll`), que también contiene el renderer monolítico. El launcher no enlaza
         // esa DLL ni D3D, por lo que el salto PE directo no puede descubrirla. La firma exige los
@@ -2793,6 +2797,52 @@ final class WineManager {
             && files.contains("d3dcompiler_47.dll")
             && files.contains("bink2w64.dll")
             && hasOodleRuntime
+    }
+
+    /// Reconoce la rama PC Enhanced de 4A Engine, que exige D3D12/DXR pero carga la API en runtime.
+    ///
+    /// Se combinan el diagnóstico interno de la edición Enhanced, el requisito DXR 1.1, los
+    /// símbolos D3D12 y el paquete propio de compilación/HairWorks. Así las builds 4A que todavía
+    /// ofrecen D3D11 no se fuerzan a D3D12 y un conjunto genérico de DLLs RTX tampoco activa la regla.
+    func isFourAEnhancedD3D12Engine(_ executable: String) -> Bool {
+        guard isExecutable64Bit(executable) else { return false }
+
+        let imports = peImportedLibraries(forExecutable: executable)
+        let explicitGraphicsImports: Set<String> = [
+            "d3d12.dll", "d3d11.dll", "d3d10.dll", "d3d10core.dll", "dxgi.dll",
+            "d3d9.dll", "d3d8.dll", "ddraw.dll", "vulkan-1.dll", "opengl32.dll"
+        ]
+        guard imports.isDisjoint(with: explicitGraphicsImports) else { return false }
+
+        let engineMarkers = [
+            "4A Engine",
+            "PC Enhanced version",
+            "Only DirectX 12 and Vulkan are supported.",
+            "does not support DXR1.1 or above."
+        ]
+        guard engineMarkers.allSatisfy({ exeContains(executable, anyOf: [$0]) }) else {
+            return false
+        }
+
+        let dynamicD3D12Markers = [
+            "D3D12CreateDevice",
+            "D3D12GetDebugInterface",
+            "D3D12SerializeRootSignature",
+            "CreateDXGIFactory2"
+        ]
+        guard dynamicD3D12Markers.allSatisfy({ exeContains(executable, anyOf: [$0]) }) else {
+            return false
+        }
+
+        let directory = (executable as NSString).deletingLastPathComponent
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: directory) else {
+            return false
+        }
+        let files = Set(entries.map { $0.lowercased() })
+        return files.contains("dxcompiler_pc.dll")
+            && files.contains("dxil.dll")
+            && files.contains("nvhairworksdx12.win64.dll")
+            && files.contains("content.vfx")
     }
 
     private func cryEngineGameModuleGraphicsAPI(
@@ -3962,10 +4012,14 @@ final class WineManager {
         // Cualquier import administrado real necesita `mscoree` disponible. Incluye .NET Core y
         // DLLs mixtas C++/CLI usadas por motores nativos (p. ej. el reporter de Hades). La evidencia
         // se obtiene del escaneo PE acotado; no se habilita Mono/.NET globalmente ni por título.
-        if (isDotNetCoreGame(executable) || runtimeDependencies.contains(.dotNet)),
-           let overrides = env["WINEDLLOVERRIDES"] {
-            env["WINEDLLOVERRIDES"] = Self.enablingManagedRuntime(in: overrides)
-        }
+        let managedDependencies: [RuntimeDependencyProvisioner.Dependency] =
+            (isDotNetCoreGame(executable) && !runtimeDependencies.contains(.dotNet))
+            ? runtimeDependencies + [.dotNet]
+            : runtimeDependencies
+        env = Self.environmentByEnablingManagedRuntimeIfNeeded(
+            env,
+            dependencies: managedDependencies
+        )
         if let appId = steamAppId, !appId.isEmpty {
             let gameDir = (executable as NSString).deletingLastPathComponent
             try? appId.write(toFile: "\(gameDir)/steam_appid.txt", atomically: true, encoding: .utf8)
@@ -3985,7 +4039,8 @@ final class WineManager {
             arguments: [executable] + engineArgs + allArgs,
             environment: env,
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
-            effective: eff
+            effective: eff,
+            enableManagedRuntime: managedDependencies.contains(.dotNet)
         )
     }
 
@@ -5404,6 +5459,12 @@ final class WineManager {
     ) async throws -> Process {
         let gameDir = (executable as NSString).deletingLastPathComponent
         let fm = FileManager.default
+        // La ruta D3D12 se resolvía antes del preflight común de runtimes. Eso dejaba activo el
+        // `mscoree=d` preventivo de GPTK incluso cuando una DLL mixta adyacente lo importaba (4A
+        // Enhanced carga BugTrap.dll, que a su vez necesita mscoree), y el loader devolvía 126 antes
+        // de crear ventana. El mismo escaneo acotado y estructural del resto de rutas evita depender
+        // de títulos y provisiona además cualquier helper DirectX empaquetado que sí corresponda.
+        let runtimeDependencies = RuntimeDependencyProvisioner.provision(executable: executable)
 
         // 1) Motor: por defecto el motor D3DMetal propio (`wine-d3dmetal`, WineHQ 11.10 + D3DMetal
         //    de Apple), que corre D3D12→Metal en Wine MODERNO. EXCEPCIÓN: **Unity 6.x (6000.x+)
@@ -5506,8 +5567,17 @@ final class WineManager {
         // SIEMPRE el estado Retina después de sincronizar el prefijo para que no herede la escala
         // del juego anterior. Liquid Engine necesita coordenadas 1×: con Retina convierte el
         // framebuffer físico 3024×1964 en puntos y desborda un escritorio lógico 1512×982.
-        let requiresOneXWindowCoordinates = GameDisplayStateRepair
-            .requiresOneXWindowCoordinates(appId: steamAppId, executable: executable)
+        // 4A Enhanced crea el contenedor fullscreen con el tamaño del framebuffer físico aunque
+        // winemac.drv ya esté trabajando en puntos Retina. En una pantalla 2× eso convierte una
+        // ventana de 3024×1964 en 3024×1964 *puntos* sobre un escritorio de 1512×982: durante
+        // algunas transiciones solo queda visible un cuadrante. Su huella estructural es la misma
+        // que exige DXR, así que la excepción queda aislada de las ramas 4A que aún usan D3D11.
+        let isFourAEnhanced = isFourAEnhancedD3D12Engine(executable)
+        let requiresOneXWindowCoordinates = isFourAEnhanced
+            || GameDisplayStateRepair.requiresOneXWindowCoordinates(
+                appId: steamAppId,
+                executable: executable
+            )
         await setMacDriverRetinaMode(
             prefix: bottle.prefixPath,
             wine: d3d12Wine,
@@ -5518,6 +5588,31 @@ final class WineManager {
                 "Motor con coordenadas físicas detectado: escala nativa 1× para mantener ventana e input dentro del escritorio.",
                 level: .info
             )
+        }
+        if let repairArguments = fourAUncleanExitRegistryRepairArguments(
+            executable: executable
+        ) {
+            let repair = try? await runWine(
+                winePath: d3d12Wine,
+                arguments: repairArguments,
+                prefix: bottle.prefixPath,
+                environment: Self.wineControlEnvironment(
+                    prefix: bottle.prefixPath,
+                    wine: d3d12Wine
+                ),
+                allowNonZeroExit: true
+            )
+            if repair?.exitCode == 0 {
+                log.log(
+                    "4A Enhanced: estado de cierre anterior normalizado; se evita el falso diálogo de modo seguro.",
+                    level: .info
+                )
+            } else {
+                log.log(
+                    "4A Enhanced: no se pudo normalizar el marcador de cierre anterior (Wine: \(repair?.exitCode ?? -1)).",
+                    level: .warn
+                )
+            }
         }
         if needsManagedMedia {
             await enableManagedMediaFoundation(
@@ -5539,6 +5634,26 @@ final class WineManager {
         } else {
             env = gptkManager.d3dMetalEnvironment(prefix: bottle.prefixPath)
         }
+        env = Self.environmentByEnablingManagedRuntimeIfNeeded(
+            env,
+            dependencies: runtimeDependencies
+        )
+        env = environmentByEnablingRequiredD3DMetalFeatures(
+            env,
+            executable: executable
+        )
+        if runtimeDependencies.contains(.dotNet) {
+            log.log(
+                "D3D12: runtime administrado importado por el ejecutable o una DLL del motor; mscoree habilitado de forma aislada.",
+                level: .info
+            )
+        }
+        if env["D3DM_SUPPORT_DXR"] == "1" {
+            log.log(
+                "D3D12: el motor exige DXR; soporte de ray tracing de D3DMetal habilitado automáticamente.",
+                level: .info
+            )
+        }
         // Unreal + GPTK: DYLD al `external` del motor BASE (el de mousefix no le sirve).
         // El sync (esync/fsync=0) se pisa más abajo, en el overlay efectivo de launchWineProcess
         // (que si no volvería a activarlos según el perfil). Solo afecta a Unreal.
@@ -5548,6 +5663,14 @@ final class WineManager {
         if let appId = steamAppId, !appId.isEmpty {
             env["SteamAppId"] = appId
             env["SteamGameId"] = appId
+        }
+        // 4A Enhanced carga D3D12 y sus módulos de forma dinámica. Los fallos tempranos de su loader
+        // devuelven ERROR_MOD_NOT_FOUND (126) sin llegar a crear ventana y no siempre usan la clase
+        // `err`; habilitar los canales `module`/`loaddll` completos permite que el LaunchAgent
+        // protegido conserve únicamente esas líneas técnicas, sin escribir jamás los tokens
+        // efímeros de Epic ni el comando completo.
+        if isFourAEnhancedD3D12Engine(executable) {
+            env["WINEDEBUG"] = "+module,+loaddll"
         }
         // Unity sobre GPTK/D3DMetal: fullscreen borderless + render MONOHILO (`-force-gfx-direct`),
         // igual que el resto de paths Unity — el fullscreen EXCLUSIVO revienta el swapchain y el
@@ -5574,6 +5697,7 @@ final class WineManager {
             environment: env,
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: effective,
+            enableManagedRuntime: runtimeDependencies.contains(.dotNet),
             d3dMetalGame: useD3DMetalEngine
         )
     }
@@ -9143,6 +9267,31 @@ final class WineManager {
             + "\(command)\n"
     }
 
+    /// Conserva diagnóstico útil para lanzamientos con credenciales sin persistir su salida cruda.
+    /// El filtro solo deja firmas técnicas de carga/render y descarta de forma explícita cualquier
+    /// línea relacionada con autenticación. La sustitución de proceso mantiene `exec`: Wine sigue
+    /// siendo el proceso del LaunchAgent y conserva el contexto gráfico validado.
+    nonisolated static func launchAgentCommand(
+        _ command: String,
+        containsSensitiveArguments: Bool,
+        diagnosticLogPath: String
+    ) -> String {
+        guard containsSensitiveArguments else { return "exec \(command)" }
+
+        func shellQuote(_ value: String) -> String {
+            "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        }
+        let logPath = shellQuote(diagnosticLogPath)
+        let allowTechnicalLine =
+            "tolower($0) ~ /(:module:|:loaddll:|failed|not found|unsupported|exception|c0000135|d3d12|dxgi)/"
+        let rejectSensitiveLine =
+            "tolower($0) !~ /(auth_|exchangecode|exchange|password|credential|access_token|refresh_token|epicuser|epicid)/"
+        let filter = "\(allowTechnicalLine) && \(rejectSensitiveLine)"
+        return "umask 077\n"
+            + ": > \(logPath)\n"
+            + "exec \(command) > >(/usr/bin/awk '\(filter)' >> \(logPath)) 2>&1"
+    }
+
     /// Comprueba si el LaunchAgent ya consumió su script. En macOS `test` vive en `/bin`, no en
     /// `/usr/bin`; usar una ruta inexistente hacía que el bucle de recuperación ignorase el marcador
     /// y relanzase el mismo juego varias veces después de un fallo rápido.
@@ -9215,6 +9364,80 @@ final class WineManager {
         }.joined(separator: ";")
     }
 
+    /// Reactiva únicamente `mscoree` cuando el inventario acotado del juego demuestra una carga
+    /// administrada. Conserva intactos Gecko, multimedia y las capas gráficas del entorno elegido.
+    nonisolated static func environmentByEnablingManagedRuntimeIfNeeded(
+        _ environment: [String: String],
+        dependencies: [RuntimeDependencyProvisioner.Dependency]
+    ) -> [String: String] {
+        guard dependencies.contains(.dotNet),
+              let overrides = environment["WINEDLLOVERRIDES"] else { return environment }
+        var resolved = environment
+        resolved["WINEDLLOVERRIDES"] = enablingManagedRuntime(in: overrides)
+        return resolved
+    }
+
+    /// D3DMetal conserva DXR detrás de una capacidad explícita para que los juegos que no lo usan
+    /// no cambien de ruta gráfica. La rama Enhanced de 4A exige DXR 1.1 incluso para crear el
+    /// dispositivo inicial: si no se publica, muestra el aviso de requisitos mínimos antes de abrir
+    /// su renderizador. La huella estructural completa del motor evita habilitar ray tracing por
+    /// título, tienda o para cualquier otro D3D12 que solo lo incluya de forma opcional.
+    func environmentByEnablingRequiredD3DMetalFeatures(
+        _ environment: [String: String],
+        executable: String
+    ) -> [String: String] {
+        guard isFourAEnhancedD3D12Engine(executable) else { return environment }
+        var resolved = environment
+        resolved["D3DM_SUPPORT_DXR"] = "1"
+        return resolved
+    }
+
+    /// 4A marca `BadQuit=1` al empezar y lo limpia únicamente tras una salida ordinaria. Cuando
+    /// Vessel detiene una ejecución bloqueada, el siguiente arranque muestra un diálogo de modo
+    /// seguro cuyos textos no llegan a pintarse bajo Wine. Vessel ya aplica el perfil gráfico
+    /// compatible antes de lanzar, por lo que restablecer el marcador es la recuperación automática
+    /// equivalente a «Run normally». Se exige la huella completa de Enhanced; ningún título ni
+    /// AppID participa en la decisión.
+    func fourAUncleanExitRegistryRepairArguments(executable: String) -> [String]? {
+        guard isFourAEnhancedD3D12Engine(executable) else { return nil }
+        return [
+            "reg", "add", #"HKCU\Software\4A-Games\Metro Exodus"#,
+            "/v", "BadQuit", "/t", "REG_DWORD", "/d", "0", "/f"
+        ]
+    }
+
+    /// Variables que pueden cruzar el aislamiento `env -i` del motor D3DMetal propio. Mantener
+    /// aquí las capacidades del traductor evita que un perfil correctamente detectado se pierda
+    /// justo al separar el juego del contexto gráfico de la app.
+    nonisolated static var d3dMetalGameCleanEnvironmentKeys: [String] {
+        [
+            "HOME", "USER", "TMPDIR", "WINEPREFIX", "WINEDEBUG", "MVK_CONFIG_LOG_LEVEL",
+            "WINEDLLOVERRIDES", "DYLD_FALLBACK_LIBRARY_PATH", "SteamAppId", "SteamGameId",
+            "WINEMSYNC", "WINEESYNC", "WINEFSYNC", "CX_FWD_COMPAT_GL_CTX",
+            "VESSEL_FORCE_CORE_GL_CTX", "VESSEL_WINE_FIBER_GS_REWRITE",
+            "MTL_HUD_ENABLED", "D3DM_SUPPORT_DXR", "ROSETTA_ADVERTISE_AVX",
+            "GST_PLUGIN_SYSTEM_PATH", "GST_PLUGIN_PATH", "GST_PLUGIN_SCANNER",
+            "GST_REGISTRY", "GIO_EXTRA_MODULES",
+            "SDL_RENDER_DRIVER", "SDL_FRAMEBUFFER_ACCELERATION",
+            "SDL_JOYSTICK_HIDAPI", "SDL_JOYSTICK_HIDAPI_PS4", "SDL_JOYSTICK_HIDAPI_PS4_RUMBLE",
+            "SDL_JOYSTICK_HIDAPI_PS5", "SDL_JOYSTICK_HIDAPI_PS5_RUMBLE", "SDL_JOYSTICK_HIDAPI_SWITCH"
+        ]
+    }
+
+    /// Lista blanca equivalente para GPTK, cuya sesión Aqua independiente es necesaria para crear
+    /// el dispositivo Metal desde una app sandboxed/embebida. DXR debe viajar en el comando del
+    /// LaunchAgent: dejarlo solo en `fullEnv` no tiene efecto porque el hijo arranca con `env -i`.
+    nonisolated static var gptkGameCleanEnvironmentKeys: [String] {
+        [
+            "HOME", "USER", "TMPDIR", "WINEPREFIX", "WINEDEBUG", "MVK_CONFIG_LOG_LEVEL",
+            "WINEDLLOVERRIDES", "DYLD_FALLBACK_LIBRARY_PATH", "SteamAppId", "SteamGameId",
+            "WINEMSYNC", "WINEESYNC", "WINEFSYNC", "CX_FWD_COMPAT_GL_CTX", "MTL_HUD_ENABLED",
+            "D3DM_SUPPORT_DXR", "ROSETTA_ADVERTISE_AVX", "SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS",
+            "SDL_JOYSTICK_HIDAPI", "SDL_JOYSTICK_HIDAPI_PS4", "SDL_JOYSTICK_HIDAPI_PS4_RUMBLE",
+            "SDL_JOYSTICK_HIDAPI_PS5", "SDL_JOYSTICK_HIDAPI_PS5_RUMBLE", "SDL_JOYSTICK_HIDAPI_SWITCH"
+        ]
+    }
+
     nonisolated static func redactedArgumentsForLogging(_ arguments: [String]) -> [String] {
         arguments.map { argument in
             guard isSensitiveLaunchArgument(argument) else { return argument }
@@ -9254,6 +9477,10 @@ final class WineManager {
         effective: EffectiveLaunchConfig? = nil,
         forceSyncOff: Bool = false,
         forceSyncOn: Bool = false,
+        /// Reaplica la evidencia administrada después de todos los overlays del perfil. Es la última
+        /// palabra sobre `mscoree`: una dependencia PE demostrada no puede quedar desactivada por una
+        /// configuración base o aprendida anterior.
+        enableManagedRuntime: Bool = false,
         d3dMetalGame: Bool = false,
         /// Fuerza el lanzamiento con entorno LIMPIO (`env -i` vía bash), como si viniera de un
         /// terminal. No es solo cosa de Metal: **cualquier** juego que cree un contexto gráfico
@@ -9412,6 +9639,9 @@ final class WineManager {
                 await applyWinetricksVerbs(eff.winetricksVerbs, prefix: prefix, wine: winePath)
             }
         }
+        if enableManagedRuntime, let overrides = fullEnv["WINEDLLOVERRIDES"] {
+            fullEnv["WINEDLLOVERRIDES"] = Self.enablingManagedRuntime(in: overrides)
+        }
         // Juegos **.NET Core**: lanzar vía `/usr/bin/env -i` con el entorno construido, para ROMPER
         // el contexto de la app GUI. Vessel es una `.app`: CoreFoundation inyecta en sus hijos
         // `__CFBundleIdentifier` (= com.swondev.vessel) + `XPC_*` (identidad de bundle), y macOS
@@ -9466,19 +9696,7 @@ final class WineManager {
             // device por el contexto de bundle) aunque el cliente Steam esté conectado.
             log.log("Juego DXMT/D3DMetal: lanzando con entorno LIMPIO (env -i) para crear el device (Metal) sin el contexto de bundle de la app.", level: .info)
             var clean: [String: String] = [:]
-            for k in ["HOME", "USER", "TMPDIR", "WINEPREFIX", "WINEDEBUG", "MVK_CONFIG_LOG_LEVEL",
-                      "WINEDLLOVERRIDES", "DYLD_FALLBACK_LIBRARY_PATH", "SteamAppId", "SteamGameId",
-                      "WINEMSYNC", "WINEESYNC", "WINEFSYNC", "CX_FWD_COMPAT_GL_CTX",
-                      "VESSEL_FORCE_CORE_GL_CTX", "VESSEL_WINE_FIBER_GS_REWRITE",
-                      "MTL_HUD_ENABLED",
-                      "ROSETTA_ADVERTISE_AVX",
-                      "GST_PLUGIN_SYSTEM_PATH", "GST_PLUGIN_PATH", "GST_PLUGIN_SCANNER",
-                      "GST_REGISTRY", "GIO_EXTRA_MODULES",
-                      // Render de SDL (envoltorios retro): sin esto en la lista blanca, `env -i` se
-                      // las comería y DOSBox/ScummVM volverían a pasar por d3d9→wined3d.
-                      "SDL_RENDER_DRIVER", "SDL_FRAMEBUFFER_ACCELERATION",
-                      "SDL_JOYSTICK_HIDAPI", "SDL_JOYSTICK_HIDAPI_PS4", "SDL_JOYSTICK_HIDAPI_PS4_RUMBLE",
-                      "SDL_JOYSTICK_HIDAPI_PS5", "SDL_JOYSTICK_HIDAPI_PS5_RUMBLE", "SDL_JOYSTICK_HIDAPI_SWITCH"] {
+            for k in Self.d3dMetalGameCleanEnvironmentKeys {
                 if let v = fullEnv[k] { clean[k] = v }
             }
             func shq(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
@@ -9498,12 +9716,7 @@ final class WineManager {
             // menú. Agente PROPIO (no el del cliente Steam): ni le pisa el label ni mata steam.exe.
             log.log("GPTK/D3DMetal: lanzando el juego vía LaunchAgent (launchd bootstrap, independiente de la app).", level: .info)
             var clean: [String: String] = [:]
-            for k in ["HOME", "USER", "TMPDIR", "WINEPREFIX", "WINEDEBUG", "MVK_CONFIG_LOG_LEVEL",
-                      "WINEDLLOVERRIDES", "DYLD_FALLBACK_LIBRARY_PATH", "SteamAppId", "SteamGameId",
-                      "WINEMSYNC", "WINEESYNC", "WINEFSYNC", "CX_FWD_COMPAT_GL_CTX", "MTL_HUD_ENABLED",
-                      "ROSETTA_ADVERTISE_AVX", "SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS",
-                      "SDL_JOYSTICK_HIDAPI", "SDL_JOYSTICK_HIDAPI_PS4", "SDL_JOYSTICK_HIDAPI_PS4_RUMBLE",
-                      "SDL_JOYSTICK_HIDAPI_PS5", "SDL_JOYSTICK_HIDAPI_PS5_RUMBLE", "SDL_JOYSTICK_HIDAPI_SWITCH"] {
+            for k in Self.gptkGameCleanEnvironmentKeys {
                 if let v = fullEnv[k] { clean[k] = v }
             }
             func shq(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
@@ -9513,10 +9726,16 @@ final class WineManager {
             let cmdFile = "\(NSHomeDirectory())/Library/Application Support/Vessel/.game-launch.sh"
             let attemptMarker = cmdFile + ".started"
             try? FileManager.default.removeItem(atPath: attemptMarker)
+            let rawLaunchCommand = "/usr/bin/env -i \(assignments) \(cmdline)"
+            let protectedLog = "\(NSHomeDirectory())/Library/Logs/Vessel/protected-game-agent.log"
             let script = Self.selfRemovingLaunchAgentScript(
                 commandFile: cmdFile,
                 workingDirectory: cwd,
-                command: "exec /usr/bin/env -i \(assignments) \(cmdline)"
+                command: Self.launchAgentCommand(
+                    rawLaunchCommand,
+                    containsSensitiveArguments: containsSensitiveArguments,
+                    diagnosticLogPath: protectedLog
+                )
             )
             try? script.write(toFile: cmdFile, atomically: true, encoding: .utf8)
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cmdFile)
@@ -9617,7 +9836,7 @@ final class WineManager {
             func shq(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
             let assignments = clean.map { "\($0.key)=\(shq($0.value))" }.joined(separator: " ")
             let cmdline = ([winePath] + arguments).map { shq($0) }.joined(separator: " ")
-            let bashCmd = "exec /usr/bin/env -i \(assignments) \(cmdline)"
+            let bashCmd = "/usr/bin/env -i \(assignments) \(cmdline)"
             // Lanzar vía un **LaunchAgent** que arranca **launchd** (`bootstrap` en el dominio GUI del
             // usuario, `gui/<uid>`): el proceso queda con PPID=1, sesión Aqua propia y su PROPIA
             // "responsible process" → el CEF de Steam del motor completo crea su ventana. Alternativas
@@ -9638,10 +9857,15 @@ final class WineManager {
             let attemptMarker = cmdFile + ".started"
             try? FileManager.default.removeItem(atPath: attemptMarker)
             let cwd = workingDirectory ?? (prefix as NSString).deletingLastPathComponent
+            let protectedLog = "\(NSHomeDirectory())/Library/Logs/Vessel/protected-game-agent.log"
             let script = Self.selfRemovingLaunchAgentScript(
                 commandFile: cmdFile,
                 workingDirectory: cwd,
-                command: bashCmd
+                command: Self.launchAgentCommand(
+                    bashCmd,
+                    containsSensitiveArguments: containsSensitiveArguments,
+                    diagnosticLogPath: protectedLog
+                )
             )
             try? script.write(toFile: cmdFile, atomically: true, encoding: .utf8)
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cmdFile)
