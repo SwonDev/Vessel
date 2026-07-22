@@ -5,6 +5,33 @@ import XCTest
 
 @MainActor
 final class WineManagerGraphicsRoutingTests: XCTestCase {
+    func testDisabledWineDebuggerPolicySkipsCrashPromptInBothRegistryViews() throws {
+        let commands = WineManager.disabledAutoDebuggerRegistryCommands
+
+        XCTAssertEqual(commands.count, 4)
+        XCTAssertEqual(Set(commands.compactMap { command in
+            guard let keyIndex = command.firstIndex(of: "add"),
+                  command.indices.contains(keyIndex + 1) else { return nil }
+            return command[keyIndex + 1]
+        }), [
+            #"HKLM\Software\Microsoft\Windows NT\CurrentVersion\AeDebug"#,
+            #"HKLM\Software\Wow6432Node\Microsoft\Windows NT\CurrentVersion\AeDebug"#
+        ])
+
+        let debuggerCommands = commands.filter { $0.contains("Debugger") }
+        let autoCommands = commands.filter { $0.contains("Auto") }
+        XCTAssertEqual(debuggerCommands.count, 2)
+        XCTAssertEqual(autoCommands.count, 2)
+        for command in debuggerCommands {
+            let dataIndex = try XCTUnwrap(command.firstIndex(of: "/d"))
+            XCTAssertEqual(command[dataIndex + 1], "")
+        }
+        for command in autoCommands {
+            let dataIndex = try XCTUnwrap(command.firstIndex(of: "/d"))
+            XCTAssertEqual(command[dataIndex + 1], "1")
+        }
+    }
+
     func testKleiDataBundleEngineKeepsBin64WorkingDirectory() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("vessel-klei-working-dir-\(UUID().uuidString)", isDirectory: true)

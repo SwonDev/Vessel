@@ -8528,14 +8528,23 @@ final class WineManager {
     private func ensurePrefixSyncedToEngine(_ wine: String, prefix: String) async {
         let id = engineID(forWine: wine)
         let marker = "\(prefix)/.vessel-prefix-engine"
+        let isFullEngine = WineEngineLocator.isFullEngine(wine)
         if (try? String(contentsOfFile: marker, encoding: .utf8))?
-            .trimmingCharacters(in: .whitespacesAndNewlines) == id { return }
+            .trimmingCharacters(in: .whitespacesAndNewlines) == id {
+            // La política de crash tiene su propia versión: un prefijo puede estar sincronizado con
+            // el motor y conservar todavía la configuración antigua `Auto=0`, que precisamente
+            // muestra el diálogo «Exception raised». La migración solo ejecuta `reg` una vez.
+            if !isFullEngine {
+                await ensureAutoDebuggerDisabled(prefix: prefix, wine: wine)
+            }
+            return
+        }
         // Motor COMPLETO (wine-full): trae su propio Wine + DXMT + winemac completos y gestiona el
         // prefijo de fábrica (validado: cliente Steam y juegos corren sin un `wineboot -u` externo).
         // Además su `bin/wine` es un shim que exige su propio entorno, mientras `resyncGamePrefix`
         // lanza wineboot con el entorno REEMPLAZADO (sin HOME/PATH) → no encaja. Marcamos el prefijo
         // como sincronizado sin forzar el resync.
-        if WineEngineLocator.isFullEngine(wine) {
+        if isFullEngine {
             try? id.write(toFile: marker, atomically: true, encoding: .utf8)
             return
         }
@@ -8562,15 +8571,48 @@ final class WineManager {
     ///
     /// Se escribe en las DOS ramas del registro: los procesos de 32-bit leen `Wow6432Node`, así que
     /// poner solo la nativa NO evita la bomba (comprobado: seguían saliendo 78 `winedbg`).
-    private func disableAutoDebugger(prefix: String, wine: String) async {
-        for key in [#"HKLM\Software\Microsoft\Windows NT\CurrentVersion\AeDebug"#,
-                    #"HKLM\Software\Wow6432Node\Microsoft\Windows NT\CurrentVersion\AeDebug"#] {
-            _ = try? await runWine(winePath: wine, arguments: ["reg", "add", key, "/v", "Debugger",
-                                                               "/t", "REG_SZ", "/d", "", "/f"],
-                                   prefix: prefix, allowNonZeroExit: true)
-            _ = try? await runWine(winePath: wine, arguments: ["reg", "add", key, "/v", "Auto",
-                                                               "/t", "REG_SZ", "/d", "0", "/f"],
-                                   prefix: prefix, allowNonZeroExit: true)
+    nonisolated static var disabledAutoDebuggerRegistryCommands: [[String]] {
+        [#"HKLM\Software\Microsoft\Windows NT\CurrentVersion\AeDebug"#,
+         #"HKLM\Software\Wow6432Node\Microsoft\Windows NT\CurrentVersion\AeDebug"#]
+            .flatMap { key in
+                [
+                    ["reg", "add", key, "/v", "Debugger", "/t", "REG_SZ", "/d", "", "/f"],
+                    // En Wine, `Auto=0` NO desactiva el depurador: abre primero el MessageBox
+                    // «Exception raised / Do you wish to debug it?». `Auto=1` omite ese diálogo y
+                    // el comando Debugger vacío falla en silencio; la excepción permanece en el log.
+                    ["reg", "add", key, "/v", "Auto", "/t", "REG_SZ", "/d", "1", "/f"]
+                ]
+            }
+    }
+
+    private func ensureAutoDebuggerDisabled(prefix: String, wine: String) async {
+        let policyVersion = "2"
+        let policyMarker = "\(prefix)/.vessel-aedebug-policy"
+        if (try? String(contentsOfFile: policyMarker, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) == policyVersion {
+            return
+        }
+
+        var succeeded = true
+        for arguments in Self.disabledAutoDebuggerRegistryCommands {
+            do {
+                let result = try await runWine(
+                    winePath: wine,
+                    arguments: arguments,
+                    prefix: prefix,
+                    allowNonZeroExit: true
+                )
+                if result.exitCode != 0 { succeeded = false }
+            } catch {
+                succeeded = false
+            }
+        }
+        if succeeded {
+            try? policyVersion.write(
+                toFile: policyMarker,
+                atomically: true,
+                encoding: .utf8
+            )
         }
     }
 
@@ -8580,7 +8622,7 @@ final class WineManager {
         // `wineboot -u` choca con él y se queda COLGADO esperando —dejando el árbol de
         // servicios a medias y disparando el clásico cuelgue/fork-bomba—. Limpiarlo antes lo evita.
         await killPrefixWineservers(prefix: prefix)
-        await disableAutoDebugger(prefix: prefix, wine: gameWine)
+        await ensureAutoDebuggerDisabled(prefix: prefix, wine: gameWine)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: gameWine)
         process.arguments = ["wineboot", "-u"]
