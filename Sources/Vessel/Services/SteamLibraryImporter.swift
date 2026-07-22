@@ -328,62 +328,97 @@ final class SteamLibraryImporter: Sendable {
             return candidate
         }
 
-        guard let enumerator = fm.enumerator(
-            at: URL(fileURLWithPath: root),
-            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
-            options: [.skipsHiddenFiles]
-        ) else { return payloads }
-
-        for case let url as URL in enumerator {
-            let isINI = url.pathExtension.caseInsensitiveCompare("ini") == .orderedSame
-            let isText = url.pathExtension.caseInsensitiveCompare("txt") == .orderedSame
-            guard isINI || isText,
-                  let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+        // Los dos contratos admitidos ya acotan por construcción dónde puede vivir su descriptor:
+        // DotEmu exige `<raíz>/splash/config.txt` y el launcher moderno exige un INI hermano. Recorrer
+        // todo el depot para encontrarlos era equivalente pero muy costoso: God of War contiene más
+        // de 155.000 assets y cada sincronización repetía un segundo paseo completo, llevando Vessel
+        // por encima del 100 % de CPU y varios GiB de memoria aunque no hubiera ningún launcher.
+        let textKeys: Set<URLResourceKey> = [.isRegularFileKey, .fileSizeKey, .isSymbolicLinkKey]
+        func smallTextContents(at url: URL) -> String? {
+            let standardized = url.standardizedFileURL
+            guard standardized.path.hasPrefix(standardizedRoot + "/"),
+                  let values = try? standardized.resourceValues(forKeys: textKeys),
                   values.isRegularFile == true,
-                  (values.fileSize ?? 0) <= 64 * 1024,
-                  let contents = try? String(contentsOf: url, encoding: .utf8) else { continue }
+                  values.isSymbolicLink != true,
+                  (values.fileSize ?? 0) <= 64 * 1024 else { return nil }
+            return try? String(contentsOf: standardized, encoding: .utf8)
+        }
 
-            if isText, let payload = dotEmuPayload(from: url, contents: contents) {
-                payloads.insert(payload)
+        // Mantener la comparación case-insensitive del escaneo anterior también en volúmenes que
+        // distingan mayúsculas: solo se listan la raíz y su carpeta `splash`, nunca los assets.
+        let rootURL = URL(fileURLWithPath: standardizedRoot, isDirectory: true)
+        if let rootEntries = try? fm.contentsOfDirectory(
+            at: rootURL,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+            options: [.skipsHiddenFiles]
+        ), let splashURL = rootEntries.first(where: {
+            $0.lastPathComponent.caseInsensitiveCompare("splash") == .orderedSame
+        }), let splashValues = try? splashURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+           splashValues.isDirectory == true,
+           splashValues.isSymbolicLink != true,
+           let splashEntries = try? fm.contentsOfDirectory(
+               at: splashURL,
+               includingPropertiesForKeys: Array(textKeys),
+               options: [.skipsHiddenFiles]
+           ), let configURL = splashEntries.first(where: {
+               $0.lastPathComponent.caseInsensitiveCompare("config.txt") == .orderedSame
+           }), let contents = smallTextContents(at: configURL),
+           let payload = dotEmuPayload(from: configURL, contents: contents) {
+            payloads.insert(payload)
+        }
+
+        // Un INI solo es relevante si comparte carpeta con un ejecutable cuyo nombre confirma que
+        // es launcher. Consultar esas pocas carpetas conserva exactamente el contrato previo y evita
+        // inspeccionar árboles de texturas, idiomas, cinemáticas o mods.
+        for directory in launchersByDirectory.keys.sorted() {
+            guard directory == standardizedRoot || directory.hasPrefix(standardizedRoot + "/") else {
                 continue
             }
-            guard isINI else { continue }
+            let directoryURL = URL(fileURLWithPath: directory, isDirectory: true).standardizedFileURL
+            guard let entries = try? fm.contentsOfDirectory(
+                at: directoryURL,
+                includingPropertiesForKeys: Array(textKeys),
+                options: [.skipsHiddenFiles]
+            ) else { continue }
 
-            let iniStem = normalizedName(url.deletingPathExtension().lastPathComponent)
-            guard !iniStem.isEmpty else { continue }
-            let directory = url.deletingLastPathComponent().standardizedFileURL.path
-            guard launchersByDirectory[directory]?.contains(where: { launcher in
-                let launcherStem = normalizedName(
-                    ((((launcher as NSString).lastPathComponent) as NSString).deletingPathExtension)
-                )
-                return launcherStem.contains(iniStem)
-            }) == true else { continue }
+            for url in entries where url.pathExtension.caseInsensitiveCompare("ini") == .orderedSame {
+                guard let contents = smallTextContents(at: url) else { continue }
 
-            guard let applicationPath = contents
-                .split(whereSeparator: \.isNewline)
-                .compactMap({ line -> String? in
-                    let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
-                    guard parts.count == 2,
-                          parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
-                            .caseInsensitiveCompare("ApplicationPath") == .orderedSame else { return nil }
-                    return parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
-                        .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-                })
-                .first,
-                  !applicationPath.isEmpty,
-                  (applicationPath as NSString).pathExtension.caseInsensitiveCompare("exe") == .orderedSame
-            else { continue }
+                let iniStem = normalizedName(url.deletingPathExtension().lastPathComponent)
+                guard !iniStem.isEmpty,
+                      launchersByDirectory[directory]?.contains(where: { launcher in
+                          let launcherStem = normalizedName(
+                              ((((launcher as NSString).lastPathComponent) as NSString).deletingPathExtension)
+                          )
+                          return launcherStem.contains(iniStem)
+                      }) == true else { continue }
 
-            let relative = applicationPath.replacingOccurrences(of: "\\", with: "/")
-            let resolved = URL(fileURLWithPath: relative, relativeTo: url.deletingLastPathComponent())
-                .standardizedFileURL.path
-            guard resolved.hasPrefix(standardizedRoot + "/"),
-                  let candidate = candidatePaths.first(where: {
-                      $0.caseInsensitiveCompare(resolved) == .orderedSame
-                  }),
-                  !normalizedName((candidate as NSString).lastPathComponent).contains("launcher")
-            else { continue }
-            payloads.insert(candidate)
+                guard let applicationPath = contents
+                    .split(whereSeparator: \.isNewline)
+                    .compactMap({ line -> String? in
+                        let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                        guard parts.count == 2,
+                              parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+                                .caseInsensitiveCompare("ApplicationPath") == .orderedSame else { return nil }
+                        return parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+                            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+                    })
+                    .first,
+                      !applicationPath.isEmpty,
+                      (applicationPath as NSString).pathExtension.caseInsensitiveCompare("exe") == .orderedSame
+                else { continue }
+
+                let relative = applicationPath.replacingOccurrences(of: "\\", with: "/")
+                let resolved = URL(fileURLWithPath: relative, relativeTo: directoryURL)
+                    .standardizedFileURL.path
+                guard resolved.hasPrefix(standardizedRoot + "/"),
+                      let candidate = candidatePaths.first(where: {
+                          $0.caseInsensitiveCompare(resolved) == .orderedSame
+                      }),
+                      !normalizedName((candidate as NSString).lastPathComponent).contains("launcher")
+                else { continue }
+                payloads.insert(candidate)
+            }
         }
         return payloads
     }
