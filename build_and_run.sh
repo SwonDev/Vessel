@@ -78,6 +78,10 @@ fi
 # las copia en caliente al lib/ del motor unificado (applyCryptoFix, gated por marcador) sin re-descargar 2 GB
 [ -d "Resources/engine-cryptofix" ] && cp -R "Resources/engine-cryptofix" "$APP_BUNDLE/Contents/Resources/engine-cryptofix"
 
+# MoltenVK x86_64 con capacidades ampliadas para títulos Vulkan nativos que las exigen. Se
+# distribuye aislado y comprimido; MoltenVKManager valida dos SHA-256 antes de activarlo.
+[ -d "Resources/moltenvk-compat" ] && cp -R "Resources/moltenvk-compat" "$APP_BUNDLE/Contents/Resources/moltenvk-compat"
+
 # ddraw.dll parcheado (WineHQ 11.10 + docs/wine-patches/0002-*): SetDisplayMode ya no invalida las
 # superficies de un juego en modo exclusivo. Sin esto, los juegos de DirectDraw de los 90 que cambian
 # de modo y nunca llaman a Restore() se quedan en negro para siempre (War Wind). Drop-in por marcador

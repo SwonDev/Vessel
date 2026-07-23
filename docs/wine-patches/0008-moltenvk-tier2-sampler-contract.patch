@@ -1,0 +1,15 @@
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKDevice.mm b/MoltenVK/MoltenVK/GPUObjects/MVKDevice.mm
+index e1f3c04..931ca97 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKDevice.mm
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKDevice.mm
+@@ -2707,6 +2707,10 @@ void MVKPhysicalDevice::initMetalFeatures() {
+ 	// Affects push constants limit so keep it reasonable.
+ 	if (isTier2MetalArgumentBuffers()) {
+ 		_metalFeatures.maxPerStageTextureCount = 256;
++		// Tier 2 argument buffers are not constrained by the 16 direct sampler
++		// slots. Advertise the conservative 32 samplers required by modern
++		// Vulkan titles while retaining the direct-slot limit elsewhere.
++		_metalFeatures.maxPerStageSamplerCount = 32;
+ 	}
+ 	_metalFeatures.maxPerStageStorageTextureCount = _metalFeatures.maxPerStageTextureCount;
+

@@ -19,6 +19,21 @@ final class WineManager {
         case backgroundDRM
     }
 
+    enum SteamRuntimeProfile: Equatable, Sendable {
+        case standard
+        case nativeVulkan(libraryDirectory: String)
+
+        var markerID: String {
+            switch self {
+            case .standard:
+                return "standard"
+            case .nativeVulkan(let libraryDirectory):
+                let version = URL(fileURLWithPath: libraryDirectory).lastPathComponent
+                return "native-vulkan:\(version)"
+            }
+        }
+    }
+
     enum RuntimePrefixPreparationDecision: Equatable, Sendable {
         case continueWithoutCleanup
         case prepareExclusively
@@ -102,10 +117,13 @@ final class WineManager {
         currentEngineID: String?,
         targetEngineID: String,
         role: SteamClientRole,
-        wrapperInstalled: Bool
+        wrapperInstalled: Bool,
+        currentRuntimeProfileID: String = "standard",
+        targetRuntimeProfileID: String = "standard"
     ) -> Bool {
         guard steamRunning else { return false }
         guard currentEngineID == targetEngineID else { return true }
+        guard currentRuntimeProfileID == targetRuntimeProfileID else { return true }
         return role == .interactive && !wrapperInstalled
     }
 
@@ -2335,6 +2353,18 @@ final class WineManager {
         }
     }
 
+    /// Algunos motores Vulkan nativos comprueban un contrato de dispositivo más amplio que el
+    /// perfil público de MoltenVK: líneas anchas y más de 16 samplers por etapa. La firma se basa
+    /// en los diagnósticos y nombres de capacidades embebidos en el motor, no en el título ni en el
+    /// AppID. Así el runtime ampliado queda aislado de Hades y del resto de juegos ya validados.
+    func requiresExtendedNativeVulkanCapabilities(_ executable: String) -> Bool {
+        guard isNativeVulkanGame(executable) else { return false }
+        return exeContains(executable, anyOf: ["Graphics Driver Compatibility Warning"])
+            && exeContains(executable, anyOf: ["SYS_GFX_DRIVER_ERR_SAMPLERS"])
+            && exeContains(executable, anyOf: ["wideLines:"])
+            && exeContains(executable, anyOf: ["maxPerStageDescriptorSamplers"])
+    }
+
     /// Motor Moai clásico con backend SDL estático. Estas builds PE32 importan OpenGL pero no usan
     /// el contexto core/forward-compatible de los motores OpenGL modernos: con el clon unificado el
     /// proceso queda vivo sin ventana; el Wine completo crea el contexto compatible y renderiza.
@@ -3802,6 +3832,7 @@ final class WineManager {
         // La detección también cubre el import transitivo desde `Engine*.dll` (Hades x64Vk).
         if go == .auto, isNativeVulkanGame(executable),
            let fullEngineWine = await fullEngineWineEnsured() {
+            let needsExtendedCapabilities = requiresExtendedNativeVulkanCapabilities(executable)
             log.log("Juego Vulkan nativo detectado: MoltenVK→Metal con el motor completo.", level: .info)
             cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
             try? await terminateWineProcesses(winePath: fullEngineWine, prefix: bottle.prefixPath)
@@ -3810,7 +3841,7 @@ final class WineManager {
             await setMacDriverRetinaMode(
                 prefix: bottle.prefixPath,
                 wine: fullEngineWine,
-                enabled: eff.retina
+                enabled: needsExtendedCapabilities ? false : eff.retina
             )
             var env = [
                 "WINEPREFIX": bottle.prefixPath,
@@ -3826,7 +3857,9 @@ final class WineManager {
                 env["SteamGameId"] = appId
             }
             do {
-                let moltenVK = try await moltenVKManager.ensureLibrary()
+                let moltenVK = needsExtendedCapabilities
+                    ? try await moltenVKManager.ensureNativeVulkanCompatibilityLibrary()
+                    : try await moltenVKManager.ensureLibrary()
                 env = Self.modernMoltenVKEnvironment(
                     from: env,
                     libraryDirectory: moltenVK,
@@ -3836,10 +3869,17 @@ final class WineManager {
                 // el diagnóstico conserva el nombre concreto sin inundar el log normal.
                 env["MVK_CONFIG_LOG_LEVEL"] = "1"
                 log.log(
-                    "Vulkan nativo: MoltenVK \(MoltenVKManager.pinnedVersion) aislado y autogestionado.",
+                    needsExtendedCapabilities
+                        ? "Vulkan nativo: perfil ampliado \(MoltenVKManager.nativeVulkanCompatibilityVersion) aislado y verificado."
+                        : "Vulkan nativo: MoltenVK \(MoltenVKManager.pinnedVersion) aislado y autogestionado.",
                     level: .info
                 )
             } catch {
+                if needsExtendedCapabilities {
+                    throw WineError.launchFailed(
+                        "El motor Vulkan nativo requiere su runtime de compatibilidad verificado: \(error.localizedDescription)"
+                    )
+                }
                 log.log(
                     "No se pudo preparar MoltenVK moderno; se conserva el runtime incluido: \(error.localizedDescription)",
                     level: .warn
@@ -5960,7 +6000,10 @@ final class WineManager {
         // haya cerrado/crasheado sin escribir "Logged Off". Sin comprobar que steam.exe sigue
         // vivo, un log viejo hacía que "Abrir Steam" cortocircuitara ("Steam abierto y conectado ✓"
         // sin lanzar ninguna ventana → "no abre nada"). Si no hay proceso, NO está conectado.
-        guard isWineProcessRunning(matching: "steam.exe") else { return false }
+        guard isWineProcessRunning(
+            matching: "steam.exe",
+            prefix: bottle.prefixPath
+        ) else { return false }
         let logPath = "\(bottle.steamDirectory)/logs/connection_log.txt"
         guard let data = FileManager.default.contents(atPath: logPath) else { return false }
         return SteamConnectionLogState.parseRecent(data) == .connected
@@ -6019,6 +6062,18 @@ final class WineManager {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private func currentSteamRuntimeProfileID(prefix: String) -> String {
+        let marker = "\(prefix)/.vessel-steam-runtime-profile"
+        let stored = (try? String(contentsOfFile: marker, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return stored?.isEmpty == false ? stored! : SteamRuntimeProfile.standard.markerID
+    }
+
+    private func persistSteamRuntimeProfile(_ profile: SteamRuntimeProfile, prefix: String) {
+        let marker = "\(prefix)/.vessel-steam-runtime-profile"
+        try? profile.markerID.write(toFile: marker, atomically: true, encoding: .utf8)
+    }
+
     /// Cambia de forma explícita entre los dos roles de Steam. Nunca permite que la idempotencia
     /// de `launchSteam` reutilice un wineserver de otro motor: eso hacía que la acción «Abrir Steam»
     /// enfocara el cliente D3DMetal negro y que el siguiente juego chocara con el Gcenx interactivo.
@@ -6026,23 +6081,32 @@ final class WineManager {
     private func transitionSteamClientIfNeeded(
         in bottle: Bottle,
         to wine: String,
-        role: SteamClientRole
+        role: SteamClientRole,
+        runtimeProfile: SteamRuntimeProfile = .standard
     ) async -> Bool {
         let running = isWineProcessRunning(matching: "steam.exe", prefix: bottle.prefixPath)
         let targetEngineID = engineID(forWine: wine)
         let currentEngineID = await currentSteamEngineID(prefix: bottle.prefixPath)
+        let currentRuntimeProfileID = currentSteamRuntimeProfileID(prefix: bottle.prefixPath)
         let wrapperInstalled = wrapperInstaller.isInstalled(in: bottle)
         guard Self.shouldRestartSteamClient(
             steamRunning: running,
             currentEngineID: currentEngineID,
             targetEngineID: targetEngineID,
             role: role,
-            wrapperInstalled: wrapperInstalled
+            wrapperInstalled: wrapperInstalled,
+            currentRuntimeProfileID: currentRuntimeProfileID,
+            targetRuntimeProfileID: runtimeProfile.markerID
         ) else { return true }
 
-        let reason = currentEngineID != targetEngineID
-            ? "cambio de motor \(currentEngineID ?? "desconocido") → \(targetEngineID)"
-            : "cambio de cliente DRM a interfaz interactiva"
+        let reason: String
+        if currentEngineID != targetEngineID {
+            reason = "cambio de motor \(currentEngineID ?? "desconocido") → \(targetEngineID)"
+        } else if currentRuntimeProfileID != runtimeProfile.markerID {
+            reason = "cambio de runtime \(currentRuntimeProfileID) → \(runtimeProfile.markerID)"
+        } else {
+            reason = "cambio de cliente DRM a interfaz interactiva"
+        }
         NotificationService.shared.status("Preparando el cliente Steam visible…")
         log.log("Transición de rol Steam: \(reason).", level: .info)
         try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
@@ -6050,6 +6114,11 @@ final class WineManager {
         try? await Task.sleep(for: .seconds(1))
 
         let stopped = !isWineProcessRunning(matching: "steam.exe", prefix: bottle.prefixPath)
+        if stopped {
+            try? FileManager.default.removeItem(
+                atPath: "\(bottle.prefixPath)/.vessel-steam-runtime-profile"
+            )
+        }
         if !stopped {
             log.log(
                 "Steam sigue ocupado y no pudo completar la transición de rol todavía.",
@@ -6063,9 +6132,20 @@ final class WineManager {
     /// motor que usará el juego, para compartir wineserver → DRM). Lo arranca si hace falta y
     /// espera hasta `timeoutSeconds` a que el `connection_log` confirme el logon. Devuelve si
     /// llegó a conectar. Con `-tcp` la conexión al CM es estable bajo Wine (el UDP se caía).
-    func ensureSteamConnected(in bottle: Bottle, clientWine: String, timeoutSeconds: Int = 90, background: Bool = false) async -> Bool {
+    func ensureSteamConnected(
+        in bottle: Bottle,
+        clientWine: String,
+        timeoutSeconds: Int = 90,
+        background: Bool = false,
+        runtimeProfile: SteamRuntimeProfile = .standard
+    ) async -> Bool {
         let role: SteamClientRole = background ? .backgroundDRM : .interactive
-        guard await transitionSteamClientIfNeeded(in: bottle, to: clientWine, role: role) else {
+        guard await transitionSteamClientIfNeeded(
+            in: bottle,
+            to: clientWine,
+            role: role,
+            runtimeProfile: runtimeProfile
+        ) else {
             NotificationService.shared.status(nil)
             return false
         }
@@ -6107,7 +6187,14 @@ final class WineManager {
         // Arrancar Steam SIEMPRE que no esté conectado: `launchSteam` ya es idempotente (si
         // `steam.exe` corre, se reutiliza). NO gatear en `steamwebhelper` — pgrep lista zombies
         // que `pkill` no puede reapear, y eso hacía que se SALTARA el arranque (Steam nunca abría).
-        do { _ = try await launchSteam(in: bottle, using: clientWine, background: background) }
+        do {
+            _ = try await launchSteam(
+                in: bottle,
+                using: clientWine,
+                background: background,
+                runtimeProfile: runtimeProfile
+            )
+        }
         catch { log.log("No se pudo arrancar el cliente Steam: \(error.localizedDescription)", level: .error) }
         NotificationService.shared.status("Esperando a que Steam inicie sesión (la primera vez puede tardar un poco)…")
         // Espera al login. AUTO-REPARACIÓN: si Steam sigue vivo pero SIN iniciar sesión tras una
@@ -6164,7 +6251,8 @@ final class WineManager {
                     _ = try await launchSteam(
                         in: bottle,
                         using: clientWine,
-                        background: background
+                        background: background,
+                        runtimeProfile: runtimeProfile
                     )
                 } catch {
                     log.log("No se pudo reconectar Steam: \(error.localizedDescription)", level: .error)
@@ -6212,7 +6300,13 @@ final class WineManager {
                 try? await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
                 try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: clientWine)
                 cleanCEFCache(in: bottle)
-                do { _ = try await launchSteam(in: bottle, using: clientWine) }
+                do {
+                    _ = try await launchSteam(
+                        in: bottle,
+                        using: clientWine,
+                        runtimeProfile: runtimeProfile
+                    )
+                }
                 catch { log.log("No se pudo relanzar el cliente Steam: \(error.localizedDescription)", level: .error) }
                 NotificationService.shared.status("Esperando a que Steam inicie sesión…")
             }
@@ -6473,6 +6567,96 @@ final class WineManager {
         //      cliente Steam en el MISMO wineserver de GPTK para el DRM. Se salta la rama unificada.
         let graphicsAPI = detectGraphicsAPI(forExecutable: executable)
         ensureFrozenbyteDisplaySettings(prefix: bottle.prefixPath, executable: executable)
+        if isNativeVulkanGame(executable), let fullWine = await fullEngineWineEnsured() {
+            let needsExtendedCapabilities = requiresExtendedNativeVulkanCapabilities(executable)
+            let runtimeProfile: SteamRuntimeProfile
+            do {
+                let libraryDirectory = needsExtendedCapabilities
+                    ? try await moltenVKManager.ensureNativeVulkanCompatibilityLibrary()
+                    : try await moltenVKManager.ensureLibrary()
+                runtimeProfile = .nativeVulkan(libraryDirectory: libraryDirectory)
+            } catch {
+                guard !needsExtendedCapabilities else {
+                    throw WineError.launchFailed(
+                        "El motor Vulkan nativo requiere su runtime de compatibilidad verificado: \(error.localizedDescription)"
+                    )
+                }
+                log.log(
+                    "MoltenVK moderno no está disponible; se conserva el runtime incluido en wine-full: \(error.localizedDescription)",
+                    level: .warn
+                )
+                runtimeProfile = .standard
+            }
+
+            try await prepareRealSteamClient(
+                in: bottle,
+                wine: fullWine,
+                gameExecutable: executable
+            )
+            ensureSteamConfig(in: bottle)
+            log.log(
+                needsExtendedCapabilities
+                    ? "Vulkan nativo protegido: preparando Steam y el juego con el perfil ampliado aislado."
+                    : "Vulkan nativo protegido: preparando Steam y el juego con MoltenVK aislado.",
+                level: .info
+            )
+            let connected = await ensureSteamConnected(
+                in: bottle,
+                clientWine: fullWine,
+                timeoutSeconds: 120,
+                background: true,
+                runtimeProfile: runtimeProfile
+            )
+            if !connected {
+                if SteamAuthService.storedSessionNeedsReauthentication {
+                    throw steamRealReauthenticationRequired(gameExecutable: executable)
+                }
+                throw steamRealNotConnected(gameExecutable: executable, in: bottle)
+            }
+
+            cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
+            await setMacDriverRetinaMode(
+                prefix: bottle.prefixPath,
+                wine: fullWine,
+                // Los motores que persisten la resolución lógica junto a este contrato amplían
+                // dos veces la ventana bajo Retina. Escala 1× conserva el área útil de macOS.
+                enabled: needsExtendedCapabilities ? false : effective.retina
+            )
+
+            if steamAppLaunchRequired {
+                log.log(
+                    "Steam conectado con el runtime Vulkan heredable; autorizando el AppID protegido.",
+                    level: .info
+                )
+                return try await launchThroughConnectedSteamClient(
+                    executable: executable,
+                    appId: appId,
+                    launchArguments: launchArguments,
+                    bottle: bottle,
+                    wine: fullWine,
+                    runtimeProfile: runtimeProfile
+                )
+            }
+
+            var environment = steamClientEnvironment(
+                prefix: bottle.prefixPath,
+                wine: fullWine,
+                runtimeProfile: runtimeProfile
+            )
+            environment["SteamAppId"] = appId
+            environment["SteamGameId"] = appId
+            for (key, value) in effective.extraEnv { environment[key] = value }
+            return try await launchWineProcess(
+                winePath: fullWine,
+                prefix: bottle.prefixPath,
+                arguments: [executable] + launchArguments,
+                environment: environment,
+                workingDirectory: gameWorkingDirectory(forExecutable: executable),
+                effective: effective,
+                forceSyncOn: true,
+                forceCleanEnv: true
+            )
+        }
         if Self.shouldUseFullWineForSteamAppLaunch(
             required: steamAppLaunchRequired,
             graphicsAPI: graphicsAPI
@@ -7085,7 +7269,8 @@ final class WineManager {
         appId: String,
         launchArguments: [String],
         bottle: Bottle,
-        wine: String
+        wine: String,
+        runtimeProfile: SteamRuntimeProfile = .standard
     ) async throws -> Process {
         guard !appId.isEmpty, appId.allSatisfy(\.isNumber) else {
             throw WineError.launchFailed("Steam devolvió un AppID inválido para el juego protegido.")
@@ -7094,7 +7279,11 @@ final class WineManager {
             "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
         }
 
-        var environment = steamClientEnvironment(prefix: bottle.prefixPath, wine: wine)
+        var environment = steamClientEnvironment(
+            prefix: bottle.prefixPath,
+            wine: wine,
+            runtimeProfile: runtimeProfile
+        )
         environment["HOME"] = NSHomeDirectory()
         environment["USER"] = NSUserName()
         environment["TMPDIR"] = NSTemporaryDirectory()
@@ -8496,6 +8685,24 @@ final class WineManager {
         return result
     }
 
+    nonisolated static func environmentByApplyingSteamRuntimeProfile(
+        _ environment: [String: String],
+        profile: SteamRuntimeProfile
+    ) -> [String: String] {
+        switch profile {
+        case .standard:
+            return environment
+        case .nativeVulkan(let libraryDirectory):
+            var result = modernMoltenVKEnvironment(
+                from: environment,
+                libraryDirectory: libraryDirectory,
+                useMetalArgumentBuffers: true
+            )
+            result["MVK_CONFIG_LOG_LEVEL"] = "1"
+            return result
+        }
+    }
+
     /// Lista blanca del entorno que cruza la frontera `env -i` del motor completo.
     ///
     /// Mantenerla en una función comprobable evita que una ruta prepare un backend gráfico y que
@@ -8579,7 +8786,11 @@ final class WineManager {
     /// D3DMetal (`DYLD_FALLBACK_LIBRARY_PATH` a sus libs externas + WINEMSYNC); sin él, Steam
     /// arranca y se cierra al instante en GPTK. Verificado: con este entorno steam.exe +
     /// steamwebhelper se mantienen vivos en GPTK. En Gcenx, el entorno normal.
-    private func steamClientEnvironment(prefix: String, wine: String) -> [String: String] {
+    private func steamClientEnvironment(
+        prefix: String,
+        wine: String,
+        runtimeProfile: SteamRuntimeProfile = .standard
+    ) -> [String: String] {
         // Motor COMPLETO (wine-full): el cliente Steam CEF corre NATIVO con WINEMSYNC=1 (msync ON,
         // como el Wine de referencia). Sin wrapper, sin steam.cfg; el CEF renderiza por su DXMT/winemac
         // de fábrica. Los juegos que Steam lance heredan los env globales del bottle (.NET + AVX).
@@ -8589,7 +8800,7 @@ final class WineManager {
             env["MVK_CONFIG_LOG_LEVEL"] = "0"
             env["DOTNET_EnableWriteXorExecute"] = "0"
             if #available(macOS 15, *) { env["ROSETTA_ADVERTISE_AVX"] = "1" }
-            return env
+            return Self.environmentByApplyingSteamRuntimeProfile(env, profile: runtimeProfile)
         }
         // GPTK/D3DMetal: entorno de D3DMetal (Steam en el mismo motor que un juego Metal).
         if wine.contains("/\(GPTKManager.engineName)/") {
@@ -8607,7 +8818,7 @@ final class WineManager {
             env["WINEFSYNC"] = "0"
             env["SteamAppId"] = "753"
             env["SteamGameId"] = "753"
-            return env
+            return Self.environmentByApplyingSteamRuntimeProfile(env, profile: runtimeProfile)
         }
         // Motor UNIFICADO propio: el cliente de Steam CEF funciona con **WINEMSYNC=0** — msync
         // ROMPE el async socket completion (ConnectEx/overlapped) del updater HTTP → el connect
@@ -8632,7 +8843,7 @@ final class WineManager {
             env["MVK_CONFIG_LOG_LEVEL"] = "0"
             env["SteamAppId"] = "753"
             env["SteamGameId"] = "753"
-            return env
+            return Self.environmentByApplyingSteamRuntimeProfile(env, profile: runtimeProfile)
         }
         if WineEngineLocator.isUnifiedEngine(wine) {
             // Motor UNIFICADO / wine-steam (cliente Steam CEF, juegos D3D11 por DXMT): WINEMSYNC=0 —
@@ -8651,10 +8862,13 @@ final class WineManager {
             // cliente; imprescindibles para que muchos juegos .NET/nativos arranquen desde Steam.
             env["DOTNET_EnableWriteXorExecute"] = "0"
             if #available(macOS 15, *) { env["ROSETTA_ADVERTISE_AVX"] = "1" }
-            return env
+            return Self.environmentByApplyingSteamRuntimeProfile(env, profile: runtimeProfile)
         }
         // Gcenx (interfaz validada): composición software y sync=0.
-        return steamClientEnvironment(prefix: prefix)
+        return Self.environmentByApplyingSteamRuntimeProfile(
+            steamClientEnvironment(prefix: prefix),
+            profile: runtimeProfile
+        )
     }
 
     /// Entorno de JUEGO para el motor **D3DMetal** propio (`wine-d3dmetal`). El DYLD hacia
@@ -8692,7 +8906,12 @@ final class WineManager {
     }
 
     @discardableResult
-    func launchSteam(in bottle: Bottle, using winePath: String? = nil, background: Bool = false) async throws -> Process {
+    func launchSteam(
+        in bottle: Bottle,
+        using winePath: String? = nil,
+        background: Bool = false,
+        runtimeProfile: SteamRuntimeProfile = .standard
+    ) async throws -> Process {
         guard FileManager.default.fileExists(atPath: bottle.steamPath) else {
             throw WineError.launchFailed("Steam no está instalado en este bottle.")
         }
@@ -8704,7 +8923,12 @@ final class WineManager {
                 ? resolveClientWine(for: bottle)
                 : WineEngineLocator.interactiveSteamWineBinary() ?? resolveClientWine(for: bottle))
         let role: SteamClientRole = background ? .backgroundDRM : .interactive
-        guard await transitionSteamClientIfNeeded(in: bottle, to: clientWine, role: role) else {
+        guard await transitionSteamClientIfNeeded(
+            in: bottle,
+            to: clientWine,
+            role: role,
+            runtimeProfile: runtimeProfile
+        ) else {
             throw WineError.launchFailed(
                 "Steam está terminando una operación y aún no puede cambiar al cliente \(background ? "de DRM" : "visible")."
             )
@@ -8815,13 +9039,19 @@ final class WineManager {
         }
         // CLAVE: cwd = carpeta de Steam (escribible). Con cwd en "/" (lo que hereda la
         // app GUI) CEF no puede crear su caché y Steam se abre y se cierra solo.
-        return try await launchWineProcess(
+        let process = try await launchWineProcess(
             winePath: clientWine,
             prefix: bottle.prefixPath,
             arguments: [bottle.steamPath] + args,
-            environment: steamClientEnvironment(prefix: bottle.prefixPath, wine: clientWine),
+            environment: steamClientEnvironment(
+                prefix: bottle.prefixPath,
+                wine: clientWine,
+                runtimeProfile: runtimeProfile
+            ),
             workingDirectory: (bottle.steamPath as NSString).deletingLastPathComponent
         )
+        persistSteamRuntimeProfile(runtimeProfile, prefix: bottle.prefixPath)
+        return process
     }
 
     /// True si Steam ya descargó su cliente completo (existe `steamui.dll`). En una

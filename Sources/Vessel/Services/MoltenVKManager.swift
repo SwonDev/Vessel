@@ -7,6 +7,7 @@ import Foundation
 final class MoltenVKManager {
     enum MoltenVKError: LocalizedError {
         case downloadFailed(String)
+        case bundledRuntimeMissing
         case checksumMismatch
         case extractionFailed(String)
         case invalidRuntime
@@ -15,6 +16,8 @@ final class MoltenVKManager {
             switch self {
             case .downloadFailed(let message):
                 return "Descarga de MoltenVK falló: \(message)"
+            case .bundledRuntimeMissing:
+                return "Vessel no contiene el runtime Vulkan nativo de compatibilidad."
             case .checksumMismatch:
                 return "La verificación de integridad de MoltenVK falló."
             case .extractionFailed(let message):
@@ -34,10 +37,25 @@ final class MoltenVKManager {
         "5ea0c259df7ded9a275444820f09cced54d6e5a7c7a31d262de62a5cdb7e15cf"
     static let archiveRuntimePath = "MoltenVK/MoltenVK/dynamic/dylib/macOS"
 
-    private let cacheRoot: String
+    /// Build aislada para juegos Vulkan nativos que requieren `wideLines`, `logicOp` y más de
+    /// 16 samplers. DXVK sigue usando exclusivamente el asset oficial anterior.
+    static let nativeVulkanCompatibilityVersion = "1.4.1-vessel.1"
+    static let nativeVulkanCompatibilityArchiveResource =
+        "moltenvk-compat/MoltenVK-v1.4.1-vessel.1-x86_64.zip"
+    static let nativeVulkanCompatibilityArchiveSHA256 =
+        "0b8df4cb3706d54a418870e3a53b63c8a060b1cf9f0273a6d557c5bbb97fd22c"
+    static let nativeVulkanCompatibilityLibrarySHA256 =
+        "4843a94be3f2e76e6f7db0f94b9ca6950a4b8f9bb25cfbce46d4c6483473bdc0"
 
-    init(cacheDirectory: String = VesselPaths.cacheDirectory) {
+    private let cacheRoot: String
+    private let bundledResource: (String) -> URL?
+
+    init(
+        cacheDirectory: String = VesselPaths.cacheDirectory,
+        bundledResource: @escaping (String) -> URL? = VesselPaths.bundledResource
+    ) {
         cacheRoot = "\(cacheDirectory)/moltenvk"
+        self.bundledResource = bundledResource
     }
 
     func cachedLibraryDirectory() -> String? {
@@ -106,6 +124,83 @@ final class MoltenVKManager {
         try fm.moveItem(atPath: extracted, toPath: finalDirectory)
         Self.removeQuarantine(at: finalDirectory)
         progress("MoltenVK \(Self.pinnedVersion) listo", 1.0)
+        return finalDirectory
+    }
+
+    func cachedNativeVulkanCompatibilityLibraryDirectory() -> String? {
+        let directory = "\(cacheRoot)/\(Self.nativeVulkanCompatibilityVersion)"
+        let library = "\(directory)/libMoltenVK.dylib"
+        let manifest = "\(directory)/MoltenVK_icd.json"
+        guard FileManager.default.fileExists(atPath: manifest),
+              let data = try? Data(
+                contentsOf: URL(fileURLWithPath: library),
+                options: .mappedIfSafe
+              ),
+              Self.sha256(data) == Self.nativeVulkanCompatibilityLibrarySHA256,
+              Self.containsX8664Slice(library) else {
+            return nil
+        }
+        return directory
+    }
+
+    /// Extrae el runtime empaquetado en una caché versionada y lo valida tanto antes como después
+    /// de la extracción. No hay descarga ni compilación en el equipo del usuario.
+    func ensureNativeVulkanCompatibilityLibrary(
+        progress: @escaping @Sendable (String, Double) -> Void = { _, _ in }
+    ) async throws -> String {
+        if let cached = cachedNativeVulkanCompatibilityLibraryDirectory() {
+            progress("Runtime Vulkan nativo preparado", 1.0)
+            return cached
+        }
+
+        guard let archive = bundledResource(Self.nativeVulkanCompatibilityArchiveResource) else {
+            throw MoltenVKError.bundledRuntimeMissing
+        }
+        let archiveData = try Data(contentsOf: archive, options: .mappedIfSafe)
+        guard Self.sha256(archiveData) == Self.nativeVulkanCompatibilityArchiveSHA256 else {
+            throw MoltenVKError.checksumMismatch
+        }
+
+        progress("Preparando el runtime Vulkan nativo…", 0.25)
+        let fm = FileManager.default
+        try fm.createDirectory(atPath: cacheRoot, withIntermediateDirectories: true)
+        let staging = "\(cacheRoot)/installing-\(UUID().uuidString)"
+        try fm.createDirectory(atPath: staging, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: staging) }
+
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        task.arguments = ["-x", "-k", archive.path, staging]
+        let output = Pipe()
+        task.standardOutput = output
+        task.standardError = output
+        try task.run()
+        task.waitUntilExit()
+        guard task.terminationStatus == 0 else {
+            let message = String(
+                data: output.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8
+            ) ?? "ditto terminó con código \(task.terminationStatus)"
+            throw MoltenVKError.extractionFailed(message)
+        }
+
+        let library = "\(staging)/libMoltenVK.dylib"
+        let manifest = "\(staging)/MoltenVK_icd.json"
+        guard fm.fileExists(atPath: manifest),
+              let libraryData = try? Data(
+                contentsOf: URL(fileURLWithPath: library),
+                options: .mappedIfSafe
+              ),
+              Self.sha256(libraryData) == Self.nativeVulkanCompatibilityLibrarySHA256,
+              Self.containsX8664Slice(library) else {
+            throw MoltenVKError.invalidRuntime
+        }
+
+        let finalDirectory = "\(cacheRoot)/\(Self.nativeVulkanCompatibilityVersion)"
+        try? fm.removeItem(atPath: finalDirectory)
+        try fm.moveItem(atPath: staging, toPath: finalDirectory)
+        Self.removeQuarantine(at: finalDirectory)
+        progress("Runtime Vulkan nativo listo", 1.0)
         return finalDirectory
     }
 

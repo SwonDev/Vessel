@@ -100,7 +100,7 @@ El motor empaqueta estas librerías en `lib/` (todas `x86_64`, con dependencias 
 | **FreeType** | 2.14.3 | FTL / GPL-2 (dual) | <https://download.savannah.gnu.org/releases/freetype/freetype-2.14.3.tar.xz> |
 | **wine-mono** | 11.2.0 | MIT / LGPL (componentes) | <https://github.com/wine-mono/wine-mono/releases/tag/wine-mono-11.2.0> |
 | **DXMT** | (3Shain) | Apache-2.0 / MIT | <https://github.com/3Shain/dxmt> |
-| **MoltenVK** | — | Apache-2.0 | <https://github.com/KhronosGroup/MoltenVK> |
+| **MoltenVK** | 1.4.1 | Apache-2.0 | <https://github.com/KhronosGroup/MoltenVK/tree/v1.4.1> |
 | **libpng / brotli / bzip2 / zlib / gmp** | (deps de freetype/gnutls) | zlib / MIT / BSD / LGPL | fuentes upstream respectivas |
 
 ### Notas de build (Rosetta x86_64, macOS Apple Silicon)
@@ -114,6 +114,14 @@ El motor empaqueta estas librerías en `lib/` (todas `x86_64`, con dependencias 
 - Validación: GnuTLS 3.8.13 negocia un **handshake TLS 1.3 real** (AES-256-GCM + ECDHE-RSA)
   contra `api.steampowered.com`; FreeType reporta `FT_Library_Version = 2.14.3`; `wine-11.10`
   arranca limpio con toda la cadena.
+- **MoltenVK de compatibilidad Vulkan nativa:** Vessel conserva el asset oficial 1.4.1 para DXVK
+  y empaqueta, en un perfil separado, una build `x86_64` del commit
+  `db445ff2042d9ce348c439ad8451112f354b8d2a` con `MVK_USE_METAL_PRIVATE_API=1`. Esta opción del
+  propio upstream expone `wideLines` y `logicOp`; el parche reproducible
+  `docs/wine-patches/0008-moltenvk-tier2-sampler-contract.patch` anuncia 32 samplers únicamente
+  cuando Metal ofrece argument buffers Tier 2. El runtime solo se activa al detectar en el motor
+  del juego el contrato Vulkan ampliado, nunca en DXVK ni globalmente. El ZIP incluye la licencia
+  Apache-2.0 y se verifica por SHA-256 antes de extraerlo y antes de cada reutilización.
 
 ---
 

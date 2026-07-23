@@ -2877,6 +2877,53 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertTrue(manager.isNativeVulkanGame(executable.path))
     }
 
+    func testExtendedNativeVulkanContractUsesCapabilityMarkersNotTitle() throws {
+        let executable = try makePE64(
+            named: "ArbitraryEngine.exe",
+            marker: [
+                "Graphics Driver Compatibility Warning",
+                "SYS_GFX_DRIVER_ERR_SAMPLERS",
+                "wideLines:",
+                "maxPerStageDescriptorSamplers"
+            ].joined(separator: " "),
+            imports: ["vulkan-1.dll"]
+        )
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+
+        let manager = WineManager()
+        XCTAssertTrue(manager.requiresExtendedNativeVulkanCapabilities(executable.path))
+
+        let ordinary = try makePE64(
+            named: "OrdinaryVulkan.exe",
+            marker: "wideLines:",
+            imports: ["vulkan-1.dll"]
+        )
+        defer { try? FileManager.default.removeItem(at: ordinary.deletingLastPathComponent()) }
+        XCTAssertFalse(manager.requiresExtendedNativeVulkanCapabilities(ordinary.path))
+    }
+
+    func testNativeVulkanSteamProfileOverlaysOnlyTheRequestedRuntime() {
+        let standard = WineManager.SteamRuntimeProfile.standard
+        let native = WineManager.SteamRuntimeProfile.nativeVulkan(
+            libraryDirectory: "/tmp/moltenvk/1.4.1-vessel.1"
+        )
+        let base = ["WINEPREFIX": "/tmp/bottle", "SteamAppId": "753"]
+
+        XCTAssertEqual(
+            WineManager.environmentByApplyingSteamRuntimeProfile(base, profile: standard),
+            base
+        )
+        let overlaid = WineManager.environmentByApplyingSteamRuntimeProfile(
+            base,
+            profile: native
+        )
+        XCTAssertEqual(overlaid["CX_LIBVULKAN"], "/tmp/moltenvk/1.4.1-vessel.1/libMoltenVK.dylib")
+        XCTAssertEqual(overlaid["MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS"], "1")
+        XCTAssertEqual(overlaid["MVK_CONFIG_LOG_LEVEL"], "1")
+        XCTAssertEqual(overlaid["SteamAppId"], "753")
+        XCTAssertEqual(native.markerID, "native-vulkan:1.4.1-vessel.1")
+    }
+
     func testNativeVulkanInvalidatesOnlyLearnedDirect3DOverride() throws {
         let executable = try makePE64(
             named: "NativeVulkan.exe",
@@ -3354,6 +3401,24 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             targetEngineID: "wine-unified",
             role: .backgroundDRM,
             wrapperInstalled: true
+        ))
+        XCTAssertTrue(WineManager.shouldRestartSteamClient(
+            steamRunning: true,
+            currentEngineID: "wine-full",
+            targetEngineID: "wine-full",
+            role: .backgroundDRM,
+            wrapperInstalled: false,
+            currentRuntimeProfileID: "standard",
+            targetRuntimeProfileID: "native-vulkan:1.4.1-vessel.1"
+        ))
+        XCTAssertTrue(WineManager.shouldRestartSteamClient(
+            steamRunning: true,
+            currentEngineID: "wine-full",
+            targetEngineID: "wine-full",
+            role: .backgroundDRM,
+            wrapperInstalled: false,
+            currentRuntimeProfileID: "native-vulkan:1.4.1-vessel.1",
+            targetRuntimeProfileID: "standard"
         ))
     }
 
