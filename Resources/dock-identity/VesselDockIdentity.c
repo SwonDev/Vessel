@@ -2,6 +2,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <crt_externs.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <mach-o/dyld.h>
 #include <mach-o/getsect.h>
 #include <mach/mach.h>
@@ -66,12 +67,16 @@ static const char *vessel_preloader_alias(const char *path) {
     const char *basename = path ? strrchr(path, '/') : NULL;
     basename = basename ? basename + 1 : path;
 
+    const bool is_preloader = basename && strstr(basename, "preloader");
+    const bool is_wine_temporary_alias = basename
+        && (strcmp(basename, "wine") == 0 || strcmp(basename, "wine64") == 0)
+        && strstr(path, "/winetemp-");
+
     if (path
         && alias
         && *alias
         && strcmp(path, alias) != 0
-        && basename
-        && strstr(basename, "preloader")) {
+        && (is_preloader || is_wine_temporary_alias)) {
         struct stat source_info;
         struct stat alias_info;
         bool source_is_regular = stat(path, &source_info) == 0
@@ -86,7 +91,9 @@ static const char *vessel_preloader_alias(const char *path) {
         // solo la acepta si pertenece al usuario, es regular, no es escribible por terceros y
         // conserva el tamaño del preloader original. Los motores antiguos mantienen el hard link
         // como fallback; nunca se sigue un symlink preexistente.
-        if (alias_is_safe_copy || (source_is_regular && link(path, alias) == 0)) {
+        if (alias_is_safe_copy
+            || (source_is_regular
+                && linkat(AT_FDCWD, path, AT_FDCWD, alias, 0) == 0)) {
             return alias;
         }
     }
@@ -96,6 +103,27 @@ static const char *vessel_preloader_alias(const char *path) {
 
 static int vessel_execv(const char *path, char *const arguments[]) {
     return execv(vessel_preloader_alias(path), arguments);
+}
+
+static int vessel_execve(
+    const char *path,
+    char *const arguments[],
+    char *const environment[]
+) {
+    return execve(vessel_preloader_alias(path), arguments, environment);
+}
+
+static int vessel_link(const char *source, const char *destination) {
+    // La variante Apple/GPTK crea primero un hard link temporal llamado `wine` y ejecuta después
+    // ese enlace. Redirigir la fuente en el momento de `link(2)` hace que LaunchServices vea el
+    // plist ya parcheado en disco, incluso cuando ntdll no ejecuta directamente `wine-preloader`.
+    return linkat(
+        AT_FDCWD,
+        vessel_preloader_alias(source),
+        AT_FDCWD,
+        destination,
+        0
+    );
 }
 
 static int vessel_posix_spawn(
@@ -117,6 +145,8 @@ static int vessel_posix_spawn(
 }
 
 VESSEL_DYLD_INTERPOSE(vessel_execv, execv);
+VESSEL_DYLD_INTERPOSE(vessel_execve, execve);
+VESSEL_DYLD_INTERPOSE(vessel_link, link);
 VESSEL_DYLD_INTERPOSE(vessel_posix_spawn, posix_spawn);
 
 static const char *find_bytes(

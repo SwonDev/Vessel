@@ -100,6 +100,16 @@ fi
 
 # Identidad nativa por juego para cargadores WineHQ: cambia el nombre del proceso que macOS muestra
 # en el Dock sin modificar el motor instalado. Es x86_64 porque se inyecta en el loader bajo Rosetta.
+# Se recompila desde la fuente para que el binario empaquetado nunca quede desfasado respecto al C
+# revisado; el deployment target coincide con el mínimo declarado por Vessel y Sparkle.
+DOCK_IDENTITY_SOURCE="Resources/dock-identity/VesselDockIdentity.c"
+DOCK_IDENTITY_HELPER="Resources/dock-identity/libVesselDockIdentity.dylib"
+if [ -f "$DOCK_IDENTITY_SOURCE" ]; then
+    xcrun clang -arch x86_64 -dynamiclib -Os -Wall -Wextra -Werror \
+        -mmacosx-version-min=15.0 -framework CoreFoundation \
+        "$DOCK_IDENTITY_SOURCE" -o "$DOCK_IDENTITY_HELPER"
+    codesign --force --sign - "$DOCK_IDENTITY_HELPER" 2>/dev/null
+fi
 if [ -f "Resources/dock-identity/libVesselDockIdentity.dylib" ]; then
     mkdir -p "$APP_BUNDLE/Contents/Resources/dock-identity"
     cp "Resources/dock-identity/libVesselDockIdentity.dylib" "$APP_BUNDLE/Contents/Resources/dock-identity/"
