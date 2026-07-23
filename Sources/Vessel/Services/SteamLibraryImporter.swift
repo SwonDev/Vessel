@@ -446,19 +446,31 @@ final class SteamLibraryImporter: Sendable {
         // «classic» más corta junto a la edición actual). Si la caché está ausente, corrupta o apunta
         // a un fichero que ya no existe tras una actualización, se conserva el resolutor estructural
         // de abajo como fallback seguro.
-        if let appID, !appID.isEmpty,
-           let steamDirectory, !steamDirectory.isEmpty,
-           let relative = SteamAppInfoLaunchResolver.defaultWindowsExecutable(
-               appID: appID,
-               appInfoPath: "\(steamDirectory)/appcache/appinfo.vdf"
-           ),
-           let official = SteamAppInfoLaunchResolver.resolvedExecutable(
-               relativePath: relative,
-               installRoot: dir,
-               fileManager: fm
-           ) {
-            return official
-        }
+        let officialExecutable: String? = {
+            guard let appID, !appID.isEmpty,
+                  let steamDirectory, !steamDirectory.isEmpty,
+                  let relative = SteamAppInfoLaunchResolver.defaultWindowsExecutable(
+                      appID: appID,
+                      appInfoPath: "\(steamDirectory)/appcache/appinfo.vdf"
+                  ) else { return nil }
+            return SteamAppInfoLaunchResolver.resolvedExecutable(
+                relativePath: relative,
+                installRoot: dir,
+                fileManager: fm
+            )
+        }()
+
+        // Una entrada directa de Steam sigue siendo autoritativa. La única excepción que necesita
+        // inspección adicional es un ejecutable cuyo propio nombre confirma que es un launcher:
+        // algunos depots acompañan ese bootstrapper con un descriptor verificable que declara el
+        // payload real. Si no encontramos tal contrato más abajo, conservamos igualmente el
+        // launcher oficial; nunca lo sustituimos por una conjetura de nombres.
+        let officialIsLauncher = officialExecutable.map { executable in
+            let stem = ((((executable as NSString).lastPathComponent) as NSString)
+                .deletingPathExtension)
+            return normalizedName(stem).contains("launcher")
+        } ?? false
+        if let officialExecutable, !officialIsLauncher { return officialExecutable }
 
         guard let enumerator = fm.enumerator(atPath: dir) else { return nil }
         let folderKey = normalizedName((dir as NSString).lastPathComponent)
@@ -506,6 +518,13 @@ final class SteamLibraryImporter: Sendable {
         guard !exes.isEmpty else { return nil }
         let configuredLauncherPayloads = launcherConfiguredPayloads(in: dir, candidates: exes)
         let confirmedVulkanSiblings = confirmedVulkanSiblingExecutables(in: exes)
+
+        // Si Steam exige un launcher y el depot no declara de forma verificable ningún payload,
+        // no se intenta saltarlo: puede encargarse de autenticación, parches o selección de rama.
+        // Esta salida ocurre después del escaneo acotado de descriptores y antes de la heurística.
+        if let officialExecutable, officialIsLauncher, configuredLauncherPayloads.isEmpty {
+            return officialExecutable
+        }
 
         func score(_ rel: String, _ full: String) -> Int {
             var s = 0

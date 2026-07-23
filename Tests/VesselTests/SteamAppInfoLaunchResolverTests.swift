@@ -160,6 +160,65 @@ final class SteamAppInfoLaunchResolverTests: XCTestCase {
         )
     }
 
+    func testImporterFollowsVerifiedPayloadDeclaredByOfficialLauncher() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let steam = directory.appendingPathComponent("Steam", isDirectory: true)
+        let appCache = steam.appendingPathComponent("appcache", isDirectory: true)
+        let depot = directory.appendingPathComponent("Modern Edition", isDirectory: true)
+        let edition = depot.appendingPathComponent("edition", isDirectory: true)
+        try FileManager.default.createDirectory(at: appCache, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: edition, withIntermediateDirectories: true)
+        try Data("classic".utf8).write(to: depot.appendingPathComponent("Classic.exe"))
+        try Data("launcher".utf8).write(to: edition.appendingPathComponent("ModernLauncher.exe"))
+        try Data("payload".utf8).write(to: edition.appendingPathComponent("ModernGame.exe"))
+        try Data("ApplicationPath=ModernGame.exe\n".utf8).write(
+            to: edition.appendingPathComponent("Modern.ini")
+        )
+        try makeVersion41AppInfo(
+            appID: 42,
+            entries: [
+                LaunchEntry(index: 0, executable: "edition\\ModernLauncher.exe", osList: "windows")
+            ]
+        ).write(to: appCache.appendingPathComponent("appinfo.vdf"))
+
+        XCTAssertEqual(
+            SteamLibraryImporter.mainGameExecutable(
+                in: depot.path,
+                appID: "42",
+                steamDirectory: steam.path
+            ),
+            edition.appendingPathComponent("ModernGame.exe").path
+        )
+    }
+
+    func testImporterKeepsOfficialLauncherWithoutVerifiedPayloadContract() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let steam = directory.appendingPathComponent("Steam", isDirectory: true)
+        let appCache = steam.appendingPathComponent("appcache", isDirectory: true)
+        let depot = directory.appendingPathComponent("Online Game", isDirectory: true)
+        try FileManager.default.createDirectory(at: appCache, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: depot, withIntermediateDirectories: true)
+        try Data("launcher".utf8).write(to: depot.appendingPathComponent("OnlineLauncher.exe"))
+        try Data("client".utf8).write(to: depot.appendingPathComponent("Client.exe"))
+        try makeVersion41AppInfo(
+            appID: 43,
+            entries: [
+                LaunchEntry(index: 0, executable: "OnlineLauncher.exe", osList: "windows")
+            ]
+        ).write(to: appCache.appendingPathComponent("appinfo.vdf"))
+
+        XCTAssertEqual(
+            SteamLibraryImporter.mainGameExecutable(
+                in: depot.path,
+                appID: "43",
+                steamDirectory: steam.path
+            ),
+            depot.appendingPathComponent("OnlineLauncher.exe").path
+        )
+    }
+
     func testRejectsLaunchPathOutsideDepot() throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
