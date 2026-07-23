@@ -37,15 +37,16 @@ final class MoltenVKManager {
         "5ea0c259df7ded9a275444820f09cced54d6e5a7c7a31d262de62a5cdb7e15cf"
     static let archiveRuntimePath = "MoltenVK/MoltenVK/dynamic/dylib/macOS"
 
-    /// Build aislada para juegos Vulkan nativos que requieren `wideLines`, `logicOp` y más de
-    /// 16 samplers. DXVK sigue usando exclusivamente el asset oficial anterior.
-    static let nativeVulkanCompatibilityVersion = "1.4.1-vessel.1"
+    /// Build aislada para juegos Vulkan nativos que requieren `wideLines`, `logicOp`, más de
+    /// 16 samplers y el contrato id Tech comprobado. DXVK sigue usando exclusivamente el asset
+    /// oficial anterior y el refresco de presentación solo se activa mediante su variable opt-in.
+    static let nativeVulkanCompatibilityVersion = "1.4.1-vessel.2"
     static let nativeVulkanCompatibilityArchiveResource =
-        "moltenvk-compat/MoltenVK-v1.4.1-vessel.1-x86_64.zip"
+        "moltenvk-compat/MoltenVK-v1.4.1-vessel.2-x86_64.zip"
     static let nativeVulkanCompatibilityArchiveSHA256 =
-        "0b8df4cb3706d54a418870e3a53b63c8a060b1cf9f0273a6d557c5bbb97fd22c"
+        "2af10a46c3a97cf52feac16e9da1282242266c09de9d757e1c00807b75b85634"
     static let nativeVulkanCompatibilityLibrarySHA256 =
-        "4843a94be3f2e76e6f7db0f94b9ca6950a4b8f9bb25cfbce46d4c6483473bdc0"
+        "35d9e265662373f436ea4b274decc7a4bd0b82fc2cd12c421653bcdb2e1ae785"
 
     private let cacheRoot: String
     private let bundledResource: (String) -> URL?

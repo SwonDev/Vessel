@@ -1759,6 +1759,30 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(environment["MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS"], "1")
     }
 
+    func testProtectedSteamChildKeepsEngineLibrariesAfterRuntimeOverlay() {
+        let overlaid = WineManager.modernMoltenVKEnvironment(
+            from: ["WINEPREFIX": "/tmp/vessel-bottle"],
+            libraryDirectory: "/tmp/moltenvk/1.4.1",
+            useMetalArgumentBuffers: true
+        )
+        let inherited = WineManager.environmentByAppendingEngineLibraries(
+            overlaid,
+            engineRoot: "/tmp/vessel-wine-full"
+        )
+        let libraries = "/tmp/moltenvk/1.4.1:/tmp/vessel-wine-full/lib"
+
+        XCTAssertEqual(inherited["DYLD_FALLBACK_LIBRARY_PATH"], libraries)
+        XCTAssertEqual(inherited["DYLD_LIBRARY_PATH"], libraries)
+        XCTAssertEqual(inherited["CX_LIBVULKAN"], "/tmp/moltenvk/1.4.1/libMoltenVK.dylib")
+        XCTAssertEqual(
+            WineManager.environmentByAppendingEngineLibraries(
+                inherited,
+                engineRoot: "/tmp/vessel-wine-full"
+            ),
+            inherited
+        )
+    }
+
     func testFullEngineCleanEnvironmentPreservesIsolatedGraphicsRuntimeOnly() {
         let environment = [
             "HOME": "/Users/example",
@@ -1773,6 +1797,7 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             "DXVK_LOG_LEVEL": "info",
             "DXVK_LOG_PATH": "/tmp/game",
             "MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS": "1",
+            "MVK_CONFIG_REFRESH_METAL_LAYER_ON_FOCUS": "1",
             "D3DM_VENDOR_ID": "0x10de",
             "D3DM_DEVICE_ID": "0x2484",
             "D3DM_DEVICE_DESCRIPTION": "NVIDIA GeForce RTX 3070",
@@ -1794,6 +1819,7 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(clean["DXVK_LOG_LEVEL"], "info")
         XCTAssertEqual(clean["DXVK_LOG_PATH"], "/tmp/game")
         XCTAssertEqual(clean["MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS"], "1")
+        XCTAssertEqual(clean["MVK_CONFIG_REFRESH_METAL_LAYER_ON_FOCUS"], "1")
         XCTAssertEqual(clean["D3DM_VENDOR_ID"], "0x10de")
         XCTAssertEqual(clean["D3DM_DEVICE_ID"], "0x2484")
         XCTAssertEqual(clean["D3DM_DEVICE_DESCRIPTION"], "NVIDIA GeForce RTX 3070")
@@ -2253,6 +2279,73 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertTrue(WineManager.isUsableGameWindow(
             window(title: "Legitimate Retro Game", width: 320, height: 240),
             ownedBy: [ownerPID]
+        ))
+    }
+
+    func testGameFocusMatchesRendererSuffixRemovedFromWineWindowTitle() {
+        let candidates = [
+            WineManager.WindowFocusCandidate(
+                pid: 101,
+                area: 1280 * 800,
+                ownerName: "wine",
+                windowName: "Steam",
+                applicationName: "wine"
+            ),
+            WineManager.WindowFocusCandidate(
+                pid: 202,
+                area: 756 * 491,
+                ownerName: "wine",
+                windowName: "DOOMEternal",
+                applicationName: "wine"
+            )
+        ]
+
+        XCTAssertEqual(
+            WineManager.preferredGameWindowPID(
+                executableName: "DOOMEternalx64vk.exe",
+                candidates: candidates
+            ),
+            202
+        )
+    }
+
+    func testGameFocusFallsBackOnlyToANewWineWindow() {
+        let candidates = [
+            WineManager.WindowFocusCandidate(
+                pid: 101,
+                area: 1280 * 800,
+                ownerName: "wine",
+                windowName: "Steam",
+                applicationName: "wine"
+            ),
+            WineManager.WindowFocusCandidate(
+                pid: 202,
+                area: 1512 * 982,
+                ownerName: "wine",
+                windowName: "Juego",
+                applicationName: "wine"
+            ),
+            WineManager.WindowFocusCandidate(
+                pid: 303,
+                area: 1920 * 1080,
+                ownerName: "Brave Browser",
+                windowName: "Vídeo",
+                applicationName: "Brave Browser"
+            )
+        ]
+
+        XCTAssertEqual(
+            WineManager.preferredGameWindowPID(
+                executableName: "ArbitraryPayload.exe",
+                candidates: candidates,
+                excludingWindowOwnerPIDs: [101]
+            ),
+            202
+        )
+        XCTAssertNil(WineManager.preferredGameWindowPID(
+            executableName: "ArbitraryPayload.exe",
+            candidates: Array(candidates.dropFirst(2)),
+            excludingWindowOwnerPIDs: [101]
         ))
     }
 
@@ -2806,9 +2899,13 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             isDirectory: true
         )
         let launcherDirectory = root.appendingPathComponent("launcher", isDirectory: true)
+        let launcherResources = launcherDirectory.appendingPathComponent(
+            "resources",
+            isDirectory: true
+        )
         let baseDirectory = root.appendingPathComponent("base", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        for directory in [launcherDirectory, baseDirectory] {
+        for directory in [launcherDirectory, launcherResources, baseDirectory] {
             try FileManager.default.createDirectory(
                 at: directory,
                 withIntermediateDirectories: true
@@ -2820,8 +2917,11 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         try writePE(
             to: launcher,
             is64Bit: true,
-            imports: ["KERNEL32.dll", "USER32.dll", "steam_api64.dll"],
-            marker: "idTech launcher"
+            imports: [
+                "KERNEL32.dll", "USER32.dll", "d3d11.dll", "d3d12.dll", "dxgi.dll",
+                "ffmpeg.dll"
+            ],
+            marker: "idTech launcher Electron Chromium"
         )
         try writePE(
             to: payload,
@@ -2832,6 +2932,12 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         try Data("render package".utf8).write(
             to: baseDirectory.appendingPathComponent("game.resources")
         )
+        for name in ["LICENSE.electron.txt", "resources.pak", "icudtl.dat", "ffmpeg.dll"] {
+            try Data(name.utf8).write(to: launcherDirectory.appendingPathComponent(name))
+        }
+        try Data("electron app".utf8).write(
+            to: launcherResources.appendingPathComponent("app.asar")
+        )
 
         let manager = WineManager()
         XCTAssertEqual(
@@ -2839,7 +2945,21 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             payload.path
         )
         XCTAssertEqual(manager.graphicsRuntimeExecutable(for: launcher.path), payload.path)
+        XCTAssertTrue(manager.isPackagedIDTechVulkanRuntime(launcher.path))
+        XCTAssertTrue(manager.isPackagedIDTechVulkanRuntime(payload.path))
         XCTAssertTrue(manager.isNativeVulkanGame(launcher.path))
+        XCTAssertTrue(manager.requiresExtendedNativeVulkanCapabilities(launcher.path))
+        XCTAssertTrue(manager.requiresExtendedNativeVulkanCapabilities(payload.path))
+        XCTAssertTrue(manager.requiresSteamAppLaunch(launcher.path))
+        XCTAssertEqual(
+            WineManager.connectedSteamNativeVulkanDirectExecutable(
+                bootstrapper: launcher.path,
+                runtimeExecutable: payload.path,
+                steamAppLaunchRequired: true,
+                usesIDTechCompositedPresentation: true
+            ),
+            payload.path
+        )
         XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: launcher.path), .d3d11)
         XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: launcher.path), .gcenx)
         XCTAssertEqual(manager.fallbackLayers(forExecutable: launcher.path), [.gcenx])
@@ -2848,6 +2968,63 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             ["idTechLauncher.exe", "ArbitraryGame_x64vk.exe", "ArbitraryGame_x32vk.exe"]
         )
         XCTAssertEqual(manager.processTrackingDirectory(forExecutable: launcher.path), root.path)
+    }
+
+    func testLivePackagedIDTechLauncherContractWhenRequested() throws {
+        guard let launcher = ProcessInfo.processInfo.environment[
+            "VESSEL_RUN_LIVE_IDTECH_LAUNCHER"
+        ], !launcher.isEmpty else {
+            throw XCTSkip("Define VESSEL_RUN_LIVE_IDTECH_LAUNCHER para validar un depot id Tech real.")
+        }
+
+        let manager = WineManager()
+        let payload = try XCTUnwrap(
+            manager.packagedIDTechVulkanPayloadExecutable(forBootstrapper: launcher)
+        )
+        XCTAssertTrue(payload.lowercased().hasSuffix("x64vk.exe"))
+        XCTAssertEqual(manager.graphicsRuntimeExecutable(for: launcher), payload)
+        XCTAssertTrue(manager.isPackagedIDTechVulkanRuntime(launcher))
+        XCTAssertTrue(manager.isPackagedIDTechVulkanRuntime(payload))
+        XCTAssertNotNil(GameDisplayStateRepair.idTechConfigurationStem(forExecutable: payload))
+        XCTAssertTrue(manager.isNativeVulkanGame(launcher))
+        XCTAssertTrue(manager.requiresExtendedNativeVulkanCapabilities(launcher))
+        XCTAssertTrue(manager.requiresExtendedNativeVulkanCapabilities(payload))
+        XCTAssertTrue(manager.requiresSteamAppLaunch(launcher))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: launcher), .d3d11)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: launcher), .gcenx)
+        XCTAssertEqual(
+            manager.processTrackingDirectory(forExecutable: launcher),
+            (payload as NSString).deletingLastPathComponent
+        )
+        XCTAssertEqual(
+            WineManager.connectedSteamNativeVulkanDirectExecutable(
+                bootstrapper: launcher,
+                runtimeExecutable: payload,
+                steamAppLaunchRequired: true,
+                usesIDTechCompositedPresentation: true
+            ),
+            payload
+        )
+    }
+
+    func testOnlyVerifiedIDTechVulkanCanBypassProtectedSteamRelay() {
+        XCTAssertNil(
+            WineManager.connectedSteamNativeVulkanDirectExecutable(
+                bootstrapper: "/game/ProtectedLauncher.exe",
+                runtimeExecutable: "/game/ProtectedRenderer.exe",
+                steamAppLaunchRequired: true,
+                usesIDTechCompositedPresentation: false
+            )
+        )
+        XCTAssertEqual(
+            WineManager.connectedSteamNativeVulkanDirectExecutable(
+                bootstrapper: "/game/OrdinaryVulkan.exe",
+                runtimeExecutable: "/game/OrdinaryVulkan.exe",
+                steamAppLaunchRequired: false,
+                usesIDTechCompositedPresentation: false
+            ),
+            "/game/OrdinaryVulkan.exe"
+        )
     }
 
     func testIncompleteIDTechLayoutCannotChangeLauncherRouting() throws {
@@ -2966,6 +3143,7 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         let manager = WineManager()
         XCTAssertNil(manager.packagedIDTechVulkanPayloadExecutable(forBootstrapper: launcher.path))
         XCTAssertFalse(manager.isNativeVulkanGame(launcher.path))
+        XCTAssertFalse(manager.requiresSteamAppLaunch(launcher.path))
         XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: launcher.path), .d3d12)
         XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: launcher.path), .gptk)
     }
@@ -3372,7 +3550,25 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(overlaid["MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS"], "1")
         XCTAssertEqual(overlaid["MVK_CONFIG_LOG_LEVEL"], "1")
         XCTAssertEqual(overlaid["SteamAppId"], "753")
-        XCTAssertEqual(native.markerID, "native-vulkan:1.4.1-vessel.1")
+        XCTAssertEqual(
+            native.markerID,
+            "native-vulkan:1.4.1-vessel.1:engine-libs-v1"
+        )
+        XCTAssertNil(overlaid["MVK_CONFIG_REFRESH_METAL_LAYER_ON_FOCUS"])
+
+        let focusRefresh = WineManager.SteamRuntimeProfile.nativeVulkan(
+            libraryDirectory: "/tmp/moltenvk/1.4.1-vessel.2",
+            refreshPresentationOnFocus: true
+        )
+        let refreshed = WineManager.environmentByApplyingSteamRuntimeProfile(
+            base,
+            profile: focusRefresh
+        )
+        XCTAssertEqual(refreshed["MVK_CONFIG_REFRESH_METAL_LAYER_ON_FOCUS"], "1")
+        XCTAssertEqual(
+            focusRefresh.markerID,
+            "native-vulkan:1.4.1-vessel.2:engine-libs-v1:focus-refresh-v1"
+        )
     }
 
     func testD3DMetalDriverIdentitySteamProfileIsInheritedWithoutChangingSteamIDs() {

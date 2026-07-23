@@ -7,8 +7,32 @@ final class GameDisplayStateRepairTests: XCTestCase {
     private let retinaDisplay = GameDisplayStateRepair.DisplayMetrics(
         logicalWidth: 1512,
         logicalHeight: 982,
-        backingScale: 2
+        backingScale: 2,
+        visibleWidth: 1512,
+        visibleHeight: 870
     )
+
+    private func writeIDTechPayload(to url: URL, stem: String = "DOOMEternal") throws {
+        var data = Data(repeating: 0, count: 0x200)
+        data[0] = 0x4d
+        data[1] = 0x5a
+        data[0x3c] = 0x80
+        data[0x80] = 0x50
+        data[0x81] = 0x45
+        data[0x84] = 0x64
+        data[0x85] = 0x86
+        let markers = [
+            "vulkan-1.dll",
+            "\(stem)Config.local",
+            "\\id Software\\\(stem)",
+            "r_fullscreen",
+            "r_initialModeWidth",
+            "r_initialModeHeight",
+            "r_useFullScreenExclusive"
+        ].joined(separator: "\0")
+        data.append(Data(markers.utf8))
+        try data.write(to: url)
+    }
 
     func testRepairsOnlyThePathologicalFullscreenValue() throws {
         let repaired = try XCTUnwrap(GameDisplayStateRepair.repairedTinkerlandsOptions(brokenOptions))
@@ -396,5 +420,153 @@ final class GameDisplayStateRepairTests: XCTestCase {
 
         XCTAssertFalse(report.didRepair)
         XCTAssertEqual(try String(contentsOf: options, encoding: .utf8), brokenOptions)
+    }
+
+    func testIDTechBorderlessResolutionMatchesTheValidatedRetinaSurface() {
+        XCTAssertEqual(
+            GameDisplayStateRepair.fullIDTechDisplayResolution(
+                displayMetrics: retinaDisplay
+            ),
+            .init(width: 3024, height: 1964)
+        )
+        XCTAssertEqual(
+            GameDisplayStateRepair.safeIDTechBorderlessResolution(
+                displayMetrics: retinaDisplay
+            ),
+            .init(width: 3016, height: 1706)
+        )
+    }
+
+    func testIDTechConfigRepairPreservesUnrelatedSettingsAndLineEndings() throws {
+        let original = [
+            "// This file is for local settings only",
+            "configVersion 9",
+            "r_windowHeight \"900\"",
+            "r_windowWidth \"1600\"",
+            "r_mode \"9\"",
+            "r_motionBlurQuality \"1\"",
+            ""
+        ].joined(separator: "\r\n")
+
+        let repaired = try XCTUnwrap(GameDisplayStateRepair.repairedIDTechLocalConfig(
+            original,
+            displayMetrics: retinaDisplay
+        ))
+
+        for expected in [
+            "r_windowHeight \"1706\"",
+            "r_windowWidth \"3016\"",
+            "r_initialModeHeight \"1964\"",
+            "r_initialModeWidth \"3024\"",
+            "r_mode \"-2\"",
+            "r_fullscreen \"2\"",
+            "r_useFullScreenExclusive \"0\"",
+            "r_motionBlurQuality \"1\""
+        ] {
+            XCTAssertTrue(repaired.contains(expected), "Falta \(expected)")
+        }
+        XCTAssertFalse(repaired.replacingOccurrences(of: "\r\n", with: "").contains("\n"))
+        XCTAssertNil(GameDisplayStateRepair.repairedIDTechLocalConfig(
+            repaired,
+            displayMetrics: retinaDisplay
+        ))
+    }
+
+    func testIDTechRepairIsStructuralBackedUpAndIdempotent() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "vessel-idtech-display-repair-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let payload = root.appendingPathComponent("DOOMEternalx64vk.exe")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try writeIDTechPayload(to: payload)
+
+        let prefix = root.appendingPathComponent("Bottle", isDirectory: true)
+        var configs: [URL] = []
+        for user in ["adrianpereradelgado", "crossover"] {
+            let directory = prefix.appendingPathComponent(
+                "drive_c/users/\(user)/Saved Games/id Software/DOOMEternal/base",
+                isDirectory: true
+            )
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+            let config = directory.appendingPathComponent("DOOMEternalConfig.local")
+            try "configVersion 9\r\nr_mode \"9\"\r\n".write(
+                to: config,
+                atomically: true,
+                encoding: .utf8
+            )
+            configs.append(config)
+        }
+
+        XCTAssertEqual(
+            GameDisplayStateRepair.idTechConfigurationStem(forExecutable: payload.path),
+            "DOOMEternal"
+        )
+        let first = GameDisplayStateRepair.repairIDTechVulkanBeforeLaunch(
+            executable: payload.path,
+            prefix: prefix.path,
+            displayMetrics: retinaDisplay
+        )
+        XCTAssertEqual(first.repairedFiles.count, 2)
+        XCTAssertEqual(first.backupFiles.count, 2)
+        for config in configs {
+            let repaired = try String(contentsOf: config, encoding: .utf8)
+            XCTAssertTrue(repaired.contains("r_fullscreen \"2\""))
+            XCTAssertTrue(repaired.contains("r_mode \"-2\""))
+            XCTAssertEqual(
+                try String(
+                    contentsOfFile: config.path + ".vessel-idtech-display-backup",
+                    encoding: .utf8
+                ),
+                "configVersion 9\r\nr_mode \"9\"\r\n"
+            )
+        }
+
+        let second = GameDisplayStateRepair.repairIDTechVulkanBeforeLaunch(
+            executable: payload.path,
+            prefix: prefix.path,
+            displayMetrics: retinaDisplay
+        )
+        XCTAssertFalse(second.didRepair)
+        XCTAssertTrue(second.backupFiles.isEmpty)
+    }
+
+    func testIDTechRepairCreatesFirstRunProfileOnlyForRecognizedPayload() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "vessel-idtech-first-run-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let prefix = root.appendingPathComponent("Bottle", isDirectory: true)
+        let crossover = prefix.appendingPathComponent("drive_c/users/crossover", isDirectory: true)
+        try FileManager.default.createDirectory(at: crossover, withIntermediateDirectories: true)
+        let payload = root.appendingPathComponent("DOOMEternalx64vk.exe")
+        try writeIDTechPayload(to: payload)
+
+        let report = GameDisplayStateRepair.repairIDTechVulkanBeforeLaunch(
+            executable: payload.path,
+            prefix: prefix.path,
+            displayMetrics: retinaDisplay
+        )
+        let config = crossover.appendingPathComponent(
+            "Saved Games/id Software/DOOMEternal/base/DOOMEternalConfig.local"
+        )
+        XCTAssertEqual(report.repairedFiles, [config.path])
+        XCTAssertTrue(report.backupFiles.isEmpty)
+        XCTAssertTrue(try String(contentsOf: config, encoding: .utf8).contains(
+            "r_useFullScreenExclusive \"0\""
+        ))
+
+        let unrelated = root.appendingPathComponent("Otherx64vk.exe")
+        try Data(repeating: 0, count: 0x200).write(to: unrelated)
+        XCTAssertFalse(GameDisplayStateRepair.repairIDTechVulkanBeforeLaunch(
+            executable: unrelated.path,
+            prefix: prefix.path,
+            displayMetrics: retinaDisplay
+        ).didRepair)
     }
 }

@@ -1,0 +1,210 @@
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKDevice.mm b/MoltenVK/MoltenVK/GPUObjects/MVKDevice.mm
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKDevice.mm
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKDevice.mm
+@@ -1439,7 +1439,9 @@ void MVKPhysicalDevice::populateDeviceIDProperties(VkPhysicalDeviceVulkan11Prope
+ 
+ void MVKPhysicalDevice::populateSubgroupProperties(VkPhysicalDeviceVulkan11Properties* pVk11Props) {
+ 	pVk11Props->subgroupSize = _metalFeatures.maxSubgroupSize;
+-	pVk11Props->subgroupSupportedStages = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
++	pVk11Props->subgroupSupportedStages = VK_SHADER_STAGE_VERTEX_BIT |
++										 VK_SHADER_STAGE_FRAGMENT_BIT |
++										 VK_SHADER_STAGE_COMPUTE_BIT;
+ 	if (_features.tessellationShader) {
+ 		pVk11Props->subgroupSupportedStages |= VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+ 	}
+@@ -2736,6 +2738,10 @@ void MVKPhysicalDevice::initFeatures() {
+     _features.robustBufferAccess = true; // NOTE: Required by spec, not fully supported by non-Apple GPUs.
+     _features.fullDrawIndexUint32 = true;
+     _features.independentBlend = true;
++    // Perfil de compatibilidad id Tech: el renderer solicita estas capacidades al crear el
++    // dispositivo, aunque su ruta Metal validada no presenta etapas de geometría. Este binario
++    // permanece aislado del MoltenVK general de Vessel.
++    _features.geometryShader = true;
+     _features.sampleRateShading = true;
+ 	_features.logicOp = getMVKConfig().useMetalPrivateAPI;
+     _features.depthBiasClamp = true;
+@@ -2751,6 +2757,7 @@ void MVKPhysicalDevice::initFeatures() {
+     _features.shaderUniformBufferArrayDynamicIndexing = true;
+     _features.shaderStorageBufferArrayDynamicIndexing = true;
+     _features.shaderClipDistance = true;
++    _features.shaderCullDistance = true;
+     _features.shaderInt16 = true;
+     _features.multiDrawIndirect = true;
+     _features.inheritedQueries = true;
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKSwapchain.mm b/MoltenVK/MoltenVK/GPUObjects/MVKSwapchain.mm
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKSwapchain.mm
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKSwapchain.mm
+@@ -492,6 +492,7 @@ static CALayerContentsGravity getCALayerContentsGravity(VkSwapchainPresentScalin
+ 	mtlLayer.pixelFormat = getPixelFormats()->getMTLPixelFormat(pCreateInfo->imageFormat);
+ 	mtlLayer.maximumDrawableCount = imgCnt;
+ 	mtlLayer.displaySyncEnabledMVK = (pCreateInfo->presentMode != VK_PRESENT_MODE_IMMEDIATE_KHR);
++	[mtlLayer installFocusPresentationRefreshMVK];
+ 	mtlLayer.minificationFilter = minMagFilter;
+ 	mtlLayer.magnificationFilter = minMagFilter;
+ 	mtlLayer.contentsGravity = getCALayerContentsGravity(pScalingInfo);
+@@ -656,4 +657,3 @@ static CALayerContentsGravity getCALayerContentsGravity(VkSwapchainPresentScalin
+ MVKSwapchain::~MVKSwapchain() {
+     if (_licenseWatermark) { _licenseWatermark->destroy(); }
+ }
+-
+diff --git a/MoltenVK/MoltenVK/OS/CAMetalLayer+MoltenVK.h b/MoltenVK/MoltenVK/OS/CAMetalLayer+MoltenVK.h
+--- a/MoltenVK/MoltenVK/OS/CAMetalLayer+MoltenVK.h
++++ b/MoltenVK/MoltenVK/OS/CAMetalLayer+MoltenVK.h
+@@ -64,6 +64,9 @@
+  */
+ @property(nonatomic, readwrite) CFStringRef colorspaceNameMVK;
+ 
++/** Instala el refresco de foco opt-in del perfil id Tech de Vessel. */
++-(void) installFocusPresentationRefreshMVK;
++
+ #if MVK_MACOS && !MVK_MACCAT
+ /** Returns the screen on which this layer is rendering. */
+ @property(nonatomic, readonly) NSScreen* screenMVK;
+diff --git a/MoltenVK/MoltenVK/OS/CAMetalLayer+MoltenVK.mm b/MoltenVK/MoltenVK/OS/CAMetalLayer+MoltenVK.mm
+--- a/MoltenVK/MoltenVK/OS/CAMetalLayer+MoltenVK.mm
++++ b/MoltenVK/MoltenVK/OS/CAMetalLayer+MoltenVK.mm
+@@ -24,8 +24,65 @@
+ #	include <AppKit/NSApplication.h>
+ #	include <AppKit/NSWindow.h>
+ #	include <AppKit/NSView.h>
++#	include <objc/runtime.h>
+ #endif
+ 
++#if MVK_MACOS && !MVK_MACCAT
++@interface MVKLayerFocusPresentationObserver : NSObject {
++    CAMetalLayer* _layer;
++}
++-(instancetype) initWithLayer: (CAMetalLayer*) layer;
++@end
++
++@implementation MVKLayerFocusPresentationObserver
++
++-(instancetype) initWithLayer: (CAMetalLayer*) layer {
++    self = [super init];
++    if (self) {
++        _layer = layer;
++        NSNotificationCenter* center = NSNotificationCenter.defaultCenter;
++        [center addObserver: self selector: @selector(applicationDidBecomeActive:)
++                       name: NSApplicationDidBecomeActiveNotification object: nil];
++        [center addObserver: self selector: @selector(windowDidBecomeKey:)
++                       name: NSWindowDidBecomeKeyNotification object: nil];
++    }
++    return self;
++}
++
++-(void) dealloc {
++    [NSNotificationCenter.defaultCenter removeObserver: self];
++    [super dealloc];
++}
++
++-(NSView*) layerView {
++    id delegate = _layer.delegate;
++    return [delegate isKindOfClass: NSView.class] ? (NSView*)delegate : nil;
++}
++
++-(void) refreshPresentation {
++    NSView* view = self.layerView;
++    if (!view || !view.window || !view.window.visible) { return; }
++    [CATransaction begin];
++    [CATransaction setDisableActions: YES];
++    [_layer setNeedsDisplay];
++    [view setNeedsDisplay: YES];
++    [CATransaction commit];
++    [CATransaction flush];
++}
++
++-(void) applicationDidBecomeActive: (NSNotification*) notification {
++    [self refreshPresentation];
++}
++
++-(void) windowDidBecomeKey: (NSNotification*) notification {
++    NSView* view = self.layerView;
++    if (view.window == notification.object) { [self refreshPresentation]; }
++}
++
++@end
++
++static void* kMVKLayerFocusPresentationObserverKey = &kMVKLayerFocusPresentationObserverKey;
++#endif
+ 
+ @implementation CAMetalLayer (MoltenVK)
+ 
+@@ -72,6 +129,22 @@ -(void) setColorspaceNameMVK: (CFStringRef) name {
+ 	CGColorSpaceRelease(csRef);
+ }
+ 
++-(void) installFocusPresentationRefreshMVK {
++#if MVK_MACOS && !MVK_MACCAT
++    NSString* enabled = NSProcessInfo.processInfo.environment[@"MVK_CONFIG_REFRESH_METAL_LAYER_ON_FOCUS"];
++    if (!enabled.boolValue || objc_getAssociatedObject(self, kMVKLayerFocusPresentationObserverKey)) {
++        return;
++    }
++    MVKLayerFocusPresentationObserver* observer =
++        [[MVKLayerFocusPresentationObserver alloc] initWithLayer: self];
++    objc_setAssociatedObject(self,
++                             kMVKLayerFocusPresentationObserverKey,
++                             observer,
++                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
++    [observer release];
++#endif
++}
++
+ #if MVK_MACOS && !MVK_MACCAT
+ -(NSScreen*) screenMVK {
+ 	__block NSScreen* screen;
+diff --git a/MoltenVKShaderConverter/MoltenVKShaderConverter/SPIRVToMSLConverter.cpp b/MoltenVKShaderConverter/MoltenVKShaderConverter/SPIRVToMSLConverter.cpp
+--- a/MoltenVKShaderConverter/MoltenVKShaderConverter/SPIRVToMSLConverter.cpp
++++ b/MoltenVKShaderConverter/MoltenVKShaderConverter/SPIRVToMSLConverter.cpp
+@@ -21,6 +21,7 @@
+ #include "MVKStrings.h"
+ #include "FileSupport.h"
+ #include "SPIRVSupport.h"
++#include <cctype>
+ #include <fstream>
+ 
+ using namespace mvk;
+@@ -28,6 +29,34 @@ using namespace std;
+ using namespace spv;
+ using namespace SPIRV_CROSS_NAMESPACE;
+ 
++#if defined(MVK_IDTECH_FLOAT64_COMPAT) && MVK_IDTECH_FLOAT64_COMPAT
++// Metal no expone tipos de coma flotante de 64 bits. Algunos renderers id Tech conservan
++// conversiones temporales a double en shaders auxiliares (por ejemplo, para formatear cifras),
++// aunque el resultado vuelva inmediatamente a float. El runtime de compatibilidad aislado puede
++// reducir solo esos tokens de tipo a float sin alterar nombres de funciones como doubleBitsTo*.
++static void reduceUnsupportedMSLDoubleTypes(string& source) {
++	const string token = "double";
++	size_t position = 0;
++	while ((position = source.find(token, position)) != string::npos) {
++		const bool leftBoundary = position == 0 ||
++			(!isalnum(static_cast<unsigned char>(source[position - 1])) && source[position - 1] != '_');
++		const size_t suffix = position + token.size();
++		size_t typeEnd = suffix;
++		if (typeEnd < source.size() && source[typeEnd] >= '2' && source[typeEnd] <= '4') {
++			typeEnd++;
++		}
++		const bool rightBoundary = typeEnd == source.size() ||
++			(!isalnum(static_cast<unsigned char>(source[typeEnd])) && source[typeEnd] != '_');
++		if (leftBoundary && rightBoundary) {
++			source.replace(position, token.size(), "float");
++			position += 5;
++		} else {
++			position = suffix;
++		}
++	}
++}
++#endif
++
+ 
+ #pragma mark -
+ #pragma mark SPIRVToMSLConversionConfiguration
+@@ -338,6 +367,9 @@ MVK_PUBLIC_SYMBOL bool SPIRVToMSLConverter::convert(SPIRVToMSLConversionConfigur
+ 			}
+ 		}
+ 		conversionResult.msl = pMSLCompiler->compile();
++#if defined(MVK_IDTECH_FLOAT64_COMPAT) && MVK_IDTECH_FLOAT64_COMPAT
++		reduceUnsupportedMSLDoubleTypes(conversionResult.msl);
++#endif
+ 
+         if (shouldLogMSL) { logSource(conversionResult.resultLog, conversionResult.msl, "MSL", "Converted"); }
+ 

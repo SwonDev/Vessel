@@ -21,16 +21,23 @@ final class WineManager {
 
     enum SteamRuntimeProfile: Equatable, Sendable {
         case standard
-        case nativeVulkan(libraryDirectory: String)
+        case nativeVulkan(
+            libraryDirectory: String,
+            refreshPresentationOnFocus: Bool = false
+        )
         case d3dMetalDriverIdentity
 
         var markerID: String {
             switch self {
             case .standard:
                 return "standard"
-            case .nativeVulkan(let libraryDirectory):
+            case .nativeVulkan(let libraryDirectory, let refreshPresentationOnFocus):
                 let version = URL(fileURLWithPath: libraryDirectory).lastPathComponent
-                return "native-vulkan:\(version)"
+                // El marker forma parte del contrato heredado por los hijos de Steam. La revisión
+                // `engine-libs-v1` fuerza un único reinicio limpio de clientes que aún conservan el
+                // perfil antiguo sin FreeType/GnuTLS en sus rutas dyld.
+                let base = "native-vulkan:\(version):engine-libs-v1"
+                return refreshPresentationOnFocus ? "\(base):focus-refresh-v1" : base
             case .d3dMetalDriverIdentity:
                 return "d3dmetal-driver-identity:nvidia-10de-2484"
             }
@@ -1135,6 +1142,58 @@ final class WineManager {
         })
     }
 
+    struct WindowFocusCandidate: Equatable, Sendable {
+        let pid: pid_t
+        let area: Double
+        let ownerName: String
+        let windowName: String
+        let applicationName: String
+    }
+
+    /// Resuelve la ventana Cocoa que pertenece al payload de juego aunque Wine publique su proceso
+    /// como `wine`. Algunos motores eliminan del título el sufijo de arquitectura/renderer del PE
+    /// (`DOOMEternalx64vk.exe` → `DOOMEternal`), por lo que se comparan ambas identidades
+    /// normalizadas. Si el título no está disponible por permisos, el snapshot previo permite usar
+    /// únicamente una ventana Wine nueva, sin activar por accidente cualquier aplicación macOS que
+    /// haya aparecido mientras arrancaba el juego.
+    nonisolated static func preferredGameWindowPID(
+        executableName: String,
+        candidates: [WindowFocusCandidate],
+        excludingWindowOwnerPIDs baselineWindowOwnerPIDs: Set<pid_t>? = nil
+    ) -> pid_t? {
+        func normalized(_ value: String) -> String {
+            String(value.lowercased().filter { $0.isLetter || $0.isNumber })
+        }
+
+        let executableStem = ((executableName as NSString).deletingPathExtension)
+        let executableIdentity = normalized(executableStem)
+        var acceptedIdentities: Set<String> = [executableIdentity]
+        for suffix in ["win64shipping", "win32shipping", "x64vk", "x86vk", "shipping", "x64", "x86", "vk"]
+        where executableIdentity.hasSuffix(suffix) && executableIdentity.count > suffix.count {
+            acceptedIdentities.insert(String(executableIdentity.dropLast(suffix.count)))
+        }
+
+        let identified = candidates.filter { candidate in
+            [candidate.ownerName, candidate.windowName, candidate.applicationName]
+                .map(normalized)
+                .contains(where: acceptedIdentities.contains)
+        }
+        if let exact = identified.max(by: { $0.area < $1.area }) {
+            return exact.pid
+        }
+
+        guard let baselineWindowOwnerPIDs else { return nil }
+        return candidates
+            .filter { candidate in
+                guard !baselineWindowOwnerPIDs.contains(candidate.pid) else { return false }
+                let owner = normalized(candidate.ownerName)
+                let application = normalized(candidate.applicationName)
+                return owner.contains("wine") || application.contains("wine")
+            }
+            .max(by: { $0.area < $1.area })?
+            .pid
+    }
+
     private func nudgeGameWindowFocus(
         exeName: String,
         excludingWindowOwnerPIDs baselineWindowOwnerPIDs: Set<pid_t>? = nil
@@ -1148,7 +1207,7 @@ final class WineManager {
                     [.optionOnScreenOnly, .excludeDesktopElements],
                     kCGNullWindowID
                 ) as? [[String: Any]]) ?? []
-                let candidates: [(pid: pid_t, area: Double, owner: String)] = windows.compactMap { info in
+                let candidates: [WineManager.WindowFocusCandidate] = windows.compactMap { info in
                     guard let number = info[kCGWindowOwnerPID as String] as? NSNumber,
                           let bounds = info[kCGWindowBounds as String] as? [String: Any],
                           let width = bounds["Width"] as? Double,
@@ -1159,29 +1218,25 @@ final class WineManager {
                           (info[kCGWindowAlpha as String] as? Double ?? 1) > 0.05 else {
                         return nil
                     }
-                    return (
-                        pid_t(number.int32Value),
-                        width * height,
-                        info[kCGWindowOwnerName as String] as? String ?? ""
+                    let pid = pid_t(number.int32Value)
+                    return Self.WindowFocusCandidate(
+                        pid: pid,
+                        area: width * height,
+                        ownerName: info[kCGWindowOwnerName as String] as? String ?? "",
+                        windowName: info[kCGWindowName as String] as? String ?? "",
+                        applicationName: apps.first(where: {
+                            $0.processIdentifier == pid
+                        })?.localizedName ?? ""
                     )
                 }
-
-                let exactName = exeName.lowercased()
-                let exactPID = candidates.first(where: { candidate in
-                    candidate.owner.lowercased() == exactName
-                        || apps.first(where: { $0.processIdentifier == candidate.pid })?
-                            .localizedName?.lowercased() == exactName
-                })?.pid
-                let newWindowPID: pid_t? = baselineWindowOwnerPIDs.flatMap { baseline in
-                    candidates
-                        .filter {
-                            !baseline.contains($0.pid)
-                                && $0.pid != ProcessInfo.processInfo.processIdentifier
-                        }
-                        .max(by: { $0.area < $1.area })?
-                        .pid
+                let eligibleCandidates = candidates.filter {
+                    $0.pid != ProcessInfo.processInfo.processIdentifier
                 }
-                guard let pid = exactPID ?? newWindowPID,
+                guard let pid = Self.preferredGameWindowPID(
+                    executableName: exeName,
+                    candidates: eligibleCandidates,
+                    excludingWindowOwnerPIDs: baselineWindowOwnerPIDs
+                ),
                       let game = NSRunningApplication(processIdentifier: pid),
                       !game.isTerminated else { continue }
                 NSApp.activate(ignoringOtherApps: true)
@@ -1437,6 +1492,7 @@ final class WineManager {
         SteamDRMScanner.hasSteamStub(executable)
             || SteamDRMScanner.hasLegacyValveRunMeBootstrap(executable)
             || isClassicPopCapSteamEngine(executable)
+            || packagedIDTechVulkanPayloadExecutable(forBootstrapper: executable) != nil
     }
 
     /// Protecciones de espacio de usuario que deben conservar el `steam_api` original y hablar con
@@ -1489,6 +1545,23 @@ final class WineManager {
         graphicsAPI: GameGraphicsAPI
     ) -> Bool {
         required && graphicsAPI != .d3d12
+    }
+
+    /// Decide si un runtime Vulkan puede iniciarse directamente una vez que Steam ya está
+    /// conectado en el mismo wineserver. Los AppID protegidos ordinarios siguen delegándose a
+    /// `-applaunch`; el paquete id Tech es la excepción comprobada: su relay Electron queda sin
+    /// imagen bajo Wine, mientras el único payload `*x64vk.exe` validado por estructura conserva
+    /// Steamworks y renderiza correctamente al ejecutarse con el cliente oficial vivo.
+    static func connectedSteamNativeVulkanDirectExecutable(
+        bootstrapper: String,
+        runtimeExecutable: String,
+        steamAppLaunchRequired: Bool,
+        usesIDTechCompositedPresentation: Bool
+    ) -> String? {
+        if steamAppLaunchRequired && !usesIDTechCompositedPresentation {
+            return nil
+        }
+        return usesIDTechCompositedPresentation ? runtimeExecutable : bootstrapper
     }
 
     /// Unreal Engine 1 clásico: ejecutable PE32, núcleo modular en `System`, paquetes `.u` y
@@ -2552,6 +2625,14 @@ final class WineManager {
     func requiresExtendedNativeVulkanCapabilities(_ executable: String) -> Bool {
         guard isNativeVulkanGame(executable) else { return false }
         let runtimeExecutable = graphicsRuntimeExecutable(for: executable)
+        // El paquete id Tech ya está validado por una firma más fuerte que los textos de
+        // diagnóstico del PE: launcher Electron, `base/` no vacío y un único payload raíz
+        // `*x64vk.exe` que importa Vulkan. Sus builds retail no conservan necesariamente las cuatro
+        // cadenas de advertencia usadas por otros motores, pero sí requieren el contrato ampliado
+        // que Vessel comprobó para id Tech (samplers, subgrupos, cull distance y presentación).
+        // Mantener ambas decisiones enlazadas evita detectar correctamente el payload y degradarlo
+        // después al MoltenVK genérico justo antes del lanzamiento.
+        if isPackagedIDTechVulkanRuntime(runtimeExecutable) { return true }
         return exeContains(runtimeExecutable, anyOf: ["Graphics Driver Compatibility Warning"])
             && exeContains(runtimeExecutable, anyOf: ["SYS_GFX_DRIVER_ERR_SAMPLERS"])
             && exeContains(runtimeExecutable, anyOf: ["wideLines:"])
@@ -2837,6 +2918,14 @@ final class WineManager {
         // Inspeccionar solo Torchlight.exe, por ejemplo, lo deja como `.other` aunque el plugin
         // seleccionado importe D3D9 de forma inequívoca.
         if isLegacyOgreD3D9Game(executable) { return .d3d9 }
+        // El launcher id Tech actual es un shell Electron: sus imports D3D11/D3D12/DXGI pertenecen
+        // a Chromium, no al renderer del juego. El contrato estructural valida ese shell y el único
+        // payload `*x64vk.exe`, por lo que debe resolverse antes que los imports genéricos del PE.
+        if let idTechPayload = packagedIDTechVulkanPayloadExecutable(
+            forBootstrapper: executable
+        ) {
+            return detectGraphicsAPI(forExecutable: idTechPayload)
+        }
         let isUnity = fm.fileExists(atPath: "\(dir)/UnityPlayer.dll")
             || fm.fileExists(atPath: "\(dir)/\(exeName)_Data")
         // Juegos Unity: por defecto renderizan en D3D11 AUNQUE incluyan la Agility SDK
@@ -2913,14 +3002,6 @@ final class WineManager {
         // y verificado; el ejecutable que se delega a Steam sigue siendo el bootstrapper oficial.
         if let unrealPayload = packagedUnrealPayloadExecutable(forBootstrapper: executable) {
             return detectGraphicsAPI(forExecutable: unrealPayload)
-        }
-        // id Tech conserva el launcher oficial dentro de `launcher/`, pero el renderer Vulkan
-        // real es un PE64 `*x64vk.exe` hermano de `base/` en la raíz del depot. La asociación se
-        // valida estructuralmente y solo hereda la API: Steam sigue ejecutando su launcher.
-        if let idTechPayload = packagedIDTechVulkanPayloadExecutable(
-            forBootstrapper: executable
-        ) {
-            return detectGraphicsAPI(forExecutable: idTechPayload)
         }
         // Algunos motores enlazan la API gráfica a través de una DLL local obligatoria. La tabla PE
         // del ejecutable declara ese módulo y el módulo declara D3D; seguir solo ese salto evita que
@@ -3128,12 +3209,14 @@ final class WineManager {
     }
 
     /// Resuelve el payload Vulkan de los paquetes id Tech que separan el launcher oficial del
-    /// renderer. No ejecuta el payload directamente: sirve para seleccionar MoltenVK, limpiar solo
-    /// sus DLL adyacentes y seguir el handoff que Steam realiza después de autorizar el AppID.
+    /// renderer. El payload verificado permite seleccionar MoltenVK y, una vez conectado Steam en
+    /// el mismo wineserver, efectuar el relevo automático sin depender de la ventana Electron.
     ///
-    /// El contrato no usa título ni AppID: exige `launcher/idTechLauncher.exe` como PE64 sin API
-    /// gráfica, un paquete de recursos `base/` no vacío y exactamente un PE64 raíz `*x64vk.exe`
-    /// que importe `vulkan-1.dll`. Cualquier layout incompleto o ambiguo conserva el enrutado previo.
+    /// El contrato no usa título ni AppID: exige `launcher/idTechLauncher.exe` como PE64, un paquete
+    /// de recursos `base/` no vacío y exactamente un PE64 raíz `*x64vk.exe` que importe
+    /// `vulkan-1.dll`. Un launcher con imports gráficos solo se admite si demuestra ser el shell
+    /// Electron empaquetado (`app.asar` + recursos Chromium); así sus imports de composición no se
+    /// confunden con el renderer real. Cualquier layout incompleto o ambiguo conserva el enrutado.
     nonisolated func packagedIDTechVulkanPayloadExecutable(
         forBootstrapper executable: String
     ) -> String? {
@@ -3163,8 +3246,37 @@ final class WineManager {
         let launcherImports = Set(
             PEImportScanner.importedLibraries(atPath: executable).map { $0.lowercased() }
         )
-        guard launcherImports.isDisjoint(with: explicitGraphicsImports),
-              let baseName = rootEntries.first(where: {
+        if !launcherImports.isDisjoint(with: explicitGraphicsImports) {
+            let launcherEntries = Set(
+                ((try? fileManager.contentsOfDirectory(atPath: launcherDirectory)) ?? [])
+                    .map { $0.lowercased() }
+            )
+            let resourcesDirectory = (launcherDirectory as NSString)
+                .appendingPathComponent("resources")
+            let appArchive = (resourcesDirectory as NSString).appendingPathComponent("app.asar")
+            var resourcesIsDirectory: ObjCBool = false
+            var appArchiveIsDirectory: ObjCBool = false
+            let appArchiveAttributes = try? fileManager.attributesOfItem(atPath: appArchive)
+            let appArchiveSize = (appArchiveAttributes?[.size] as? NSNumber)?.uint64Value ?? 0
+            let electronFiles = [
+                "license.electron.txt", "resources.pak", "icudtl.dat", "ffmpeg.dll"
+            ]
+            guard electronFiles.allSatisfy(launcherEntries.contains),
+                  PathSafety.isContained(resourcesDirectory, in: launcherDirectory),
+                  fileManager.fileExists(
+                      atPath: resourcesDirectory,
+                      isDirectory: &resourcesIsDirectory
+                  ),
+                  resourcesIsDirectory.boolValue,
+                  PathSafety.isContained(appArchive, in: launcherDirectory),
+                  fileManager.fileExists(
+                      atPath: appArchive,
+                      isDirectory: &appArchiveIsDirectory
+                  ),
+                  !appArchiveIsDirectory.boolValue,
+                  appArchiveSize > 0 else { return nil }
+        }
+        guard let baseName = rootEntries.first(where: {
                   $0.caseInsensitiveCompare("base") == .orderedSame
               }) else { return nil }
 
@@ -3194,6 +3306,43 @@ final class WineManager {
         }
 
         return candidates.count == 1 ? candidates[0] : nil
+    }
+
+    /// Reconoce cualquiera de los dos extremos del paquete id Tech ya verificado. La ruta de
+    /// lanzamiento sigue siendo el launcher oficial; esta función permite aplicar al payload
+    /// exactamente el mismo contrato de presentación cuando Steam lo crea como proceso hijo.
+    nonisolated func isPackagedIDTechVulkanRuntime(_ executable: String) -> Bool {
+        if packagedIDTechVulkanPayloadExecutable(forBootstrapper: executable) != nil {
+            return true
+        }
+
+        let fileManager = FileManager.default
+        let payload = URL(fileURLWithPath: executable).standardizedFileURL
+        let root = payload.deletingLastPathComponent()
+        guard payload.lastPathComponent.lowercased().hasSuffix("x64vk.exe"),
+              let rootEntries = try? fileManager.contentsOfDirectory(atPath: root.path),
+              let launcherDirectoryName = rootEntries.first(where: {
+                  $0.caseInsensitiveCompare("launcher") == .orderedSame
+              }) else { return false }
+
+        let launcherDirectory = root.appendingPathComponent(
+            launcherDirectoryName,
+            isDirectory: true
+        )
+        guard PathSafety.isContained(launcherDirectory.path, in: root.path),
+              let launcherEntries = try? fileManager.contentsOfDirectory(
+                  atPath: launcherDirectory.path
+              ),
+              let launcherName = launcherEntries.first(where: {
+                  $0.caseInsensitiveCompare("idTechLauncher.exe") == .orderedSame
+              }) else { return false }
+
+        let launcher = launcherDirectory.appendingPathComponent(launcherName)
+        guard PathSafety.isContained(launcher.path, in: root.path),
+              let resolvedPayload = packagedIDTechVulkanPayloadExecutable(
+                  forBootstrapper: launcher.path
+              ) else { return false }
+        return URL(fileURLWithPath: resolvedPayload).standardizedFileURL == payload
     }
 
     /// PE que contiene el renderer efectivo de un launcher empaquetado. La ruta oficial que se
@@ -4009,6 +4158,20 @@ final class WineManager {
                 level: .info
             )
         }
+        let displayRuntimeExecutable = graphicsRuntimeExecutable(for: executable)
+        if isPackagedIDTechVulkanRuntime(displayRuntimeExecutable) {
+            let idTechDisplayRepair = GameDisplayStateRepair.repairIDTechVulkanBeforeLaunch(
+                executable: displayRuntimeExecutable,
+                prefix: bottle.prefixPath,
+                displayMetrics: currentGameDisplayMetrics()
+            )
+            if idTechDisplayRepair.didRepair {
+                log.log(
+                    "id Tech Vulkan: presentación borderless Retina autorreparada antes de jugar (\(idTechDisplayRepair.repairedFiles.count) perfil(es)); copia de seguridad conservada.",
+                    level: .info
+                )
+            }
+        }
         let proprietaryRepair = ProprietaryEngineRepair.repairBeforeLaunch(
             appId: steamAppId,
             executable: executable
@@ -4260,6 +4423,9 @@ final class WineManager {
            let fullEngineWine = await fullEngineWineEnsured() {
             let runtimeExecutable = graphicsRuntimeExecutable(for: executable)
             let needsExtendedCapabilities = requiresExtendedNativeVulkanCapabilities(executable)
+            let usesIDTechCompositedPresentation = isPackagedIDTechVulkanRuntime(
+                runtimeExecutable
+            )
             log.log("Juego Vulkan nativo detectado: MoltenVK→Metal con el motor completo.", level: .info)
             cleanExeAdjacentDXMTDLLs(gameExecutable: runtimeExecutable)
             try? await terminateWineProcesses(winePath: fullEngineWine, prefix: bottle.prefixPath)
@@ -4268,8 +4434,18 @@ final class WineManager {
             await setMacDriverRetinaMode(
                 prefix: bottle.prefixPath,
                 wine: fullEngineWine,
-                enabled: needsExtendedCapabilities ? false : eff.retina
+                enabled: usesIDTechCompositedPresentation
+                    ? true
+                    : (needsExtendedCapabilities ? false : eff.retina)
             )
+            if usesIDTechCompositedPresentation {
+                await setGameWindowDecoration(
+                    prefix: bottle.prefixPath,
+                    wine: fullEngineWine,
+                    executable: runtimeExecutable,
+                    decorated: false
+                )
+            }
             var env = [
                 "WINEPREFIX": bottle.prefixPath,
                 "WINEDEBUG": "-all",
@@ -4295,6 +4471,9 @@ final class WineManager {
                 // Solo errores: si el juego solicita una feature que Metal no puede representar,
                 // el diagnóstico conserva el nombre concreto sin inundar el log normal.
                 env["MVK_CONFIG_LOG_LEVEL"] = "1"
+                if usesIDTechCompositedPresentation {
+                    env["MVK_CONFIG_REFRESH_METAL_LAYER_ON_FOCUS"] = "1"
+                }
                 log.log(
                     needsExtendedCapabilities
                         ? "Vulkan nativo: perfil ampliado \(MoltenVKManager.nativeVulkanCompatibilityVersion) aislado y verificado."
@@ -5941,6 +6120,62 @@ final class WineManager {
         return true
     }
 
+    /// Aísla la decoración al nombre del payload. El modo borderless compuesto de id Tech necesita
+    /// que WindowServer no añada una barra de título, pero el resto de ventanas Wine del bottle
+    /// —incluido el cliente Steam— conserva su comportamiento normal.
+    private func setGameWindowDecoration(
+        prefix: String,
+        wine: String,
+        executable: String,
+        decorated: Bool
+    ) async {
+        let executableName = (executable as NSString).lastPathComponent
+        guard !executableName.isEmpty else { return }
+        let key = #"HKCU\Software\Wine\AppDefaults\"#
+            + executableName
+            + #"\X11 Driver"#
+        let result = try? await runWine(
+            winePath: wine,
+            arguments: [
+                "reg", "add", key, "/v", "Decorated", "/t", "REG_SZ", "/d",
+                decorated ? "Y" : "N", "/f"
+            ],
+            prefix: prefix,
+            environment: Self.wineControlEnvironment(prefix: prefix, wine: wine),
+            allowNonZeroExit: true
+        )
+        if result?.exitCode != 0 {
+            log.log(
+                "No se pudo aplicar la decoración aislada a \(executableName).",
+                level: .warn
+            )
+        }
+    }
+
+    /// Métricas del monitor donde se abrirá el juego. `visibleFrame` excluye barra de menú y Dock;
+    /// el factor del propio NSScreen evita mezclar los píxeles físicos de otra pantalla conectada.
+    private func currentGameDisplayMetrics() -> GameDisplayStateRepair.DisplayMetrics {
+        let mode = CGDisplayCopyDisplayMode(CGMainDisplayID())
+        guard let screen = NSScreen.main else {
+            let logicalWidth = mode?.width ?? 1512
+            let logicalHeight = mode?.height ?? 982
+            let scaleX = mode.map { Double($0.pixelWidth) / Double(max(1, $0.width)) } ?? 2
+            let scaleY = mode.map { Double($0.pixelHeight) / Double(max(1, $0.height)) } ?? 2
+            return .init(
+                logicalWidth: logicalWidth,
+                logicalHeight: logicalHeight,
+                backingScale: max(scaleX, scaleY)
+            )
+        }
+        return .init(
+            logicalWidth: max(1, Int(screen.frame.width.rounded())),
+            logicalHeight: max(1, Int(screen.frame.height.rounded())),
+            backingScale: max(1, screen.backingScaleFactor),
+            visibleWidth: max(1, Int(screen.visibleFrame.width.rounded())),
+            visibleHeight: max(1, Int(screen.visibleFrame.height.rounded()))
+        )
+    }
+
     /// Entorno mínimo para comandos de control (`reg`, `wineboot`, etc.). Cuando `wine-full`
     /// ya mantiene vivo el wineserver de Steam, esos comandos deben usar exactamente su mismo
     /// backend de sincronización. Wine rechaza cualquier cliente que llegue sin `WINEMSYNC=1`
@@ -7003,12 +7238,18 @@ final class WineManager {
             let needsExtendedCapabilities = requiresExtendedNativeVulkanCapabilities(
                 graphicsRuntimeExecutable
             )
+            let usesIDTechCompositedPresentation = isPackagedIDTechVulkanRuntime(
+                graphicsRuntimeExecutable
+            )
             let runtimeProfile: SteamRuntimeProfile
             do {
                 let libraryDirectory = needsExtendedCapabilities
                     ? try await moltenVKManager.ensureNativeVulkanCompatibilityLibrary()
                     : try await moltenVKManager.ensureLibrary()
-                runtimeProfile = .nativeVulkan(libraryDirectory: libraryDirectory)
+                runtimeProfile = .nativeVulkan(
+                    libraryDirectory: libraryDirectory,
+                    refreshPresentationOnFocus: usesIDTechCompositedPresentation
+                )
             } catch {
                 guard !needsExtendedCapabilities else {
                     throw WineError.launchFailed(
@@ -7054,10 +7295,26 @@ final class WineManager {
                 wine: fullWine,
                 // Los motores que persisten la resolución lógica junto a este contrato amplían
                 // dos veces la ventana bajo Retina. Escala 1× conserva el área útil de macOS.
-                enabled: needsExtendedCapabilities ? false : effective.retina
+                enabled: usesIDTechCompositedPresentation
+                    ? true
+                    : (needsExtendedCapabilities ? false : effective.retina)
             )
+            if usesIDTechCompositedPresentation {
+                await setGameWindowDecoration(
+                    prefix: bottle.prefixPath,
+                    wine: fullWine,
+                    executable: graphicsRuntimeExecutable,
+                    decorated: false
+                )
+            }
 
-            if steamAppLaunchRequired {
+            let directExecutable = Self.connectedSteamNativeVulkanDirectExecutable(
+                bootstrapper: executable,
+                runtimeExecutable: graphicsRuntimeExecutable,
+                steamAppLaunchRequired: steamAppLaunchRequired,
+                usesIDTechCompositedPresentation: usesIDTechCompositedPresentation
+            )
+            if directExecutable == nil {
                 log.log(
                     "Steam conectado con el runtime Vulkan heredable; autorizando el AppID protegido.",
                     level: .info
@@ -7072,6 +7329,25 @@ final class WineManager {
                 )
             }
 
+            let executableToLaunch = directExecutable ?? executable
+            if usesIDTechCompositedPresentation {
+                // El relay Electron oficial ya cumplió su función como descriptor del depot, pero
+                // no pinta de forma fiable bajo Wine. Steam sigue siendo el cliente real conectado;
+                // restauramos el Steamworks original del payload y colocamos su AppID junto al PE
+                // antes del relevo automático. No hay parámetros ni ajustes manuales por título.
+                goldbergManager.restoreGame(gameExecutable: executableToLaunch)
+                let payloadDirectory = (executableToLaunch as NSString).deletingLastPathComponent
+                try? appId.write(
+                    toFile: "\(payloadDirectory)/steam_appid.txt",
+                    atomically: true,
+                    encoding: .utf8
+                )
+                log.log(
+                    "id Tech Vulkan: Steam conectado; relevo automático del launcher al payload verificado.",
+                    level: .info
+                )
+            }
+
             var environment = steamClientEnvironment(
                 prefix: bottle.prefixPath,
                 wine: fullWine,
@@ -7083,12 +7359,16 @@ final class WineManager {
             return try await launchWineProcess(
                 winePath: fullWine,
                 prefix: bottle.prefixPath,
-                arguments: [executable] + launchArguments,
+                arguments: [executableToLaunch] + launchArguments,
                 environment: environment,
-                workingDirectory: gameWorkingDirectory(forExecutable: executable),
+                workingDirectory: gameWorkingDirectory(forExecutable: executableToLaunch),
                 effective: effective,
                 forceSyncOn: true,
-                forceCleanEnv: true
+                // El payload id Tech usa Vulkan nativo, no DXMT/D3DMetal. Debe atravesar el
+                // LaunchAgent aislado de `wine-full`, cuya lista blanca conserva el ICD, MoltenVK y
+                // el refresco Metal; la ruta genérica `forceCleanEnv` está diseñada para D3DMetal y
+                // descartaría esas capacidades justo antes de crear el dispositivo Vulkan.
+                forceCleanEnv: !usesIDTechCompositedPresentation
             )
         }
         if Self.shouldUseFullWineForSteamAppLaunch(
@@ -7758,9 +8038,10 @@ final class WineManager {
         environment["USER"] = NSUserName()
         environment["TMPDIR"] = NSTemporaryDirectory()
         if let root = WineEngineLocator.engineRoot(forWineExecutable: URL(fileURLWithPath: wine)) {
-            if environment["DYLD_FALLBACK_LIBRARY_PATH"]?.isEmpty != false {
-                environment["DYLD_FALLBACK_LIBRARY_PATH"] = root.appendingPathComponent("lib").path
-            }
+            environment = Self.environmentByAppendingEngineLibraries(
+                environment,
+                engineRoot: root.path
+            )
             environment["WINESERVER"] = root.appendingPathComponent("bin/wineserver").path
         }
 
@@ -9161,6 +9442,38 @@ final class WineManager {
         return result
     }
 
+    /// Conserva las bibliotecas base del motor cuando un perfil gráfico ya ha antepuesto un
+    /// runtime aislado. Los hijos que Steam crea desde `-applaunch` heredan este entorno sin pasar
+    /// por `launchWineProcess`; si `wine-full/lib` desaparece, Wine no puede cargar FreeType/GnuTLS
+    /// y launchers Chromium/Electron quedan blancos aunque el proceso siga vivo.
+    nonisolated static func environmentByAppendingEngineLibraries(
+        _ environment: [String: String],
+        engineRoot: String
+    ) -> [String: String] {
+        var result = environment
+        let engineLibraries = (engineRoot as NSString).appendingPathComponent("lib")
+
+        func appendingIfNeeded(to value: String?) -> String {
+            let components = (value ?? "")
+                .split(separator: ":", omittingEmptySubsequences: true)
+                .map(String.init)
+            guard !components.contains(engineLibraries) else {
+                return components.joined(separator: ":")
+            }
+            return (components + [engineLibraries]).joined(separator: ":")
+        }
+
+        result["DYLD_FALLBACK_LIBRARY_PATH"] = appendingIfNeeded(
+            to: result["DYLD_FALLBACK_LIBRARY_PATH"]
+        )
+        if result["DYLD_LIBRARY_PATH"] != nil {
+            result["DYLD_LIBRARY_PATH"] = appendingIfNeeded(
+                to: result["DYLD_LIBRARY_PATH"]
+            )
+        }
+        return result
+    }
+
     nonisolated static func environmentByApplyingSteamRuntimeProfile(
         _ environment: [String: String],
         profile: SteamRuntimeProfile
@@ -9168,13 +9481,16 @@ final class WineManager {
         switch profile {
         case .standard:
             return environment
-        case .nativeVulkan(let libraryDirectory):
+        case .nativeVulkan(let libraryDirectory, let refreshPresentationOnFocus):
             var result = modernMoltenVKEnvironment(
                 from: environment,
                 libraryDirectory: libraryDirectory,
                 useMetalArgumentBuffers: true
             )
             result["MVK_CONFIG_LOG_LEVEL"] = "1"
+            if refreshPresentationOnFocus {
+                result["MVK_CONFIG_REFRESH_METAL_LAYER_ON_FOCUS"] = "1"
+            }
             return result
         case .d3dMetalDriverIdentity:
             return environmentByApplyingD3DMetalDriverIdentity(
@@ -9202,7 +9518,8 @@ final class WineManager {
             "CX_ACTIVE_GRAPHICS_BACKEND", "CX_LIBVULKAN",
             "SteamAppId", "SteamGameId",
             "WINEMSYNC", "WINEESYNC", "WINEFSYNC",
-            "MVK_CONFIG_LOG_LEVEL", "MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS", "MTL_HUD_ENABLED",
+            "MVK_CONFIG_LOG_LEVEL", "MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS",
+            "MVK_CONFIG_REFRESH_METAL_LAYER_ON_FOCUS", "MTL_HUD_ENABLED",
             "D3DM_VENDOR_ID", "D3DM_DEVICE_ID", "D3DM_DEVICE_DESCRIPTION",
             "GST_PLUGIN_SYSTEM_PATH", "GST_PLUGIN_PATH", "GST_PLUGIN_SCANNER", "GST_REGISTRY",
             "GIO_EXTRA_MODULES",
@@ -11128,13 +11445,21 @@ final class WineManager {
             .map { ($0 as NSString).lastPathComponent }
             .joined(separator: " ")
         log.log("CMD: \((winePath as NSString).lastPathComponent) \(loggedArguments)", level: .debug)
+        // El proceso Wine publica todas sus apps con el mismo nombre genérico. Conservar los
+        // propietarios que ya tenían ventanas permite identificar después solo la superficie nueva
+        // del juego (y no el cliente Steam que comparte prefijo) cuando el título Cocoa difiere del
+        // nombre del PE.
+        let existingWindowOwnerPIDs = Self.windowOwnerPIDsSnapshot()
         do {
             try process.run()
             log.log("Proceso Wine lanzado (pid=\(process.processIdentifier))", level: .info)
             // El juego es el primer argumento que acaba en `.exe` (los demás son opciones, o
             // `explorer` cuando va en escritorio virtual).
             if let exe = arguments.first(where: { $0.lowercased().hasSuffix(".exe") }) {
-                nudgeGameWindowFocus(exeName: (exe as NSString).lastPathComponent)
+                nudgeGameWindowFocus(
+                    exeName: (exe as NSString).lastPathComponent,
+                    excludingWindowOwnerPIDs: existingWindowOwnerPIDs
+                )
             }
             return process
         } catch {

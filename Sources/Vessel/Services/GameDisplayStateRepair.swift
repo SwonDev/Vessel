@@ -12,6 +12,22 @@ enum GameDisplayStateRepair {
         let logicalWidth: Int
         let logicalHeight: Int
         let backingScale: Double
+        let visibleWidth: Int?
+        let visibleHeight: Int?
+
+        init(
+            logicalWidth: Int,
+            logicalHeight: Int,
+            backingScale: Double,
+            visibleWidth: Int? = nil,
+            visibleHeight: Int? = nil
+        ) {
+            self.logicalWidth = logicalWidth
+            self.logicalHeight = logicalHeight
+            self.backingScale = backingScale
+            self.visibleWidth = visibleWidth
+            self.visibleHeight = visibleHeight
+        }
     }
 
     struct Resolution: Equatable, Sendable {
@@ -35,6 +51,7 @@ enum GameDisplayStateRepair {
     private static let fourAEnhancedConfigRelativePath = "Saved Games/metro exodus"
     private static let fourAEnhancedConfigName = "user.cfg"
     private static let displayBackupSuffix = ".vessel-display-backup"
+    private static let idTechDisplayBackupSuffix = ".vessel-idtech-display-backup"
 
     /// Liquid Engine crea su ventana D3D11 con coordenadas físicas aun cuando Wine expone un
     /// escritorio Retina en puntos. En una pantalla 2×, una superficie de 3024×1964 termina así
@@ -503,6 +520,231 @@ enum GameDisplayStateRepair {
             logicalHeight: mode.height,
             backingScale: max(scaleX, scaleY)
         )
+    }
+
+    /// Área física que el modo borderless compuesto de id Tech puede presentar sin invadir el
+    /// borde reservado por WindowServer. `visibleWidth/Height` ya excluyen barra de menú y Dock;
+    /// los cuatro puntos horizontales y diecisiete verticales restantes corresponden al margen
+    /// mínimo validado con la superficie Retina de WineMetalView.
+    nonisolated static func safeIDTechBorderlessResolution(
+        displayMetrics: DisplayMetrics
+    ) -> Resolution {
+        let scale = min(3, max(1, displayMetrics.backingScale))
+        let visibleWidth = min(
+            max(1, displayMetrics.logicalWidth),
+            max(1, displayMetrics.visibleWidth ?? displayMetrics.logicalWidth)
+        )
+        let visibleHeight = min(
+            max(1, displayMetrics.logicalHeight),
+            max(1, displayMetrics.visibleHeight ?? displayMetrics.logicalHeight)
+        )
+        let safeWidth = max(1, visibleWidth - 4)
+        let safeHeight = max(1, visibleHeight - 17)
+        return Resolution(
+            width: Int((Double(safeWidth) * scale).rounded()),
+            height: Int((Double(safeHeight) * scale).rounded())
+        )
+    }
+
+    /// Framebuffer físico completo anunciado al motor durante su inicialización. El modo de
+    /// presentación efectivo sigue siendo borderless compuesto; estos valores evitan que una
+    /// preferencia antigua fuerce a id Tech a reconstruir un modo exclusivo al recuperar el foco.
+    nonisolated static func fullIDTechDisplayResolution(
+        displayMetrics: DisplayMetrics
+    ) -> Resolution {
+        let scale = min(3, max(1, displayMetrics.backingScale))
+        return Resolution(
+            width: Int((Double(max(1, displayMetrics.logicalWidth)) * scale).rounded()),
+            height: Int((Double(max(1, displayMetrics.logicalHeight)) * scale).rounded())
+        )
+    }
+
+    /// Reconoce el contrato de configuración id Tech desde el propio payload Vulkan. No usa el
+    /// título ni el AppID: el nombre `*x64vk.exe`, PE64 y las rutas/cvars embebidas deben derivar del
+    /// mismo stem. Devolver el stem permite localizar el perfil sin una tabla por juego.
+    nonisolated static func idTechConfigurationStem(
+        forExecutable executable: String,
+        fileManager: FileManager = .default
+    ) -> String? {
+        let fileName = (executable as NSString).lastPathComponent
+        let executableStem = (fileName as NSString).deletingPathExtension
+        let suffix = "x64vk"
+        guard fileManager.fileExists(atPath: executable),
+              executableStem.lowercased().hasSuffix(suffix),
+              executableStem.count > suffix.count,
+              let suffixRange = executableStem.range(
+                  of: suffix,
+                  options: [.caseInsensitive, .backwards]
+              ),
+              suffixRange.upperBound == executableStem.endIndex else { return nil }
+
+        let stem = String(executableStem[..<suffixRange.lowerBound])
+        guard !stem.isEmpty,
+              stem.range(of: #"^[A-Za-z0-9._ -]+$"#, options: .regularExpression) != nil,
+              let data = try? Data(
+                  contentsOf: URL(fileURLWithPath: executable),
+                  options: .mappedIfSafe
+              ),
+              isPE64(data) else { return nil }
+
+        let requiredMarkers = [
+            "vulkan-1.dll",
+            "\(stem)Config.local",
+            "\\id Software\\\(stem)",
+            "r_fullscreen",
+            "r_initialModeWidth",
+            "r_initialModeHeight",
+            "r_useFullScreenExclusive"
+        ]
+        guard requiredMarkers.allSatisfy({ marker in
+            data.range(of: Data(marker.utf8)) != nil
+        }) else { return nil }
+        return stem
+    }
+
+    /// Normaliza exclusivamente los cvars de presentación administrados por Vessel. Se conserva el
+    /// resto del archivo y su convención de saltos de línea; el juego puede seguir gestionando
+    /// calidad, brillo, accesibilidad y cualquier otra preferencia.
+    nonisolated static func repairedIDTechLocalConfig(
+        _ original: String?,
+        displayMetrics: DisplayMetrics
+    ) -> String? {
+        let base = original ?? "// Ajustes locales de presentación administrados por Vessel\r\n"
+        let lineEnding = base.contains("\r\n") ? "\r\n" : "\n"
+        let full = fullIDTechDisplayResolution(displayMetrics: displayMetrics)
+        let borderless = safeIDTechBorderlessResolution(displayMetrics: displayMetrics)
+        let managedValues = [
+            ("r_windowHeight", String(borderless.height)),
+            ("r_windowWidth", String(borderless.width)),
+            ("r_initialModeHeight", String(full.height)),
+            ("r_initialModeWidth", String(full.width)),
+            ("r_mode", "-2"),
+            ("r_fullscreen", "2"),
+            ("r_useFullScreenExclusive", "0")
+        ]
+
+        var repaired = base
+        for (key, value) in managedValues {
+            repaired = settingQuotedCVar(
+                repaired,
+                key: key,
+                value: value,
+                lineEnding: lineEnding
+            )
+        }
+        return repaired == original ? nil : repaired
+    }
+
+    /// Repara todos los perfiles Wine existentes del payload reconocido. Si es el primer arranque,
+    /// crea el perfil en el usuario `crossover` —el usuario efectivo de wine-full— y conserva una
+    /// copia exacta, una sola vez, antes de modificar cualquier archivo ya existente.
+    @discardableResult
+    nonisolated static func repairIDTechVulkanBeforeLaunch(
+        executable: String,
+        prefix: String,
+        fileManager: FileManager = .default,
+        displayMetrics: DisplayMetrics
+    ) -> Report {
+        guard let stem = idTechConfigurationStem(
+            forExecutable: executable,
+            fileManager: fileManager
+        ) else { return Report() }
+
+        let usersDirectory = (prefix as NSString).appendingPathComponent("drive_c/users")
+        guard let users = try? fileManager.contentsOfDirectory(atPath: usersDirectory) else {
+            return Report()
+        }
+        let eligibleUsers = users.sorted().filter {
+            $0.caseInsensitiveCompare("Public") != .orderedSame
+                && $0 != "."
+                && $0 != ".."
+        }
+        guard !eligibleUsers.isEmpty else { return Report() }
+
+        func configPath(for user: String) -> String {
+            (usersDirectory as NSString).appendingPathComponent(
+                "\(user)/Saved Games/id Software/\(stem)/base/\(stem)Config.local"
+            )
+        }
+
+        let existingPaths = eligibleUsers.map(configPath).filter {
+            fileManager.fileExists(atPath: $0)
+        }
+        let targetPaths: [String]
+        if existingPaths.isEmpty {
+            let targetUser = eligibleUsers.first(where: {
+                $0.caseInsensitiveCompare("crossover") == .orderedSame
+            }) ?? eligibleUsers[0]
+            targetPaths = [configPath(for: targetUser)]
+        } else {
+            targetPaths = existingPaths
+        }
+
+        var report = Report()
+        for path in targetPaths {
+            guard PathSafety.isContained(path, in: usersDirectory) else { continue }
+            let existed = fileManager.fileExists(atPath: path)
+            let original = existed
+                ? try? String(contentsOfFile: path, encoding: .utf8)
+                : nil
+            guard !existed || original != nil,
+                  let repaired = repairedIDTechLocalConfig(
+                      original,
+                      displayMetrics: displayMetrics
+                  ) else { continue }
+
+            if existed {
+                let backupPath = path + idTechDisplayBackupSuffix
+                if !fileManager.fileExists(atPath: backupPath) {
+                    do {
+                        try fileManager.copyItem(atPath: path, toPath: backupPath)
+                        report.backupFiles.append(backupPath)
+                    } catch {
+                        continue
+                    }
+                }
+            } else {
+                do {
+                    try fileManager.createDirectory(
+                        atPath: (path as NSString).deletingLastPathComponent,
+                        withIntermediateDirectories: true
+                    )
+                } catch {
+                    continue
+                }
+            }
+
+            do {
+                try Data(repaired.utf8).write(
+                    to: URL(fileURLWithPath: path),
+                    options: .atomic
+                )
+                report.repairedFiles.append(path)
+            } catch {
+                continue
+            }
+        }
+        return report
+    }
+
+    private nonisolated static func settingQuotedCVar(
+        _ original: String,
+        key: String,
+        value: String,
+        lineEnding: String
+    ) -> String {
+        let escapedKey = NSRegularExpression.escapedPattern(for: key)
+        let pattern = "(?mi)^[ \\t]*\(escapedKey)[ \\t]+[^\\r\\n]*"
+        if let range = original.range(of: pattern, options: .regularExpression) {
+            var result = original
+            result.replaceSubrange(range, with: "\(key) \"\(value)\"")
+            return result
+        }
+
+        var result = original
+        if !result.isEmpty, !result.hasSuffix("\n") { result += lineEnding }
+        result += "\(key) \"\(value)\"\(lineEnding)"
+        return result
     }
 
     private nonisolated static func iniSectionRange(
