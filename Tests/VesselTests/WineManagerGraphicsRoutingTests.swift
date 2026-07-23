@@ -2800,6 +2800,176 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(WineManager().detectGraphicsAPI(forExecutable: launcher.path), .d3d11)
     }
 
+    func testPackagedIDTechLauncherInheritsVerifiedNativeVulkanPayload() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "vessel-idtech-launcher-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let launcherDirectory = root.appendingPathComponent("launcher", isDirectory: true)
+        let baseDirectory = root.appendingPathComponent("base", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for directory in [launcherDirectory, baseDirectory] {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+        }
+
+        let launcher = launcherDirectory.appendingPathComponent("idTechLauncher.exe")
+        let payload = root.appendingPathComponent("ArbitraryGame_x64vk.exe")
+        try writePE(
+            to: launcher,
+            is64Bit: true,
+            imports: ["KERNEL32.dll", "USER32.dll", "steam_api64.dll"],
+            marker: "idTech launcher"
+        )
+        try writePE(
+            to: payload,
+            is64Bit: true,
+            imports: ["KERNEL32.dll", "vulkan-1.dll"],
+            marker: "idRenderSystemLocal"
+        )
+        try Data("render package".utf8).write(
+            to: baseDirectory.appendingPathComponent("game.resources")
+        )
+
+        let manager = WineManager()
+        XCTAssertEqual(
+            manager.packagedIDTechVulkanPayloadExecutable(forBootstrapper: launcher.path),
+            payload.path
+        )
+        XCTAssertEqual(manager.graphicsRuntimeExecutable(for: launcher.path), payload.path)
+        XCTAssertTrue(manager.isNativeVulkanGame(launcher.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: launcher.path), .d3d11)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: launcher.path), .gcenx)
+        XCTAssertEqual(manager.fallbackLayers(forExecutable: launcher.path), [.gcenx])
+        XCTAssertEqual(
+            manager.trackedProcessFamilyImageNames(forExecutable: launcher.path),
+            ["idTechLauncher.exe", "ArbitraryGame_x64vk.exe", "ArbitraryGame_x32vk.exe"]
+        )
+        XCTAssertEqual(manager.processTrackingDirectory(forExecutable: launcher.path), root.path)
+    }
+
+    func testIncompleteIDTechLayoutCannotChangeLauncherRouting() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "vessel-incomplete-idtech-launcher-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let launcherDirectory = root.appendingPathComponent("launcher", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: launcherDirectory,
+            withIntermediateDirectories: true
+        )
+
+        let launcher = launcherDirectory.appendingPathComponent("idTechLauncher.exe")
+        try writePE(
+            to: launcher,
+            is64Bit: true,
+            imports: ["KERNEL32.dll", "USER32.dll"],
+            marker: "idTech launcher"
+        )
+        try writePE(
+            to: root.appendingPathComponent("ArbitraryGame_x64vk.exe"),
+            is64Bit: true,
+            imports: ["vulkan-1.dll"],
+            marker: "idRenderSystemLocal"
+        )
+
+        // Sin el paquete `base/` no hay un contrato suficiente para vincular ambos PE.
+        let manager = WineManager()
+        XCTAssertNil(manager.packagedIDTechVulkanPayloadExecutable(forBootstrapper: launcher.path))
+        XCTAssertFalse(manager.isNativeVulkanGame(launcher.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: launcher.path), .other)
+        XCTAssertEqual(
+            manager.trackedProcessFamilyImageNames(forExecutable: launcher.path),
+            ["idTechLauncher.exe"]
+        )
+        XCTAssertEqual(
+            manager.processTrackingDirectory(forExecutable: launcher.path),
+            launcherDirectory.path
+        )
+    }
+
+    func testAmbiguousIDTechVulkanPayloadCannotChangeLauncherRouting() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "vessel-ambiguous-idtech-launcher-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let launcherDirectory = root.appendingPathComponent("launcher", isDirectory: true)
+        let baseDirectory = root.appendingPathComponent("base", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for directory in [launcherDirectory, baseDirectory] {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+        }
+        try Data("render package".utf8).write(
+            to: baseDirectory.appendingPathComponent("game.resources")
+        )
+
+        let launcher = launcherDirectory.appendingPathComponent("idTechLauncher.exe")
+        try writePE(
+            to: launcher,
+            is64Bit: true,
+            imports: ["KERNEL32.dll"],
+            marker: "idTech launcher"
+        )
+        for name in ["First_x64vk.exe", "Second_x64vk.exe"] {
+            try writePE(
+                to: root.appendingPathComponent(name),
+                is64Bit: true,
+                imports: ["vulkan-1.dll"],
+                marker: "idRenderSystemLocal"
+            )
+        }
+
+        let manager = WineManager()
+        XCTAssertNil(manager.packagedIDTechVulkanPayloadExecutable(forBootstrapper: launcher.path))
+        XCTAssertFalse(manager.isNativeVulkanGame(launcher.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: launcher.path), .other)
+    }
+
+    func testDirectIDTechLauncherRendererWinsOverPackagedVulkanPayload() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "vessel-explicit-idtech-launcher-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let launcherDirectory = root.appendingPathComponent("launcher", isDirectory: true)
+        let baseDirectory = root.appendingPathComponent("base", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for directory in [launcherDirectory, baseDirectory] {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+        }
+        try Data("render package".utf8).write(
+            to: baseDirectory.appendingPathComponent("game.resources")
+        )
+
+        let launcher = launcherDirectory.appendingPathComponent("idTechLauncher.exe")
+        try writePE(
+            to: launcher,
+            is64Bit: true,
+            imports: ["KERNEL32.dll", "d3d12.dll"],
+            marker: "idTech launcher"
+        )
+        try writePE(
+            to: root.appendingPathComponent("ArbitraryGame_x64vk.exe"),
+            is64Bit: true,
+            imports: ["vulkan-1.dll"],
+            marker: "idRenderSystemLocal"
+        )
+
+        let manager = WineManager()
+        XCTAssertNil(manager.packagedIDTechVulkanPayloadExecutable(forBootstrapper: launcher.path))
+        XCTAssertFalse(manager.isNativeVulkanGame(launcher.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: launcher.path), .d3d12)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: launcher.path), .gptk)
+    }
+
     func testDeclaredX64PayloadRoutesMinimalLauncherToD3D12() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("vessel-declared-payload-\(UUID().uuidString)", isDirectory: true)

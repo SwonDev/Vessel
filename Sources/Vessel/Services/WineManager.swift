@@ -2534,14 +2534,15 @@ final class WineManager {
     func isNativeVulkanGame(_ executable: String) -> Bool {
         if exeImports(executable, anyOf: ["vulkan-1.dll"]) { return true }
         let directory = (executable as NSString).deletingLastPathComponent
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory) else {
-            return false
+        if let names = try? FileManager.default.contentsOfDirectory(atPath: directory),
+           names.prefix(256).contains(where: { name in
+               let lower = name.lowercased()
+               guard lower.hasPrefix("engine"), lower.hasSuffix(".dll") else { return false }
+               return exeImports("\(directory)/\(name)", anyOf: ["vulkan-1.dll"])
+           }) {
+            return true
         }
-        return names.prefix(256).contains { name in
-            let lower = name.lowercased()
-            guard lower.hasPrefix("engine"), lower.hasSuffix(".dll") else { return false }
-            return exeImports("\(directory)/\(name)", anyOf: ["vulkan-1.dll"])
-        }
+        return packagedIDTechVulkanPayloadExecutable(forBootstrapper: executable) != nil
     }
 
     /// Algunos motores Vulkan nativos comprueban un contrato de dispositivo más amplio que el
@@ -2550,10 +2551,11 @@ final class WineManager {
     /// AppID. Así el runtime ampliado queda aislado de Hades y del resto de juegos ya validados.
     func requiresExtendedNativeVulkanCapabilities(_ executable: String) -> Bool {
         guard isNativeVulkanGame(executable) else { return false }
-        return exeContains(executable, anyOf: ["Graphics Driver Compatibility Warning"])
-            && exeContains(executable, anyOf: ["SYS_GFX_DRIVER_ERR_SAMPLERS"])
-            && exeContains(executable, anyOf: ["wideLines:"])
-            && exeContains(executable, anyOf: ["maxPerStageDescriptorSamplers"])
+        let runtimeExecutable = graphicsRuntimeExecutable(for: executable)
+        return exeContains(runtimeExecutable, anyOf: ["Graphics Driver Compatibility Warning"])
+            && exeContains(runtimeExecutable, anyOf: ["SYS_GFX_DRIVER_ERR_SAMPLERS"])
+            && exeContains(runtimeExecutable, anyOf: ["wideLines:"])
+            && exeContains(runtimeExecutable, anyOf: ["maxPerStageDescriptorSamplers"])
     }
 
     /// Motor Moai clásico con backend SDL estático. Estas builds PE32 importan OpenGL pero no usan
@@ -2701,9 +2703,15 @@ final class WineManager {
     /// cerró y el fallback mataría una ventana ya funcional. La firma del motor permite relajar solo
     /// ese segundo filtro; nombre de imagen + prefijo continúan acotando la familia con seguridad.
     nonisolated func processTrackingDirectory(forExecutable executable: String) -> String? {
-        isZomboidJavaEngine(executable)
-            ? nil
-            : (executable as NSString).deletingLastPathComponent
+        if isZomboidJavaEngine(executable) { return nil }
+        if let payload = packagedIDTechVulkanPayloadExecutable(
+            forBootstrapper: executable
+        ) {
+            // El launcher vive en `<raíz>/launcher`, pero el payload abre recursos desde la raíz.
+            // Acotar `lsof` al subdirectorio del relay haría desaparecer una sesión aún jugable.
+            return (payload as NSString).deletingLastPathComponent
+        }
+        return (executable as NSString).deletingLastPathComponent
     }
 
     /// Detecta aplicaciones/juegos empaquetados con NW.js (Chromium + Node). Su ejecutable no suele
@@ -2905,6 +2913,14 @@ final class WineManager {
         // y verificado; el ejecutable que se delega a Steam sigue siendo el bootstrapper oficial.
         if let unrealPayload = packagedUnrealPayloadExecutable(forBootstrapper: executable) {
             return detectGraphicsAPI(forExecutable: unrealPayload)
+        }
+        // id Tech conserva el launcher oficial dentro de `launcher/`, pero el renderer Vulkan
+        // real es un PE64 `*x64vk.exe` hermano de `base/` en la raíz del depot. La asociación se
+        // valida estructuralmente y solo hereda la API: Steam sigue ejecutando su launcher.
+        if let idTechPayload = packagedIDTechVulkanPayloadExecutable(
+            forBootstrapper: executable
+        ) {
+            return detectGraphicsAPI(forExecutable: idTechPayload)
         }
         // Algunos motores enlazan la API gráfica a través de una DLL local obligatoria. La tabla PE
         // del ejecutable declara ese módulo y el módulo declara D3D; seguir solo ese salto evita que
@@ -3109,6 +3125,83 @@ final class WineManager {
         }
 
         return candidates.count == 1 ? candidates[0] : nil
+    }
+
+    /// Resuelve el payload Vulkan de los paquetes id Tech que separan el launcher oficial del
+    /// renderer. No ejecuta el payload directamente: sirve para seleccionar MoltenVK, limpiar solo
+    /// sus DLL adyacentes y seguir el handoff que Steam realiza después de autorizar el AppID.
+    ///
+    /// El contrato no usa título ni AppID: exige `launcher/idTechLauncher.exe` como PE64 sin API
+    /// gráfica, un paquete de recursos `base/` no vacío y exactamente un PE64 raíz `*x64vk.exe`
+    /// que importe `vulkan-1.dll`. Cualquier layout incompleto o ambiguo conserva el enrutado previo.
+    nonisolated func packagedIDTechVulkanPayloadExecutable(
+        forBootstrapper executable: String
+    ) -> String? {
+        guard isExecutable64Bit(executable) else { return nil }
+
+        let fileManager = FileManager.default
+        let launcherDirectory = (executable as NSString).deletingLastPathComponent
+        let launcherName = (executable as NSString).lastPathComponent
+        guard (launcherDirectory as NSString).lastPathComponent
+                .caseInsensitiveCompare("launcher") == .orderedSame,
+              launcherName.caseInsensitiveCompare("idTechLauncher.exe") == .orderedSame else {
+            return nil
+        }
+
+        let root = (launcherDirectory as NSString).deletingLastPathComponent
+        guard !root.isEmpty,
+              root != "/",
+              PathSafety.isContained(executable, in: root),
+              let rootEntries = try? fileManager.contentsOfDirectory(atPath: root) else {
+            return nil
+        }
+
+        let explicitGraphicsImports: Set<String> = [
+            "d3d12.dll", "d3d11.dll", "d3d10.dll", "d3d10core.dll", "dxgi.dll",
+            "d3d9.dll", "d3d8.dll", "ddraw.dll", "vulkan-1.dll", "opengl32.dll"
+        ]
+        let launcherImports = Set(
+            PEImportScanner.importedLibraries(atPath: executable).map { $0.lowercased() }
+        )
+        guard launcherImports.isDisjoint(with: explicitGraphicsImports),
+              let baseName = rootEntries.first(where: {
+                  $0.caseInsensitiveCompare("base") == .orderedSame
+              }) else { return nil }
+
+        let baseDirectory = (root as NSString).appendingPathComponent(baseName)
+        var isBaseDirectory: ObjCBool = false
+        guard PathSafety.isContained(baseDirectory, in: root),
+              fileManager.fileExists(
+                  atPath: baseDirectory,
+                  isDirectory: &isBaseDirectory
+              ),
+              isBaseDirectory.boolValue,
+              let baseEntries = try? fileManager.contentsOfDirectory(atPath: baseDirectory),
+              !baseEntries.isEmpty else { return nil }
+
+        let candidates = rootEntries.compactMap { entry -> String? in
+            let name = entry.lowercased()
+            guard name.hasSuffix("x64vk.exe") else { return nil }
+            let path = (root as NSString).appendingPathComponent(entry)
+            var isDirectory: ObjCBool = false
+            guard PathSafety.isContained(path, in: root),
+                  fileManager.fileExists(atPath: path, isDirectory: &isDirectory),
+                  !isDirectory.boolValue,
+                  isExecutable64Bit(path),
+                  PEImportScanner.importedLibraries(atPath: path)
+                    .contains("vulkan-1.dll") else { return nil }
+            return path
+        }
+
+        return candidates.count == 1 ? candidates[0] : nil
+    }
+
+    /// PE que contiene el renderer efectivo de un launcher empaquetado. La ruta oficial que se
+    /// entrega a Steam nunca cambia; esta función centraliza únicamente las decisiones de runtime.
+    nonisolated func graphicsRuntimeExecutable(for executable: String) -> String {
+        packagedUnrealPayloadExecutable(forBootstrapper: executable)
+            ?? packagedIDTechVulkanPayloadExecutable(forBootstrapper: executable)
+            ?? executable
     }
 
     /// API gráfica de un payload nativo declarado por un launcher mediante `<startup><cmdline>`.
@@ -4165,9 +4258,10 @@ final class WineManager {
         // La detección también cubre el import transitivo desde `Engine*.dll` (Hades x64Vk).
         if go == .auto, isNativeVulkanGame(executable),
            let fullEngineWine = await fullEngineWineEnsured() {
+            let runtimeExecutable = graphicsRuntimeExecutable(for: executable)
             let needsExtendedCapabilities = requiresExtendedNativeVulkanCapabilities(executable)
             log.log("Juego Vulkan nativo detectado: MoltenVK→Metal con el motor completo.", level: .info)
-            cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
+            cleanExeAdjacentDXMTDLLs(gameExecutable: runtimeExecutable)
             try? await terminateWineProcesses(winePath: fullEngineWine, prefix: bottle.prefixPath)
             try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: fullEngineWine)
             await resyncGamePrefix(gameWine: fullEngineWine, prefix: bottle.prefixPath)
@@ -6902,12 +6996,13 @@ final class WineManager {
         // Los launchers protegidos de Unreal no contienen el renderer ni sus validaciones. Steam
         // crea después el payload `*-Win64-Shipping.exe`; todas las decisiones de runtime D3D12
         // deben analizar ese PE verificado, aunque la orden oficial siga delegando el launcher.
-        let graphicsRuntimeExecutable = packagedUnrealPayloadExecutable(
-            forBootstrapper: executable
-        ) ?? executable
+        let graphicsRuntimeExecutable = self.graphicsRuntimeExecutable(for: executable)
         ensureFrozenbyteDisplaySettings(prefix: bottle.prefixPath, executable: executable)
-        if isNativeVulkanGame(executable), let fullWine = await fullEngineWineEnsured() {
-            let needsExtendedCapabilities = requiresExtendedNativeVulkanCapabilities(executable)
+        if isNativeVulkanGame(graphicsRuntimeExecutable),
+           let fullWine = await fullEngineWineEnsured() {
+            let needsExtendedCapabilities = requiresExtendedNativeVulkanCapabilities(
+                graphicsRuntimeExecutable
+            )
             let runtimeProfile: SteamRuntimeProfile
             do {
                 let libraryDirectory = needsExtendedCapabilities
@@ -6953,7 +7048,7 @@ final class WineManager {
                 throw steamRealNotConnected(gameExecutable: executable, in: bottle)
             }
 
-            cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
+            cleanExeAdjacentDXMTDLLs(gameExecutable: graphicsRuntimeExecutable)
             await setMacDriverRetinaMode(
                 prefix: bottle.prefixPath,
                 wine: fullWine,
@@ -8490,7 +8585,8 @@ final class WineManager {
         var names = Self.processFamilyImageNames(launcherName)
         let payloads = [
             declaredX64PayloadExecutable(forExecutable: executable),
-            packagedUnrealPayloadExecutable(forBootstrapper: executable)
+            packagedUnrealPayloadExecutable(forBootstrapper: executable),
+            packagedIDTechVulkanPayloadExecutable(forBootstrapper: executable)
         ].compactMap { $0 }
         for payload in payloads {
             for candidate in Self.processFamilyImageNames((payload as NSString).lastPathComponent)
