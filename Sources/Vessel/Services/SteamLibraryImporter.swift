@@ -68,7 +68,11 @@ final class SteamLibraryImporter: Sendable {
         guard stateFlags & 4 != 0 else { return nil }
         let gameDir = "\(steamapps)/common/\(installdir)"
 
-        if let exe = findMainExecutable(in: gameDir) {
+        if let exe = findMainExecutable(
+            in: gameDir,
+            appID: appId,
+            steamDirectory: (steamapps as NSString).deletingLastPathComponent
+        ) {
             return ImportedGame(
                 id: appId,
                 appId: appId,
@@ -81,8 +85,16 @@ final class SteamLibraryImporter: Sendable {
         return nil
     }
 
-    private func findMainExecutable(in dir: String) -> String? {
-        Self.mainGameExecutable(in: dir)
+    private func findMainExecutable(
+        in dir: String,
+        appID: String,
+        steamDirectory: String
+    ) -> String? {
+        Self.mainGameExecutable(
+            in: dir,
+            appID: appID,
+            steamDirectory: steamDirectory
+        )
     }
 
     /// Normaliza un nombre dejando solo alfanuméricos en minúscula. Permite comparar el nombre
@@ -423,8 +435,31 @@ final class SteamLibraryImporter: Sendable {
         return payloads
     }
 
-    static func mainGameExecutable(in dir: String) -> String? {
+    static func mainGameExecutable(
+        in dir: String,
+        appID: String? = nil,
+        steamDirectory: String? = nil
+    ) -> String? {
         let fm = FileManager.default
+        // Steam ya ha resuelto plataforma, edición y opción predeterminada en `appinfo.vdf`.
+        // Esa decisión es más autoritativa que cualquier heurística de nombres (p. ej. una edición
+        // «classic» más corta junto a la edición actual). Si la caché está ausente, corrupta o apunta
+        // a un fichero que ya no existe tras una actualización, se conserva el resolutor estructural
+        // de abajo como fallback seguro.
+        if let appID, !appID.isEmpty,
+           let steamDirectory, !steamDirectory.isEmpty,
+           let relative = SteamAppInfoLaunchResolver.defaultWindowsExecutable(
+               appID: appID,
+               appInfoPath: "\(steamDirectory)/appcache/appinfo.vdf"
+           ),
+           let official = SteamAppInfoLaunchResolver.resolvedExecutable(
+               relativePath: relative,
+               installRoot: dir,
+               fileManager: fm
+           ) {
+            return official
+        }
+
         guard let enumerator = fm.enumerator(atPath: dir) else { return nil }
         let folderKey = normalizedName((dir as NSString).lastPathComponent)
 

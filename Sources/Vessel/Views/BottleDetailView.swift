@@ -619,7 +619,8 @@ struct BottleDetailView: View {
                           userInfo: [NSLocalizedDescriptionKey: "SteamCMD no pudo completar la operación."])
         }
 
-        if operation.kind == .install, installedGame == nil, let exe = mainExecutable(in: installDir) {
+        if operation.kind == .install, installedGame == nil,
+           let exe = mainExecutable(in: installDir, appID: appId) {
             let game = GameInstall(
                 name: name, executablePath: exe, steamAppId: appId, installPath: installDir,
                 coverImageURL: "https://cdn.akamai.steamstatic.com/steam/apps/\(appId)/library_600x900_2x.jpg"
@@ -704,8 +705,12 @@ struct BottleDetailView: View {
     }
 
     /// Localiza el ejecutable principal del juego descargado (ignora redistribuibles).
-    private func mainExecutable(in dir: String) -> String? {
-        SteamLibraryImporter.mainGameExecutable(in: dir)
+    private func mainExecutable(in dir: String, appID: String) -> String? {
+        SteamLibraryImporter.mainGameExecutable(
+            in: dir,
+            appID: appID,
+            steamDirectory: localBottle.steamDirectory
+        )
     }
 
     /// Vigila en tiempo real la carpeta `steamapps` del bottle: cuando Steam instala
@@ -750,7 +755,11 @@ struct BottleDetailView: View {
                         : game.installPath
                     guard !installPath.isEmpty,
                           FileManager.default.fileExists(atPath: installPath),
-                          let resolved = SteamLibraryImporter.mainGameExecutable(in: installPath)
+                          let resolved = SteamLibraryImporter.mainGameExecutable(
+                              in: installPath,
+                              appID: appID,
+                              steamDirectory: bottleSnapshot.steamDirectory
+                          )
                     else { continue }
                     repairs.append(RegisteredGameExecutableRepair(
                         appID: appID,
@@ -829,7 +838,11 @@ struct BottleDetailView: View {
         // esté obsoleto. Se persiste la corrección para que la ficha/detalles también queden bien.
         var exePath = game.executablePath
         if !game.installPath.isEmpty,
-           let resolved = SteamLibraryImporter.mainGameExecutable(in: game.installPath),
+           let resolved = SteamLibraryImporter.mainGameExecutable(
+               in: game.installPath,
+               appID: game.steamAppId,
+               steamDirectory: localBottle.steamDirectory
+           ),
            resolved != exePath {
             exePath = resolved
             if let appId = game.steamAppId {
@@ -977,7 +990,11 @@ struct BottleDetailView: View {
         let trackId = game.steamAppId ?? game.id.uuidString
         var executable = game.executablePath
         if !game.installPath.isEmpty,
-           let resolved = SteamLibraryImporter.mainGameExecutable(in: game.installPath) {
+           let resolved = SteamLibraryImporter.mainGameExecutable(
+               in: game.installPath,
+               appID: game.steamAppId,
+               steamDirectory: localBottle.steamDirectory
+           ) {
             executable = resolved
         }
         let config = GameConfigStore.load(trackId)

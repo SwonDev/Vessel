@@ -377,7 +377,12 @@ struct SteamDRMImportSheet: View {
         let ok = await steamCMD.installGame(appId: appId, user: user, installDir: installDir, validate: true) { pct, msg in
             progress[appId] = (msg.contains("Descargando") ? max(0, min(1, pct / 100)) : 0, msg)
         }
-        guard ok, let cand = SteamDRMScanner.shared.candidate(appId: appId, name: name, installDir: installDir) else {
+        guard ok, let cand = SteamDRMScanner.shared.candidate(
+            appId: appId,
+            name: name,
+            installDir: installDir,
+            steamDirectory: bottle.steamDirectory
+        ) else {
             progress[appId] = nil; failed[appId] = "La instalación no se completó."; return
         }
         guard cand.status.isGenerable else {

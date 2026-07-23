@@ -57,8 +57,17 @@ final class SteamDRMScanner {
 
     /// Construye un `Candidate` para un juego YA instalado en `installDir` (localiza el ejecutable
     /// y clasifica su DRM). Lo usa el flujo "instalar desde Steam y generar".
-    func candidate(appId: String, name: String, installDir: String) -> Candidate? {
-        guard let exe = SteamLibraryImporter.mainGameExecutable(in: installDir) else { return nil }
+    func candidate(
+        appId: String,
+        name: String,
+        installDir: String,
+        steamDirectory: String? = nil
+    ) -> Candidate? {
+        guard let exe = SteamLibraryImporter.mainGameExecutable(
+            in: installDir,
+            appID: appId,
+            steamDirectory: steamDirectory
+        ) else { return nil }
         let report = DRMAnalyzer.analyze(folder: installDir, executable: exe)
         return Candidate(id: appId, appId: appId, name: name, installPath: installDir,
                          executablePath: exe,
