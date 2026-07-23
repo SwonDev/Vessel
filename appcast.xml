@@ -6,6 +6,19 @@
     <description>Actualizaciones de Vessel — la mejor app para jugar a Steam en Mac Silicon.</description>
     <language>es</language>
     <item>
+      <title>Versión 0.0.13</title>
+      <sparkle:version>13</sparkle:version>
+      <sparkle:shortVersionString>0.0.13</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[ Compatibilidad automática para DragonSword y launchers Unreal D3D12 protegidos: Vessel detecta el payload real, hereda Steam, D3DMetal y multimedia, y mantiene el seguimiento completo sin parámetros manuales. Incluye las mejoras acumuladas de Steam, Epic, Vulkan, resolución, rendimiento y nombre de juego en el Dock. ]]></description>
+      <pubDate>Thu, 23 Jul 2026 08:55:36 +0100</pubDate>
+      <enclosure
+        url="https://github.com/SwonDev/Vessel/releases/download/v0.0.13/Vessel-0.0.13.zip"
+        sparkle:edSignature="v2x9O9vHXMQf1rniMvmw5tP6taODNPW+/Mzw4RbsPIHA3aDTc79iM/eujjbNuGiignvDeaUsgLdmT5urVZjtAQ=="
+        length="28595866"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>Versión 0.0.12</title>
       <sparkle:version>12</sparkle:version>
       <sparkle:shortVersionString>0.0.12</sparkle:shortVersionString>
