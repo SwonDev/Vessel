@@ -16,10 +16,11 @@ struct SteamCMDExecutionGateTests {
         let gate = SteamCMDExecutionGate()
         let probe = SteamCMDGateProbe()
 
-        await gate.acquire()
+        #expect(await gate.acquire())
         let second = Task {
             await probe.record("esperando")
-            await gate.acquire()
+            let acquired = await gate.acquire()
+            guard acquired else { return }
             await probe.record("adquirido")
             await gate.release()
         }
@@ -32,5 +33,27 @@ struct SteamCMDExecutionGateTests {
         await gate.release()
         await second.value
         #expect(await probe.events == ["esperando", "adquirido"])
+    }
+
+    @Test("Cancelar una orden en espera no retiene el siguiente turno")
+    func cancellationRemovesWaiter() async {
+        let gate = SteamCMDExecutionGate()
+        let probe = SteamCMDGateProbe()
+
+        #expect(await gate.acquire())
+        let cancelled = Task {
+            await probe.record("esperando cancelación")
+            return await gate.acquire()
+        }
+        while await probe.events.isEmpty {
+            await Task.yield()
+        }
+
+        cancelled.cancel()
+        #expect(await cancelled.value == false)
+        await gate.release()
+
+        #expect(await gate.acquire())
+        await gate.release()
     }
 }

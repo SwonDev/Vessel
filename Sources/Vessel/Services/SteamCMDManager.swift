@@ -8,16 +8,34 @@ import Darwin
 actor SteamCMDExecutionGate {
     static let shared = SteamCMDExecutionGate()
 
-    private var isAvailable = true
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Bool, Never>
+    }
 
-    func acquire() async {
+    private var isAvailable = true
+    private var waiters: [Waiter] = []
+
+    /// Devuelve `false` si la tarea se cancela mientras espera. Así una operación pausada no queda
+    /// retenida detrás de otra descarga larga solo para adquirir y liberar el turno más tarde.
+    func acquire() async -> Bool {
+        guard !Task.isCancelled else { return false }
         if isAvailable {
             isAvailable = false
-            return
+            return true
         }
-        await withCheckedContinuation { continuation in
-            waiters.append(continuation)
+
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(returning: false)
+                } else {
+                    waiters.append(Waiter(id: id, continuation: continuation))
+                }
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id) }
         }
     }
 
@@ -26,7 +44,12 @@ actor SteamCMDExecutionGate {
             isAvailable = true
             return
         }
-        waiters.removeFirst().resume()
+        waiters.removeFirst().continuation.resume(returning: true)
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        waiters.remove(at: index).continuation.resume(returning: false)
     }
 }
 
@@ -313,7 +336,9 @@ final class SteamCMDManager {
         onLine: (@MainActor (String) -> Void)?
     ) async -> (output: String, exitCode: Int32) {
         let executionGate = SteamCMDExecutionGate.shared
-        await executionGate.acquire()
+        guard await executionGate.acquire() else {
+            return ("Operación cancelada antes de iniciar SteamCMD.", -2)
+        }
         guard !Task.isCancelled else {
             await executionGate.release()
             return ("Operación cancelada antes de iniciar SteamCMD.", -2)
