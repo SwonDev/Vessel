@@ -899,19 +899,37 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             result["DYLD_INSERT_LIBRARIES"],
             "/Vessel/libVesselDockIdentity.dylib"
         )
-        for key in [
+        let identityKeys = [
             "WINEPRELOADERAPPNAME", "VESSEL_DOCK_APP_NAME",
             "VESSEL_DOCK_PRELOADER_ALIAS", "DYLD_INSERT_LIBRARIES"
-        ] {
+        ]
+        for key in identityKeys {
             XCTAssertTrue(WineManager.d3dMetalGameCleanEnvironmentKeys.contains(key))
+            XCTAssertTrue(WineManager.gptkGameCleanEnvironmentKeys.contains(key))
         }
-        XCTAssertTrue(WineManager.gptkGameCleanEnvironmentKeys.contains("WINEPRELOADERAPPNAME"))
         XCTAssertEqual(
             WineManager.fullEngineCleanEnvironment(from: result)["WINEPRELOADERAPPNAME"],
             result["WINEPRELOADERAPPNAME"]
         )
         XCTAssertNil(WineManager.fullEngineCleanEnvironment(from: result)["DYLD_INSERT_LIBRARIES"])
-        XCTAssertFalse(WineManager.gptkGameCleanEnvironmentKeys.contains("DYLD_INSERT_LIBRARIES"))
+    }
+
+    func testGPTKDockIdentityUsesHelperEvenWhenLoaderAdvertisesNativeOverride() {
+        XCTAssertFalse(WineManager.nativeDockIdentityIsReliable(
+            isGPTKEngine: true,
+            isKnownPatchedEngine: false,
+            advertisesNativeOverride: true
+        ))
+        XCTAssertTrue(WineManager.nativeDockIdentityIsReliable(
+            isGPTKEngine: false,
+            isKnownPatchedEngine: true,
+            advertisesNativeOverride: false
+        ))
+        XCTAssertTrue(WineManager.nativeDockIdentityIsReliable(
+            isGPTKEngine: false,
+            isKnownPatchedEngine: false,
+            advertisesNativeOverride: true
+        ))
     }
 
     func testFullEngineControlCommandsMatchSteamSynchronization() {
@@ -2809,6 +2827,36 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             importedLibraries: ["D3D12.dll", "DXGI.dll", "amd_ags_x64.dll", "EOSSDK-Win64-Shipping.dll"],
             containsVoidEngineMarker: true,
             containsAMDDriverGate: true,
+            isD3D12: true
+        ))
+    }
+
+    func testApexTortoiseD3D12DriverGateIsDetectedStructurally() {
+        XCTAssertTrue(WineManager.requiresD3DMetalDriverIdentityCompatibility(
+            importedLibraries: ["D3D12.dll", "DXGI.dll", "amd_ags_x64.dll", "EOSSDK-Win64-Shipping.dll"],
+            containsVoidEngineMarker: false,
+            containsAMDDriverGate: false,
+            containsApexGraphicsStack: true,
+            containsTortoiseDriverWarning: true,
+            isD3D12: true
+        ))
+    }
+
+    func testD3DMetalDriverIdentityRejectsIncompleteApexSignatures() {
+        XCTAssertFalse(WineManager.requiresD3DMetalDriverIdentityCompatibility(
+            importedLibraries: ["d3d12.dll", "dxgi.dll", "amd_ags_x64.dll"],
+            containsVoidEngineMarker: false,
+            containsAMDDriverGate: false,
+            containsApexGraphicsStack: true,
+            containsTortoiseDriverWarning: false,
+            isD3D12: true
+        ))
+        XCTAssertFalse(WineManager.requiresD3DMetalDriverIdentityCompatibility(
+            importedLibraries: ["d3d12.dll", "dxgi.dll"],
+            containsVoidEngineMarker: false,
+            containsAMDDriverGate: false,
+            containsApexGraphicsStack: true,
+            containsTortoiseDriverWarning: true,
             isD3D12: true
         ))
     }

@@ -923,23 +923,46 @@ final class WineManager {
         )
     }
 
-    /// Firma estructural de Void Engine cuando valida el controlador AMD antes de crear el primer
-    /// frame D3D12. D3DMetal expone por DXGI `AMD Compatibility Mode` (vendor 0x1002), pero no una
-    /// versión UMD consultable; Void interpreta ese contrato de traducción como un driver AMD real
-    /// obsoleto y abre un `MessageBox` preventivo aunque el dispositivo FL12_0 ya sea válido.
+    /// Firma estructural de motores D3D12 que validan la versión del controlador antes de crear el
+    /// primer frame. D3DMetal expone por DXGI `AMD Compatibility Mode` (vendor 0x1002), pero no una
+    /// versión UMD consultable; algunos motores interpretan ese contrato de traducción como un
+    /// driver AMD real obsoleto y abren un `MessageBox` preventivo aunque el dispositivo sea válido.
     ///
     /// Se exige la combinación completa de imports y marcadores del sistema de cvars del motor para
     /// no afectar a otros ejecutables que simplemente usen AGS o D3D12. No intervienen título ni
     /// AppID, por lo que cubre otras compilaciones del mismo motor sin crear perfiles manuales.
+    nonisolated static func requiresD3DMetalDriverIdentityCompatibility(
+        importedLibraries: Set<String>,
+        containsVoidEngineMarker: Bool,
+        containsAMDDriverGate: Bool,
+        containsApexGraphicsStack: Bool,
+        containsTortoiseDriverWarning: Bool,
+        isD3D12: Bool
+    ) -> Bool {
+        guard isD3D12 else { return false }
+        let imports = Set(importedLibraries.map { $0.lowercased() })
+        guard imports.isSuperset(of: ["d3d12.dll", "dxgi.dll", "amd_ags_x64.dll"]) else {
+            return false
+        }
+        let voidDriverGate = containsVoidEngineMarker && containsAMDDriverGate
+        let apexDriverGate = containsApexGraphicsStack && containsTortoiseDriverWarning
+        return voidDriverGate || apexDriverGate
+    }
+
     nonisolated static func requiresVoidEngineD3DMetalDriverCompatibility(
         importedLibraries: Set<String>,
         containsVoidEngineMarker: Bool,
         containsAMDDriverGate: Bool,
         isD3D12: Bool
     ) -> Bool {
-        guard isD3D12, containsVoidEngineMarker, containsAMDDriverGate else { return false }
-        let imports = Set(importedLibraries.map { $0.lowercased() })
-        return imports.isSuperset(of: ["d3d12.dll", "dxgi.dll", "amd_ags_x64.dll"])
+        requiresD3DMetalDriverIdentityCompatibility(
+            importedLibraries: importedLibraries,
+            containsVoidEngineMarker: containsVoidEngineMarker,
+            containsAMDDriverGate: containsAMDDriverGate,
+            containsApexGraphicsStack: false,
+            containsTortoiseDriverWarning: false,
+            isD3D12: isD3D12
+        )
     }
 
     func requiresVoidEngineD3DMetalDriverCompatibility(_ executable: String) -> Bool {
@@ -957,6 +980,35 @@ final class WineManager {
         )
     }
 
+    func requiresD3DMetalDriverIdentityCompatibility(_ executable: String) -> Bool {
+        let containsApexGraphicsStack = exeContains(executable, anyOf: ["ApexRenderBackend"])
+            && exeContains(executable, anyOf: ["apex_module_initialization_mode"])
+            && exeContains(executable, anyOf: ["CApexModuleGraphicsDevice"])
+        let containsTortoiseDriverWarning = exeContains(
+            executable,
+            anyOf: ["TORTOISE Graphics Driver Problem"]
+        ) && exeContains(
+            executable,
+            anyOf: [
+                "Your graphics driver is out-of-date. This will likely cause problems. Do you want to start the game anyway?"
+            ]
+        )
+        return Self.requiresD3DMetalDriverIdentityCompatibility(
+            importedLibraries: peImportedLibraries(forExecutable: executable),
+            containsVoidEngineMarker: exeContains(executable, anyOf: ["VoidEngine"]),
+            containsAMDDriverGate: exeContains(
+                executable,
+                anyOf: [
+                    "r_minRecommendedAMDDriverMajorVersion",
+                    "r_minAMDDriverMajorVersion"
+                ]
+            ),
+            containsApexGraphicsStack: containsApexGraphicsStack,
+            containsTortoiseDriverWarning: containsTortoiseDriverWarning,
+            isD3D12: detectGraphicsAPI(forExecutable: executable) == .d3d12
+        )
+    }
+
     /// Alinea la identidad DXGI con el contrato de versión que D3DMetal publica. El framework de
     /// Apple incluye una versión UMD de estilo NVIDIA (30.0.15.1233 → 512.33), pero por defecto
     /// anuncia vendor AMD; Void combina ambas ramas y muestra un aviso preventivo falso. Las
@@ -965,7 +1017,7 @@ final class WineManager {
     /// La emulación escogida (RTX 3070) satisface el mínimo D3D12/VRAM del motor sin habilitar ni
     /// deshabilitar features: D3D12CreateDevice y todos los feature checks siguen pasando por la GPU
     /// Apple real y por D3DMetal. Solo se corrige la etiqueta que usa el validador del driver.
-    nonisolated static func environmentByApplyingVoidEngineD3DMetalIdentity(
+    nonisolated static func environmentByApplyingD3DMetalDriverIdentity(
         _ environment: [String: String],
         required: Bool
     ) -> [String: String] {
@@ -975,6 +1027,13 @@ final class WineManager {
         resolved["D3DM_DEVICE_ID"] = "0x2484"
         resolved["D3DM_DEVICE_DESCRIPTION"] = "NVIDIA GeForce RTX 3070"
         return resolved
+    }
+
+    nonisolated static func environmentByApplyingVoidEngineD3DMetalIdentity(
+        _ environment: [String: String],
+        required: Bool
+    ) -> [String: String] {
+        environmentByApplyingD3DMetalDriverIdentity(environment, required: required)
     }
 
     /// Auto-detecta la API gráfica del juego. Lo más fiable es mirar las DLL que
@@ -5815,7 +5874,7 @@ final class WineManager {
             && detectGraphicsAPI(forExecutable: executable) != .d3d12
         let needsManagedMedia = requiresManagedD3D12MediaEngine(executable)
         let needsCoherentGPUProbe = requiresCoherentD3DMetalGPUProbeEngine(executable)
-        let needsVoidDriverCompatibility = requiresVoidEngineD3DMetalDriverCompatibility(executable)
+        let needsD3DMetalDriverIdentity = requiresD3DMetalDriverIdentityCompatibility(executable)
         let needsDirectStorageFallback = requiresDirectStorageCompatibilityFallback(executable)
         let needsStableFourAWindowing = isFourAEnhancedD3D12Engine(executable)
         let needsIsolatedD3DMetalEngine = Self.requiresIsolatedD3DMetalRuntime(
@@ -5994,9 +6053,9 @@ final class WineManager {
             env,
             executable: executable
         )
-        env = Self.environmentByApplyingVoidEngineD3DMetalIdentity(
+        env = Self.environmentByApplyingD3DMetalDriverIdentity(
             env,
-            required: needsVoidDriverCompatibility
+            required: needsD3DMetalDriverIdentity
         )
         if runtimeDependencies.contains(.dotNet) {
             log.log(
@@ -6010,9 +6069,9 @@ final class WineManager {
                 level: .info
             )
         }
-        if needsVoidDriverCompatibility {
+        if needsD3DMetalDriverIdentity {
             log.log(
-                "Void Engine + D3DMetal: identidad DXGI alineada con el driver virtual del traductor; se evita el falso aviso previo.",
+                "D3D12 + D3DMetal: identidad DXGI alineada con el driver virtual del traductor; se evita el falso aviso de controlador.",
                 level: .info
             )
         }
@@ -10034,7 +10093,8 @@ final class WineManager {
         [
             "HOME", "USER", "TMPDIR", "WINEPREFIX", "WINEDEBUG", "MVK_CONFIG_LOG_LEVEL",
             "WINEDLLOVERRIDES", "DYLD_FALLBACK_LIBRARY_PATH", "SteamAppId", "SteamGameId",
-            "WINEPRELOADERAPPNAME",
+            "WINEPRELOADERAPPNAME", "VESSEL_DOCK_APP_NAME",
+            "VESSEL_DOCK_PRELOADER_ALIAS", "DYLD_INSERT_LIBRARIES",
             "WINEMSYNC", "WINEESYNC", "WINEFSYNC", "CX_FWD_COMPAT_GL_CTX", "MTL_HUD_ENABLED",
             "D3DM_SUPPORT_DXR", "ROSETTA_ADVERTISE_AVX", "SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS",
             "D3DM_VENDOR_ID", "D3DM_DEVICE_ID", "D3DM_DEVICE_DESCRIPTION",
@@ -10094,9 +10154,9 @@ final class WineManager {
         return String(collapsed.prefix(64))
     }
 
-    /// Composición pura y comprobable del entorno de identidad. Los motores CrossOver/GPTK ya
-    /// implementan `WINEPRELOADERAPPNAME`; WineHQ recibe además el helper de Vessel que replica ese
-    /// comportamiento y ejecuta el preloader mediante un alias con el título real del juego.
+    /// Composición pura y comprobable del entorno de identidad. Los cargadores que aplican de forma
+    /// fiable `WINEPRELOADERAPPNAME` usan su ruta nativa; el resto recibe además el helper de Vessel,
+    /// que corrige `CFBundleName` y ejecuta el preloader mediante un alias con el título del juego.
     nonisolated static func dockIdentityEnvironment(
         from environment: [String: String],
         displayName: String?,
@@ -10126,12 +10186,24 @@ final class WineManager {
         return result
     }
 
+    nonisolated static func nativeDockIdentityIsReliable(
+        isGPTKEngine: Bool,
+        isKnownPatchedEngine: Bool,
+        advertisesNativeOverride: Bool
+    ) -> Bool {
+        // GPTK contiene el literal `WINEPRELOADERAPPNAME`, pero su cargador temporal no conserva
+        // la identidad en el Dock. La ejecución real muestra `wine`; el helper sí debe viajar por
+        // el LaunchAgent hasta ese cargador final. El literal por sí solo no es evidencia suficiente.
+        guard !isGPTKEngine else { return false }
+        return isKnownPatchedEngine || advertisesNativeOverride
+    }
+
     private func loaderSupportsNativeDockIdentity(winePath: String) -> Bool {
-        if WineEngineLocator.isFullEngine(winePath)
-            || WineEngineLocator.isGPTKEngine(winePath)
-            || WineEngineLocator.isD3DMetalMediaEngine(winePath) {
-            return true
-        }
+        let isGPTKEngine = WineEngineLocator.isGPTKEngine(winePath)
+        let isKnownPatchedEngine = WineEngineLocator.isFullEngine(winePath)
+            || WineEngineLocator.isD3DMetalMediaEngine(winePath)
+        if isGPTKEngine { return false }
+        if isKnownPatchedEngine { return true }
 
         var candidates = [URL(fileURLWithPath: winePath)]
         if let root = WineEngineLocator.engineRoot(
@@ -10145,12 +10217,17 @@ final class WineManager {
             ]
         }
         let marker = Data("WINEPRELOADERAPPNAME".utf8)
-        return Set(candidates.map(\.standardizedFileURL)).contains { candidate in
+        let advertisesNativeOverride = Set(candidates.map(\.standardizedFileURL)).contains { candidate in
             guard let data = try? Data(contentsOf: candidate, options: .mappedIfSafe) else {
                 return false
             }
             return data.range(of: marker) != nil
         }
+        return Self.nativeDockIdentityIsReliable(
+            isGPTKEngine: isGPTKEngine,
+            isKnownPatchedEngine: isKnownPatchedEngine,
+            advertisesNativeOverride: advertisesNativeOverride
+        )
     }
 
     private func environmentByApplyingDockIdentity(
