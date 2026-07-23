@@ -260,18 +260,48 @@ final class SteamLibraryImporter: Sendable {
     /// nombres de juegos, AppID ni argumentos manuales.
     private static func launcherConfiguredPayloads(
         in root: String,
-        candidates: [(rel: String, full: String)]
+        candidates: [(rel: String, full: String)],
+        knownLaunchers: [String]? = nil
     ) -> Set<String> {
         let fm = FileManager.default
         let standardizedRoot = URL(fileURLWithPath: root).standardizedFileURL.path
         let candidatePaths = candidates.map { URL(fileURLWithPath: $0.full).standardizedFileURL.path }
         var payloads: Set<String> = []
 
-        let launchersByDirectory = Dictionary(grouping: candidatePaths.filter { path in
+        let packageLauncherPaths = (knownLaunchers ?? candidatePaths)
+            .map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+            .filter { path in
+                return path.hasPrefix(standardizedRoot + "/")
+                    && fm.fileExists(atPath: path)
+            }
+        let launcherPaths = packageLauncherPaths.filter { path in
             let stem = (((path as NSString).lastPathComponent as NSString).deletingPathExtension)
             return normalizedName(stem).contains("launcher")
-        }) { (path: String) in
+        }
+        let launchersByDirectory = Dictionary(grouping: launcherPaths) { (path: String) in
             (path as NSString).deletingLastPathComponent
+        }
+
+        func acceptedPayload(at path: String) -> String? {
+            let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+            guard standardized.hasPrefix(standardizedRoot + "/"),
+                  (standardized as NSString).pathExtension.caseInsensitiveCompare("exe") == .orderedSame,
+                  !normalizedName((standardized as NSString).lastPathComponent).contains("launcher")
+            else { return nil }
+
+            if let candidate = candidatePaths.first(where: {
+                $0.caseInsensitiveCompare(standardized) == .orderedSame
+            }) {
+                return candidate
+            }
+            // La ruta oficial rápida no enumera todo el depot. En ese caso el descriptor aporta el
+            // destino y aquí se valida directamente como fichero regular y ejecutable Windows.
+            guard candidatePaths.isEmpty else { return nil }
+            var isDirectory: ObjCBool = false
+            guard fm.fileExists(atPath: standardized, isDirectory: &isDirectory),
+                  !isDirectory.boolValue,
+                  !isDOSExecutable(standardized) else { return nil }
+            return standardized
         }
 
         func binaryContains(_ path: String, markers: [String]) -> Bool {
@@ -319,7 +349,7 @@ final class SteamLibraryImporter: Sendable {
 
             let gameRoot = splashDirectory.deletingLastPathComponent().standardizedFileURL
             guard gameRoot.path == standardizedRoot,
-                  candidatePaths.contains(where: { launcher in
+                  packageLauncherPaths.contains(where: { launcher in
                       let launcherURL = URL(fileURLWithPath: launcher).standardizedFileURL
                       return launcherURL.deletingLastPathComponent() == gameRoot
                           && binaryContains(
@@ -332,12 +362,7 @@ final class SteamLibraryImporter: Sendable {
             let relative = payloadValue.replacingOccurrences(of: "\\", with: "/")
             let resolved = URL(fileURLWithPath: relative, relativeTo: gameRoot)
                 .standardizedFileURL.path
-            guard resolved.hasPrefix(standardizedRoot + "/"),
-                  let candidate = candidatePaths.first(where: {
-                      $0.caseInsensitiveCompare(resolved) == .orderedSame
-                  })
-            else { return nil }
-            return candidate
+            return acceptedPayload(at: resolved)
         }
 
         // Los dos contratos admitidos ya acotan por construcción dónde puede vivir su descriptor:
@@ -423,12 +448,7 @@ final class SteamLibraryImporter: Sendable {
                 let relative = applicationPath.replacingOccurrences(of: "\\", with: "/")
                 let resolved = URL(fileURLWithPath: relative, relativeTo: directoryURL)
                     .standardizedFileURL.path
-                guard resolved.hasPrefix(standardizedRoot + "/"),
-                      let candidate = candidatePaths.first(where: {
-                          $0.caseInsensitiveCompare(resolved) == .orderedSame
-                      }),
-                      !normalizedName((candidate as NSString).lastPathComponent).contains("launcher")
-                else { continue }
+                guard let candidate = acceptedPayload(at: resolved) else { continue }
                 payloads.insert(candidate)
             }
         }
@@ -471,6 +491,19 @@ final class SteamLibraryImporter: Sendable {
             return normalizedName(stem).contains("launcher")
         } ?? false
         if let officialExecutable, !officialIsLauncher { return officialExecutable }
+        if let officialExecutable, officialIsLauncher {
+            let declaredPayloads = launcherConfiguredPayloads(
+                in: dir,
+                candidates: [],
+                knownLaunchers: [officialExecutable]
+            )
+            // Un único destino declarado es inequívoco. Varios descriptores diferentes implican
+            // selección de edición/modo y deben seguir pasando por el launcher oficial.
+            if declaredPayloads.count == 1, let declaredPayload = declaredPayloads.first {
+                return declaredPayload
+            }
+            return officialExecutable
+        }
 
         guard let enumerator = fm.enumerator(atPath: dir) else { return nil }
         let folderKey = normalizedName((dir as NSString).lastPathComponent)
@@ -518,13 +551,6 @@ final class SteamLibraryImporter: Sendable {
         guard !exes.isEmpty else { return nil }
         let configuredLauncherPayloads = launcherConfiguredPayloads(in: dir, candidates: exes)
         let confirmedVulkanSiblings = confirmedVulkanSiblingExecutables(in: exes)
-
-        // Si Steam exige un launcher y el depot no declara de forma verificable ningún payload,
-        // no se intenta saltarlo: puede encargarse de autenticación, parches o selección de rama.
-        // Esta salida ocurre después del escaneo acotado de descriptores y antes de la heurística.
-        if let officialExecutable, officialIsLauncher, configuredLauncherPayloads.isEmpty {
-            return officialExecutable
-        }
 
         func score(_ rel: String, _ full: String) -> Int {
             var s = 0
