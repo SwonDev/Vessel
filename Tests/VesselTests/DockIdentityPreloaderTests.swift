@@ -120,6 +120,44 @@ final class DockIdentityPreloaderTests: XCTestCase {
         XCTAssertEqual((parentAttributes[.posixPermissions] as? NSNumber)?.intValue, 0o700)
     }
 
+    func testPrepareAliasFindsModernWineLoaderWhenNoPreloaderExists() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("vessel-dock-modern-loader-\(UUID().uuidString)", isDirectory: true)
+        let bin = root.appendingPathComponent("bin", isDirectory: true)
+        let wine = bin.appendingPathComponent("wine", isDirectory: false)
+        let loader = root.appendingPathComponent(
+            "lib/wine/x86_64-unix/wine",
+            isDirectory: false
+        )
+        let alias = root.appendingPathComponent("private/Grim Dawn", isDirectory: false)
+        defer { try? fileManager.removeItem(at: root) }
+
+        try fileManager.createDirectory(
+            at: loader.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try fileManager.createDirectory(at: bin, withIntermediateDirectories: true)
+        try Data("dispatcher".utf8).write(to: wine)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: wine.path)
+        let source = try makeMachO()
+        try source.write(to: loader)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: loader.path)
+
+        try DockIdentityPreloader.prepareAlias(
+            wineExecutable: wine,
+            alias: alias,
+            displayName: "Grim Dawn",
+            fileManager: fileManager
+        )
+
+        XCTAssertEqual(try Data(contentsOf: loader), source)
+        XCTAssertEqual(
+            try embeddedPlist(in: Data(contentsOf: alias))["CFBundleName"] as? String,
+            "Grim Dawn"
+        )
+    }
+
     func testBundleIdentifierIsStableAndScopedByGame() {
         let first = DockIdentityPreloader.bundleIdentifier(
             winePath: "/Engines/gptk/wine/bin/wine",

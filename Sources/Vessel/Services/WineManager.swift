@@ -27,19 +27,21 @@ final class WineManager {
         )
         case d3dMetalDriverIdentity
 
+        private static let dockIdentityContract = "dock-identity-v2"
+
         var markerID: String {
             switch self {
             case .standard:
-                return "standard"
+                return "standard:\(Self.dockIdentityContract)"
             case .nativeVulkan(let libraryDirectory, let refreshPresentationOnFocus):
                 let version = URL(fileURLWithPath: libraryDirectory).lastPathComponent
                 // El marker forma parte del contrato heredado por los hijos de Steam. La revisión
                 // `engine-libs-v1` fuerza un único reinicio limpio de clientes que aún conservan el
                 // perfil antiguo sin FreeType/GnuTLS en sus rutas dyld.
-                let base = "native-vulkan:\(version):engine-libs-v1"
+                let base = "native-vulkan:\(version):engine-libs-v1:\(Self.dockIdentityContract)"
                 return refreshPresentationOnFocus ? "\(base):focus-refresh-v1" : base
             case .d3dMetalDriverIdentity:
-                return "d3dmetal-driver-identity:nvidia-10de-2484"
+                return "d3dmetal-driver-identity:nvidia-10de-2484:\(Self.dockIdentityContract)"
             }
         }
     }
@@ -118,6 +120,11 @@ final class WineManager {
     /// Supervisa un único diálogo legal del Steam interno. Un nuevo intento cancela el anterior;
     /// así dos vistas no pueden reemitir simultáneamente el mismo `-applaunch`.
     private static var steamAuthorizationMonitor: Task<Void, Never>?
+
+    /// Margen del supervisor para que Steam termine tareas legítimas previas a crear el proceso
+    /// del juego, especialmente una primera sincronización grande de Steam Cloud. El proceso sigue
+    /// siendo cancelable desde Vessel y las decisiones de usuario se detectan aparte por el log.
+    nonisolated static let protectedSteamExecutableAppearanceTimeoutSeconds = 30 * 60
 
     /// Decide si un Steam vivo debe reiniciarse antes de cambiar de función. Una interfaz ya
     /// conectada puede servir como DRM si comparte motor; la inversa no es cierta: el cliente
@@ -8025,6 +8032,15 @@ final class WineManager {
         guard !appId.isEmpty, appId.allSatisfy(\.isNumber) else {
             throw WineError.launchFailed("Steam devolvió un AppID inválido para el juego protegido.")
         }
+        // Steam crea el proceso del juego fuera de `launchWineProcess`, por lo que su identidad no
+        // puede aplicarse después del spawn. El mapa queda publicado antes de enviar `-applaunch` y
+        // el helper que ya heredó el cliente lo resuelve en el hijo exacto.
+        registerSteamDockIdentity(
+            executable: executable,
+            appId: appId,
+            bottle: bottle,
+            wine: wine
+        )
         func shq(_ value: String) -> String {
             "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
         }
@@ -8058,13 +8074,23 @@ final class WineManager {
         // y crear `Limbo.exe`; el supervisor debe considerar ambos el mismo proceso.
         let pgrep = Self.caseInsensitivePgrepShellCommand(matchingPattern: pattern)
         let steamDirectory = (bottle.steamPath as NSString).deletingLastPathComponent
+        // Steam puede aceptar `-applaunch` inmediatamente y mantener el juego en
+        // `SynchronizingCloud` durante bastante más de dos minutos (por ejemplo, después de
+        // importar una biblioteca con muchos guardados). El supervisor representa todo el
+        // lanzamiento, no solo la creación del primer proceso. Si caduca demasiado pronto, el
+        // tracker vuelve a «Jugar», muestra un falso fallo y el segundo `-applaunch` queda ignorado
+        // porque Steam todavía conserva la primera acción pendiente.
+        //
+        // Treinta minutos es un límite acotado y cancelable desde «Detener». Las decisiones de UI
+        // (EULA, hardware, interstitials) siguen detectándose por el registro en pocos segundos y
+        // no dependen de este margen.
         let script = """
         cd \(shq(steamDirectory)) || exit 70
         /usr/bin/env -i \(assignments) \(command)
         launch_status=$?
         appeared=0
         attempt=0
-        while [ "$attempt" -lt 120 ]; do
+        while [ "$attempt" -lt \(Self.protectedSteamExecutableAppearanceTimeoutSeconds) ]; do
           if \(pgrep) >/dev/null 2>&1; then appeared=1; break; fi
           attempt=$((attempt + 1))
           sleep 1
@@ -9513,7 +9539,8 @@ final class WineManager {
             "HOME", "USER", "TMPDIR", "WINEPREFIX", "WINEDEBUG", "WINEDLLOVERRIDES",
             "WINESERVER",
             "WINEPRELOADERAPPNAME",
-            "DYLD_FALLBACK_LIBRARY_PATH", "DYLD_LIBRARY_PATH",
+            "VESSEL_DOCK_DYNAMIC_IDENTITY", "VESSEL_DOCK_IDENTITY_MAP",
+            "DYLD_INSERT_LIBRARIES", "DYLD_FALLBACK_LIBRARY_PATH", "DYLD_LIBRARY_PATH",
             "VK_ICD_FILENAMES", "VK_DRIVER_FILES", "DXVK_LOG_LEVEL", "DXVK_LOG_PATH",
             "CX_ACTIVE_GRAPHICS_BACKEND", "CX_LIBVULKAN",
             "SteamAppId", "SteamGameId",
@@ -9590,6 +9617,15 @@ final class WineManager {
         wine: String,
         runtimeProfile: SteamRuntimeProfile = .standard
     ) -> [String: String] {
+        func finalized(_ environment: [String: String]) -> [String: String] {
+            environmentByApplyingDynamicSteamDockIdentity(
+                Self.environmentByApplyingSteamRuntimeProfile(
+                    environment,
+                    profile: runtimeProfile
+                ),
+                prefix: prefix
+            )
+        }
         // Motor COMPLETO (wine-full): el cliente Steam CEF corre NATIVO con WINEMSYNC=1 (msync ON,
         // como el Wine de referencia). Sin wrapper, sin steam.cfg; el CEF renderiza por su DXMT/winemac
         // de fábrica. Los juegos que Steam lance heredan los env globales del bottle (.NET + AVX).
@@ -9599,7 +9635,7 @@ final class WineManager {
             env["MVK_CONFIG_LOG_LEVEL"] = "0"
             env["DOTNET_EnableWriteXorExecute"] = "0"
             if #available(macOS 15, *) { env["ROSETTA_ADVERTISE_AVX"] = "1" }
-            return Self.environmentByApplyingSteamRuntimeProfile(env, profile: runtimeProfile)
+            return finalized(env)
         }
         // GPTK/D3DMetal: entorno de D3DMetal (Steam en el mismo motor que un juego Metal).
         if wine.contains("/\(GPTKManager.engineName)/") {
@@ -9617,7 +9653,7 @@ final class WineManager {
             env["WINEFSYNC"] = "0"
             env["SteamAppId"] = "753"
             env["SteamGameId"] = "753"
-            return Self.environmentByApplyingSteamRuntimeProfile(env, profile: runtimeProfile)
+            return finalized(env)
         }
         // Motor UNIFICADO propio: el cliente de Steam CEF funciona con **WINEMSYNC=0** — msync
         // ROMPE el async socket completion (ConnectEx/overlapped) del updater HTTP → el connect
@@ -9642,7 +9678,7 @@ final class WineManager {
             env["MVK_CONFIG_LOG_LEVEL"] = "0"
             env["SteamAppId"] = "753"
             env["SteamGameId"] = "753"
-            return Self.environmentByApplyingSteamRuntimeProfile(env, profile: runtimeProfile)
+            return finalized(env)
         }
         if WineEngineLocator.isUnifiedEngine(wine) {
             // Motor UNIFICADO / wine-steam (cliente Steam CEF, juegos D3D11 por DXMT): WINEMSYNC=0 —
@@ -9661,13 +9697,10 @@ final class WineManager {
             // cliente; imprescindibles para que muchos juegos .NET/nativos arranquen desde Steam.
             env["DOTNET_EnableWriteXorExecute"] = "0"
             if #available(macOS 15, *) { env["ROSETTA_ADVERTISE_AVX"] = "1" }
-            return Self.environmentByApplyingSteamRuntimeProfile(env, profile: runtimeProfile)
+            return finalized(env)
         }
         // Gcenx (interfaz validada): composición software y sync=0.
-        return Self.environmentByApplyingSteamRuntimeProfile(
-            steamClientEnvironment(prefix: prefix),
-            profile: runtimeProfile
-        )
+        return finalized(steamClientEnvironment(prefix: prefix))
     }
 
     /// Entorno de JUEGO para el motor **D3DMetal** propio (`wine-d3dmetal`). El DYLD hacia
@@ -10686,7 +10719,8 @@ final class WineManager {
             "HOME", "USER", "TMPDIR", "WINEPREFIX", "WINEDEBUG", "MVK_CONFIG_LOG_LEVEL",
             "WINEDLLOVERRIDES", "DYLD_FALLBACK_LIBRARY_PATH", "SteamAppId", "SteamGameId",
             "WINEPRELOADERAPPNAME", "VESSEL_DOCK_APP_NAME",
-            "VESSEL_DOCK_PRELOADER_ALIAS", "DYLD_INSERT_LIBRARIES",
+            "VESSEL_DOCK_PRELOADER_ALIAS", "VESSEL_DOCK_DYNAMIC_IDENTITY",
+            "VESSEL_DOCK_IDENTITY_MAP", "DYLD_INSERT_LIBRARIES",
             "WINEMSYNC", "WINEESYNC", "WINEFSYNC", "CX_FWD_COMPAT_GL_CTX",
             "VESSEL_FORCE_CORE_GL_CTX", "VESSEL_WINE_FIBER_GS_REWRITE",
             "MTL_HUD_ENABLED", "D3DM_SUPPORT_DXR", "ROSETTA_ADVERTISE_AVX",
@@ -10707,7 +10741,8 @@ final class WineManager {
             "HOME", "USER", "TMPDIR", "WINEPREFIX", "WINEDEBUG", "MVK_CONFIG_LOG_LEVEL",
             "WINEDLLOVERRIDES", "DYLD_FALLBACK_LIBRARY_PATH", "SteamAppId", "SteamGameId",
             "WINEPRELOADERAPPNAME", "VESSEL_DOCK_APP_NAME",
-            "VESSEL_DOCK_PRELOADER_ALIAS", "DYLD_INSERT_LIBRARIES",
+            "VESSEL_DOCK_PRELOADER_ALIAS", "VESSEL_DOCK_DYNAMIC_IDENTITY",
+            "VESSEL_DOCK_IDENTITY_MAP", "DYLD_INSERT_LIBRARIES",
             "WINEMSYNC", "WINEESYNC", "WINEFSYNC", "CX_FWD_COMPAT_GL_CTX", "MTL_HUD_ENABLED",
             "D3DM_SUPPORT_DXR", "ROSETTA_ADVERTISE_AVX", "SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS",
             "D3DM_VENDOR_ID", "D3DM_DEVICE_ID", "D3DM_DEVICE_DESCRIPTION",
@@ -10765,6 +10800,202 @@ final class WineManager {
             .joined(separator: " ")
         guard !collapsed.isEmpty else { return nil }
         return String(collapsed.prefix(64))
+    }
+
+    /// El cliente Steam vive antes de conocer qué juego abrirá. En lugar de fijarle un nombre,
+    /// recibe un mapa privado que el helper consulta en cada hijo Wine. Así `CreateProcess` puede
+    /// resolver la identidad exacta del PE sin reiniciar Steam ni mantener excepciones por título.
+    nonisolated static func dynamicSteamDockIdentityEnvironment(
+        from environment: [String: String],
+        injectionLibraryPath: String?,
+        mapPath: String
+    ) -> [String: String] {
+        var result = environment
+        for key in [
+            "WINEPRELOADERAPPNAME", "VESSEL_DOCK_APP_NAME",
+            "VESSEL_DOCK_PRELOADER_ALIAS", "VESSEL_DOCK_DYNAMIC_IDENTITY",
+            "VESSEL_DOCK_IDENTITY_MAP", "DYLD_INSERT_LIBRARIES"
+        ] {
+            result[key] = nil
+        }
+        guard let injectionLibraryPath,
+              injectionLibraryPath.hasPrefix("/"),
+              !injectionLibraryPath.isEmpty,
+              mapPath.hasPrefix("/"),
+              !mapPath.isEmpty else { return result }
+        result["VESSEL_DOCK_DYNAMIC_IDENTITY"] = "1"
+        result["VESSEL_DOCK_IDENTITY_MAP"] = mapPath
+        // Nunca se conserva una inyección heredada: esta ruta solo admite el helper firmado que
+        // Vessel acaba de localizar dentro de su propio bundle.
+        result["DYLD_INSERT_LIBRARIES"] = injectionLibraryPath
+        return result
+    }
+
+    nonisolated static func isDynamicSteamDockIdentityEnvironment(
+        _ environment: [String: String]
+    ) -> Bool {
+        environment["VESSEL_DOCK_DYNAMIC_IDENTITY"] == "1"
+            && environment["VESSEL_DOCK_IDENTITY_MAP"]?.hasPrefix("/") == true
+            && environment["DYLD_INSERT_LIBRARIES"]?.hasPrefix("/") == true
+    }
+
+    nonisolated static func steamDockIdentityMapPath(prefix: String) -> String {
+        URL(fileURLWithPath: prefix, isDirectory: true)
+            .appendingPathComponent(".vessel", isDirectory: true)
+            .appendingPathComponent("steam-dock-identities.tsv", isDirectory: false)
+            .standardizedFileURL.path
+    }
+
+    /// Replica exactamente la normalización ASCII del helper C. No se usa `lowercased()` para no
+    /// transformar de manera distinta los nombres Unicode presentes en algunas bibliotecas.
+    nonisolated static func normalizedSteamDockWindowsPath(_ rawValue: String) -> String? {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+        guard !trimmed.isEmpty else { return nil }
+        var result = String.UnicodeScalarView()
+        for scalar in trimmed.unicodeScalars {
+            guard !CharacterSet.controlCharacters.contains(scalar) else { return nil }
+            switch scalar.value {
+            case 0x2F:
+                result.append("\\")
+            case 0x41...0x5A:
+                guard let lowered = UnicodeScalar(scalar.value + 0x20) else { return nil }
+                result.append(lowered)
+            default:
+                result.append(scalar)
+            }
+        }
+        return String(result)
+    }
+
+    /// Convierte la ruta POSIX resuelta por el importador a la ruta que Wine publica en argv. Los
+    /// juegos dentro de `drive_c` usan C:; cualquier biblioteca externa queda accesible por Z:.
+    nonisolated static func steamDockWindowsPath(
+        executable: String,
+        prefix: String
+    ) -> String? {
+        if executable.range(
+            of: #"^[A-Za-z]:[\\/]"#,
+            options: .regularExpression
+        ) != nil {
+            return normalizedSteamDockWindowsPath(executable)
+        }
+        guard executable.hasPrefix("/") else { return nil }
+        let path = URL(fileURLWithPath: executable).standardizedFileURL.path
+        let driveC = URL(fileURLWithPath: prefix, isDirectory: true)
+            .appendingPathComponent("drive_c", isDirectory: true)
+            .standardizedFileURL.path
+        let windowsPath: String
+        if path.hasPrefix(driveC + "/") {
+            windowsPath = "c:\\" + String(path.dropFirst(driveC.count + 1))
+        } else {
+            windowsPath = "z:" + path
+        }
+        return normalizedSteamDockWindowsPath(windowsPath)
+    }
+
+    nonisolated static func steamManifestValue(
+        _ key: String,
+        in contents: String
+    ) -> String? {
+        for line in contents.split(whereSeparator: \.isNewline) {
+            let components = line.split(
+                separator: "\"",
+                omittingEmptySubsequences: false
+            )
+            guard components.count >= 4,
+                  components[1].caseInsensitiveCompare(key) == .orderedSame else { continue }
+            let value = String(components[3])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty { return value }
+        }
+        return nil
+    }
+
+    nonisolated static func steamDockDisplayName(
+        appId: String,
+        steamDirectory: String,
+        fallbackExecutable: String
+    ) -> String? {
+        let manifest = URL(fileURLWithPath: steamDirectory, isDirectory: true)
+            .appendingPathComponent("steamapps/appmanifest_\(appId).acf", isDirectory: false)
+        let manifestName = (try? String(contentsOf: manifest, encoding: .utf8))
+            .flatMap { steamManifestValue("name", in: $0) }
+        let fallback = URL(fileURLWithPath: fallbackExecutable)
+            .deletingPathExtension()
+            .lastPathComponent
+            .replacingOccurrences(of: "_", with: " ")
+        return normalizedDockDisplayName(manifestName ?? fallback)
+    }
+
+    /// Actualiza una única entrada con rename atómico. El helper solo acepta este fichero si es
+    /// regular, pertenece al usuario y no es escribible por grupo/otros; se aplican esas garantías
+    /// antes de publicarlo para que ningún hijo observe un estado parcial.
+    nonisolated static func writeSteamDockIdentityMapping(
+        prefix: String,
+        windowsExecutablePath: String,
+        displayName: String,
+        preloaderAliasPath: String?
+    ) throws {
+        guard let key = normalizedSteamDockWindowsPath(windowsExecutablePath),
+              let name = normalizedDockDisplayName(displayName) else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
+        let directory = URL(fileURLWithPath: prefix, isDirectory: true)
+            .appendingPathComponent(".vessel", isDirectory: true)
+        let map = URL(fileURLWithPath: steamDockIdentityMapPath(prefix: prefix))
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: directory.path
+        )
+
+        var lines: [String] = []
+        if let attributes = try? fileManager.attributesOfItem(atPath: map.path),
+           attributes[.type] as? FileAttributeType == .typeRegular,
+           (attributes[.ownerAccountID] as? NSNumber)?.uint32Value == geteuid(),
+           ((attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0o777) & 0o022 == 0,
+           ((attributes[.size] as? NSNumber)?.intValue ?? 0) <= 1_048_576,
+           let existing = try? String(contentsOf: map, encoding: .utf8) {
+            lines = existing.split(whereSeparator: \.isNewline).compactMap { rawLine in
+                let line = String(rawLine)
+                guard let storedKey = line.split(
+                    separator: "\t",
+                    maxSplits: 1,
+                    omittingEmptySubsequences: false
+                ).first,
+                normalizedSteamDockWindowsPath(String(storedKey)) != key else { return nil }
+                return line
+            }
+        }
+
+        let alias = preloaderAliasPath?.hasPrefix("/") == true
+            ? preloaderAliasPath! : ""
+        lines.append("\(key)\t\(name)\t\(alias)")
+        var payload = lines.joined(separator: "\n") + "\n"
+        while payload.utf8.count > 1_048_576, lines.count > 1 {
+            lines.removeFirst()
+            payload = lines.joined(separator: "\n") + "\n"
+        }
+
+        let temporary = directory.appendingPathComponent(
+            ".steam-dock-identities-\(UUID().uuidString).tmp",
+            isDirectory: false
+        )
+        defer { try? fileManager.removeItem(at: temporary) }
+        try Data(payload.utf8).write(to: temporary)
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: temporary.path
+        )
+        guard Darwin.rename(temporary.path, map.path) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
     }
 
     /// Composición pura y comprobable del entorno de identidad. Los cargadores que aplican de forma
@@ -10849,6 +11080,12 @@ final class WineManager {
         winePath: String
     ) -> [String: String] {
         guard let name = Self.normalizedDockDisplayName(displayName) else {
+            // El cliente Steam todavía no tiene un nombre de juego: ya transporta el resolver
+            // dinámico controlado por Vessel para sus futuros hijos. Limpiarlo aquí hacía que el
+            // mapa se publicara correctamente pero ningún proceso llegase a cargar el helper.
+            if Self.isDynamicSteamDockIdentityEnvironment(environment) {
+                return environment
+            }
             return Self.dockIdentityEnvironment(
                 from: environment,
                 displayName: nil,
@@ -10918,6 +11155,93 @@ final class WineManager {
                 from: environment,
                 displayName: name,
                 nativeOverrideAvailable: true
+            )
+        }
+    }
+
+    private func environmentByApplyingDynamicSteamDockIdentity(
+        _ environment: [String: String],
+        prefix: String
+    ) -> [String: String] {
+        let helper = VesselPaths.bundledResource(
+            "dock-identity/libVesselDockIdentity.dylib"
+        )
+        if helper == nil {
+            log.log(
+                "No se encontró el helper dinámico de identidad del Dock para Steam.",
+                level: .warn
+            )
+        }
+        return Self.dynamicSteamDockIdentityEnvironment(
+            from: environment,
+            injectionLibraryPath: helper?.path,
+            mapPath: Self.steamDockIdentityMapPath(prefix: prefix)
+        )
+    }
+
+    private func registerSteamDockIdentity(
+        executable: String,
+        appId: String,
+        bottle: Bottle,
+        wine: String
+    ) {
+        guard let windowsPath = Self.steamDockWindowsPath(
+            executable: executable,
+            prefix: bottle.prefixPath
+        ), let displayName = Self.steamDockDisplayName(
+            appId: appId,
+            steamDirectory: bottle.steamDirectory,
+            fallbackExecutable: executable
+        ) else {
+            log.log(
+                "No se pudo resolver la identidad automática del Dock para Steam \(appId).",
+                level: .warn
+            )
+            return
+        }
+
+        let digest = SHA256.hash(
+            data: Data("\(wine)\u{0}\(windowsPath)".utf8)
+        )
+        .prefix(12)
+        .map { String(format: "%02x", $0) }
+        .joined()
+        let alias = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("VesselDockIdentity", isDirectory: true)
+            .appendingPathComponent("steam", isDirectory: true)
+            .appendingPathComponent(digest, isDirectory: true)
+            .appendingPathComponent(displayName, isDirectory: false)
+
+        var aliasPath: String?
+        do {
+            try DockIdentityPreloader.prepareAlias(
+                wineExecutable: URL(fileURLWithPath: wine),
+                alias: alias,
+                displayName: displayName
+            )
+            aliasPath = alias.path
+        } catch {
+            log.log(
+                "Steam conservará la identidad en memoria para \(displayName), pero no se pudo preparar su cargador privado: \(error.localizedDescription)",
+                level: .warn
+            )
+        }
+
+        do {
+            try Self.writeSteamDockIdentityMapping(
+                prefix: bottle.prefixPath,
+                windowsExecutablePath: windowsPath,
+                displayName: displayName,
+                preloaderAliasPath: aliasPath
+            )
+            log.log(
+                "Identidad Steam registrada automáticamente: \(displayName) → \(windowsPath).",
+                level: .info
+            )
+        } catch {
+            log.log(
+                "No se pudo publicar la identidad Steam de \(displayName): \(error.localizedDescription)",
+                level: .warn
             )
         }
     }
@@ -11154,7 +11478,8 @@ final class WineManager {
             for k in ["HOME", "USER", "TMPDIR", "WINEPREFIX", "WINEDEBUG", "WINEDLLOVERRIDES",
                       "DYLD_FALLBACK_LIBRARY_PATH", "SteamAppId", "SteamGameId",
                       "WINEPRELOADERAPPNAME", "VESSEL_DOCK_APP_NAME",
-                      "VESSEL_DOCK_PRELOADER_ALIAS", "DYLD_INSERT_LIBRARIES",
+                      "VESSEL_DOCK_PRELOADER_ALIAS", "VESSEL_DOCK_DYNAMIC_IDENTITY",
+                      "VESSEL_DOCK_IDENTITY_MAP", "DYLD_INSERT_LIBRARIES",
                       "DOTNET_ReadyToRun", "DOTNET_TieredCompilation", "DOTNET_TieredPGO",
                       "DOTNET_EnableWriteXorExecute", "DOTNET_gcServer"] {
                 if let v = fullEnv[k] { clean[k] = v }

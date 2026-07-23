@@ -160,12 +160,22 @@ enum DockIdentityPreloader {
         for wineExecutable: URL,
         fileManager: FileManager
     ) -> URL? {
-        let directory = wineExecutable
+        let executable = wineExecutable
             .resolvingSymlinksInPath()
-            .deletingLastPathComponent()
-        return ["wine-preloader", "wine64-preloader"]
-            .map { directory.appendingPathComponent($0, isDirectory: false) }
-            .first { candidate in
+        let directory = executable.deletingLastPathComponent()
+        let engineRoot = directory.deletingLastPathComponent()
+        // WineHQ/GPTK conservan un `wine-preloader` junto a `bin/wine`. El motor completo de
+        // Vessel sigue el layout moderno de CrossOver: `bin/wine` es el despachador y el Mach-O
+        // que LaunchServices registra vive en `lib/wine/x86_64-unix/wine`. Ambos contienen el
+        // mismo `__info_plist` y son fuentes válidas para la copia privada por juego.
+        let candidates = [
+            directory.appendingPathComponent("wine-preloader", isDirectory: false),
+            directory.appendingPathComponent("wine64-preloader", isDirectory: false),
+            engineRoot.appendingPathComponent("lib/wine/x86_64-unix/wine", isDirectory: false),
+            engineRoot.appendingPathComponent("lib64/wine/x86_64-unix/wine", isDirectory: false),
+            executable
+        ]
+        return candidates.first { candidate in
                 var isDirectory: ObjCBool = false
                 return fileManager.fileExists(
                     atPath: candidate.path,

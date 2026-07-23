@@ -5,6 +5,13 @@ import XCTest
 
 @MainActor
 final class WineManagerGraphicsRoutingTests: XCTestCase {
+    func testProtectedSteamSupervisorOutlivesLargeFirstCloudSync() {
+        XCTAssertGreaterThanOrEqual(
+            WineManager.protectedSteamExecutableAppearanceTimeoutSeconds,
+            30 * 60
+        )
+    }
+
     func testDisabledWineDebuggerPolicySkipsCrashPromptInBothRegistryViews() throws {
         let commands = WineManager.disabledAutoDebuggerRegistryCommands
 
@@ -901,7 +908,8 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         )
         let identityKeys = [
             "WINEPRELOADERAPPNAME", "VESSEL_DOCK_APP_NAME",
-            "VESSEL_DOCK_PRELOADER_ALIAS", "DYLD_INSERT_LIBRARIES"
+            "VESSEL_DOCK_PRELOADER_ALIAS", "VESSEL_DOCK_DYNAMIC_IDENTITY",
+            "VESSEL_DOCK_IDENTITY_MAP", "DYLD_INSERT_LIBRARIES"
         ]
         for key in identityKeys {
             XCTAssertTrue(WineManager.d3dMetalGameCleanEnvironmentKeys.contains(key))
@@ -911,7 +919,131 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             WineManager.fullEngineCleanEnvironment(from: result)["WINEPRELOADERAPPNAME"],
             result["WINEPRELOADERAPPNAME"]
         )
-        XCTAssertNil(WineManager.fullEngineCleanEnvironment(from: result)["DYLD_INSERT_LIBRARIES"])
+        XCTAssertEqual(
+            WineManager.fullEngineCleanEnvironment(from: result)["DYLD_INSERT_LIBRARIES"],
+            result["DYLD_INSERT_LIBRARIES"]
+        )
+    }
+
+    func testSteamDockIdentityUsesOnlyTheBundledDynamicHelperAcrossCleanLaunches() {
+        let result = WineManager.dynamicSteamDockIdentityEnvironment(
+            from: [
+                "WINEPREFIX": "/tmp/Vessel",
+                "VESSEL_DOCK_APP_NAME": "Nombre heredado",
+                "DYLD_INSERT_LIBRARIES": "/tmp/untrusted.dylib"
+            ],
+            injectionLibraryPath: "/Applications/Vessel.app/Contents/Resources/dock-identity/libVesselDockIdentity.dylib",
+            mapPath: "/tmp/Vessel/.vessel/steam-dock-identities.tsv"
+        )
+
+        XCTAssertNil(result["WINEPRELOADERAPPNAME"])
+        XCTAssertNil(result["VESSEL_DOCK_APP_NAME"])
+        XCTAssertNil(result["VESSEL_DOCK_PRELOADER_ALIAS"])
+        XCTAssertEqual(result["VESSEL_DOCK_DYNAMIC_IDENTITY"], "1")
+        XCTAssertEqual(
+            result["VESSEL_DOCK_IDENTITY_MAP"],
+            "/tmp/Vessel/.vessel/steam-dock-identities.tsv"
+        )
+        XCTAssertEqual(
+            result["DYLD_INSERT_LIBRARIES"],
+            "/Applications/Vessel.app/Contents/Resources/dock-identity/libVesselDockIdentity.dylib"
+        )
+        XCTAssertTrue(WineManager.isDynamicSteamDockIdentityEnvironment(result))
+        XCTAssertFalse(WineManager.isDynamicSteamDockIdentityEnvironment([
+            "VESSEL_DOCK_DYNAMIC_IDENTITY": "1",
+            "VESSEL_DOCK_IDENTITY_MAP": "relative/map.tsv",
+            "DYLD_INSERT_LIBRARIES": "/tmp/helper.dylib"
+        ]))
+        let clean = WineManager.fullEngineCleanEnvironment(from: result)
+        XCTAssertEqual(clean["VESSEL_DOCK_DYNAMIC_IDENTITY"], "1")
+        XCTAssertEqual(clean["VESSEL_DOCK_IDENTITY_MAP"], result["VESSEL_DOCK_IDENTITY_MAP"])
+        XCTAssertEqual(clean["DYLD_INSERT_LIBRARIES"], result["DYLD_INSERT_LIBRARIES"])
+    }
+
+    func testSteamDockIdentityConvertsPrefixAndExternalPathsLikeWine() {
+        let prefix = "/tmp/Vessel Bottle"
+        XCTAssertEqual(
+            WineManager.steamDockWindowsPath(
+                executable: "\(prefix)/drive_c/Program Files (x86)/Steam/steamapps/common/Grim Dawn/x64/Grim Dawn.exe",
+                prefix: prefix
+            ),
+            #"c:\program files (x86)\steam\steamapps\common\grim dawn\x64\grim dawn.exe"#
+        )
+        XCTAssertEqual(
+            WineManager.steamDockWindowsPath(
+                executable: "/Volumes/Juegos/DragonSword/DS.exe",
+                prefix: prefix
+            ),
+            #"z:\volumes\juegos\dragonsword\ds.exe"#
+        )
+        XCTAssertEqual(
+            WineManager.steamDockWindowsPath(
+                executable: #"D:\SteamLibrary\Cyberpunk 2077\Cyberpunk2077.exe"#,
+                prefix: prefix
+            ),
+            #"d:\steamlibrary\cyberpunk 2077\cyberpunk2077.exe"#
+        )
+    }
+
+    func testSteamDockIdentityUsesManifestNameAndAtomicallyReplacesOneEntry() throws {
+        let fileManager = FileManager.default
+        let prefix = fileManager.temporaryDirectory
+            .appendingPathComponent("vessel-steam-dock-map-\(UUID().uuidString)", isDirectory: true)
+        let steam = prefix.appendingPathComponent("drive_c/Steam", isDirectory: true)
+        let steamapps = steam.appendingPathComponent("steamapps", isDirectory: true)
+        defer { try? fileManager.removeItem(at: prefix) }
+        try fileManager.createDirectory(at: steamapps, withIntermediateDirectories: true)
+        try """
+        "AppState"
+        {
+            "appid" "219990"
+            "name" "Grim Dawn"
+        }
+        """.write(
+            to: steamapps.appendingPathComponent("appmanifest_219990.acf"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        XCTAssertEqual(
+            WineManager.steamDockDisplayName(
+                appId: "219990",
+                steamDirectory: steam.path,
+                fallbackExecutable: "/tmp/grim dawn.exe"
+            ),
+            "Grim Dawn"
+        )
+        let windowsPath = #"c:\steam\steamapps\common\grim dawn\grim dawn.exe"#
+        try WineManager.writeSteamDockIdentityMapping(
+            prefix: prefix.path,
+            windowsExecutablePath: windowsPath,
+            displayName: "Nombre antiguo",
+            preloaderAliasPath: "/tmp/alias-antiguo"
+        )
+        try WineManager.writeSteamDockIdentityMapping(
+            prefix: prefix.path,
+            windowsExecutablePath: windowsPath.uppercased(),
+            displayName: "Grim Dawn",
+            preloaderAliasPath: "/tmp/Grim Dawn"
+        )
+        try WineManager.writeSteamDockIdentityMapping(
+            prefix: prefix.path,
+            windowsExecutablePath: #"c:\steam\steamapps\common\otro\otro.exe"#,
+            displayName: "Otro juego",
+            preloaderAliasPath: nil
+        )
+
+        let mapPath = WineManager.steamDockIdentityMapPath(prefix: prefix.path)
+        let contents = try String(contentsOfFile: mapPath, encoding: .utf8)
+        XCTAssertFalse(contents.contains("Nombre antiguo"))
+        XCTAssertTrue(contents.contains("\(windowsPath)\tGrim Dawn\t/tmp/Grim Dawn"))
+        XCTAssertTrue(contents.contains("c:\\steam\\steamapps\\common\\otro\\otro.exe\tOtro juego\t"))
+        let attributes = try fileManager.attributesOfItem(atPath: mapPath)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        let directoryAttributes = try fileManager.attributesOfItem(
+            atPath: (mapPath as NSString).deletingLastPathComponent
+        )
+        XCTAssertEqual((directoryAttributes[.posixPermissions] as? NSNumber)?.intValue, 0o700)
     }
 
     func testGPTKDockIdentityUsesHelperEvenWhenLoaderAdvertisesNativeOverride() {
@@ -3552,7 +3684,7 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(overlaid["SteamAppId"], "753")
         XCTAssertEqual(
             native.markerID,
-            "native-vulkan:1.4.1-vessel.1:engine-libs-v1"
+            "native-vulkan:1.4.1-vessel.1:engine-libs-v1:dock-identity-v2"
         )
         XCTAssertNil(overlaid["MVK_CONFIG_REFRESH_METAL_LAYER_ON_FOCUS"])
 
@@ -3567,7 +3699,7 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(refreshed["MVK_CONFIG_REFRESH_METAL_LAYER_ON_FOCUS"], "1")
         XCTAssertEqual(
             focusRefresh.markerID,
-            "native-vulkan:1.4.1-vessel.2:engine-libs-v1:focus-refresh-v1"
+            "native-vulkan:1.4.1-vessel.2:engine-libs-v1:dock-identity-v2:focus-refresh-v1"
         )
     }
 
@@ -3585,7 +3717,7 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(overlaid["SteamAppId"], "753")
         XCTAssertEqual(
             profile.markerID,
-            "d3dmetal-driver-identity:nvidia-10de-2484"
+            "d3dmetal-driver-identity:nvidia-10de-2484:dock-identity-v2"
         )
     }
 
