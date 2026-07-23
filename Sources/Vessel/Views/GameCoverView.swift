@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import Shimmer
 import CryptoKit
 
 /// Caché de carátulas de DOS niveles: **memoria** (`NSCache`) + **disco** (persistente entre
@@ -8,15 +7,19 @@ import CryptoKit
 /// cachea la primera que cargue. A diferencia de `AsyncImage`, la descarga **no se cancela** al
 /// reciclar celdas, así que en grids de miles de juegos no quedan carátulas "a medio cargar".
 ///
-/// Objetivo: **cero cargas visibles**. Tras la primera vez, la carátula se sirve desde disco de
-/// forma instantánea (sin red) en el siguiente arranque; el grid la pinta en el primer frame.
+/// Objetivo: **cero red repetida**. Tras la primera vez, la carátula se sirve desde disco sin
+/// bloquear el actor principal; si sigue caliente en memoria, el grid la pinta en el primer frame.
 @MainActor
 final class CoverCache {
     static let shared = CoverCache()
     private let cache = NSCache<NSString, NSImage>()
 
     private init() {
-        cache.countLimit = 3000
+        // Una biblioteca grande puede tener miles de carátulas. Limitar solo por cantidad retenía
+        // varios gigabytes de imágenes decodificadas; el coste en píxeles mantiene una ventana
+        // caliente amplia sin competir con los juegos ni provocar presión de memoria al enfocar.
+        cache.countLimit = 384
+        cache.totalCostLimit = 256 * 1024 * 1024
         try? FileManager.default.createDirectory(at: Self.diskDir, withIntermediateDirectories: true)
     }
 
@@ -32,25 +35,66 @@ final class CoverCache {
         return diskDir.appendingPathComponent(hex)
     }
 
-    /// Imagen ya disponible SIN red: primero memoria, luego DISCO. Rápida y síncrona (NSImage
-    /// difiere el decodificado hasta el pintado), así que el grid puede pintarla en el primer frame.
-    func cached(_ key: String) -> NSImage? {
-        if let img = cache.object(forKey: key as NSString) { return img }
-        if let img = NSImage(contentsOf: Self.diskFile(key)) {
-            cache.setObject(img, forKey: key as NSString)
-            return img
-        }
-        return nil
+    /// Consulta exclusivamente memoria. Es segura para el inicializador de una celda SwiftUI:
+    /// nunca abre disco mientras se recompone una lista de miles de juegos.
+    func memoryCached(_ key: String) -> NSImage? {
+        cache.object(forKey: key as NSString)
     }
 
     /// Devuelve la primera imagen que cargue (memoria → disco → red). Al bajarla la PERSISTE en
     /// disco para que en el siguiente arranque sea instantánea. `nil` si no hay carátula.
     func load(_ key: String, candidates: [URL]) async -> NSImage? {
-        if let img = cached(key) { return img }
+        if let img = memoryCached(key) { return img }
+
+        if let data = await Self.readDiskData(for: key), let img = NSImage(data: data) {
+            insert(img, key: key, sourceByteCount: data.count)
+            return img
+        }
+
         guard let data = await Self.fetchCoverData(candidates: candidates), let img = NSImage(data: data) else { return nil }
-        cache.setObject(img, forKey: key as NSString)
-        try? data.write(to: Self.diskFile(key), options: .atomic)
+        insert(img, key: key, sourceByteCount: data.count)
+        await Self.persist(data, for: key)
         return img
+    }
+
+    private func insert(_ image: NSImage, key: String, sourceByteCount: Int) {
+        let representation = image.representations.max {
+            ($0.pixelsWide * $0.pixelsHigh) < ($1.pixelsWide * $1.pixelsHigh)
+        }
+        let cost = Self.estimatedMemoryCost(
+            pixelWidth: representation?.pixelsWide ?? 0,
+            pixelHeight: representation?.pixelsHigh ?? 0,
+            fallbackBytes: sourceByteCount
+        )
+        cache.setObject(image, forKey: key as NSString, cost: cost)
+    }
+
+    nonisolated static func estimatedMemoryCost(
+        pixelWidth: Int,
+        pixelHeight: Int,
+        fallbackBytes: Int
+    ) -> Int {
+        guard pixelWidth > 0, pixelHeight > 0,
+              pixelWidth <= Int.max / pixelHeight,
+              pixelWidth * pixelHeight <= Int.max / 4 else {
+            let positiveFallback = max(1, fallbackBytes)
+            return positiveFallback > Int.max / 4 ? Int.max : positiveFallback * 4
+        }
+        return max(1, pixelWidth * pixelHeight * 4)
+    }
+
+    private nonisolated static func readDiskData(for key: String) async -> Data? {
+        let file = diskFile(key)
+        return await Task.detached(priority: .utility) {
+            try? Data(contentsOf: file, options: .mappedIfSafe)
+        }.value
+    }
+
+    private nonisolated static func persist(_ data: Data, for key: String) async {
+        let file = diskFile(key)
+        await Task.detached(priority: .utility) {
+            try? data.write(to: file, options: .atomic)
+        }.value
     }
 
     /// Baja los BYTES de la primera candidata que cargue. Si TODAS fallan y son URLs de Steam
@@ -141,16 +185,15 @@ struct GameCoverImage<Placeholder: View>: View {
         self.cacheKey = cacheKey
         self.candidates = candidates
         self.placeholder = placeholder
-        // Precarga SÍNCRONA desde caché (memoria/disco) → las cacheadas se pintan al instante,
-        // sin shimmer ni retardo. Solo las nuevas (sin caché) pasan por `load()` en el `.task`.
-        _image = State(initialValue: CoverCache.shared.cached(cacheKey))
+        // Solo memoria en el inicializador: abrir cientos de ficheros aquí bloqueaba el actor
+        // principal cada vez que SwiftUI recomponía la biblioteca al recuperar el foco.
+        let memoryImage = CoverCache.shared.memoryCached(cacheKey)
+        _image = State(initialValue: memoryImage)
     }
 
     var body: some View {
         // `placeholder` (flexible) fija el tamaño; la imagen va como overlay y se recorta a él.
         placeholder()
-            // Brillo premium SOLO mientras se descarga una carátula nueva (no cacheada).
-            .shimmering(active: image == nil && !reduceMotion)
             .overlay {
                 if let image {
                     Image(nsImage: image).resizable().scaledToFill()
@@ -159,10 +202,16 @@ struct GameCoverImage<Placeholder: View>: View {
             .clipped()
             .task(id: loadID) {
                 // Re-derivar para el `cacheKey` ACTUAL (cubre el reuso de celda con otro key):
-                // si está en caché (memoria/disco) se pinta al instante; si no, se descarga.
-                if let hit = CoverCache.shared.cached(cacheKey) { image = hit; return }
-                guard !candidates.isEmpty else { image = nil; return }   // aún no hay portada que pedir
-                image = nil   // no cacheada aún → placeholder + shimmer mientras baja
+                // memoria es inmediata; disco y red se leen fuera del actor principal.
+                if let hit = CoverCache.shared.memoryCached(cacheKey) {
+                    image = hit
+                    return
+                }
+                guard !candidates.isEmpty else {
+                    image = nil
+                    return
+                }
+                image = nil
                 let loaded = await CoverCache.shared.load(cacheKey, candidates: candidates)
                 guard !Task.isCancelled else { return }
                 if reduceMotion { image = loaded }

@@ -12,6 +12,27 @@ private struct SteamLibraryScanResult: Sendable {
     let discovered: [SteamLibraryImporter.ImportedGame]
 }
 
+/// Decide qué trabajo de mantenimiento merece ejecutarse al recuperar el foco. El watcher ya
+/// recibe cambios mientras Vessel está en segundo plano, así que un foco normal no debe volver a
+/// recorrer todos los depots ni abrir SteamCMD. Conservamos una reconciliación de seguridad cuando
+/// el watcher no estaba operativo y una comprobación remota periódica.
+enum SteamForegroundRefreshPolicy {
+    static let updateCheckInterval: TimeInterval = 15 * 60
+
+    static func shouldScanLibrary(watcherIsActive: Bool) -> Bool {
+        !watcherIsActive
+    }
+
+    static func shouldCheckUpdates(
+        lastCheck: Date?,
+        now: Date = Date(),
+        force: Bool
+    ) -> Bool {
+        guard !force, let lastCheck else { return true }
+        return now.timeIntervalSince(lastCheck) >= updateCheckInterval
+    }
+}
+
 /// Combina la propiedad permanente de Steam con el estado local de instalación. Un juego
 /// instalado sustituye visualmente a su entrada «sin instalar», pero la propiedad original no se
 /// muta: al desinstalar debe reaparecer inmediatamente sin recargar la cuenta ni cambiar de vista.
@@ -188,6 +209,8 @@ struct BottleDetailView: View {
     @State private var dxvkInstalled: Bool = false
     @State private var librarySyncInProgress = false
     @State private var librarySyncRequested = false
+    @State private var steamUpdateRefreshInProgress = false
+    @State private var lastSteamUpdateRefreshAt: Date?
 
     private let store = BottleStore.shared
     private let log = LogStore.shared
@@ -260,7 +283,7 @@ struct BottleDetailView: View {
                     for game in storeGames { await enqueueSteamOperation(game.id, kind: .update) }
                 }
             },
-            onReload: { Task { await loadSteamLibrary(); await refreshSteamUpdates() } },
+            onReload: { Task { await loadSteamLibrary(); await refreshSteamUpdates(force: true) } },
             onLogout: { NotificationCenter.default.post(name: .steamLogout, object: nil) },
             onLogin: { NotificationCenter.default.post(name: .steamLogin, object: nil) },
             // "Abrir Steam": arranca el cliente Steam completo conectado en el MOTOR
@@ -288,16 +311,21 @@ struct BottleDetailView: View {
             // builds remotas. Ese escaneo puede tardar y antes dejaba instalaciones o
             // actualizaciones reales aparentando estar congeladas durante el arranque.
             if !operations.hasItems {
-                await refreshSteamUpdates()
+                await refreshSteamUpdates(force: true)
             }
         }
         .onDisappear { gamesWatcher.stop() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            // Al volver a Vessel (p.ej. tras instalar un juego en Steam) re-escaneamos
-            // y reanudamos la vigilancia por si la carpeta steamapps acaba de aparecer.
+            // El watcher sigue recibiendo cambios en segundo plano. Solo hacemos el escaneo
+            // completo de respaldo si no estaba activo; la consulta remota queda rate-limited.
+            let watcherWasActive = gamesWatcher.isWatching
+            startWatchingGames()
             Task {
-                await autoImportGames()
-                startWatchingGames()
+                if SteamForegroundRefreshPolicy.shouldScanLibrary(
+                    watcherIsActive: watcherWasActive
+                ) {
+                    await autoImportGames()
+                }
                 await refreshSteamUpdates()
             }
         }
@@ -444,10 +472,27 @@ struct BottleDetailView: View {
         }
     }
 
-    private func refreshSteamUpdates() async {
+    private func refreshSteamUpdates(force: Bool = false) async {
+        let now = Date()
+        guard SteamForegroundRefreshPolicy.shouldCheckUpdates(
+            lastCheck: lastSteamUpdateRefreshAt,
+            now: now,
+            force: force
+        ), !steamUpdateRefreshInProgress else { return }
+
+        steamUpdateRefreshInProgress = true
+        defer {
+            steamUpdateRefreshInProgress = false
+            lastSteamUpdateRefreshAt = now
+        }
+
         let localBuildIDs = steamLocalBuildIDs()
         guard !localBuildIDs.isEmpty else { updatesAvailable = []; return }
-        updatesAvailable = await steamCMD.gamesWithUpdates(localBuildIDs: localBuildIDs)
+        let refreshed = await steamCMD.gamesWithUpdates(localBuildIDs: localBuildIDs)
+        guard !Task.isCancelled else { return }
+        if updatesAvailable != refreshed {
+            updatesAvailable = refreshed
+        }
     }
 
     private func steamLocalBuildIDs() -> [String: String] {
@@ -596,7 +641,7 @@ struct BottleDetailView: View {
         // La operación ya terminó y su estado local es definitivo. Reconciliar el resto de la
         // biblioteca no debe retrasar la retirada del elemento de la cola ni mantener el botón
         // visualmente atascado; el refresco continúa en segundo plano.
-        Task { await refreshSteamUpdates() }
+        Task { await refreshSteamUpdates(force: true) }
     }
 
     private func cancelSteamOperation(_ game: StoreGame) {
@@ -670,7 +715,10 @@ struct BottleDetailView: View {
         let steamapps = "\(localBottle.steamDirectory)/steamapps"
         guard FileManager.default.fileExists(atPath: steamapps) else { return }
         gamesWatcher.start(path: steamapps) {
-            Task { await autoImportGames() }
+            Task {
+                await autoImportGames()
+                await refreshSteamUpdates()
+            }
         }
     }
 

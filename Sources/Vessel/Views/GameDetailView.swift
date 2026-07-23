@@ -1583,7 +1583,6 @@ private struct LightboxImage: View {
         }
         .task(id: cacheKey) {
             guard let url else { return }
-            if let hit = CoverCache.shared.cached(cacheKey) { image = hit; return }
             image = await CoverCache.shared.load(cacheKey, candidates: [url])
         }
     }

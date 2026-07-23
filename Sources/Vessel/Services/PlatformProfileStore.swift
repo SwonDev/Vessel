@@ -13,6 +13,21 @@ struct PlatformAccountProfile: Codable, Equatable, Sendable {
     var store: StoreKind? { StoreKind(rawValue: storeID) }
 }
 
+/// Los perfiles públicos cambian con poca frecuencia. Esta política evita que cada activación de
+/// la ventana provoque una petición de red y dos invalidaciones del árbol SwiftUI completo.
+enum PlatformProfileRefreshPolicy {
+    static let minimumInterval: TimeInterval = 15 * 60
+
+    static func shouldRefresh(
+        lastRefresh: Date?,
+        now: Date = Date(),
+        force: Bool
+    ) -> Bool {
+        guard !force, let lastRefresh else { return true }
+        return now.timeIntervalSince(lastRefresh) >= minimumInterval
+    }
+}
+
 /// Carga el perfil de la cuenta activa con una estrategia «local primero, red después»:
 /// la cápsula aparece de inmediato desde la sesión/caché y se enriquece en segundo plano.
 /// Los endpoints consultados son perfiles públicos; no se envía telemetría ni se copian tokens.
@@ -23,6 +38,8 @@ final class PlatformProfileStore {
 
     private(set) var profiles: [StoreKind: PlatformAccountProfile] = [:]
     private(set) var loadingStores: Set<StoreKind> = []
+    private var refreshingStores: Set<StoreKind> = []
+    private var lastRemoteRefresh: [StoreKind: Date] = [:]
 
     private init() {
         for store in StoreKind.allCases where store != .local {
@@ -44,23 +61,36 @@ final class PlatformProfileStore {
     func refresh(_ store: StoreKind, force: Bool = false) async {
         guard store != .local else {
             profiles[store] = nil
+            lastRemoteRefresh[store] = nil
             return
         }
         guard let local = localProfile(for: store) else {
             profiles[store] = nil
+            lastRemoteRefresh[store] = nil
             removeCache(for: store)
             return
         }
 
         if profiles[store]?.userID != local.userID {
             profiles[store] = cachedProfile(for: store, matching: local.userID) ?? local
+            lastRemoteRefresh[store] = nil
         } else if profiles[store] == nil {
             profiles[store] = local
         }
 
-        guard force || !loadingStores.contains(store) else { return }
-        loadingStores.insert(store)
-        defer { loadingStores.remove(store) }
+        let now = Date()
+        guard PlatformProfileRefreshPolicy.shouldRefresh(
+            lastRefresh: lastRemoteRefresh[store],
+            now: now,
+            force: force
+        ), !refreshingStores.contains(store) else { return }
+
+        refreshingStores.insert(store)
+        if force { loadingStores.insert(store) }
+        defer {
+            refreshingStores.remove(store)
+            if force { loadingStores.remove(store) }
+        }
 
         let enriched: PlatformAccountProfile?
         switch store {
@@ -73,14 +103,18 @@ final class PlatformProfileStore {
         }
 
         if let enriched {
-            profiles[store] = enriched
+            if profiles[store] != enriched {
+                profiles[store] = enriched
+            }
             saveCache(enriched, for: store)
+            lastRemoteRefresh[store] = now
         }
     }
 
     /// Invalida una plataforma tras login/logout y vuelve a detectar su sesión local.
     func accountDidChange(_ store: StoreKind) async {
         profiles[store] = nil
+        lastRemoteRefresh[store] = nil
         await refresh(store, force: true)
     }
 
