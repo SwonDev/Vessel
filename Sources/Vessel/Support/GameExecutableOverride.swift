@@ -74,8 +74,19 @@ enum AutomaticGameExecutableResolver {
         fileManager: FileManager = .default
     ) -> String {
         guard let installRoot, !installRoot.isEmpty,
-              PathSafety.isContained(officialExecutable, in: installRoot),
-              PEImportScanner.hasCLRRuntimeHeader(atPath: officialExecutable) else {
+              PathSafety.isContained(officialExecutable, in: installRoot) else {
+            return officialExecutable
+        }
+
+        if let payload = managedDualRendererPayload(
+            forAppHost: officialExecutable,
+            installRoot: installRoot,
+            fileManager: fileManager
+        ) {
+            return payload
+        }
+
+        guard PEImportScanner.hasCLRRuntimeHeader(atPath: officialExecutable) else {
             return officialExecutable
         }
 
@@ -114,5 +125,100 @@ enum AutomaticGameExecutableResolver {
         // Vessel incluye D3DMetal como ruta nativa D3D12→Metal. Elegir el payload moderno evita el
         // selector .NET y permite que WineManager prepare desde el principio el motor correcto.
         return dx12
+    }
+
+    /// Resuelve un launcher .NET `apphost` que ofrece dos renderers nativos en `bin/`.
+    ///
+    /// El contrato está deliberadamente cerrado y no depende del juego ni de su tienda:
+    /// - el ejecutable oficial vive en un directorio `Launcher` directo del juego;
+    /// - es un apphost PE64 nativo que contiene `hostfxr_main` y referencia exactamente su DLL
+    ///   homónima, mientras esa DLL es CLR y declara las opciones `UseDX11`/`UseVulkan`;
+    /// - `bin/` contiene exactamente un PE64 D3D11 (import real) y exactamente un PE64 Vulkan
+    ///   (cargador y entrypoints reales), sin candidatos ambiguos.
+    ///
+    /// En macOS se elige D3D11: Vessel lo traduce directamente a Metal mediante DXMT y evita tanto
+    /// el launcher .NET como una ruta Vulkan menos estable. Un árbol incompleto o ambiguo conserva
+    /// siempre el ejecutable oficial.
+    private static func managedDualRendererPayload(
+        forAppHost appHost: String,
+        installRoot: String,
+        fileManager: FileManager
+    ) -> String? {
+        guard PEImportScanner.is64BitImage(atPath: appHost),
+              !PEImportScanner.hasCLRRuntimeHeader(atPath: appHost) else { return nil }
+
+        let root = PathSafety.canonical(installRoot)
+        let launcherDirectory = (PathSafety.canonical(appHost) as NSString)
+            .deletingLastPathComponent
+        guard (launcherDirectory as NSString).deletingLastPathComponent == root,
+              (launcherDirectory as NSString).lastPathComponent
+                .caseInsensitiveCompare("Launcher") == .orderedSame,
+              let launcherEntries = try? fileManager.contentsOfDirectory(
+                  atPath: launcherDirectory
+              ) else { return nil }
+
+        let appHostName = (appHost as NSString).lastPathComponent
+        let appHostStem = (appHostName as NSString).deletingPathExtension
+        guard !appHostStem.isEmpty,
+              appHostStem.lowercased().contains("launcher"),
+              let managedName = launcherEntries.first(where: {
+                  $0.caseInsensitiveCompare("\(appHostStem).dll") == .orderedSame
+              }) else { return nil }
+
+        let managedAssembly = (launcherDirectory as NSString)
+            .appendingPathComponent(managedName)
+        guard PathSafety.isContained(managedAssembly, in: root),
+              PEImportScanner.hasCLRRuntimeHeader(atPath: managedAssembly),
+              PEImportScanner.containsASCIIStrings(
+                  atPath: appHost,
+                  allOf: [managedName, "hostfxr_main"]
+              ),
+              PEImportScanner.containsASCIIStrings(
+                  atPath: managedAssembly,
+                  allOf: ["UseDX11", "UseVulkan"]
+              ),
+              let rootEntries = try? fileManager.contentsOfDirectory(atPath: root),
+              let binName = rootEntries.first(where: {
+                  $0.caseInsensitiveCompare("bin") == .orderedSame
+              }) else { return nil }
+
+        let binDirectory = (root as NSString).appendingPathComponent(binName)
+        var isDirectory: ObjCBool = false
+        guard PathSafety.isContained(binDirectory, in: root),
+              fileManager.fileExists(atPath: binDirectory, isDirectory: &isDirectory),
+              isDirectory.boolValue,
+              let binEntries = try? fileManager.contentsOfDirectory(atPath: binDirectory)
+        else { return nil }
+
+        let executables = binEntries.compactMap { name -> String? in
+            guard (name as NSString).pathExtension.caseInsensitiveCompare("exe") == .orderedSame
+            else { return nil }
+            let path = (binDirectory as NSString).appendingPathComponent(name)
+            var candidateIsDirectory: ObjCBool = false
+            guard PathSafety.isContained(path, in: binDirectory),
+                  fileManager.fileExists(atPath: path, isDirectory: &candidateIsDirectory),
+                  !candidateIsDirectory.boolValue,
+                  PEImportScanner.is64BitImage(atPath: path) else { return nil }
+            return PathSafety.canonical(path)
+        }
+
+        let dx11 = executables.filter { executable in
+            let imports = PEImportScanner.importedLibraries(atPath: executable)
+            return imports.contains("d3d11.dll")
+                && !PEImportScanner.containsASCIIStrings(
+                    atPath: executable,
+                    allOf: ["vulkan-1.dll", "vkGetInstanceProcAddr", "vkCreateInstance"]
+                )
+        }
+        let vulkan = executables.filter { executable in
+            let imports = PEImportScanner.importedLibraries(atPath: executable)
+            return !imports.contains("d3d11.dll")
+                && PEImportScanner.containsASCIIStrings(
+                    atPath: executable,
+                    allOf: ["vulkan-1.dll", "vkGetInstanceProcAddr", "vkCreateInstance"]
+                )
+        }
+        guard dx11.count == 1, vulkan.count == 1, dx11[0] != vulkan[0] else { return nil }
+        return dx11[0]
     }
 }

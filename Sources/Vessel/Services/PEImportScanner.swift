@@ -150,6 +150,29 @@ enum PEImportScanner {
         return rva != 0 && size >= 0x48 && image.fileOffset(forRVA: rva) != nil
     }
 
+    /// `true` si el fichero es una imagen PE32+ (64 bits) válida.
+    static func is64BitImage(atPath path: String) -> Bool {
+        guard let image = image(atPath: path),
+              let magic = readUInt16(image.data, at: image.optionalOffset) else { return false }
+        return magic == 0x20b
+    }
+
+    /// Comprueba contratos ASCII exactos dentro de una imagen PE sin interpretar texto libre.
+    ///
+    /// Se usa únicamente como evidencia complementaria a cabeceras/imports PE y a un layout
+    /// cerrado. El mapeo evita copiar ejecutables grandes y cada marcador debe aparecer completo.
+    static func containsASCIIStrings(atPath path: String, allOf markers: [String]) -> Bool {
+        guard !markers.isEmpty,
+              markers.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 1_024 }),
+              let data = try? Data(
+                  contentsOf: URL(fileURLWithPath: path),
+                  options: .mappedIfSafe
+              ) else { return false }
+        return markers.allSatisfy { marker in
+            data.range(of: Data(marker.utf8)) != nil
+        }
+    }
+
     /// Símbolos que el PE publica en IMAGE_DIRECTORY_ENTRY_EXPORT.
     ///
     /// La lectura es intencionadamente acotada: solo sigue la tabla oficial de nombres exportados,

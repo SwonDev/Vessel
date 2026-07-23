@@ -20,7 +20,8 @@ struct GameExecutableOverrideTests {
     private func writePE64(
         to url: URL,
         imports: [String] = [],
-        managed: Bool = false
+        managed: Bool = false,
+        markers: [String] = []
     ) throws {
         var data = Data(repeating: 0, count: 0x800)
         let peOffset = 0x80
@@ -69,6 +70,13 @@ struct GameExecutableOverrideTests {
         if managed {
             writeUInt32(0x1300, to: &data, at: directoryOffset + 14 * 8)
             writeUInt32(0x48, to: &data, at: directoryOffset + 14 * 8 + 4)
+        }
+        var markerOffset = 0x600
+        for marker in markers {
+            let bytes = Data(marker.utf8) + Data([0])
+            guard markerOffset + bytes.count <= data.count else { break }
+            data.replaceSubrange(markerOffset..<(markerOffset + bytes.count), with: bytes)
+            markerOffset += bytes.count
         }
         try data.write(to: url)
     }
@@ -147,6 +155,76 @@ struct GameExecutableOverrideTests {
         try writePE64(to: launcher, managed: true)
         try writePE64(to: root.appendingPathComponent("StableGame_DX11.exe"))
         try writePE64(to: root.appendingPathComponent("StableGame_DX12.exe"))
+
+        #expect(GameExecutableOverride.resolve(
+            configuredPath: nil,
+            installRoot: root.path,
+            fallback: launcher.path
+        ) == launcher.path)
+    }
+
+    @Test("Un apphost administrado con pareja DX11/Vulkan elige el payload DX11")
+    func resolvesManagedAppHostDualRendererPackage() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-managed-renderers-\(UUID().uuidString)", isDirectory: true)
+        let launcherDirectory = root.appendingPathComponent("Launcher", isDirectory: true)
+        let binDirectory = root.appendingPathComponent("bin", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: launcherDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: binDirectory, withIntermediateDirectories: true)
+
+        let launcher = launcherDirectory.appendingPathComponent("GameLauncher.exe")
+        let managed = launcherDirectory.appendingPathComponent("GameLauncher.dll")
+        let dx11 = binDirectory.appendingPathComponent("RendererLegacy.exe")
+        let vulkan = binDirectory.appendingPathComponent("RendererModern.exe")
+        try writePE64(
+            to: launcher,
+            markers: ["GameLauncher.dll", "hostfxr_main"]
+        )
+        try writePE64(
+            to: managed,
+            managed: true,
+            markers: ["UseDX11", "UseVulkan"]
+        )
+        try writePE64(to: dx11, imports: ["d3d11.dll", "dxgi.dll"])
+        try writePE64(
+            to: vulkan,
+            markers: ["vulkan-1.dll", "vkGetInstanceProcAddr", "vkCreateInstance"]
+        )
+
+        #expect(GameExecutableOverride.resolve(
+            configuredPath: nil,
+            installRoot: root.path,
+            fallback: launcher.path
+        ) == PathSafety.canonical(dx11.path))
+    }
+
+    @Test("Un paquete dual ambiguo conserva el launcher oficial")
+    func rejectsAmbiguousManagedAppHostPackage() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-ambiguous-renderers-\(UUID().uuidString)", isDirectory: true)
+        let launcherDirectory = root.appendingPathComponent("Launcher", isDirectory: true)
+        let binDirectory = root.appendingPathComponent("bin", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: launcherDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: binDirectory, withIntermediateDirectories: true)
+
+        let launcher = launcherDirectory.appendingPathComponent("GameLauncher.exe")
+        try writePE64(
+            to: launcher,
+            markers: ["GameLauncher.dll", "hostfxr_main"]
+        )
+        try writePE64(
+            to: launcherDirectory.appendingPathComponent("GameLauncher.dll"),
+            managed: true,
+            markers: ["UseDX11", "UseVulkan"]
+        )
+        try writePE64(to: binDirectory.appendingPathComponent("RendererA.exe"), imports: ["d3d11.dll"])
+        try writePE64(to: binDirectory.appendingPathComponent("RendererB.exe"), imports: ["d3d11.dll"])
+        try writePE64(
+            to: binDirectory.appendingPathComponent("RendererVk.exe"),
+            markers: ["vulkan-1.dll", "vkGetInstanceProcAddr", "vkCreateInstance"]
+        )
 
         #expect(GameExecutableOverride.resolve(
             configuredPath: nil,
