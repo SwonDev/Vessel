@@ -1032,7 +1032,8 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         is64Bit: Bool,
         imports: [String],
         marker: String,
-        exports: [String] = []
+        exports: [String] = [],
+        utf16Markers: [String] = []
     ) throws {
         var data = Data(repeating: 0, count: 0x800)
         let peOffset = 0x80
@@ -1112,6 +1113,11 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         }
 
         data.append(Data(marker.utf8))
+        for wideMarker in utf16Markers {
+            if let wideData = wideMarker.data(using: .utf16LittleEndian) {
+                data.append(wideData)
+            }
+        }
         try data.write(to: url)
     }
 
@@ -1767,6 +1773,9 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             "DXVK_LOG_LEVEL": "info",
             "DXVK_LOG_PATH": "/tmp/game",
             "MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS": "1",
+            "D3DM_VENDOR_ID": "0x10de",
+            "D3DM_DEVICE_ID": "0x2484",
+            "D3DM_DEVICE_DESCRIPTION": "NVIDIA GeForce RTX 3070",
             "GST_PLUGIN_SYSTEM_PATH": "/tmp/gstreamer/plugins",
             "GST_PLUGIN_SCANNER": "/tmp/gstreamer/scanner",
             "GST_REGISTRY": "/tmp/bottle/gstreamer.bin",
@@ -1785,6 +1794,9 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(clean["DXVK_LOG_LEVEL"], "info")
         XCTAssertEqual(clean["DXVK_LOG_PATH"], "/tmp/game")
         XCTAssertEqual(clean["MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS"], "1")
+        XCTAssertEqual(clean["D3DM_VENDOR_ID"], "0x10de")
+        XCTAssertEqual(clean["D3DM_DEVICE_ID"], "0x2484")
+        XCTAssertEqual(clean["D3DM_DEVICE_DESCRIPTION"], "NVIDIA GeForce RTX 3070")
         XCTAssertEqual(clean["GST_PLUGIN_SYSTEM_PATH"], "/tmp/gstreamer/plugins")
         XCTAssertEqual(clean["GST_PLUGIN_SCANNER"], "/tmp/gstreamer/scanner")
         XCTAssertEqual(clean["GST_REGISTRY"], "/tmp/bottle/gstreamer.bin")
@@ -2600,6 +2612,194 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .gptk)
     }
 
+    func testPackagedUnrealBootstrapperInheritsVerifiedD3D12Payload() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "vessel-unreal-bootstrapper-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let engineWin64 = root.appendingPathComponent(
+            "Engine/Binaries/Win64",
+            isDirectory: true
+        )
+        let projectWin64 = root.appendingPathComponent(
+            "DS/Binaries/Win64",
+            isDirectory: true
+        )
+        let agilityDirectory = projectWin64.appendingPathComponent(
+            "D3D12",
+            isDirectory: true
+        )
+        let paks = root.appendingPathComponent("DS/Content/Paks", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for directory in [engineWin64, agilityDirectory, paks] {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+        }
+
+        let launcher = root.appendingPathComponent("DSClient.exe")
+        let payload = projectWin64.appendingPathComponent("DSClient-Win64-Shipping.exe")
+        try writePE(
+            to: launcher,
+            is64Bit: true,
+            imports: ["KERNEL32.dll"],
+            marker: "SteamInternal_SteamAPI_Init"
+        )
+        try writePE(
+            to: engineWin64.appendingPathComponent("CrashReportClient.exe"),
+            is64Bit: true,
+            imports: ["KERNEL32.dll"],
+            marker: ""
+        )
+        try writePE(
+            to: payload,
+            is64Bit: true,
+            imports: ["dxgi.dll"],
+            marker: "D3D12GetInterface D3D12CreateDevice D3D12RHI\\Private",
+            utf16Markers: [
+                "WARNING: Known issues with graphics driver",
+                "The installed version of the {Vendor} graphics driver has known issues in {RHI}.",
+                "Minimum required: {RecommendedVer}"
+            ]
+        )
+        try Data("D3D12Core".utf8).write(
+            to: agilityDirectory.appendingPathComponent("D3D12Core.dll")
+        )
+        try Data("pakchunk0-WindowsClient".utf8).write(
+            to: paks.appendingPathComponent("pakchunk0-WindowsClient.pak")
+        )
+
+        let manager = WineManager()
+        XCTAssertEqual(
+            manager.packagedUnrealPayloadExecutable(forBootstrapper: launcher.path),
+            payload.path
+        )
+        XCTAssertTrue(manager.isUnrealAgilityD3D12Payload(payload.path))
+        XCTAssertTrue(manager.requiresD3DMetalDriverIdentityCompatibility(payload.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: payload.path), .d3d12)
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: launcher.path), .d3d12)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: launcher.path), .gptk)
+        XCTAssertFalse(WineManager.shouldUseFullWineForSteamAppLaunch(
+            required: true,
+            graphicsAPI: manager.detectGraphicsAPI(forExecutable: launcher.path)
+        ))
+        XCTAssertEqual(
+            manager.trackedProcessFamilyImageNames(forExecutable: launcher.path),
+            ["DSClient.exe", "DSClient-Win64-Shipping.exe"]
+        )
+        let supervisorPattern = manager.launchSupervisorProcessPattern(
+            forExecutable: launcher.path
+        )
+        XCTAssertTrue(supervisorPattern.contains("SClient"))
+        XCTAssertTrue(supervisorPattern.contains("Win64-Shipping"))
+    }
+
+    func testIncompletePackagedUnrealLayoutCannotChangeBootstrapperRouting() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "vessel-incomplete-unreal-bootstrapper-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let engineWin64 = root.appendingPathComponent(
+            "Engine/Binaries/Win64",
+            isDirectory: true
+        )
+        let projectWin64 = root.appendingPathComponent(
+            "DS/Binaries/Win64/D3D12",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: engineWin64,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: projectWin64,
+            withIntermediateDirectories: true
+        )
+
+        let launcher = root.appendingPathComponent("DSClient.exe")
+        try writePE(
+            to: launcher,
+            is64Bit: true,
+            imports: ["KERNEL32.dll"],
+            marker: "SteamInternal_SteamAPI_Init"
+        )
+        try writePE(
+            to: engineWin64.appendingPathComponent("CrashReportClient.exe"),
+            is64Bit: true,
+            imports: ["KERNEL32.dll"],
+            marker: ""
+        )
+        try writePE(
+            to: root.appendingPathComponent(
+                "DS/Binaries/Win64/DSClient-Win64-Shipping.exe"
+            ),
+            is64Bit: true,
+            imports: ["dxgi.dll"],
+            marker: "D3D12GetInterface D3D12CreateDevice D3D12RHI\\Private"
+        )
+        try Data("D3D12Core".utf8).write(
+            to: projectWin64.appendingPathComponent("D3D12Core.dll")
+        )
+        // Sin `Content/Paks/*.pak` no existe un contrato suficiente para vincular ambos PE.
+        let manager = WineManager()
+        XCTAssertNil(manager.packagedUnrealPayloadExecutable(forBootstrapper: launcher.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: launcher.path), .other)
+        XCTAssertEqual(
+            manager.trackedProcessFamilyImageNames(forExecutable: launcher.path),
+            ["DSClient.exe"]
+        )
+    }
+
+    func testDirectBootstrapperRendererWinsOverPackagedUnrealPayload() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "vessel-unreal-explicit-launcher-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let engineWin64 = root.appendingPathComponent(
+            "Engine/Binaries/Win64",
+            isDirectory: true
+        )
+        let projectWin64 = root.appendingPathComponent(
+            "DS/Binaries/Win64/D3D12",
+            isDirectory: true
+        )
+        let paks = root.appendingPathComponent("DS/Content/Paks", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for directory in [engineWin64, projectWin64, paks] {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+        }
+
+        let launcher = root.appendingPathComponent("DSClient.exe")
+        try writePE(to: launcher, is64Bit: true, imports: ["d3d11.dll"], marker: "")
+        try writePE(
+            to: engineWin64.appendingPathComponent("CrashReportClient.exe"),
+            is64Bit: true,
+            imports: ["KERNEL32.dll"],
+            marker: ""
+        )
+        try writePE(
+            to: root.appendingPathComponent(
+                "DS/Binaries/Win64/DSClient-Win64-Shipping.exe"
+            ),
+            is64Bit: true,
+            imports: ["dxgi.dll"],
+            marker: "D3D12GetInterface D3D12CreateDevice D3D12RHI\\Private"
+        )
+        try Data("D3D12Core".utf8).write(
+            to: projectWin64.appendingPathComponent("D3D12Core.dll")
+        )
+        try Data("pakchunk0".utf8).write(
+            to: paks.appendingPathComponent("pakchunk0-WindowsClient.pak")
+        )
+
+        XCTAssertEqual(WineManager().detectGraphicsAPI(forExecutable: launcher.path), .d3d11)
+    }
+
     func testDeclaredX64PayloadRoutesMinimalLauncherToD3D12() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("vessel-declared-payload-\(UUID().uuidString)", isDirectory: true)
@@ -2861,6 +3061,39 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         ))
     }
 
+    func testUnrealD3D12WideDriverWarningUsesD3DMetalIdentityWithoutAGSImport() {
+        XCTAssertTrue(WineManager.requiresD3DMetalDriverIdentityCompatibility(
+            importedLibraries: ["dxgi.dll", "EOSSDK-Win64-Shipping.dll"],
+            containsVoidEngineMarker: false,
+            containsAMDDriverGate: false,
+            containsApexGraphicsStack: false,
+            containsTortoiseDriverWarning: false,
+            containsUnrealDriverWarning: true,
+            isD3D12: true
+        ))
+    }
+
+    func testUnrealDriverWarningCannotAffectD3D11OrPayloadWithoutDXGI() {
+        XCTAssertFalse(WineManager.requiresD3DMetalDriverIdentityCompatibility(
+            importedLibraries: ["dxgi.dll"],
+            containsVoidEngineMarker: false,
+            containsAMDDriverGate: false,
+            containsApexGraphicsStack: false,
+            containsTortoiseDriverWarning: false,
+            containsUnrealDriverWarning: true,
+            isD3D12: false
+        ))
+        XCTAssertFalse(WineManager.requiresD3DMetalDriverIdentityCompatibility(
+            importedLibraries: ["kernel32.dll"],
+            containsVoidEngineMarker: false,
+            containsAMDDriverGate: false,
+            containsApexGraphicsStack: false,
+            containsTortoiseDriverWarning: false,
+            containsUnrealDriverWarning: true,
+            isD3D12: true
+        ))
+    }
+
     func testVoidDriverRepairRejectsIncompleteAndUnrelatedSignatures() {
         XCTAssertFalse(WineManager.requiresVoidEngineD3DMetalDriverCompatibility(
             importedLibraries: ["d3d12.dll", "dxgi.dll"],
@@ -2970,6 +3203,24 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(overlaid["MVK_CONFIG_LOG_LEVEL"], "1")
         XCTAssertEqual(overlaid["SteamAppId"], "753")
         XCTAssertEqual(native.markerID, "native-vulkan:1.4.1-vessel.1")
+    }
+
+    func testD3DMetalDriverIdentitySteamProfileIsInheritedWithoutChangingSteamIDs() {
+        let profile = WineManager.SteamRuntimeProfile.d3dMetalDriverIdentity
+        let base = ["WINEPREFIX": "/tmp/bottle", "SteamAppId": "753"]
+        let overlaid = WineManager.environmentByApplyingSteamRuntimeProfile(
+            base,
+            profile: profile
+        )
+
+        XCTAssertEqual(overlaid["D3DM_VENDOR_ID"], "0x10de")
+        XCTAssertEqual(overlaid["D3DM_DEVICE_ID"], "0x2484")
+        XCTAssertEqual(overlaid["D3DM_DEVICE_DESCRIPTION"], "NVIDIA GeForce RTX 3070")
+        XCTAssertEqual(overlaid["SteamAppId"], "753")
+        XCTAssertEqual(
+            profile.markerID,
+            "d3dmetal-driver-identity:nvidia-10de-2484"
+        )
     }
 
     func testNativeVulkanInvalidatesOnlyLearnedDirect3DOverride() throws {

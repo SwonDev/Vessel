@@ -22,6 +22,7 @@ final class WineManager {
     enum SteamRuntimeProfile: Equatable, Sendable {
         case standard
         case nativeVulkan(libraryDirectory: String)
+        case d3dMetalDriverIdentity
 
         var markerID: String {
             switch self {
@@ -30,6 +31,8 @@ final class WineManager {
             case .nativeVulkan(let libraryDirectory):
                 let version = URL(fileURLWithPath: libraryDirectory).lastPathComponent
                 return "native-vulkan:\(version)"
+            case .d3dMetalDriverIdentity:
+                return "d3dmetal-driver-identity:nvidia-10de-2484"
             }
         }
     }
@@ -928,25 +931,34 @@ final class WineManager {
     /// versión UMD consultable; algunos motores interpretan ese contrato de traducción como un
     /// driver AMD real obsoleto y abren un `MessageBox` preventivo aunque el dispositivo sea válido.
     ///
-    /// Se exige la combinación completa de imports y marcadores del sistema de cvars del motor para
-    /// no afectar a otros ejecutables que simplemente usen AGS o D3D12. No intervienen título ni
-    /// AppID, por lo que cubre otras compilaciones del mismo motor sin crear perfiles manuales.
+    /// Cada familia exige su contrato completo: imports + cvars en Void/Apex, o payload Unreal
+    /// D3D12 + plantilla ancha exacta del aviso genérico. No intervienen título ni AppID, por lo que
+    /// cubre otras compilaciones del mismo motor sin crear perfiles manuales.
     nonisolated static func requiresD3DMetalDriverIdentityCompatibility(
         importedLibraries: Set<String>,
         containsVoidEngineMarker: Bool,
         containsAMDDriverGate: Bool,
         containsApexGraphicsStack: Bool,
         containsTortoiseDriverWarning: Bool,
+        containsUnrealDriverWarning: Bool = false,
         isD3D12: Bool
     ) -> Bool {
         guard isD3D12 else { return false }
         let imports = Set(importedLibraries.map { $0.lowercased() })
-        guard imports.isSuperset(of: ["d3d12.dll", "dxgi.dll", "amd_ags_x64.dll"]) else {
-            return false
-        }
-        let voidDriverGate = containsVoidEngineMarker && containsAMDDriverGate
-        let apexDriverGate = containsApexGraphicsStack && containsTortoiseDriverWarning
-        return voidDriverGate || apexDriverGate
+        let hasLegacyDriverStack = imports.isSuperset(
+            of: ["d3d12.dll", "dxgi.dll", "amd_ags_x64.dll"]
+        )
+        let voidDriverGate = hasLegacyDriverStack
+            && containsVoidEngineMarker
+            && containsAMDDriverGate
+        let apexDriverGate = hasLegacyDriverStack
+            && containsApexGraphicsStack
+            && containsTortoiseDriverWarning
+        // Unreal moderno puede resolver D3D12 y la validación del driver dinámicamente: su PE
+        // importa DXGI, pero no necesariamente d3d12.dll ni AMD AGS. La huella textual completa
+        // del diálogo genérico de UE, combinada con D3D12 ya verificado, es el contrato suficiente.
+        let unrealDriverGate = imports.contains("dxgi.dll") && containsUnrealDriverWarning
+        return voidDriverGate || apexDriverGate || unrealDriverGate
     }
 
     nonisolated static func requiresVoidEngineD3DMetalDriverCompatibility(
@@ -961,6 +973,7 @@ final class WineManager {
             containsAMDDriverGate: containsAMDDriverGate,
             containsApexGraphicsStack: false,
             containsTortoiseDriverWarning: false,
+            containsUnrealDriverWarning: false,
             isD3D12: isD3D12
         )
     }
@@ -993,6 +1006,15 @@ final class WineManager {
                 "Your graphics driver is out-of-date. This will likely cause problems. Do you want to start the game anyway?"
             ]
         )
+        let containsUnrealDriverWarning = isUnrealGame(executable)
+            && exeContainsUTF8OrUTF16LE(
+                executable,
+                allOf: [
+                    "WARNING: Known issues with graphics driver",
+                    "The installed version of the {Vendor} graphics driver has known issues in {RHI}.",
+                    "Minimum required: {RecommendedVer}"
+                ]
+            )
         return Self.requiresD3DMetalDriverIdentityCompatibility(
             importedLibraries: peImportedLibraries(forExecutable: executable),
             containsVoidEngineMarker: exeContains(executable, anyOf: ["VoidEngine"]),
@@ -1005,6 +1027,7 @@ final class WineManager {
             ),
             containsApexGraphicsStack: containsApexGraphicsStack,
             containsTortoiseDriverWarning: containsTortoiseDriverWarning,
+            containsUnrealDriverWarning: containsUnrealDriverWarning,
             isD3D12: detectGraphicsAPI(forExecutable: executable) == .d3d12
         )
     }
@@ -1173,43 +1196,6 @@ final class WineManager {
         }
     }
 
-    /// Responde «No» automáticamente al diálogo modal **«WARNING: Known issues with graphics
-    /// driver»** que UE4/UE5 muestran cuando la GPU se reporta como AMD (es lo que hace el
-    /// D3DMetal de GPTK: su dxgi/d3d11 dice "AMD Compatibility Mode" y la AGS de AMD salta).
-    /// El diálogo BLOQUEA el arranque del juego: sin respuesta el watchdog lo mata por «no
-    /// renderizar». «No» = seguir jugando sin abrir la web de AMD; es la respuesta correcta
-    /// siempre (no cambia rutas ni afecta a juegos sin ese diálogo: solo actúa si aparece una
-    /// ventana con ese título exacto). Verificado con Dwarven Realms (UE5): tras el «No»
-    /// automático arranca hasta su menú. El botón «No» va anclado abajo-derecha a posición
-    /// RELATIVA (~88,5 % del ancho, ~92,5 % del alto — medido a 464×289 y 232×159 pt, que
-    /// tienen márgenes en puntos DISTINTOS: la relativa es la que se mantiene). Reintenta
-    /// mientras el diálogo siga visible (un clic puede caer durante la animación de apertura).
-    private func dismissAMDDriverWarningDialog() {
-        Task { @MainActor in
-            let deadline = Date().addingTimeInterval(240)
-            while Date() < deadline {
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
-                let ventanas = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
-                                                           kCGNullWindowID) as? [[String: Any]]) ?? []
-                guard let dlg = ventanas.first(where: {
-                    ($0[kCGWindowName as String] as? String) == "WARNING: Known issues with graphics driver"
-                }), let b = dlg[kCGWindowBounds as String] as? [String: Any],
-                  let x = b["X"] as? Double, let y = b["Y"] as? Double,
-                  let w = b["Width"] as? Double, let h = b["Height"] as? Double else { continue }
-                let punto = CGPoint(x: x + w * 0.885, y: y + h * 0.925)
-                let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,
-                                   mouseCursorPosition: punto, mouseButton: .left)
-                let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp,
-                                 mouseCursorPosition: punto, mouseButton: .left)
-                down?.post(tap: .cghidEventTap)
-                up?.post(tap: .cghidEventTap)
-                log.log("Diálogo AMD «Known issues with graphics driver» respondido con «No» en \(Int(punto.x)),\(Int(punto.y)) (el juego sigue arrancando).", level: .info)
-                // Sin `return`: si el clic no cuajó (animación, foco), el siguiente sondeo reintenta.
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
-            }
-        }
-    }
-
     /// Carpeta del **mod de Source** que hay que arrancar (la que tiene el `gameinfo.txt`), o `nil`
     /// si no es un juego de este motor.
     ///
@@ -1244,6 +1230,25 @@ final class WineManager {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: executable), options: .mappedIfSafe)
         else { return false }
         return needles.contains { data.range(of: Data($0.utf8)) != nil }
+    }
+
+    /// Busca una huella textual completa tanto en recursos ANSI/UTF-8 como en tablas UTF-16LE.
+    /// Los `MessageBox` de Unreal se compilan como cadenas anchas; limitarse a UTF-8 hacía que la
+    /// misma validación de driver fuese visible al usuario pero invisible para el enrutador.
+    private nonisolated func exeContainsUTF8OrUTF16LE(
+        _ executable: String,
+        allOf needles: [String]
+    ) -> Bool {
+        guard !needles.isEmpty,
+              let data = try? Data(
+                  contentsOf: URL(fileURLWithPath: executable),
+                  options: .mappedIfSafe
+              ) else { return false }
+        return needles.allSatisfy { needle in
+            if data.range(of: Data(needle.utf8)) != nil { return true }
+            guard let utf16 = needle.data(using: .utf16LittleEndian) else { return false }
+            return data.range(of: utf16) != nil
+        }
     }
 
     /// `true` si es un juego sobre el **motor KEX** de Nightdive (las remasterizaciones de DOOM,
@@ -2860,7 +2865,10 @@ final class WineManager {
             || dirLower.contains("/binaries/win32")
             || dirLower.contains("/binaries/wingdk")
         if isUnreal, exeImports(executable, anyOf: ["d3d11.dll", "dxgi.dll"]) {
-            if exeImports(executable, anyOf: ["d3d12.dll"]) { return .d3d12 }
+            if exeImports(executable, anyOf: ["d3d12.dll"])
+                || isUnrealAgilityD3D12Payload(executable) {
+                return .d3d12
+            }
             return .d3d11
         }
         // Algunos motores mantienen un launcher mínimo y cargan toda la capa gráfica desde una DLL
@@ -2890,6 +2898,14 @@ final class WineManager {
         if exeImports(executable, anyOf: ["d3d12.dll"]) { return .d3d12 }
         if exeImports(executable, anyOf: ["d3d11.dll", "dxgi.dll", "d3d10.dll", "d3d10core.dll"]) { return .d3d11 }
         if exeImports(executable, anyOf: ["d3d9.dll", "d3d8.dll", "ddraw.dll"]) { return .d3d9 }
+        // Un paquete Unreal protegido suele exponer en la raíz un bootstrapper mínimo (SteamStub)
+        // y mantener el renderer real bajo `<Proyecto>/Binaries/Win64`. El launcher solo importa
+        // KERNEL32, así que analizarlo aislado oculta D3D12 y fuerza erróneamente `wine-full` antes
+        // de que Steam cree el payload. Se hereda exclusivamente la API de un payload empaquetado
+        // y verificado; el ejecutable que se delega a Steam sigue siendo el bootstrapper oficial.
+        if let unrealPayload = packagedUnrealPayloadExecutable(forBootstrapper: executable) {
+            return detectGraphicsAPI(forExecutable: unrealPayload)
+        }
         // Algunos motores enlazan la API gráfica a través de una DLL local obligatoria. La tabla PE
         // del ejecutable declara ese módulo y el módulo declara D3D; seguir solo ese salto evita que
         // un payload Northlight D3D12 parezca «carga dinámica» y caiga en wined3d/Gcenx. Los imports
@@ -2962,6 +2978,137 @@ final class WineManager {
             return .d3d11
         }
         return .other
+    }
+
+    /// Reconoce el D3D12 dinámico de paquetes Unreal modernos que distribuyen la Agility SDK.
+    ///
+    /// Estos payloads pueden importar solo DXGI y resolver `d3d12.dll` en runtime. La combinación
+    /// estricta de la ruta oficial `Binaries/Win64`, `D3D12Core.dll` junto al payload y símbolos del
+    /// RHI D3D12 evita confundir una DLL opcional o una Agility SDK residual con el renderer activo.
+    func isUnrealAgilityD3D12Payload(_ executable: String) -> Bool {
+        guard isUnrealGame(executable), isExecutable64Bit(executable) else { return false }
+
+        let fileManager = FileManager.default
+        let directory = (executable as NSString).deletingLastPathComponent
+        guard let entries = try? fileManager.contentsOfDirectory(atPath: directory),
+              let d3d12DirectoryName = entries.first(where: {
+                  $0.caseInsensitiveCompare("D3D12") == .orderedSame
+              }) else { return false }
+        let d3d12Directory = (directory as NSString)
+            .appendingPathComponent(d3d12DirectoryName)
+        guard PathSafety.isContained(d3d12Directory, in: directory),
+              let d3d12Entries = try? fileManager.contentsOfDirectory(atPath: d3d12Directory),
+              d3d12Entries.contains(where: {
+                  $0.caseInsensitiveCompare("D3D12Core.dll") == .orderedSame
+              }) else { return false }
+
+        guard let data = try? Data(
+            contentsOf: URL(fileURLWithPath: executable),
+            options: .mappedIfSafe
+        ) else { return false }
+        let requiredMarkers = [
+            "D3D12GetInterface",
+            "D3D12CreateDevice",
+            "D3D12RHI\\Private"
+        ]
+        return requiredMarkers.allSatisfy {
+            data.range(of: Data($0.utf8)) != nil
+        }
+    }
+
+    /// Resuelve el payload real de un bootstrapper raíz de Unreal empaquetado sin adivinar por
+    /// título, AppID ni por cualquier `.exe` profundo del depot.
+    ///
+    /// El contrato exige: runtime `Engine/Binaries/Win64/CrashReportClient.exe`, un único proyecto
+    /// directo con `Content/Paks/*.pak` y un payload PE64 cuyo nombre deriva exactamente del launcher
+    /// (`Foo.exe` → `Foo-Win64-Shipping.exe`). Todas las rutas se canonicalizan para impedir que un
+    /// enlace simbólico saque la detección del árbol instalado.
+    nonisolated func packagedUnrealPayloadExecutable(forBootstrapper executable: String) -> String? {
+        guard isExecutable64Bit(executable) else { return nil }
+
+        let fileManager = FileManager.default
+        let root = (executable as NSString).deletingLastPathComponent
+        let launcherStem = (((executable as NSString).lastPathComponent) as NSString)
+            .deletingPathExtension
+        guard !root.isEmpty, !launcherStem.isEmpty,
+              let rootEntries = try? fileManager.contentsOfDirectory(atPath: root) else {
+            return nil
+        }
+
+        func child(
+            named expectedName: String,
+            in directory: String,
+            mustBeDirectory: Bool
+        ) -> String? {
+            guard let entries = try? fileManager.contentsOfDirectory(atPath: directory),
+                  let actualName = entries.first(where: {
+                      $0.caseInsensitiveCompare(expectedName) == .orderedSame
+                  }) else { return nil }
+            let path = (directory as NSString).appendingPathComponent(actualName)
+            var isDirectory: ObjCBool = false
+            guard PathSafety.isContained(path, in: root),
+                  fileManager.fileExists(atPath: path, isDirectory: &isDirectory),
+                  isDirectory.boolValue == mustBeDirectory else { return nil }
+            return path
+        }
+
+        guard let engine = child(named: "Engine", in: root, mustBeDirectory: true),
+              let engineBinaries = child(
+                  named: "Binaries",
+                  in: engine,
+                  mustBeDirectory: true
+              ),
+              let engineWin64 = child(
+                  named: "Win64",
+                  in: engineBinaries,
+                  mustBeDirectory: true
+              ),
+              child(
+                  named: "CrashReportClient.exe",
+                  in: engineWin64,
+                  mustBeDirectory: false
+              ) != nil else { return nil }
+
+        var candidates: [String] = []
+        for projectName in rootEntries.sorted(by: {
+            $0.localizedStandardCompare($1) == .orderedAscending
+        }) where projectName.caseInsensitiveCompare("Engine") != .orderedSame {
+            let project = (root as NSString).appendingPathComponent(projectName)
+            var isProjectDirectory: ObjCBool = false
+            guard PathSafety.isContained(project, in: root),
+                  fileManager.fileExists(
+                      atPath: project,
+                      isDirectory: &isProjectDirectory
+                  ),
+                  isProjectDirectory.boolValue,
+                  let content = child(
+                      named: "Content",
+                      in: project,
+                      mustBeDirectory: true
+                  ),
+                  let paks = child(named: "Paks", in: content, mustBeDirectory: true),
+                  let pakEntries = try? fileManager.contentsOfDirectory(atPath: paks),
+                  pakEntries.contains(where: { $0.lowercased().hasSuffix(".pak") }),
+                  let binaries = child(
+                      named: "Binaries",
+                      in: project,
+                      mustBeDirectory: true
+                  ),
+                  let win64 = child(
+                      named: "Win64",
+                      in: binaries,
+                      mustBeDirectory: true
+                  ),
+                  let payload = child(
+                      named: "\(launcherStem)-Win64-Shipping.exe",
+                      in: win64,
+                      mustBeDirectory: false
+                  ),
+                  isExecutable64Bit(payload) else { continue }
+            candidates.append(payload)
+        }
+
+        return candidates.count == 1 ? candidates[0] : nil
     }
 
     /// API gráfica de un payload nativo declarado por un launcher mediante `<startup><cmdline>`.
@@ -5378,7 +5525,7 @@ final class WineManager {
 
     /// `true` únicamente para un PE x86-64 (`IMAGE_FILE_MACHINE_AMD64`). Se mantiene separado del
     /// detector de 32 bits para no alterar el enrutado histórico de ningún juego existente.
-    private func isExecutable64Bit(_ executable: String) -> Bool {
+    private nonisolated func isExecutable64Bit(_ executable: String) -> Bool {
         guard let file = FileHandle(forReadingAtPath: executable) else { return false }
         defer { try? file.close() }
         guard let head = try? file.read(upToCount: 0x40), head.count >= 0x40 else { return false }
@@ -6752,6 +6899,12 @@ final class WineManager {
         //      unificado NO lo corre (solo D3D11); va por GPTK/D3DMetal (D3D12→Metal), con el
         //      cliente Steam en el MISMO wineserver de GPTK para el DRM. Se salta la rama unificada.
         let graphicsAPI = detectGraphicsAPI(forExecutable: executable)
+        // Los launchers protegidos de Unreal no contienen el renderer ni sus validaciones. Steam
+        // crea después el payload `*-Win64-Shipping.exe`; todas las decisiones de runtime D3D12
+        // deben analizar ese PE verificado, aunque la orden oficial siga delegando el launcher.
+        let graphicsRuntimeExecutable = packagedUnrealPayloadExecutable(
+            forBootstrapper: executable
+        ) ?? executable
         ensureFrozenbyteDisplaySettings(prefix: bottle.prefixPath, executable: executable)
         if isNativeVulkanGame(executable), let fullWine = await fullEngineWineEnsured() {
             let needsExtendedCapabilities = requiresExtendedNativeVulkanCapabilities(executable)
@@ -7105,11 +7258,17 @@ final class WineManager {
         // conectar; por eso este motor es EL correcto para D3D12+Steam. Validado a mano: FFT
         // (AppID 1004640) supera el DRM, carga D3DMetal y renderiza (solo lo frena su anti-tamper
         // Denuvo); juegos D3D12 SIN Denuvo funcionan de principio a fin.
-        let needsManagedMedia = isD3D12 && requiresManagedD3D12MediaEngine(executable)
+        let needsManagedMedia = isD3D12
+            && requiresManagedD3D12MediaEngine(graphicsRuntimeExecutable)
         let needsCoherentGPUProbe = isD3D12
-            && requiresCoherentD3DMetalGPUProbeEngine(executable)
+            && requiresCoherentD3DMetalGPUProbeEngine(graphicsRuntimeExecutable)
         let needsDirectStorageFallback = isD3D12
-            && requiresDirectStorageCompatibilityFallback(executable)
+            && requiresDirectStorageCompatibilityFallback(graphicsRuntimeExecutable)
+        let needsD3DMetalDriverIdentity = isD3D12
+            && requiresD3DMetalDriverIdentityCompatibility(graphicsRuntimeExecutable)
+        let d3d12RuntimeProfile: SteamRuntimeProfile = needsD3DMetalDriverIdentity
+            ? .d3dMetalDriverIdentity
+            : .standard
         let d3d12LaunchArguments = Self.directStorageCompatibilityArguments(
             required: needsDirectStorageFallback,
             resolvedArguments: launchArguments
@@ -7158,7 +7317,13 @@ final class WineManager {
             log.log(steamPreparationMessage, level: .info)
             // Cliente en 2º plano (multiproceso -silent → loguea por JWT sin ventana). El motor
             // D3DMetal corre el CEF igual que el unificado (WINEMSYNC=0, wrapper SwiftShader).
-            let connected = await ensureSteamConnected(in: bottle, clientWine: d3dmWine, timeoutSeconds: 120, background: true)
+            let connected = await ensureSteamConnected(
+                in: bottle,
+                clientWine: d3dmWine,
+                timeoutSeconds: 120,
+                background: true,
+                runtimeProfile: d3d12RuntimeProfile
+            )
             if !connected {
                 if SteamAuthService.storedSessionNeedsReauthentication {
                     throw steamRealReauthenticationRequired(gameExecutable: executable)
@@ -7167,15 +7332,21 @@ final class WineManager {
             }
             if needsManagedMedia {
                 await enableManagedMediaFoundation(
-                    for: executable,
+                    for: graphicsRuntimeExecutable,
                     prefix: bottle.prefixPath,
                     wine: d3dmWine
+                )
+            }
+            if needsD3DMetalDriverIdentity {
+                log.log(
+                    "UE D3D12 con validación de driver: Steam y su payload heredan una identidad DXGI coherente con D3DMetal.",
+                    level: .info
                 )
             }
             log.log("Cliente Steam conectado; lanzando el juego D3D12 con DRM real (D3DMetal).", level: .info)
             // Que mande el d3d12/dxgi builtin de D3DMetal: quitar del game dir las DLLs de DXMT que
             // un intento previo dejara junto al exe (chocan). NO se toca la subcarpeta D3D12/ (Agility SDK).
-            cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
+            cleanExeAdjacentDXMTDLLs(gameExecutable: graphicsRuntimeExecutable)
             // Modo Retina para render a resolución física completa en pantallas Retina.
             let retinaWriteSucceeded: Bool
             if requiresOneXWindowCoordinates {
@@ -7223,6 +7394,10 @@ final class WineManager {
                 : d3dMetalUnifiedEnvironment(prefix: bottle.prefixPath)
             env["SteamAppId"] = appId
             env["SteamGameId"] = appId
+            env = Self.environmentByApplyingD3DMetalDriverIdentity(
+                env,
+                required: needsD3DMetalDriverIdentity
+            )
             for (k, v) in effective.extraEnv { env[k] = v }
             if steamAppLaunchRequired {
                 log.log("Protección Steam D3D12: delegando el arranque al cliente por AppID.", level: .info)
@@ -7232,7 +7407,8 @@ final class WineManager {
                     appId: appId,
                     launchArguments: d3d12LaunchArguments,
                     bottle: bottle,
-                    wine: d3dmWine
+                    wine: d3dmWine,
+                    runtimeProfile: d3d12RuntimeProfile
                 )
                 NotificationService.shared.status(nil)
                 return process
@@ -7272,7 +7448,13 @@ final class WineManager {
         try await prepareRealSteamClient(in: bottle, wine: gptkWine, gameExecutable: executable)
         ensureSteamConfig(in: bottle)
         log.log("Modo Steam real (GPTK/D3DMetal): preparando el cliente Steam conectado…", level: .info)
-        let connected = await ensureSteamConnected(in: bottle, clientWine: gptkWine, timeoutSeconds: 120, background: true)
+        let connected = await ensureSteamConnected(
+            in: bottle,
+            clientWine: gptkWine,
+            timeoutSeconds: 120,
+            background: true,
+            runtimeProfile: d3d12RuntimeProfile
+        )
         if !connected {
             if SteamAuthService.storedSessionNeedsReauthentication {
                 throw steamRealReauthenticationRequired(gameExecutable: executable)
@@ -7284,7 +7466,9 @@ final class WineManager {
         // 4) D3D12: que mande el `d3d12`/`dxgi` builtin de D3DMetal — quitar del game dir las DLLs
         //    de DXMT que un intento previo dejara junto al exe (chocan con D3DMetal). NO se toca la
         //    subcarpeta `D3D12/` del Agility SDK (D3DMetal la ignora por diseño).
-        if isD3D12 { cleanExeAdjacentDXMTDLLs(gameExecutable: executable) }
+        if isD3D12 {
+            cleanExeAdjacentDXMTDLLs(gameExecutable: graphicsRuntimeExecutable)
+        }
 
         // 5) Lanzar el juego en GPTK, MISMO wineserver que Steam (NO se mata Steam ni se
         //    resincroniza el prefijo, que lo tumbaría). SteamAPI_Init encuentra el cliente vivo.
@@ -7298,6 +7482,10 @@ final class WineManager {
         env["WINEFSYNC"] = "0"
         env["SteamAppId"] = appId
         env["SteamGameId"] = appId
+        env = Self.environmentByApplyingD3DMetalDriverIdentity(
+            env,
+            required: needsD3DMetalDriverIdentity
+        )
         if steamAppLaunchRequired {
             log.log("SteamStub/CEG: delegando el arranque al cliente Steam por AppID.", level: .info)
             NotificationService.shared.status("Steam conectado. Autorizando y lanzando el juego…")
@@ -7306,7 +7494,8 @@ final class WineManager {
                 appId: appId,
                 launchArguments: d3d12LaunchArguments,
                 bottle: bottle,
-                wine: gptkWine
+                wine: gptkWine,
+                runtimeProfile: d3d12RuntimeProfile
             )
             NotificationService.shared.status(nil)
             return process
@@ -7488,7 +7677,7 @@ final class WineManager {
             .map(shq)
             .joined(separator: " ")
         let imageName = (executable as NSString).lastPathComponent
-        let pattern = Self.steamProtectedProcessPattern(imageName)
+        let pattern = launchSupervisorProcessPattern(forExecutable: executable)
         // Windows no distingue mayúsculas en nombres de imagen. Steam puede analizar `limbo.exe`
         // y crear `Limbo.exe`; el supervisor debe considerar ambos el mismo proceso.
         let pgrep = Self.caseInsensitivePgrepShellCommand(matchingPattern: pattern)
@@ -8293,12 +8482,17 @@ final class WineManager {
     }
 
     /// Imágenes que forman una única sesión jugable para un ejecutable concreto. Mantiene las
-    /// variantes de arquitectura existentes y añade el payload declarado por el launcher cuando
-    /// el contrato XML/x64 ha sido validado. El orden conserva primero el ejecutable solicitado.
+    /// variantes de arquitectura existentes y añade cualquier payload estructuralmente declarado
+    /// por el launcher cuando su contrato ha sido validado. El orden conserva primero el ejecutable
+    /// solicitado para que el supervisor abarque también los handoffs del bootstrapper.
     nonisolated func trackedProcessFamilyImageNames(forExecutable executable: String) -> [String] {
         let launcherName = (executable as NSString).lastPathComponent
         var names = Self.processFamilyImageNames(launcherName)
-        if let payload = declaredX64PayloadExecutable(forExecutable: executable) {
+        let payloads = [
+            declaredX64PayloadExecutable(forExecutable: executable),
+            packagedUnrealPayloadExecutable(forBootstrapper: executable)
+        ].compactMap { $0 }
+        for payload in payloads {
             for candidate in Self.processFamilyImageNames((payload as NSString).lastPathComponent)
             where !names.contains(where: {
                 $0.caseInsensitiveCompare(candidate) == .orderedSame
@@ -8886,6 +9080,11 @@ final class WineManager {
             )
             result["MVK_CONFIG_LOG_LEVEL"] = "1"
             return result
+        case .d3dMetalDriverIdentity:
+            return environmentByApplyingD3DMetalDriverIdentity(
+                environment,
+                required: true
+            )
         }
     }
 
@@ -8908,6 +9107,7 @@ final class WineManager {
             "SteamAppId", "SteamGameId",
             "WINEMSYNC", "WINEESYNC", "WINEFSYNC",
             "MVK_CONFIG_LOG_LEVEL", "MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS", "MTL_HUD_ENABLED",
+            "D3DM_VENDOR_ID", "D3DM_DEVICE_ID", "D3DM_DEVICE_DESCRIPTION",
             "GST_PLUGIN_SYSTEM_PATH", "GST_PLUGIN_PATH", "GST_PLUGIN_SCANNER", "GST_REGISTRY",
             "GIO_EXTRA_MODULES",
             "DOTNET_ReadyToRun", "DOTNET_TieredCompilation", "DOTNET_TieredPGO",
@@ -10840,7 +11040,6 @@ final class WineManager {
             if let exe = arguments.first(where: { $0.lowercased().hasSuffix(".exe") }) {
                 nudgeGameWindowFocus(exeName: (exe as NSString).lastPathComponent)
             }
-            dismissAMDDriverWarningDialog()
             return process
         } catch {
             try? await terminateWineProcesses(winePath: winePath, prefix: prefix)
