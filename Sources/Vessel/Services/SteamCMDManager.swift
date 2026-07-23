@@ -61,6 +61,11 @@ actor SteamCMDExecutionGate {
 @MainActor
 @Observable
 final class SteamCMDManager {
+    enum ProgressStage: Equatable, Sendable {
+        case downloading
+        case verifying
+    }
+
     enum LoginResult: Equatable {
         case ok
         case needsGuard          // pide código de Steam Guard / 2FA
@@ -175,6 +180,14 @@ final class SteamCMDManager {
             await run(arguments: args, operationID: executionID) { line in
                 let l = line.lowercased()
                 if let pct = Self.progressPercent(in: line) {
+                    if Self.progressStage(in: line) == .verifying {
+                        // SteamCMD reinicia su porcentaje al pasar de descarga a verificación.
+                        // Etiquetarlo como descarga hace parecer que la operación retrocedió del
+                        // 100 % al 0 %; en esta fase tampoco se debe calcular velocidad de red.
+                        samples.removeAll(keepingCapacity: true)
+                        onProgress(pct, "Verificando… \(Int(pct))%")
+                        return
+                    }
                     var message = "Descargando… \(Int(pct))%"
                     if let (done, total) = Self.progressBytes(in: line), total > 0 {
                         let now = Date()
@@ -442,6 +455,13 @@ final class SteamCMDManager {
         let tail = parts[1].trimmingCharacters(in: .whitespaces)
         let num = tail.prefix { $0.isNumber || $0 == "." }
         return Double(num)
+    }
+
+    nonisolated static func progressStage(in line: String) -> ProgressStage {
+        let lower = line.lowercased()
+        return lower.contains("verifying") || lower.contains("validating")
+            ? .verifying
+            : .downloading
     }
 
     /// Bytes descargados y totales de la línea de progreso de steamcmd: "(1234 / 5678)".

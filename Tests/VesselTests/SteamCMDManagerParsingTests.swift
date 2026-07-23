@@ -111,6 +111,16 @@ struct SteamCMDManagerParsingTests {
         #expect(SteamCMDManager.appUpdateSucceeded(in: output, exitCode: 0))
     }
 
+    @Test("Distingue la verificación final de una descarga")
+    func distinguishesVerificationProgress() {
+        let downloading = "Update state (0x61) downloading, progress: 98.45 (156702414915 / 159166572882)"
+        let verifying = "Update state (0x81) verifying update, progress: 20.45 (32557467030 / 159166572882)"
+
+        #expect(SteamCMDManager.progressStage(in: downloading) == .downloading)
+        #expect(SteamCMDManager.progressStage(in: verifying) == .verifying)
+        #expect(SteamCMDManager.progressPercent(in: verifying) == 20.45)
+    }
+
     @Test("No confunde el código cero de SteamCMD con una operación correcta")
     func rejectsFalseZeroExitSuccess() {
         let output = "ERROR! Failed to install app '207350' (No subscription)"
