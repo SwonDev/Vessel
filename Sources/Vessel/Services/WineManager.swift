@@ -10769,7 +10769,7 @@ final class WineManager {
 
     /// Composición pura y comprobable del entorno de identidad. Los cargadores que aplican de forma
     /// fiable `WINEPRELOADERAPPNAME` usan su ruta nativa; el resto recibe además el helper de Vessel,
-    /// que corrige `CFBundleName` y ejecuta el preloader mediante un alias con el título del juego.
+    /// que ejecuta una copia privada del preloader cuya identidad ya está corregida en disco.
     nonisolated static func dockIdentityEnvironment(
         from environment: [String: String],
         displayName: String?,
@@ -10888,8 +10888,22 @@ final class WineManager {
                 attributes: [.posixPermissions: 0o700]
             )
             let alias = aliasDirectory.appendingPathComponent(name, isDirectory: false)
-            if FileManager.default.fileExists(atPath: alias.path) {
-                try FileManager.default.removeItem(at: alias)
+            do {
+                try DockIdentityPreloader.prepareAlias(
+                    wineExecutable: URL(fileURLWithPath: winePath),
+                    alias: alias,
+                    displayName: name
+                )
+            } catch {
+                // Se mantiene el contrato anterior como fallback: el helper intentará crear un
+                // hard link al preloader real. El juego nunca deja de arrancar por su identidad.
+                if FileManager.default.fileExists(atPath: alias.path) {
+                    try? FileManager.default.removeItem(at: alias)
+                }
+                log.log(
+                    "No se pudo pregrabar la identidad del Dock para \(name): \(error.localizedDescription)",
+                    level: .warn
+                )
             }
             return Self.dockIdentityEnvironment(
                 from: environment,

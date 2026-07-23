@@ -74,14 +74,19 @@ static const char *vessel_preloader_alias(const char *path) {
         && strstr(basename, "preloader")) {
         struct stat source_info;
         struct stat alias_info;
-        bool alias_matches = stat(path, &source_info) == 0
-            && stat(alias, &alias_info) == 0
-            && source_info.st_dev == alias_info.st_dev
-            && source_info.st_ino == alias_info.st_ino;
-
-        if (alias_matches
-            || link(path, alias) == 0
-            || (errno != EEXIST && symlink(path, alias) == 0)) {
+        bool source_is_regular = stat(path, &source_info) == 0
+            && S_ISREG(source_info.st_mode);
+        bool alias_is_safe_copy = source_is_regular
+            && lstat(alias, &alias_info) == 0
+            && S_ISREG(alias_info.st_mode)
+            && alias_info.st_uid == geteuid()
+            && (alias_info.st_mode & (S_IWGRP | S_IWOTH)) == 0
+            && alias_info.st_size == source_info.st_size;
+        // Vessel crea antes del exec una copia privada con __info_plist ya parcheado. El helper
+        // solo la acepta si pertenece al usuario, es regular, no es escribible por terceros y
+        // conserva el tamaño del preloader original. Los motores antiguos mantienen el hard link
+        // como fallback; nunca se sigue un symlink preexistente.
+        if (alias_is_safe_copy || (source_is_regular && link(path, alias) == 0)) {
             return alias;
         }
     }
