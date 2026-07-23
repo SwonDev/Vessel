@@ -3,6 +3,32 @@ import XCTest
 @testable import Vessel
 
 final class DependencyManagerTests: XCTestCase {
+    func testWinePrefixReadinessRequiresRegistersAndCoreDLLs() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VesselPrefixReadiness-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("drive_c/windows/system32"),
+            withIntermediateDirectories: true
+        )
+        XCTAssertFalse(WineManager.isWinePrefixInitialized(at: root.path))
+
+        for relativePath in [
+            "system.reg",
+            "user.reg",
+            "drive_c/windows/system32/kernel32.dll",
+            "drive_c/windows/system32/ntdll.dll"
+        ] {
+            try Data(repeating: 0x01, count: 2_048)
+                .write(to: root.appendingPathComponent(relativePath))
+        }
+        XCTAssertTrue(WineManager.isWinePrefixInitialized(at: root.path))
+
+        try Data().write(to: root.appendingPathComponent("user.reg"))
+        XCTAssertFalse(WineManager.isWinePrefixInitialized(at: root.path))
+    }
+
     func testDecodesGitHubReleaseSnakeCaseFields() throws {
         let json = """
         {

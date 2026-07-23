@@ -435,14 +435,141 @@ final class WineManager {
             withIntermediateDirectories: true
         )
         log.log("Inicializando prefix Wine en \(path)", level: .info)
-        try await runWineTool(
-            winePath: winePath,
-            toolName: "wineboot",
-            fallbackArguments: ["wineboot", "--init"],
-            toolArguments: ["--init"],
-            prefix: path
-        )
+        try await initializeWinePrefix(at: path, winePath: winePath)
         log.log("Prefix inicializado", level: .info)
+    }
+
+    /// Un prefijo nuevo está utilizable cuando Wine ya escribió ambos registros y las DLL base
+    /// de Windows. `wineboot --init` puede dejar después su `wineserver` en espera indefinida
+    /// (observado con wine-dxmt aunque el árbol ya estaba completo); esperar únicamente a que el
+    /// wrapper termine bloqueaba la instalación de Epic/GOG sin límite. Esta señal se basa en el
+    /// contrato del prefijo, no en temporizadores ni en un motor concreto.
+    nonisolated static func isWinePrefixInitialized(at path: String) -> Bool {
+        winePrefixInitializationSignature(at: path) != nil
+    }
+
+    /// Tamaños y fechas de modificación del contrato mínimo. Además de validar la existencia,
+    /// permite exigir que los ficheros hayan permanecido estables antes de cerrar `wineboot`:
+    /// `system.reg` aparece mientras todavía se está escribiendo y no debe aceptarse a medias.
+    private nonisolated static func winePrefixInitializationSignature(
+        at path: String
+    ) -> [Int64]? {
+        let fileManager = FileManager.default
+        let requiredFiles: [(path: String, minimumSize: Int64)] = [
+            ("system.reg", 1_024),
+            ("user.reg", 512),
+            ("drive_c/windows/system32/kernel32.dll", 1_024),
+            ("drive_c/windows/system32/ntdll.dll", 1_024)
+        ]
+        var signature: [Int64] = []
+        for required in requiredFiles {
+            let candidate = (path as NSString).appendingPathComponent(required.path)
+            guard let attributes = try? fileManager.attributesOfItem(atPath: candidate),
+                  let fileType = attributes[.type] as? FileAttributeType,
+                  fileType == .typeRegular,
+                  let size = (attributes[.size] as? NSNumber)?.int64Value,
+                  size >= required.minimumSize,
+                  let modified = attributes[.modificationDate] as? Date else {
+                return nil
+            }
+            signature.append(size)
+            signature.append(Int64(modified.timeIntervalSince1970 * 1_000))
+        }
+        return signature
+    }
+
+    /// Inicializa un prefijo con una salida acotada y autorreparable. En cuanto el contrato mínimo
+    /// está completo se concede un breve margen para que Wine termine por sí mismo; si conserva el
+    /// server residual, se cierra exclusivamente ese prefijo. Un fallo antes de alcanzar el estado
+    /// utilizable sigue propagándose: nunca se marca como creado un bottle incompleto.
+    private func initializeWinePrefix(at path: String, winePath: String) async throws {
+        let process = Process()
+        if let wineboot = siblingTool(named: "wineboot", forWinePath: winePath) {
+            process.executableURL = URL(fileURLWithPath: wineboot)
+            process.arguments = ["--init"]
+        } else {
+            process.executableURL = URL(fileURLWithPath: winePath)
+            process.arguments = ["wineboot", "--init"]
+        }
+
+        var environment = Self.userShellEnvironment
+        for (key, value) in Self.wineControlEnvironment(prefix: path, wine: winePath) {
+            environment[key] = value
+        }
+        // Un bottle de juego no necesita que Wine abra instaladores interactivos de Mono/Gecko
+        // durante la creación. Los runtimes reales se provisionan después por autodetección.
+        environment["WINEDLLOVERRIDES"] = "mscoree,mshtml=d;winedbg.exe=d"
+        process.environment = environment
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+        } catch {
+            throw WineError.launchFailed(error.localizedDescription)
+        }
+
+        let hardDeadline = Date().addingTimeInterval(90)
+        var readySince: Date?
+        var stableSignature: [Int64]?
+        while process.isRunning, Date() < hardDeadline {
+            if let signature = Self.winePrefixInitializationSignature(at: path) {
+                if signature != stableSignature {
+                    stableSignature = signature
+                    readySince = Date()
+                }
+                if Date().timeIntervalSince(readySince!) >= 2 { break }
+            } else {
+                stableSignature = nil
+                readySince = nil
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+
+        let prefixReady = Self.isWinePrefixInitialized(at: path)
+        let neededResidualShutdown = process.isRunning
+        if process.isRunning {
+            if prefixReady {
+                log.log(
+                    "wineboot dejó el prefijo listo pero mantuvo un wineserver residual; se cierra automáticamente.",
+                    level: .debug
+                )
+            } else {
+                log.log(
+                    "wineboot --init superó 90 s sin completar el prefijo; se cancela para evitar un bloqueo indefinido.",
+                    level: .warn
+                )
+            }
+            try? await terminateWineProcesses(winePath: winePath, prefix: path)
+            let shutdownDeadline = Date().addingTimeInterval(5)
+            while process.isRunning, Date() < shutdownDeadline {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            if process.isRunning {
+                process.terminate()
+                try? await Task.sleep(for: .milliseconds(300))
+            }
+            if process.isRunning {
+                Darwin.kill(process.processIdentifier, SIGKILL)
+                try? await Task.sleep(for: .milliseconds(300))
+            }
+        }
+
+        guard prefixReady else {
+            let detail: String
+            if process.isRunning {
+                detail = "wineboot no respondió y el prefijo quedó incompleto."
+            } else {
+                detail = "wineboot terminó con código \(process.terminationStatus) sin completar el prefijo."
+            }
+            throw WineError.launchFailed(detail)
+        }
+        if !neededResidualShutdown, process.terminationStatus != 0 {
+            throw WineError.launchFailed(
+                "wineboot terminó con código \(process.terminationStatus)."
+            )
+        }
     }
 
     /// Configura un bottle recién creado. Con wine-dxmt (3Shain), DXMT+DXVK
@@ -9519,45 +9646,10 @@ final class WineManager {
         }
     }
 
-    private func runWineTool(
-        winePath: String,
-        toolName: String,
-        fallbackArguments: [String],
-        toolArguments: [String],
-        prefix: String
-    ) async throws {
-        if let toolPath = siblingTool(named: toolName, forWinePath: winePath) {
-            try await runExecutable(path: toolPath, arguments: toolArguments, prefix: prefix)
-        } else {
-            _ = try await runWine(winePath: winePath, arguments: fallbackArguments, prefix: prefix)
-        }
-    }
-
     private func siblingTool(named toolName: String, forWinePath winePath: String) -> String? {
         let wineURL = URL(fileURLWithPath: winePath)
         let toolURL = wineURL.deletingLastPathComponent().appendingPathComponent(toolName)
         return FileManager.default.isExecutableFile(atPath: toolURL.path) ? toolURL.path : nil
-    }
-
-    private func runExecutable(path: String, arguments: [String], prefix: String) async throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = arguments
-        process.environment = [
-            "WINEPREFIX": prefix,
-            "WINEDEBUG": "-all"
-        ]
-        do {
-            let result = try await runCapturing(process)
-            if result.exitCode != 0 {
-                throw WineError.launchFailed(result.output.isEmpty
-                    ? "wineboot terminó con código \(result.exitCode)" : result.output)
-            }
-        } catch let error as WineError {
-            throw error
-        } catch {
-            throw WineError.launchFailed(error.localizedDescription)
-        }
     }
 
     private func steamInstallEnvironment(prefix: String) -> [String: String] {
