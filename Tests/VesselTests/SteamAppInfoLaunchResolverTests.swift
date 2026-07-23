@@ -219,6 +219,43 @@ final class SteamAppInfoLaunchResolverTests: XCTestCase {
         )
     }
 
+    func testImporterRejectsDeclaredPayloadSymlinkOutsideDepot() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let steam = directory.appendingPathComponent("Steam", isDirectory: true)
+        let appCache = steam.appendingPathComponent("appcache", isDirectory: true)
+        let depot = directory.appendingPathComponent("Safe Game", isDirectory: true)
+        let launcherDirectory = depot.appendingPathComponent("launcher", isDirectory: true)
+        let launcher = launcherDirectory.appendingPathComponent("SafeLauncher.exe")
+        let outside = directory.appendingPathComponent("outside.exe")
+        try FileManager.default.createDirectory(at: appCache, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: launcherDirectory, withIntermediateDirectories: true)
+        try Data("launcher".utf8).write(to: launcher)
+        try Data("outside".utf8).write(to: outside)
+        try FileManager.default.createSymbolicLink(
+            at: launcherDirectory.appendingPathComponent("Payload.exe"),
+            withDestinationURL: outside
+        )
+        try Data("ApplicationPath=Payload.exe\n".utf8).write(
+            to: launcherDirectory.appendingPathComponent("Safe.ini")
+        )
+        try makeVersion41AppInfo(
+            appID: 44,
+            entries: [
+                LaunchEntry(index: 0, executable: "launcher\\SafeLauncher.exe", osList: "windows")
+            ]
+        ).write(to: appCache.appendingPathComponent("appinfo.vdf"))
+
+        XCTAssertEqual(
+            SteamLibraryImporter.mainGameExecutable(
+                in: depot.path,
+                appID: "44",
+                steamDirectory: steam.path
+            ),
+            launcher.path
+        )
+    }
+
     func testRejectsLaunchPathOutsideDepot() throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

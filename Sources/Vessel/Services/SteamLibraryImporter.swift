@@ -264,12 +264,15 @@ final class SteamLibraryImporter: Sendable {
         knownLaunchers: [String]? = nil
     ) -> Set<String> {
         let fm = FileManager.default
-        let standardizedRoot = URL(fileURLWithPath: root).standardizedFileURL.path
-        let candidatePaths = candidates.map { URL(fileURLWithPath: $0.full).standardizedFileURL.path }
+        func canonicalPath(_ path: String) -> String {
+            URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
+        }
+        let standardizedRoot = canonicalPath(root)
+        let candidatePaths = candidates.map { canonicalPath($0.full) }
         var payloads: Set<String> = []
 
         let packageLauncherPaths = (knownLaunchers ?? candidatePaths)
-            .map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+            .map(canonicalPath)
             .filter { path in
                 return path.hasPrefix(standardizedRoot + "/")
                     && fm.fileExists(atPath: path)
@@ -283,7 +286,7 @@ final class SteamLibraryImporter: Sendable {
         }
 
         func acceptedPayload(at path: String) -> String? {
-            let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+            let standardized = canonicalPath(path)
             guard standardized.hasPrefix(standardizedRoot + "/"),
                   (standardized as NSString).pathExtension.caseInsensitiveCompare("exe") == .orderedSame,
                   !normalizedName((standardized as NSString).lastPathComponent).contains("launcher")
