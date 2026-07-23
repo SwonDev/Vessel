@@ -2726,6 +2726,84 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         )
     }
 
+    func testDirectStorageFallbackRequiresTheCompletePackagedContract() throws {
+        XCTAssertTrue(WineManager.requiresDirectStorageCompatibilityFallback(
+            importedLibraries: ["D3D12.dll", "DSTORAGE.dll"],
+            containsDynamicDirectStorageContract: false,
+            hasBundledDirectStorage: true,
+            containsOfficialFallbackSwitch: true,
+            isD3D12: true
+        ))
+        XCTAssertFalse(WineManager.requiresDirectStorageCompatibilityFallback(
+            importedLibraries: ["D3D12.dll", "DSTORAGE.dll"],
+            containsDynamicDirectStorageContract: false,
+            hasBundledDirectStorage: false,
+            containsOfficialFallbackSwitch: true,
+            isD3D12: true
+        ))
+        XCTAssertFalse(WineManager.requiresDirectStorageCompatibilityFallback(
+            importedLibraries: ["D3D12.dll", "DSTORAGE.dll"],
+            containsDynamicDirectStorageContract: false,
+            hasBundledDirectStorage: true,
+            containsOfficialFallbackSwitch: false,
+            isD3D12: true
+        ))
+        XCTAssertFalse(WineManager.requiresDirectStorageCompatibilityFallback(
+            importedLibraries: ["D3D11.dll", "DSTORAGE.dll"],
+            containsDynamicDirectStorageContract: false,
+            hasBundledDirectStorage: true,
+            containsOfficialFallbackSwitch: true,
+            isD3D12: false
+        ))
+        XCTAssertTrue(WineManager.requiresDirectStorageCompatibilityFallback(
+            importedLibraries: ["D3D12.dll"],
+            containsDynamicDirectStorageContract: true,
+            hasBundledDirectStorage: true,
+            containsOfficialFallbackSwitch: true,
+            isD3D12: true
+        ))
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-dstorage-fallback-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let executable = root.appendingPathComponent("CustomGame.exe")
+        try writePE(
+            to: executable,
+            is64Bit: true,
+            imports: ["d3d12.dll", "dstorage.dll"],
+            marker: "/disable_directstorage"
+        )
+        try Data().write(to: root.appendingPathComponent("dstorage.dll"))
+        try Data().write(to: root.appendingPathComponent("dstoragecore.dll"))
+
+        XCTAssertTrue(WineManager().requiresDirectStorageCompatibilityFallback(executable.path))
+    }
+
+    func testDirectStorageFallbackArgumentIsAutomaticAndNeverDuplicated() {
+        XCTAssertEqual(
+            WineManager.directStorageCompatibilityArguments(
+                required: true,
+                resolvedArguments: []
+            ),
+            ["/disable_directstorage"]
+        )
+        XCTAssertEqual(
+            WineManager.directStorageCompatibilityArguments(
+                required: true,
+                resolvedArguments: ["/DISABLE_DIRECTSTORAGE"]
+            ),
+            []
+        )
+        XCTAssertEqual(
+            WineManager.directStorageCompatibilityArguments(
+                required: false,
+                resolvedArguments: []
+            ),
+            []
+        )
+    }
+
     func testVoidEngineD3D12AMDDriverGateIsDetectedStructurally() {
         XCTAssertTrue(WineManager.requiresVoidEngineD3DMetalDriverCompatibility(
             importedLibraries: ["D3D12.dll", "DXGI.dll", "amd_ags_x64.dll", "EOSSDK-Win64-Shipping.dll"],
@@ -2992,6 +3070,19 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         ))
     }
 
+    func testD3D12MediaProfileDetectsDynamicCRIMovieContract() {
+        XCTAssertTrue(WineManager.requiresManagedD3D12Media(
+            importedLibraries: ["d3d12.dll"],
+            containsDynamicMediaFoundationContract: true,
+            isD3D12: true
+        ))
+        XCTAssertFalse(WineManager.requiresManagedD3D12Media(
+            importedLibraries: ["d3d11.dll"],
+            containsDynamicMediaFoundationContract: true,
+            isD3D12: false
+        ))
+    }
+
     func testMediaImportsDoNotRerouteD3D11OrGamesWithoutAReader() {
         XCTAssertFalse(WineManager.requiresManagedD3D12Media(
             importedLibraries: ["d3d11.dll", "mfplat.dll", "mfreadwrite.dll"],
@@ -3149,18 +3240,41 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertTrue(LaunchDiagnostics.shouldRetryWithRealSteam(steamFailure))
     }
 
-    func testSteamEULADetectionOnlyUsesLatestAppLaunch() {
-        let waiting = """
-        ExecCommandLine: "steam.exe -applaunch 6910"
-        GameAction [AppID 6910] : LaunchApp waiting for user response to ShowEula ""
-        """
-        let acceptedAndRetried = waiting + """
-        ExecCommandLine: "steam.exe -applaunch 6910"
-        GameAction [AppID 6910] : LaunchApp changed task to SynchronizingCloud
-        """
+    func testSteamEULADetectionUsesAttemptBaselineAndExactAppID() {
+        let baseline = Data("""
+        GameAction [AppID 1593500, ActionID 1] : LaunchApp waiting for user response to ShowEula ""
+        """.utf8)
+        let unrelatedLaunch = baseline + Data("""
+        GameAction [AppID 1004640, ActionID 2] : LaunchApp changed task to CreatingProcess with ""
+        """.utf8)
+        let waiting = unrelatedLaunch + Data("""
+        GameAction [AppID 6910, ActionID 3] : LaunchApp waiting for user response to ShowEula ""
+        """.utf8)
+        let resolved = waiting + Data("""
+        GameAction [AppID 6910, ActionID 3] : LaunchApp continues with user response "ShowEula"
+        GameAction [AppID 6910, ActionID 3] : LaunchApp changed task to SynchronizingCloud with ""
+        """.utf8)
 
-        XCTAssertTrue(LaunchDiagnostics.steamEULAPromptDetected(in: waiting))
-        XCTAssertFalse(LaunchDiagnostics.steamEULAPromptDetected(in: acceptedAndRetried))
+        XCTAssertFalse(LaunchDiagnostics.steamEULAPromptDetected(
+            in: baseline,
+            after: baseline,
+            appId: "1593500"
+        ))
+        XCTAssertFalse(LaunchDiagnostics.steamEULAPromptDetected(
+            in: unrelatedLaunch,
+            after: baseline,
+            appId: "1004640"
+        ))
+        XCTAssertTrue(LaunchDiagnostics.steamEULAPromptDetected(
+            in: waiting,
+            after: baseline,
+            appId: "6910"
+        ))
+        XCTAssertFalse(LaunchDiagnostics.steamEULAPromptDetected(
+            in: resolved,
+            after: baseline,
+            appId: "6910"
+        ))
     }
 
     func testSteamAlertOnlyFocusesARealClientWindow() {
@@ -3319,14 +3433,12 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         ExecCommandLine: "steam.exe -applaunch 6910"
         GameAction [AppID 6910] : LaunchApp waiting for user response to ShowEula ""
         """.utf8).write(to: console)
-        try FileManager.default.setAttributes(
-            [.modificationDate: Date().addingTimeInterval(-60)],
-            ofItemAtPath: console.path
-        )
+        let baseline = LaunchDiagnostics.steamConsoleLogSnapshot(prefix: prefix.path)
 
-        XCTAssertFalse(LaunchDiagnostics.hasRecentSteamEULAPrompt(
+        XCTAssertFalse(LaunchDiagnostics.hasPendingSteamEULAPrompt(
             prefix: prefix.path,
-            since: Date()
+            after: baseline,
+            appId: "6910"
         ))
     }
 

@@ -25,7 +25,7 @@ enum DRMAnalyzer {
 
     /// Protección real: impide (o compromete) ejecutar el juego como copia local independiente.
     enum Protection: String, Codable, Sendable, CaseIterable {
-        case steamStub, publisherSteamTicket, denuvo, vmProtect, themida, enigma, armadillo
+        case steamStub, publisherSteamTicket, codeFusion, denuvo, vmProtect, themida, enigma, armadillo
         case easyAntiCheat, battlEye, gameGuard, vanguard, xigncode
         case eaActivation, ubisoftConnect, rockstarLauncher
         case secuROM, safeDisc, starForce, tages, laserLock
@@ -34,6 +34,7 @@ enum DRMAnalyzer {
             switch self {
             case .steamStub: return "DRM de Steam (SteamStub/CEG)"
             case .publisherSteamTicket: return "DRM de cuenta del editor (ticket de Steam)"
+            case .codeFusion: return "CodeFusion Anti-Tamper"
             case .denuvo: return "Denuvo Anti-Tamper"
             case .vmProtect: return "VMProtect"
             case .themida: return "Themida/WinLicense"
@@ -141,6 +142,19 @@ enum DRMAnalyzer {
             // Las secciones (.arch/.xtls/.ecode…) son solo una PUERTA, nunca conclusión: `.srdata`
             // está descartada a propósito por dar muchos falsos positivos.
             if containsASCII(pe, "denuvo_atd") { add(&r, .denuvo, leaf) }
+
+            // CodeFusion cifra la cadena de arranque y valida el proceso creado por la tienda. Sus
+            // builds Steam modernas conservan tres hosts propios más el bootstrap interno de
+            // SteamAPI, aunque no añaden una sección PE reconocible. Exigimos el contrato completo
+            // para no confundir una URL documental o un SDK de Steamworks corriente con DRM.
+            let hasCodeFusionHosts = containsASCII(pe, "srv01.codefusion.technology")
+                && containsASCII(pe, "srv02.codefusion.technology")
+                && containsASCII(pe, "srv03.antitamper.net")
+            let hasSteamBootstrap = containsASCII(pe, "SteamInternal_SteamAPI_Init")
+                && containsASCII(pe, "SteamAPI_RestartAppIfNecessary")
+            if hasCodeFusionHosts, hasSteamBootstrap {
+                add(&r, .codeFusion, leaf)
+            }
         }
 
         // 3) Marcadores de FICHERO — exigen recorrer el árbol (ver regla 2).

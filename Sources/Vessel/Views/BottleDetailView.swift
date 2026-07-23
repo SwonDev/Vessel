@@ -886,6 +886,11 @@ struct BottleDetailView: View {
             || UserDefaults.standard.bool(forKey: "vessel.steamRealGlobal")
             || wineManager.requiresSteamAppLaunch(exePath)
             || wineManager.officialSteamClientProtection(exePath) != nil
+        // El diagnóstico debe ignorar decisiones antiguas del mismo console_log.txt. Capturar antes
+        // de `launch` permite atribuir un ShowEula únicamente a este intento y a este AppID.
+        let steamConsoleBaseline = usesRealSteamLaunch
+            ? LaunchDiagnostics.steamConsoleLogSnapshot(prefix: localBottle.prefixPath)
+            : nil
         var launchStartedAt: Date?
         await GameLaunchTracker.shared.track(
             trackId, statsKey: "steam:\(trackId)",
@@ -931,6 +936,7 @@ struct BottleDetailView: View {
             fallbackLayers: wineManager.fallbackLayers(forExecutable: exePath, effective: eff),
             usesRealSteam: usesRealSteamLaunch,
             steamAppId: game.steamAppId,
+            steamConsoleBaseline: steamConsoleBaseline,
             launchStartedAt: launchStartedAt,
             isRunning: { GameLaunchTracker.shared.state(trackId) == .running },
             hasVisibleWindow: {

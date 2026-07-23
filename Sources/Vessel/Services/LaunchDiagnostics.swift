@@ -136,29 +136,42 @@ enum LaunchDiagnostics {
         return nil
     }
 
-    /// Steam puede detener el primer `-applaunch` en un EULA de terceros. Solo se considera la
-    /// orden más reciente: una licencia histórica en el mismo log no debe contaminar lanzamientos
-    /// posteriores una vez aceptada o cancelada.
-    nonisolated static func steamEULAPromptDetected(in consoleLog: String) -> Bool {
-        guard let latestCommand = consoleLog.range(
-            of: "ExecCommandLine:",
-            options: .backwards
-        ) else { return false }
-        let currentLaunch = consoleLog[latestCommand.lowerBound...]
-        return currentLaunch.localizedCaseInsensitiveContains("-applaunch")
-            && currentLaunch.contains("LaunchApp waiting for user response to ShowEula")
-    }
-
-    /// Comprueba únicamente el log modificado por el intento actual. La ventana pertenece a Steam
-    /// y debe dejar que el usuario revise la licencia; Vessel nunca la acepta silenciosamente.
-    nonisolated static func hasRecentSteamEULAPrompt(prefix: String, since: Date) -> Bool {
+    /// Captura el registro de decisiones de Steam justo antes de un lanzamiento. La captura es el
+    /// límite de generación: sin ella, que Steam añada cualquier línea durante el intento podría
+    /// hacer reaparecer un `ShowEula` histórico de otro juego (o de un intento ya resuelto).
+    nonisolated static func steamConsoleLogSnapshot(prefix: String) -> Data {
         let log = URL(fileURLWithPath: prefix)
             .appendingPathComponent("drive_c/Program Files (x86)/Steam/logs/console_log.txt")
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: log.path),
-              let modified = attributes[.modificationDate] as? Date,
-              modified >= since.addingTimeInterval(-2),
-              let contents = try? String(contentsOf: log, encoding: .utf8) else { return false }
-        return steamEULAPromptDetected(in: contents)
+        return (try? Data(contentsOf: log)) ?? Data()
+    }
+
+    /// Steam puede detener `-applaunch` en un EULA de terceros. Solo es válido si la espera se
+    /// escribió después de la captura, pertenece al AppID exacto y continúa pendiente. El parser
+    /// también descarta esperas que Steam ya resolvió avanzando a otra tarea.
+    nonisolated static func steamEULAPromptDetected(
+        in current: Data,
+        after baseline: Data,
+        appId: String
+    ) -> Bool {
+        SteamGameActionLog.waitingTask(
+            in: current,
+            after: baseline,
+            appId: appId
+        )?.caseInsensitiveCompare("ShowEula") == .orderedSame
+    }
+
+    /// La ventana pertenece a Steam y debe dejar que el usuario revise la licencia; Vessel nunca
+    /// la acepta silenciosamente.
+    nonisolated static func hasPendingSteamEULAPrompt(
+        prefix: String,
+        after baseline: Data,
+        appId: String
+    ) -> Bool {
+        steamEULAPromptDetected(
+            in: steamConsoleLogSnapshot(prefix: prefix),
+            after: baseline,
+            appId: appId
+        )
     }
 
     /// Avisa (notificación + log) si hay un fallo. Se usa cuando NO se va a reintentar.
@@ -184,6 +197,7 @@ enum LaunchDiagnostics {
         fallbackLayers: [GameConfig.GraphicsLayer] = [],
         usesRealSteam: Bool = false,
         steamAppId: String? = nil,
+        steamConsoleBaseline: Data? = nil,
         launchStartedAt: Date? = nil,
         isRunning: @escaping @MainActor () -> Bool = { false },
         hasVisibleWindow: (@MainActor () async -> Bool)? = nil,
@@ -232,8 +246,12 @@ enum LaunchDiagnostics {
                                       body: "Usa Steam Input/Controller (interfaces que la emulación no provee). Activando modo Steam real.")
                     break
                 }
-                if usesRealSteam, let launchStartedAt,
-                   hasRecentSteamEULAPrompt(prefix: prefix, since: launchStartedAt) {
+                if usesRealSteam, let steamAppId, let steamConsoleBaseline,
+                   hasPendingSteamEULAPrompt(
+                    prefix: prefix,
+                    after: steamConsoleBaseline,
+                    appId: steamAppId
+                   ) {
                     waitingForSteamEULA = true
                     failure = Failure(
                         category: .steam,

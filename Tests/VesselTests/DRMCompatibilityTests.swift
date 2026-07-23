@@ -282,6 +282,68 @@ struct DRMCompatibilityTests {
         let report = DRMAnalyzer.analyze(folder: root.path, executable: executable.path)
         #expect(!report.protections.contains(.publisherSteamTicket))
     }
+
+    @Test("CodeFusion con Steamworks delega el AppID sin abandonar D3DMetal")
+    @MainActor
+    func detectsCodeFusionAndRequiresOfficialSteamLaunch() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Vessel-CodeFusion-\(UUID().uuidString)", isDirectory: true)
+        let executable = root.appendingPathComponent("ProtectedGame.exe")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try pe64Fixture(
+            imports: ["d3d12.dll"],
+            markers: [
+                "srv01.codefusion.technology",
+                "srv02.codefusion.technology",
+                "srv03.antitamper.net",
+                "SteamInternal_SteamAPI_Init",
+                "SteamAPI_RestartAppIfNecessary"
+            ]
+        ).write(to: executable)
+        try Data("steamworks".utf8).write(to: root.appendingPathComponent("steam_api64.dll"))
+
+        let report = DRMAnalyzer.analyze(folder: root.path, executable: executable.path)
+        let manager = WineManager()
+        let protection = manager.officialSteamClientProtection(executable.path)
+        let graphicsAPI = manager.detectGraphicsAPI(forExecutable: executable.path)
+        let requiresAppLaunch = WineManager.requiresOfficialSteamAppLaunch(
+            builtInProtection: manager.requiresSteamAppLaunch(executable.path),
+            thirdPartyProtection: protection,
+            directLaunchException: manager.usesProtectedDirectLaunchWithConnectedSteam(executable.path)
+        )
+
+        #expect(report.protections.contains(.codeFusion))
+        #expect(report.social.contains(.steamworks))
+        #expect(protection == .codeFusion)
+        #expect(requiresAppLaunch)
+        #expect(graphicsAPI == .d3d12)
+        #expect(!WineManager.shouldUseFullWineForSteamAppLaunch(
+            required: requiresAppLaunch,
+            graphicsAPI: graphicsAPI
+        ))
+    }
+
+    @Test("Una referencia incompleta a CodeFusion no fuerza Steam oficial")
+    func ignoresIncompleteCodeFusionSignature() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Vessel-CodeFusion-Control-\(UUID().uuidString)", isDirectory: true)
+        let executable = root.appendingPathComponent("OrdinaryGame.exe")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try pe64Fixture(
+            imports: ["d3d12.dll"],
+            markers: [
+                "srv01.codefusion.technology",
+                "SteamInternal_SteamAPI_Init",
+                "SteamAPI_RestartAppIfNecessary"
+            ]
+        ).write(to: executable)
+        try Data("steamworks".utf8).write(to: root.appendingPathComponent("steam_api64.dll"))
+
+        let report = DRMAnalyzer.analyze(folder: root.path, executable: executable.path)
+        #expect(!report.protections.contains(.codeFusion))
+    }
 }
 
 private extension Data {

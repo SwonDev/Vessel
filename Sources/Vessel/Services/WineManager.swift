@@ -652,21 +652,76 @@ final class WineManager {
     enum GameGraphicsAPI { case d3d9, d3d11, d3d12, opengl, other }
 
     /// Firma estructural del perfil D3D12 + Media Foundation. No usa títulos ni AppID: combina la
-    /// API gráfica detectada con imports PE reales. `mfplat` aporta el pipeline y `mfreadwrite`/`mf`
-    /// la lectura/decodificación; desactivar winegstreamer en este caso deja el juego en negro.
+    /// API gráfica detectada con imports PE reales o con el contrato dinámico completo del backend
+    /// CRI Movie. `mfplat` aporta el pipeline y `mfreadwrite`/`mf` la lectura/decodificación;
+    /// desactivar winegstreamer en cualquiera de esos casos deja el juego en negro o bloqueado
+    /// antes de crear su primera ventana.
     nonisolated static func requiresManagedD3D12Media(
         importedLibraries: Set<String>,
+        containsDynamicMediaFoundationContract: Bool = false,
         isD3D12: Bool
     ) -> Bool {
         guard isD3D12 else { return false }
         let imports = Set(importedLibraries.map { $0.lowercased() })
-        return imports.contains("mfplat.dll")
+        let importsMediaFoundation = imports.contains("mfplat.dll")
             && (imports.contains("mfreadwrite.dll") || imports.contains("mf.dll"))
+        return importsMediaFoundation || containsDynamicMediaFoundationContract
     }
 
     func requiresManagedD3D12MediaEngine(_ executable: String) -> Bool {
         Self.requiresManagedD3D12Media(
             importedLibraries: peImportedLibraries(forExecutable: executable),
+            containsDynamicMediaFoundationContract: exeContains(
+                executable,
+                anyOf: ["Windows Media Foundation errorcode."]
+            ) && exeContains(
+                executable,
+                anyOf: ["CRI Movie/PCx64"]
+            ),
+            isD3D12: detectGraphicsAPI(forExecutable: executable) == .d3d12
+        )
+    }
+
+    /// Algunos motores D3D12 incluyen DirectStorage de Microsoft pero también publican un modo de
+    /// I/O clásico propio. En Wine/D3DMetal, cargar `dstorage.dll` nativo puede quedarse atrapado en
+    /// su cola de descompresión antes de crear la primera ventana. Solo se activa el fallback cuando
+    /// el contrato completo es demostrable: import D3D12 + DirectStorage, sus dos DLL empaquetadas y
+    /// el interruptor oficial embebido por el propio motor. No depende del título ni del AppID.
+    nonisolated static func requiresDirectStorageCompatibilityFallback(
+        importedLibraries: Set<String>,
+        containsDynamicDirectStorageContract: Bool,
+        hasBundledDirectStorage: Bool,
+        containsOfficialFallbackSwitch: Bool,
+        isD3D12: Bool
+    ) -> Bool {
+        guard isD3D12, hasBundledDirectStorage, containsOfficialFallbackSwitch else {
+            return false
+        }
+        let imports = Set(importedLibraries.map { $0.lowercased() })
+        return imports.contains("dstorage.dll") || containsDynamicDirectStorageContract
+    }
+
+    func requiresDirectStorageCompatibilityFallback(_ executable: String) -> Bool {
+        let directory = (executable as NSString).deletingLastPathComponent
+        let names = Set(
+            ((try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? [])
+                .map { $0.lowercased() }
+        )
+        return Self.requiresDirectStorageCompatibilityFallback(
+            importedLibraries: peImportedLibraries(forExecutable: executable),
+            containsDynamicDirectStorageContract: exeContains(
+                executable,
+                anyOf: ["DStorageGetFactory"]
+            ) && exeContains(
+                executable,
+                anyOf: ["DStorageCreateCompressionCodec"]
+            ),
+            hasBundledDirectStorage: names.contains("dstorage.dll")
+                && names.contains("dstoragecore.dll"),
+            containsOfficialFallbackSwitch: exeContains(
+                executable,
+                anyOf: ["/disable_directstorage"]
+            ),
             isD3D12: detectGraphicsAPI(forExecutable: executable) == .d3d12
         )
     }
@@ -843,26 +898,72 @@ final class WineManager {
     ///
     /// No se le fuerza nada al juego, así que a uno que ya dibuje bien no le cambia nada. Espera a
     /// que la ventana exista de verdad (Unity y Source tardan lo suyo) y se rinde en 90 s.
-    private func nudgeGameWindowFocus(exeName: String) {
+    private nonisolated static func windowOwnerPIDsSnapshot() -> Set<pid_t> {
+        let windows = (CGWindowListCopyWindowInfo(
+            [.optionAll, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]]) ?? []
+        return Set(windows.compactMap { info in
+            (info[kCGWindowOwnerPID as String] as? NSNumber).map { pid_t($0.int32Value) }
+        })
+    }
+
+    private func nudgeGameWindowFocus(
+        exeName: String,
+        excludingWindowOwnerPIDs baselineWindowOwnerPIDs: Set<pid_t>? = nil
+    ) {
         Task { @MainActor in
             let deadline = Date().addingTimeInterval(90)
             while Date() < deadline {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 let apps = NSWorkspace.shared.runningApplications
-                guard let juego = apps.first(where: { $0.localizedName == exeName }),
-                      !juego.isTerminated else { continue }
-                // Solo si el juego YA tiene una ventana en pantalla: si no, no hay nada que recalcular.
-                let ventanas = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
-                                                           kCGNullWindowID) as? [[String: Any]]) ?? []
-                let tieneVentana = ventanas.contains { info in
-                    (info[kCGWindowOwnerName as String] as? String) == exeName
-                        && ((info[kCGWindowBounds as String] as? [String: Any])?["Width"] as? Double ?? 0) > 200
+                let windows = (CGWindowListCopyWindowInfo(
+                    [.optionOnScreenOnly, .excludeDesktopElements],
+                    kCGNullWindowID
+                ) as? [[String: Any]]) ?? []
+                let candidates: [(pid: pid_t, area: Double, owner: String)] = windows.compactMap { info in
+                    guard let number = info[kCGWindowOwnerPID as String] as? NSNumber,
+                          let bounds = info[kCGWindowBounds as String] as? [String: Any],
+                          let width = bounds["Width"] as? Double,
+                          let height = bounds["Height"] as? Double,
+                          width > 200,
+                          height > 150,
+                          (info[kCGWindowLayer as String] as? Int ?? 0) == 0,
+                          (info[kCGWindowAlpha as String] as? Double ?? 1) > 0.05 else {
+                        return nil
+                    }
+                    return (
+                        pid_t(number.int32Value),
+                        width * height,
+                        info[kCGWindowOwnerName as String] as? String ?? ""
+                    )
                 }
-                guard tieneVentana else { continue }
+
+                let exactName = exeName.lowercased()
+                let exactPID = candidates.first(where: { candidate in
+                    candidate.owner.lowercased() == exactName
+                        || apps.first(where: { $0.processIdentifier == candidate.pid })?
+                            .localizedName?.lowercased() == exactName
+                })?.pid
+                let newWindowPID: pid_t? = baselineWindowOwnerPIDs.flatMap { baseline in
+                    candidates
+                        .filter {
+                            !baseline.contains($0.pid)
+                                && $0.pid != ProcessInfo.processInfo.processIdentifier
+                        }
+                        .max(by: { $0.area < $1.area })?
+                        .pid
+                }
+                guard let pid = exactPID ?? newWindowPID,
+                      let game = NSRunningApplication(processIdentifier: pid),
+                      !game.isTerminated else { continue }
                 NSApp.activate(ignoringOtherApps: true)
                 try? await Task.sleep(nanoseconds: 500_000_000)
-                juego.activate(options: [.activateAllWindows])
-                log.log("Ventana del juego reactivada para que ajuste su escala (bug de timing de Wine).", level: .debug)
+                game.activate(options: [.activateAllWindows])
+                log.log(
+                    "Ventana del juego reactivada para ajustar escala y foco (pid=\(pid)).",
+                    level: .debug
+                )
                 return
             }
         }
@@ -1145,7 +1246,7 @@ final class WineManager {
         let report = DRMAnalyzer.analyze(folder: installRoot, executable: executable)
         guard report.social.contains(.steamworks) else { return nil }
         let clientBound: Set<DRMAnalyzer.Protection> = [
-            .publisherSteamTicket, .denuvo, .vmProtect, .themida, .enigma
+            .publisherSteamTicket, .codeFusion, .denuvo, .vmProtect, .themida, .enigma
         ]
         return report.protections.first { clientBound.contains($0) }
     }
@@ -5548,6 +5649,7 @@ final class WineManager {
         let needsManagedMedia = requiresManagedD3D12MediaEngine(executable)
         let needsCoherentGPUProbe = requiresCoherentD3DMetalGPUProbeEngine(executable)
         let needsVoidDriverCompatibility = requiresVoidEngineD3DMetalDriverCompatibility(executable)
+        let needsDirectStorageFallback = requiresDirectStorageCompatibilityFallback(executable)
         let needsStableFourAWindowing = isFourAEnhancedD3D12Engine(executable)
         let needsIsolatedD3DMetalEngine = Self.requiresIsolatedD3DMetalRuntime(
             managedMedia: needsManagedMedia,
@@ -5765,10 +5867,20 @@ final class WineManager {
         if isFourAEnhancedD3D12Engine(executable) {
             env["WINEDEBUG"] = "+module,+loaddll"
         }
+        if needsDirectStorageFallback {
+            log.log(
+                "DirectStorage nativo con fallback oficial detectado: usando I/O clásico para evitar el bloqueo previo a la ventana.",
+                level: .info
+            )
+        }
         // Unity sobre GPTK/D3DMetal: fullscreen borderless + render MONOHILO (`-force-gfx-direct`),
         // igual que el resto de paths Unity — el fullscreen EXCLUSIVO revienta el swapchain y el
-        // multihilo casca en Unity 6 + EOS (Dragon Is Dead). Para D3D12 no-Unity (FFT), vacío.
+        // multihilo casca en Unity 6 + EOS (Dragon Is Dead).
         let unityArgs = preferGPTK ? unityLaunchArguments(forExecutable: executable, singleThreaded: true) : []
+        let directStorageArgs = Self.directStorageCompatibilityArguments(
+            required: needsDirectStorageFallback,
+            resolvedArguments: arguments
+        )
         let engineLbl = needsIsolatedD3DMetalEngine
             ? (needsManagedMedia
                 ? "motor D3DMetal multimedia (Wine 11 FOSS)"
@@ -5779,7 +5891,9 @@ final class WineManager {
         log.log("Lanzando juego D3D12 con \(engineLbl): \((executable as NSString).lastPathComponent)", level: .info)
         let processArguments = Self.d3d12ProcessArguments(
             executable: executable,
-            engineArguments: unityArgs + unrealEngineArguments(forExecutable: executable),
+            engineArguments: unityArgs
+                + directStorageArgs
+                + unrealEngineArguments(forExecutable: executable),
             resolvedArguments: arguments
         )
         return try await launchWineProcess(
@@ -5806,6 +5920,17 @@ final class WineManager {
         resolvedArguments: [String]
     ) -> [String] {
         [executable] + engineArguments + resolvedArguments
+    }
+
+    nonisolated static func directStorageCompatibilityArguments(
+        required: Bool,
+        resolvedArguments: [String]
+    ) -> [String] {
+        guard required,
+              !resolvedArguments.contains(where: {
+                  $0.caseInsensitiveCompare("/disable_directstorage") == .orderedSame
+              }) else { return [] }
+        return ["/disable_directstorage"]
     }
 
     /// Asegura que el cliente de Steam (Gcenx) está corriendo, necesario para el
@@ -6613,6 +6738,18 @@ final class WineManager {
         let needsManagedMedia = isD3D12 && requiresManagedD3D12MediaEngine(executable)
         let needsCoherentGPUProbe = isD3D12
             && requiresCoherentD3DMetalGPUProbeEngine(executable)
+        let needsDirectStorageFallback = isD3D12
+            && requiresDirectStorageCompatibilityFallback(executable)
+        let d3d12LaunchArguments = Self.directStorageCompatibilityArguments(
+            required: needsDirectStorageFallback,
+            resolvedArguments: launchArguments
+        ) + launchArguments
+        if needsDirectStorageFallback {
+            log.log(
+                "DirectStorage nativo con fallback oficial detectado: usando I/O clásico para evitar el bloqueo previo a la ventana.",
+                level: .info
+            )
+        }
         let needsIsolatedD3DMetalEngine = needsManagedMedia || needsCoherentGPUProbe
         let selectedD3DMetalWine: String?
         if needsIsolatedD3DMetalEngine {
@@ -6723,7 +6860,7 @@ final class WineManager {
                 let process = try await launchThroughConnectedSteamClient(
                     executable: executable,
                     appId: appId,
-                    launchArguments: launchArguments,
+                    launchArguments: d3d12LaunchArguments,
                     bottle: bottle,
                     wine: d3dmWine
                 )
@@ -6735,7 +6872,7 @@ final class WineManager {
             let proc = try await launchWineProcess(
                 winePath: d3dmWine,
                 prefix: bottle.prefixPath,
-                arguments: [executable] + launchArguments,
+                arguments: [executable] + d3d12LaunchArguments,
                 environment: env,
                 workingDirectory: gameWorkingDirectory(forExecutable: executable),
                 effective: effective,    // ACTIVA el env -i (contexto LIMPIO): sin `__CFBundleIdentifier` y
@@ -6797,7 +6934,7 @@ final class WineManager {
             let process = try await launchThroughConnectedSteamClient(
                 executable: executable,
                 appId: appId,
-                launchArguments: launchArguments,
+                launchArguments: d3d12LaunchArguments,
                 bottle: bottle,
                 wine: gptkWine
             )
@@ -6809,7 +6946,7 @@ final class WineManager {
         let proc = try await launchWineProcess(
             winePath: gptkWine,
             prefix: bottle.prefixPath,
-            arguments: [executable] + launchArguments,
+            arguments: [executable] + d3d12LaunchArguments,
             environment: env,
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: effective,
@@ -7027,6 +7164,7 @@ final class WineManager {
             }
         }
 
+        let existingWindowOwnerPIDs = Self.windowOwnerPIDsSnapshot()
         let baseline = steamConsoleLogData(in: bottle)
         let firstSupervisor = try makeSupervisor()
         let firstAcknowledged = await waitForSteamAppLaunchAcknowledgement(
@@ -7047,6 +7185,14 @@ final class WineManager {
                 timeoutSeconds: 20
             )
             guard blockingTask?.caseInsensitiveCompare("ShowInterstitials") == .orderedSame else {
+                // El cliente crea el proceso fuera de `launchWineProcess`, así que no atraviesa el
+                // ajuste de foco normal de Vessel. Algunos Wine/D3DMetal ya están presentando frames
+                // pero dejan su primera ventana detrás de la biblioteca. El mismo sondeo acotado y
+                // no invasivo de las rutas directas la activa únicamente cuando ya existe.
+                nudgeGameWindowFocus(
+                    exeName: imageName,
+                    excludingWindowOwnerPIDs: existingWindowOwnerPIDs
+                )
                 return firstSupervisor
             }
 
@@ -7130,6 +7276,10 @@ final class WineManager {
                 )
             }
             log.log("Steam superó automáticamente el aviso de mando para \(appId).", level: .info)
+            nudgeGameWindowFocus(
+                exeName: imageName,
+                excludingWindowOwnerPIDs: existingWindowOwnerPIDs
+            )
             return retrySupervisor
         }
 
@@ -7182,6 +7332,10 @@ final class WineManager {
                 "Steam siguió sin aceptar la orden del juego tras el reinicio automático."
             )
         }
+        nudgeGameWindowFocus(
+            exeName: imageName,
+            excludingWindowOwnerPIDs: existingWindowOwnerPIDs
+        )
         return retrySupervisor
     }
 

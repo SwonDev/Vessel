@@ -48,16 +48,15 @@
       "schemaVersion": 1,
       "title": "FINAL FANTASY TACTICS - The Ivalice Chronicles",
       "stores": { "steam": "1004640" },
-      "rating": "bronze",
-      "engine": "gptk",
-      "graphicsLayer": "gptk",
+      "rating": "silver",
+      "engine": "auto",
+      "graphicsLayer": "auto",
       "windowsArch": "win64",
-      "useRealSteam": true,
-      "notes": "D3D12 (Agility SDK) + anti-tamper CodeFusion. Con Goldberg, CodeFusion detecta la emulación → «Failed to load SteamAPI». Se lanza en modo «Steam real» (como Grim Dawn): steam_api ORIGINAL + cliente Steam REAL conectado en GPTK/D3DMetal (mismo wineserver) → CodeFusion valida contra la propiedad real y el juego renderiza por D3D12→Metal. Requiere poseer el juego (AppID 1004640) y sesión iniciada en el Steam de Vessel.",
-      "testedOn": { "macOS": "26.5", "chip": "M5 Pro", "vesselVersion": "0.1.0" },
+      "notes": "D3D12 (Agility SDK) + anti-tamper CodeFusion + DirectStorage y CRI Movie. Vessel detecta el contrato completo, delega el AppID al cliente Steam oficial, usa automáticamente el fallback de I/O clásico publicado por el juego y selecciona su motor D3DMetal multimedia aislado. Validado con render D3D12→Metal, audio, foco, cierre, estadísticas y copia de partida estables; requiere poseer el juego y tener iniciada la sesión en el Steam de Vessel.",
+      "testedOn": { "macOS": "26.5.1", "chip": "M5 Pro", "vesselVersion": "0.0.12" },
       "author": "vessel-team",
-      "date": "2026-07-03",
-      "verified": false
+      "date": "2026-07-23",
+      "verified": true
     }
   ]
 }
