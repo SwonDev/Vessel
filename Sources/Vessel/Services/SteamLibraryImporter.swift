@@ -256,8 +256,10 @@ final class SteamLibraryImporter: Sendable {
     /// verificable, destino `.exe` existente dentro del árbol y candidato ya validado por el
     /// escaneo. Además del INI moderno se reconoce el splash clásico de DotEmu: su
     /// `splash/config.txt` declara `exe <payload>` y una o más imágenes reales, mientras el launcher
-    /// raíz contiene las firmas `DotEmu`, `SDL.dll` y la ruta del propio config. No se confía en
-    /// nombres de juegos, AppID ni argumentos manuales.
+    /// raíz contiene las firmas `DotEmu`, `SDL.dll` y la ruta del propio config. También se admite
+    /// `launcher-configuration.json` cuando el launcher oficial está en la raíz y el propio depot
+    /// declara un `executablePath` Windows para Steam. No se confía en nombres de juegos, AppID ni
+    /// argumentos manuales.
     private static func launcherConfiguredPayloads(
         in root: String,
         candidates: [(rel: String, full: String)],
@@ -384,9 +386,50 @@ final class SteamLibraryImporter: Sendable {
             return try? String(contentsOf: standardized, encoding: .utf8)
         }
 
+        func jsonLauncherPayload(from url: URL, contents: String) -> String? {
+            let descriptor = url.standardizedFileURL
+            guard descriptor.lastPathComponent.caseInsensitiveCompare(
+                "launcher-configuration.json"
+            ) == .orderedSame,
+                  descriptor.deletingLastPathComponent().path == standardizedRoot,
+                  launchersByDirectory[standardizedRoot]?.isEmpty == false,
+                  let data = contents.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let platform = object["platform"] as? String,
+                  platform.caseInsensitiveCompare("steam") == .orderedSame,
+                  let gameID = object["gameId"] as? String,
+                  !gameID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let executablePath = object["executablePath"] as? String,
+                  !executablePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  (executablePath as NSString).pathExtension.caseInsensitiveCompare("exe")
+                    == .orderedSame else { return nil }
+
+            let relative = executablePath.replacingOccurrences(of: "\\", with: "/")
+            let resolved = URL(fileURLWithPath: relative, relativeTo: rootURL)
+                .standardizedFileURL.path
+            return acceptedPayload(at: resolved)
+        }
+
         // Mantener la comparación case-insensitive del escaneo anterior también en volúmenes que
         // distingan mayúsculas: solo se listan la raíz y su carpeta `splash`, nunca los assets.
         let rootURL = URL(fileURLWithPath: standardizedRoot, isDirectory: true)
+        if let rootEntries = try? fm.contentsOfDirectory(
+            at: rootURL,
+            includingPropertiesForKeys: Array(textKeys),
+            options: [.skipsHiddenFiles]
+        ) {
+            let jsonDescriptors = rootEntries.filter {
+                $0.lastPathComponent.caseInsensitiveCompare("launcher-configuration.json")
+                    == .orderedSame
+            }
+            if jsonDescriptors.count == 1,
+               let descriptor = jsonDescriptors.first,
+               let contents = smallTextContents(at: descriptor),
+               let payload = jsonLauncherPayload(from: descriptor, contents: contents) {
+                payloads.insert(payload)
+            }
+        }
+
         if let rootEntries = try? fm.contentsOfDirectory(
             at: rootURL,
             includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],

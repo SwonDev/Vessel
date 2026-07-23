@@ -219,6 +219,81 @@ final class SteamAppInfoLaunchResolverTests: XCTestCase {
         )
     }
 
+    func testImporterFollowsRootJSONPayloadDeclaredByOfficialSteamLauncher() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let steam = directory.appendingPathComponent("Steam", isDirectory: true)
+        let appCache = steam.appendingPathComponent("appcache", isDirectory: true)
+        let depot = directory.appendingPathComponent("REDengine Game", isDirectory: true)
+        let payloadDirectory = depot.appendingPathComponent("bin/x64", isDirectory: true)
+        let launcher = depot.appendingPathComponent("REDprelauncher.exe")
+        let payload = payloadDirectory.appendingPathComponent("Game.exe")
+        try FileManager.default.createDirectory(at: appCache, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: payloadDirectory, withIntermediateDirectories: true)
+        try Data("launcher".utf8).write(to: launcher)
+        try Data("payload".utf8).write(to: payload)
+        try JSONSerialization.data(
+            withJSONObject: [
+                "executablePath": #"bin\x64\Game.exe"#,
+                "gameId": "structural-game-id",
+                "platform": "steam"
+            ],
+            options: [.sortedKeys]
+        ).write(to: depot.appendingPathComponent("launcher-configuration.json"))
+        try makeVersion41AppInfo(
+            appID: 45,
+            entries: [
+                LaunchEntry(index: 0, executable: "REDprelauncher.exe", osList: "windows")
+            ]
+        ).write(to: appCache.appendingPathComponent("appinfo.vdf"))
+
+        XCTAssertEqual(
+            SteamLibraryImporter.mainGameExecutable(
+                in: depot.path,
+                appID: "45",
+                steamDirectory: steam.path
+            ),
+            payload.path
+        )
+    }
+
+    func testImporterRejectsRootJSONForAnotherPlatform() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let steam = directory.appendingPathComponent("Steam", isDirectory: true)
+        let appCache = steam.appendingPathComponent("appcache", isDirectory: true)
+        let depot = directory.appendingPathComponent("Launcher Game", isDirectory: true)
+        let launcher = depot.appendingPathComponent("GameLauncher.exe")
+        let payload = depot.appendingPathComponent("Game.exe")
+        try FileManager.default.createDirectory(at: appCache, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: depot, withIntermediateDirectories: true)
+        try Data("launcher".utf8).write(to: launcher)
+        try Data("payload".utf8).write(to: payload)
+        try JSONSerialization.data(
+            withJSONObject: [
+                "executablePath": "Game.exe",
+                "gameId": "other-store",
+                "platform": "gog"
+            ],
+            options: [.sortedKeys]
+        ).write(to: depot.appendingPathComponent("launcher-configuration.json"))
+        try makeVersion41AppInfo(
+            appID: 46,
+            entries: [
+                LaunchEntry(index: 0, executable: "GameLauncher.exe", osList: "windows")
+            ]
+        ).write(to: appCache.appendingPathComponent("appinfo.vdf"))
+
+        XCTAssertEqual(
+            SteamLibraryImporter.mainGameExecutable(
+                in: depot.path,
+                appID: "46",
+                steamDirectory: steam.path
+            ),
+            launcher.path
+        )
+    }
+
     func testImporterRejectsDeclaredPayloadSymlinkOutsideDepot() throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
