@@ -26,8 +26,12 @@ enum SteamForegroundRefreshPolicy {
     static func shouldCheckUpdates(
         lastCheck: Date?,
         now: Date = Date(),
-        force: Bool
+        force: Bool,
+        hasActiveLibraryOperations: Bool = false
     ) -> Bool {
+        // SteamCMD no admite de forma segura una consulta `app_info_print` paralela a un
+        // `app_update`. Ni siquiera una recarga manual debe cortar una descarga real.
+        guard !hasActiveLibraryOperations else { return false }
         guard !force, let lastCheck else { return true }
         return now.timeIntervalSince(lastCheck) >= updateCheckInterval
     }
@@ -477,7 +481,8 @@ struct BottleDetailView: View {
         guard SteamForegroundRefreshPolicy.shouldCheckUpdates(
             lastCheck: lastSteamUpdateRefreshAt,
             now: now,
-            force: force
+            force: force,
+            hasActiveLibraryOperations: operations.hasActiveWork
         ), !steamUpdateRefreshInProgress else { return }
 
         steamUpdateRefreshInProgress = true
@@ -639,10 +644,10 @@ struct BottleDetailView: View {
         done.removeValue(forKey: appId)
         UserDefaults.standard.set(done, forKey: "steamcmd.inflight")
         await autoImportGames()
-        // La operación ya terminó y su estado local es definitivo. Reconciliar el resto de la
-        // biblioteca no debe retrasar la retirada del elemento de la cola ni mantener el botón
-        // visualmente atascado; el refresco continúa en segundo plano.
-        Task { await refreshSteamUpdates(force: true) }
+        // La instalación ya contiene la build actual y una actualización se retira explícitamente
+        // de `updatesAvailable`. La siguiente recuperación de foco o recarga hará la consulta
+        // remota cuando la cola esté libre; arrancarla aquí competiría con el SteamCMD que aún no
+        // ha regresado al `drain` para retirar su operación.
     }
 
     private func cancelSteamOperation(_ game: StoreGame) {

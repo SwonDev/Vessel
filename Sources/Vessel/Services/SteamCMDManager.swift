@@ -1,6 +1,35 @@
 import Foundation
 import Darwin
 
+/// SteamCMD comparte caché, manifiestos y estado de sesión dentro de un único directorio. Dos
+/// invocaciones simultáneas —por ejemplo una descarga y una consulta de builds al recuperar el
+/// foco— pueden interrumpirse entre sí. Este semáforo asíncrono concede un único turno global sin
+/// bloquear hilos ni el MainActor.
+actor SteamCMDExecutionGate {
+    static let shared = SteamCMDExecutionGate()
+
+    private var isAvailable = true
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if isAvailable {
+            isAvailable = false
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        guard !waiters.isEmpty else {
+            isAvailable = true
+            return
+        }
+        waiters.removeFirst().resume()
+    }
+}
+
 /// Gestiona **SteamCMD** (cliente de línea de comandos de Steam) para instalar juegos
 /// de forma ROBUSTA, sin depender del frágil cliente GUI bajo Wine. Descarga los
 /// archivos **Windows** del juego (`ForcePlatformType windows`) directo a la carpeta
@@ -283,9 +312,16 @@ final class SteamCMDManager {
         operationID: String? = nil,
         onLine: (@MainActor (String) -> Void)?
     ) async -> (output: String, exitCode: Int32) {
+        let executionGate = SteamCMDExecutionGate.shared
+        await executionGate.acquire()
+        guard !Task.isCancelled else {
+            await executionGate.release()
+            return ("Operación cancelada antes de iniciar SteamCMD.", -2)
+        }
+
         let command = "cd \(shellQuote(dir)) && exec ./steamcmd.sh \(arguments.joined(separator: " "))"
         let processRegistry = self.processRegistry
-        return await withCheckedContinuation { (continuation: CheckedContinuation<(String, Int32), Never>) in
+        let result = await withCheckedContinuation { (continuation: CheckedContinuation<(String, Int32), Never>) in
             DispatchQueue.global().async {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -345,6 +381,8 @@ final class SteamCMDManager {
                 continuation.resume(returning: (buffer.value, process.terminationStatus))
             }
         }
+        await executionGate.release()
+        return result
     }
 
     /// Acumulador thread-safe de la salida (el readabilityHandler corre en otro hilo).

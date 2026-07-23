@@ -104,6 +104,13 @@ final class LibraryOperationQueue {
 
     var itemIDs: Set<String> { Set(items.map(\.id)) }
     var hasItems: Bool { !items.isEmpty }
+    /// Trabajo que puede estar usando ahora mismo el backend de la tienda. Las filas pausadas o
+    /// fallidas no bloquean consultas de mantenimiento porque no tienen ningún proceso activo.
+    var hasActiveWork: Bool {
+        items.contains {
+            [.queued, .running, .pausing, .cancelling].contains($0.phase)
+        }
+    }
 
     func item(for gameID: String) -> Item? { items.first { $0.id == gameID } }
     func position(of gameID: String) -> Int? { items.firstIndex { $0.id == gameID } }

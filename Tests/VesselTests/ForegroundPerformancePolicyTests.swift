@@ -34,6 +34,12 @@ struct ForegroundPerformancePolicyTests {
             now: now,
             force: true
         ))
+        #expect(!SteamForegroundRefreshPolicy.shouldCheckUpdates(
+            lastCheck: nil,
+            now: now,
+            force: true,
+            hasActiveLibraryOperations: true
+        ))
     }
 
     @Test("La caché contabiliza memoria decodificada, no solo bytes comprimidos")
