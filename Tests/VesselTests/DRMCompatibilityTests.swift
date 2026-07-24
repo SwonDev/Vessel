@@ -119,6 +119,36 @@ struct DRMCompatibilityTests {
         #expect(SteamDRMScanner.hasSteamStub(executable.path))
     }
 
+    @Test("SteamStub D3D11 conserva el motor unificado DXMT")
+    @MainActor
+    func keepsProtectedD3D11OnUnifiedDXMT() throws {
+        let executable = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Vessel-SteamStub-D3D11-\(UUID().uuidString).exe")
+        defer { try? FileManager.default.removeItem(at: executable) }
+
+        var pe = pe64Fixture(imports: ["d3d11.dll", "dxgi.dll"])
+        let section = 0x80 + 24 + 0xF0
+        pe.replaceSubrange(section..<(section + 8), with: Data(".bind\0\0\0".utf8))
+        pe.writeUInt32LE(0x1000, at: 0xA8)
+        try pe.write(to: executable)
+
+        let manager = WineManager()
+        let graphicsAPI = manager.detectGraphicsAPI(forExecutable: executable.path)
+        let requiresAppLaunch = WineManager.requiresOfficialSteamAppLaunch(
+            builtInProtection: manager.requiresSteamAppLaunch(executable.path),
+            thirdPartyProtection: nil,
+            directLaunchException: manager.usesProtectedDirectLaunchWithConnectedSteam(executable.path)
+        )
+
+        #expect(SteamDRMScanner.hasSteamStub(executable.path))
+        #expect(graphicsAPI == .d3d11)
+        #expect(requiresAppLaunch)
+        #expect(!WineManager.shouldUseFullWineForSteamAppLaunch(
+            required: requiresAppLaunch,
+            graphicsAPI: graphicsAPI
+        ))
+    }
+
     @Test("Una sección .bind sin confirmación no fuerza Steam real")
     func ignoresUnconfirmedBindSection() throws {
         let executable = FileManager.default.temporaryDirectory

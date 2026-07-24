@@ -1545,13 +1545,16 @@ final class WineManager {
         (builtInProtection || thirdPartyProtection != nil) && !directLaunchException
     }
 
-    /// Los AppID protegidos D3D12 deben conservar D3DMetal. El motor completo sigue siendo la ruta
-    /// compartida para el resto de APIs, pero no puede adelantar a la rama D3D12 especializada.
+    /// Los AppID protegidos D3D11 deben conservar DXMT y los D3D12, D3DMetal. El motor completo es
+    /// la ruta compartida para las APIs legacy o no identificadas, pero no puede adelantar a las
+    /// ramas Metal especializadas. Si un D3D11 cae aquí, `wine-full` carga wined3d→MoltenVK en vez
+    /// de DXMT; en cargas sostenidas puede quedarse negro y terminar con error aunque Steam haya
+    /// autorizado correctamente el ejecutable.
     static func shouldUseFullWineForSteamAppLaunch(
         required: Bool,
         graphicsAPI: GameGraphicsAPI
     ) -> Bool {
-        required && graphicsAPI != .d3d12
+        required && graphicsAPI != .d3d11 && graphicsAPI != .d3d12
     }
 
     /// Decide si un runtime Vulkan puede iniciarse directamente una vez que Steam ya está
