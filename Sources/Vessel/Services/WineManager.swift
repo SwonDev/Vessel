@@ -2628,6 +2628,58 @@ final class WineManager {
         return packagedIDTechVulkanPayloadExecutable(forBootstrapper: executable) != nil
     }
 
+    /// Runtime LÖVE 2D enlazado como DLL. Las builds fusionadas cargan OpenGL mediante SDL/LÖVE
+    /// en tiempo de ejecución: el `.exe` solo importa `love.dll` y `lua51.dll`, y `love.dll` no
+    /// declara `opengl32.dll` en su tabla PE. Sin esta firma, un juego LÖVE moderno parece una carga
+    /// Direct3D desconocida y termina aprendiendo Gcenx aunque su backend real sea OpenGL.
+    ///
+    /// La detección exige el enlace PE del launcher al runtime, las dependencias locales de
+    /// SDL/Lua, un símbolo exportado `luaopen_*love*` y el contrato OpenGL interno de LÖVE. No usa
+    /// nombres de juegos ni AppID y no se activa por una DLL opcional que simplemente esté al lado.
+    func isLove2DOpenGLEngine(_ executable: String) -> Bool {
+        let executableImports = peImportedLibraries(forExecutable: executable)
+        guard executableImports.contains("love.dll") else { return false }
+
+        let directory = (executable as NSString).deletingLastPathComponent
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: directory) else {
+            return false
+        }
+        let localFiles = Dictionary(
+            entries.map { ($0.lowercased(), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        guard let loveName = localFiles["love.dll"],
+              localFiles["sdl2.dll"] != nil,
+              localFiles["lua51.dll"] != nil || localFiles["lua.dll"] != nil
+        else { return false }
+
+        let love = (directory as NSString).appendingPathComponent(loveName)
+        let runtimeImports = peImportedLibraries(forExecutable: love)
+        guard runtimeImports.contains("sdl2.dll"),
+              runtimeImports.contains("lua51.dll") || runtimeImports.contains("lua.dll")
+        else { return false }
+
+        let exports = PEImportScanner.exportedSymbols(atPath: love)
+        guard exports.contains(where: { $0.contains("luaopen") && $0.contains("love") }) else {
+            return false
+        }
+        return PEImportScanner.containsASCIIStrings(
+            atPath: love,
+            allOf: [
+                "love.graphics.opengl",
+                "OpenGL 2.1 or OpenGL ES 2"
+            ]
+        )
+    }
+
+    /// Un override aprendido pertenece a una observación anterior, no a una preferencia del
+    /// usuario. Si después aparece una firma estructural inequívoca, debe volver a automático para
+    /// que el motor correcto pueda gobernar el siguiente arranque. Las elecciones manuales siguen
+    /// intactas porque `EffectiveLaunchConfig` conserva su procedencia por separado.
+    func structuralRuntimeInvalidatesLearnedGraphicsOverride(_ executable: String) -> Bool {
+        isNativeVulkanGame(executable) || isLove2DOpenGLEngine(executable)
+    }
+
     /// Algunos motores Vulkan nativos comprueban un contrato de dispositivo más amplio que el
     /// perfil público de MoltenVK: líneas anchas y más de 16 samplers por etapa. La firma se basa
     /// en los diagnósticos y nombres de capacidades embebidos en el motor, no en el título ni en el
@@ -2924,6 +2976,9 @@ final class WineManager {
         // NW.js/Chromium usa ANGLE y carga DXGI/D3D11 dinámicamente desde `nw.dll`; no aparece en
         // la tabla de imports del launcher. DXMT es su backend correcto en Apple Silicon.
         if isNWJSGame(executable) { return .d3d11 }
+        // LÖVE enlaza su módulo gráfico como `love.dll`, pero resuelve OpenGL mediante SDL en
+        // runtime. La firma completa debe ganar antes que el fallback de Direct3D dinámico.
+        if isLove2DOpenGLEngine(executable) { return .opengl }
         // OGRE clásico declara el renderizador activo en Plugins.cfg y lo carga dinámicamente.
         // Inspeccionar solo Torchlight.exe, por ejemplo, lo deja como `.other` aunque el plugin
         // seleccionado importe D3D9 de forma inequívoca.
@@ -3932,7 +3987,7 @@ final class WineManager {
     ) -> GameConfig.GraphicsLayer {
         if eff.graphicsOverrideWasLearned,
            eff.graphicsOverride != .auto,
-           isNativeVulkanGame(executable) {
+           structuralRuntimeInvalidatesLearnedGraphicsOverride(executable) {
             return .auto
         }
         return eff.graphicsOverride
@@ -4125,7 +4180,7 @@ final class WineManager {
         )
         if normalizedGraphicsOverride != eff.graphicsOverride {
             log.log(
-                "Override aprendido incompatible ignorado: el ejecutable usa Vulkan nativo y vuelve al motor completo.",
+                "Override aprendido incompatible ignorado: la firma estructural del motor vuelve a la ruta automática.",
                 level: .info
             )
             eff.graphicsOverride = normalizedGraphicsOverride

@@ -101,9 +101,9 @@ enum GameConfigStore {
         return cfg
     }
 
-    /// Invalida únicamente un override APRENDIDO que contradiga la firma Vulkan nativa del PE.
-    /// Una elección manual nunca se toca. La configuración restante (sync, HUD, ejecutable, nube)
-    /// se conserva íntegra.
+    /// Invalida únicamente un override APRENDIDO que contradiga una firma estructural inequívoca
+    /// del runtime. Una elección manual nunca se toca. La configuración restante (sync, HUD,
+    /// ejecutable, nube) se conserva íntegra.
     static func validatedForLaunch(
         _ config: GameConfig,
         id: String,
@@ -112,14 +112,15 @@ enum GameConfigStore {
     ) -> GameConfig {
         guard config.graphicsLayerOrigin == .learned,
               config.graphicsLayer != .auto,
-              wineManager.isNativeVulkanGame(executable) else { return config }
+              wineManager.structuralRuntimeInvalidatesLearnedGraphicsOverride(executable)
+        else { return config }
         var repaired = config
         repaired.graphicsLayer = .auto
         repaired.graphicsLayerOrigin = nil
         save(id, repaired)
         DiscoveredFixesStore.shared.remove(id: id)
         LogStore.shared.log(
-            "Override aprendido incompatible eliminado: el ejecutable importa Vulkan nativo y vuelve al motor wine-full.",
+            "Override aprendido incompatible eliminado: la firma estructural del motor vuelve a la ruta automática.",
             level: .info
         )
         return repaired

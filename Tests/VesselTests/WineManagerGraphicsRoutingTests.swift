@@ -1325,6 +1325,128 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [.dxmt])
     }
 
+    func testLove2DDynamicOpenGLRuntimeUsesDedicatedOpenGLEngine() throws {
+        let executable = try makePE64(
+            named: "fused-game.exe",
+            imports: ["love.dll", "lua51.dll", "MSVCR120.dll"]
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try writePE(
+            to: directory.appendingPathComponent("love.dll"),
+            is64Bit: true,
+            imports: ["SDL2.dll", "lua51.dll", "OpenAL32.dll"],
+            marker: "love.graphics.opengl This program requires OpenGL 2.1 or OpenGL ES 2",
+            exports: ["luaopen_love"]
+        )
+        try writePE(
+            to: directory.appendingPathComponent("SDL2.dll"),
+            is64Bit: true,
+            imports: ["KERNEL32.dll"],
+            marker: "SDL"
+        )
+        try writePE(
+            to: directory.appendingPathComponent("lua51.dll"),
+            is64Bit: true,
+            imports: ["KERNEL32.dll"],
+            marker: "Lua"
+        )
+
+        let manager = WineManager()
+        XCTAssertTrue(manager.isLove2DOpenGLEngine(executable.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .opengl)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .dxmt)
+        XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [.dxmt])
+    }
+
+    func testUnlinkedOrIncompleteLoveDLLCannotChangeGraphicsRouting() throws {
+        let executable = try makePE64(
+            named: "unrelated-game.exe",
+            imports: ["KERNEL32.dll"]
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try writePE(
+            to: directory.appendingPathComponent("love.dll"),
+            is64Bit: true,
+            imports: ["SDL2.dll", "lua51.dll"],
+            marker: "love.graphics.opengl This program requires OpenGL 2.1 or OpenGL ES 2",
+            exports: ["luaopen_love"]
+        )
+        try Data("optional dependency".utf8).write(
+            to: directory.appendingPathComponent("SDL2.dll")
+        )
+        try Data("optional dependency".utf8).write(
+            to: directory.appendingPathComponent("lua51.dll")
+        )
+
+        let manager = WineManager()
+        XCTAssertFalse(manager.isLove2DOpenGLEngine(executable.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .other)
+    }
+
+    func testLearnedLegacyLayerIsDiscardedForLove2DButManualChoiceSurvives() throws {
+        let executable = try makePE64(
+            named: "fused-game.exe",
+            imports: ["love.dll", "lua51.dll"]
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try writePE(
+            to: directory.appendingPathComponent("love.dll"),
+            is64Bit: true,
+            imports: ["SDL2.dll", "lua51.dll"],
+            marker: "love.graphics.opengl This program requires OpenGL 2.1 or OpenGL ES 2",
+            exports: ["luaopen_love"]
+        )
+        try writePE(
+            to: directory.appendingPathComponent("SDL2.dll"),
+            is64Bit: true,
+            imports: ["KERNEL32.dll"],
+            marker: "SDL"
+        )
+        try writePE(
+            to: directory.appendingPathComponent("lua51.dll"),
+            is64Bit: true,
+            imports: ["KERNEL32.dll"],
+            marker: "Lua"
+        )
+
+        let manager = WineManager()
+        var learned = EffectiveLaunchConfig(graphicsOverride: .gcenx)
+        learned.graphicsOverrideWasLearned = true
+        XCTAssertEqual(
+            manager.resolvedGraphicsLayer(forExecutable: executable.path, effective: learned),
+            .dxmt
+        )
+
+        var manual = learned
+        manual.graphicsOverrideWasLearned = false
+        XCTAssertEqual(
+            manager.resolvedGraphicsLayer(forExecutable: executable.path, effective: manual),
+            .gcenx
+        )
+
+        let id = "love2d-routing-\(UUID().uuidString)"
+        defer { UserDefaults.standard.removeObject(forKey: "gameconfig.\(id)") }
+        var stored = GameConfig()
+        stored.graphicsLayer = .gcenx
+        stored.graphicsLayerOrigin = .learned
+        stored.metalHUD = true
+        GameConfigStore.save(id, stored)
+
+        let repaired = GameConfigStore.validatedForLaunch(
+            stored,
+            id: id,
+            executable: executable.path,
+            wineManager: manager
+        )
+        XCTAssertEqual(repaired.graphicsLayer, .auto)
+        XCTAssertNil(repaired.graphicsLayerOrigin)
+        XCTAssertTrue(repaired.metalHUD)
+        XCTAssertEqual(GameConfigStore.load(id), repaired)
+    }
+
     func testRendererNameOutsideImportTableCannotMisrouteOpenGLAsD3D9() throws {
         let executable = try makePE32(
             named: "moai-game.exe",
