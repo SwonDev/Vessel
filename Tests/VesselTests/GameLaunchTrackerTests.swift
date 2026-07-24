@@ -144,6 +144,39 @@ final class GameLaunchTrackerTests: XCTestCase {
         XCTAssertEqual(GameLaunchTracker.shared.state(id), .idle)
     }
 
+    func testStopAlsoTerminatesLauncherWhenProcessFamilyNeverAppeared() async throws {
+        let id = "tracker-stop-pending-family-\(UUID().uuidString)"
+        let launcher = Process()
+        let probe = ProbeState()
+        probe.familyIsAlive = false
+        let tracker = GameLaunchTracker()
+
+        await tracker.track(
+            id,
+            processFamilyIsRunning: { probe.familyIsAlive },
+            stopProcessFamily: {
+                probe.stopWasCalled = true
+            }
+        ) {
+            launcher.executableURL = URL(fileURLWithPath: "/bin/sleep")
+            launcher.arguments = ["30"]
+            try launcher.run()
+            return launcher
+        }
+
+        tracker.stop(id)
+        await waitUntilIdle(id, tracker: tracker)
+
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(2))
+        while launcher.isRunning, clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertTrue(probe.stopWasCalled)
+        XCTAssertFalse(launcher.isRunning, "Detener debe cerrar también el relé pendiente")
+        XCTAssertEqual(tracker.state(id), .idle)
+    }
+
     func testAdoptsRunningFamilyAfterVesselRestarts() async {
         let id = "tracker-adopted-family-\(UUID().uuidString)"
         let probe = ProbeState()

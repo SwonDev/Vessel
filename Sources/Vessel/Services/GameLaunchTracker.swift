@@ -262,6 +262,14 @@ final class GameLaunchTracker {
             return
         }
         if let stopProcessFamily = processFamilyStops[id] {
+            // El `Process` rastreado puede ser solo un relé que espera a que aparezca la familia
+            // real (por ejemplo el supervisor de `Steam -applaunch`). Si Steam queda detenido en
+            // un EULA, esa familia todavía no existe: cerrar únicamente la familia devuelve la UI
+            // a reposo pero deja el relé esperando hasta su timeout. Terminamos ambos recursos; la
+            // acción acotada de familia sigue siendo la responsable de cerrar el juego real.
+            if processes[id]?.isRunning == true {
+                processes[id]?.terminate()
+            }
             Task { @MainActor [weak self] in
                 await stopProcessFamily()
                 guard let self else { return }
