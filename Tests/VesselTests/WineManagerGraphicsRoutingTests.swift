@@ -2680,6 +2680,76 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .dxmt)
     }
 
+    func testTechlandCEngineDynamicD3D12PackageKeepsExistingGPTKRoute() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "vessel-techland-c-engine-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let executable = root.appendingPathComponent("ArbitraryGame_x64_rwdi.exe")
+        try writePE(
+            to: executable,
+            is64Bit: true,
+            imports: [
+                "engine_core_x64_rwdi.dll",
+                "engine_foundation_x64_rwdi.dll",
+                "engine_x64_rwdi.dll"
+            ],
+            marker: "SOFTWARE\\Techland\\ _x64_rwdi"
+        )
+        try writePE(
+            to: root.appendingPathComponent("engine_core_x64_rwdi.dll"),
+            is64Bit: true,
+            imports: ["engine_foundation_x64_rwdi.dll"],
+            marker: "SOFTWARE\\Techland\\"
+        )
+        try writePE(
+            to: root.appendingPathComponent("engine_foundation_x64_rwdi.dll"),
+            is64Bit: true,
+            imports: ["KERNEL32.dll"],
+            marker: "_x64_rwdi"
+        )
+        try writePE(
+            to: root.appendingPathComponent("engine_x64_rwdi.dll"),
+            is64Bit: true,
+            imports: ["engine_core_x64_rwdi.dll", "renderer_x64_rwdi.dll"],
+            marker: "C-Engine"
+        )
+        try writePE(
+            to: root.appendingPathComponent("renderer_x64_rwdi.dll"),
+            is64Bit: true,
+            imports: ["engine_core_x64_rwdi.dll"],
+            marker: "rd3d11_x64_rwdi.dll rd3d12_x64_rwdi.dll LoadLibraryA"
+        )
+        try writePE(
+            to: root.appendingPathComponent("rd3d11_x64_rwdi.dll"),
+            is64Bit: true,
+            imports: ["renderer_x64_rwdi.dll"],
+            marker: "D3D11CreateDevice CreateDXGIFactory1 LoadLibraryW"
+        )
+        try writePE(
+            to: root.appendingPathComponent("rd3d12_x64_rwdi.dll"),
+            is64Bit: true,
+            imports: ["renderer_x64_rwdi.dll"],
+            marker: "D3D12CreateDevice CreateDXGIFactory2 D3D12SerializeRootSignature"
+        )
+
+        let agilityRuntime = root.appendingPathComponent("D3D12Core.dll")
+        try Data("Agility SDK".utf8).write(to: agilityRuntime)
+
+        let manager = WineManager()
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .d3d12)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .gptk)
+        XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [.gptk])
+
+        // CHARACTERIZATION: los dos backends cargados dinámicamente son ambiguos por sí solos.
+        // Sin el contrato distribuido de D3D12, una DLL opcional no puede forzar la ruta global.
+        try FileManager.default.removeItem(at: agilityRuntime)
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .other)
+    }
+
     func testCryEngineGameModuleRoutesMinimalLauncherToD3D12() throws {
         let executable = try makePE64(
             named: "CustomLauncher.exe",
