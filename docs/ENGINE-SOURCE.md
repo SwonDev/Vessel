@@ -53,6 +53,10 @@ descarga/empaqueta, y detalla los **parches** que aplicamos.
   todos renderizan; cliente Steam → `wine-steam` (conecta ✓); regresión Balatro (Love2D) ✓.
   El 2026-07-22, *Jurassic World Evolution 2* de Epic (Cobra) superó dos arranques consecutivos con
   D3DMetal, vídeo y ventana ajustada a 1512×982, sin el fallo previo al desreferenciar `0x8ff`.
+  El 2026-07-24, *Noita* (Falling Everything/poro) superó dos arranques consecutivos desde la app
+  oficial y un ciclo de foco Vessel→juego con OpenGL aislado, escala 1×, entrada alineada y cierre
+  limpio. La detección estructural y la validación reproducible se documentan en
+  [`FALLING-EVERYTHING-OPENGL.md`](FALLING-EVERYTHING-OPENGL.md).
 
 ---
 

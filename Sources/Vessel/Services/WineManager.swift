@@ -2672,12 +2672,45 @@ final class WineManager {
         )
     }
 
+    /// Falling Everything/poro (la familia de motor de Noita) enlaza SDL2, Lua y FMOD, pero
+    /// resuelve `opengl32.dll` manualmente. Por eso su tabla PE no declara ninguna API gráfica y
+    /// el fallback genérico lo confundía con Direct3D dinámico. La firma exige PE32, los cuatro
+    /// runtimes realmente enlazados y presentes junto al ejecutable, más tres contratos internos
+    /// independientes del renderer. No depende del título, del AppID ni de una cadena «OpenGL»
+    /// aislada que pudiera pertenecer a un backend opcional.
+    func isFallingEverythingOpenGLEngine(_ executable: String) -> Bool {
+        guard isExecutable32Bit(executable) else { return false }
+
+        let imports = peImportedLibraries(forExecutable: executable)
+        let requiredImports: Set<String> = [
+            "sdl2.dll", "lua51.dll", "fmod.dll", "fmodstudio.dll"
+        ]
+        guard requiredImports.isSubset(of: imports),
+              PEImportScanner.containsASCIIStrings(
+                atPath: executable,
+                allOf: [
+                    #"\fallingeverything\"#,
+                    "Failed loading win32 opengl32.dll!",
+                    ".?AVGraphicsOpenGL@poro@@"
+                ]
+              ) else { return false }
+
+        let directory = (executable as NSString).deletingLastPathComponent
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory) else {
+            return false
+        }
+        let localFiles = Set(names.map { $0.lowercased() })
+        return requiredImports.isSubset(of: localFiles)
+    }
+
     /// Un override aprendido pertenece a una observación anterior, no a una preferencia del
     /// usuario. Si después aparece una firma estructural inequívoca, debe volver a automático para
     /// que el motor correcto pueda gobernar el siguiente arranque. Las elecciones manuales siguen
     /// intactas porque `EffectiveLaunchConfig` conserva su procedencia por separado.
     func structuralRuntimeInvalidatesLearnedGraphicsOverride(_ executable: String) -> Bool {
-        isNativeVulkanGame(executable) || isLove2DOpenGLEngine(executable)
+        isNativeVulkanGame(executable)
+            || isLove2DOpenGLEngine(executable)
+            || isFallingEverythingOpenGLEngine(executable)
     }
 
     /// Algunos motores Vulkan nativos comprueban un contrato de dispositivo más amplio que el
@@ -2979,6 +3012,9 @@ final class WineManager {
         // LÖVE enlaza su módulo gráfico como `love.dll`, pero resuelve OpenGL mediante SDL en
         // runtime. La firma completa debe ganar antes que el fallback de Direct3D dinámico.
         if isLove2DOpenGLEngine(executable) { return .opengl }
+        // Falling Everything/poro carga opengl32.dll con LoadLibrary. Su contrato completo debe
+        // resolverse antes de las heurísticas genéricas porque el PE no importa ninguna API gráfica.
+        if isFallingEverythingOpenGLEngine(executable) { return .opengl }
         // OGRE clásico declara el renderizador activo en Plugins.cfg y lo carga dinámicamente.
         // Inspeccionar solo Torchlight.exe, por ejemplo, lo deja como `.other` aunque el plugin
         // seleccionado importe D3D9 de forma inequívoca.
@@ -6041,8 +6077,9 @@ final class WineManager {
     func usesLegacySDL2OpenGLScaling(_ executable: String) -> Bool {
         let mkxp = isMKXPRGSSGame(executable)
         let contentDrivenFMOD = isLegacyContentDrivenFMODStudioEngine(executable)
+        let fallingEverything = isFallingEverythingOpenGLEngine(executable)
         guard detectGraphicsAPI(forExecutable: executable) == .opengl,
-              mkxp || contentDrivenFMOD || (isExecutable32Bit(executable)
+              mkxp || contentDrivenFMOD || fallingEverything || (isExecutable32Bit(executable)
                 && exeContains(executable, anyOf: ["SDL2.dll", "sdl2.dll", "SDL2.DLL"])) else {
             return false
         }
@@ -7631,7 +7668,18 @@ final class WineManager {
             // (WINEMSYNC/ESYNC/FSYNC=0). El perfil se pasa para conservar los ajustes detectados,
             // pero `forceSyncOff` tiene precedencia. `forceCleanEnv` rompe la identidad heredada de
             // Vessel sin aislar el wineserver: este depende del prefijo, que sí se conserva.
-            await setMacDriverRetinaMode(prefix: bottle.prefixPath, wine: unifiedWine, enabled: effective.retina)
+            let legacySDL2Scale = isOpenGL && usesLegacySDL2OpenGLScaling(executable)
+            await setMacDriverRetinaMode(
+                prefix: bottle.prefixPath,
+                wine: unifiedWine,
+                enabled: legacySDL2Scale ? false : effective.retina
+            )
+            if legacySDL2Scale {
+                log.log(
+                    "OpenGL/SDL2 legado con Steam real: escala nativa para alinear ventana y entrada.",
+                    level: .info
+                )
+            }
             // Juegos DX11 por DXMT: el `d3d11` builtin del motor ES DXMT, pero muchos juegos
             // compilan shaders con `d3dcompiler_43` (cuyo builtin de Wine importa `wined3d`,
             // ausente en el motor unificado → "Couldn't initialize graphics engine"). Sembramos

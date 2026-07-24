@@ -1359,6 +1359,51 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [.dxmt])
     }
 
+    func testFallingEverythingDynamicOpenGLUsesDedicatedEngineAndNativeScale() throws {
+        let executable = try makePE32(
+            named: "proprietary-pixel-sim.exe",
+            marker: #"d:\projects\nollagames\fallingeverything\build\vc12"#
+                + "\0Failed loading win32 opengl32.dll!"
+                + "\0.?AVGraphicsOpenGL@poro@@",
+            imports: [
+                "KERNEL32.dll", "SDL2.dll", "lua51.dll", "fmod.dll", "fmodstudio.dll"
+            ]
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for library in ["SDL2.dll", "lua51.dll", "fmod.dll", "fmodstudio.dll"] {
+            try Data(library.utf8).write(to: directory.appendingPathComponent(library))
+        }
+
+        let manager = WineManager()
+        XCTAssertTrue(manager.isFallingEverythingOpenGLEngine(executable.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .opengl)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .dxmt)
+        XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [.dxmt])
+        XCTAssertTrue(manager.usesLegacySDL2OpenGLScaling(executable.path))
+        XCTAssertTrue(manager.structuralRuntimeInvalidatesLearnedGraphicsOverride(executable.path))
+    }
+
+    func testIncompleteFallingEverythingFingerprintCannotChangeRoutingOrScale() throws {
+        let executable = try makePE32(
+            named: "unrelated-sdl-tool.exe",
+            marker: #"d:\projects\sample\fallingeverything\build"#
+                + "\0Failed loading win32 opengl32.dll!",
+            imports: ["SDL2.dll", "lua51.dll", "fmod.dll"]
+        )
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for library in ["SDL2.dll", "lua51.dll", "fmod.dll"] {
+            try Data(library.utf8).write(to: directory.appendingPathComponent(library))
+        }
+
+        let manager = WineManager()
+        XCTAssertFalse(manager.isFallingEverythingOpenGLEngine(executable.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .other)
+        XCTAssertFalse(manager.usesLegacySDL2OpenGLScaling(executable.path))
+        XCTAssertFalse(manager.structuralRuntimeInvalidatesLearnedGraphicsOverride(executable.path))
+    }
+
     func testUnlinkedOrIncompleteLoveDLLCannotChangeGraphicsRouting() throws {
         let executable = try makePE64(
             named: "unrelated-game.exe",

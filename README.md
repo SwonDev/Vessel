@@ -114,6 +114,7 @@ Vessel enruta **cada juego a su motor y sus parches**, de forma aislada: un arre
 | Motor de juego | Verificado con | Ruta gráfica |
 |---|---|:---:|
 | Love2D | Balatro | Metal |
+| Falling Everything / poro | Noita | OpenGL nativo → Metal |
 | Godot 3 / 4 (OpenGL) | Brotato, Cassette Beasts | Metal |
 | Godot 4 (Vulkan) | Halls of Torment | MoltenVK |
 | MonoGame | Stardew Valley | Metal |
