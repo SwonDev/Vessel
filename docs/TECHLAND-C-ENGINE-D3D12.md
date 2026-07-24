@@ -42,6 +42,23 @@ El 24 de julio de 2026 se validó *Dying Light: The Beast* desde el botón «Jug
 - durante una sesión jugable real, el usuario confirmó movimiento fluido, buena respuesta y
   rendimiento sostenido, sin recortes, desbordamiento ni degradación gráfica visible.
 
+La validación descubrió además una regresión de ciclo de vida que un único arranque no podía
+mostrar. La limpieza histórica de la ruta D3DMetal retiraba también el `D3D12Core.dll` adyacente,
+interpretándolo como un traductor residual. En C-Engine ese archivo de 4.821.536 bytes pertenece a
+la instalación oficial. El primer arranque funcionaba y lo borraba; el siguiente dejaba de detectar
+el contrato D3D12, probaba Gcenx/DXMT y terminaba con `Cannot initialize renderer`.
+
+La limpieza separada de D3DMetal conserva ahora cualquier `D3D12Core.dll` distribuido por el juego
+y retira únicamente los traductores que Vessel puede haber copiado junto al ejecutable. Después de
+«Verificar o reparar», la prueba real confirmó dos arranques consecutivos desde la Vessel oficial:
+
+- ambos eligieron GPTK/D3DMetal sin argumentos ni intervención manual;
+- ambos alcanzaron `D3D_FEATURE_LEVEL_12_2`, `RendererMode("d3d12")` y `Stage = 'Complete'`;
+- entre cierre y reapertura, el SHA-256 del runtime oficial permaneció idéntico;
+- `d3d11.dll` y `dxgi.dll` residuales desaparecieron sin tocar el paquete del juego;
+- el usuario volvió a confirmar visualmente el menú completo, la escala correcta y la partida
+  detectada.
+
 El C-Engine crea un archivo llamado `crash_*.log` desde el inicio y se lo entrega a Crashpad como
 adjunto preventivo. Su mera presencia no significa que el proceso haya fallado: en la validación
 continuó registrando inicialización, memoria gráfica y transiciones de estado mientras el juego
@@ -53,7 +70,9 @@ permanecía activo.
 - No se escriben preferencias gráficas del juego.
 - No se introduce una excepción por título, AppID o nombre comercial.
 - No se modifica ningún motor Wine ni la ruta de otras familias.
+- No se borra el runtime Agility SDK que distribuya el juego, esté en `D3D12/` o junto al exe.
 - Un paquete incompleto o ambiguo conserva el fallback existente.
 
 La cobertura reproducible vive en
-`WineManagerGraphicsRoutingTests.testTechlandCEngineDynamicD3D12PackageKeepsExistingGPTKRoute`.
+`WineManagerGraphicsRoutingTests.testTechlandCEngineDynamicD3D12PackageKeepsExistingGPTKRoute` y
+`WineManagerGraphicsRoutingTests.testD3DMetalCleanupPreservesPackagedD3D12CoreAcrossConsecutiveLaunches`.

@@ -2750,6 +2750,41 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .other)
     }
 
+    func testD3DMetalCleanupPreservesPackagedD3D12CoreAcrossConsecutiveLaunches() throws {
+        let executable = try makePE64(named: "proprietary-d3d12-game.exe")
+        let directory = executable.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let packagedCore = directory.appendingPathComponent("D3D12Core.dll")
+        let packagedCoreContents = Data("official DirectX 12 Agility runtime".utf8)
+        try packagedCoreContents.write(to: packagedCore)
+
+        let injectedTranslators = [
+            "d3d11.dll", "d3d12.dll", "dxgi.dll",
+            "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "winemetal.dll"
+        ]
+        for dll in injectedTranslators {
+            try Data("Vessel translator \(dll)".utf8).write(
+                to: directory.appendingPathComponent(dll)
+            )
+        }
+
+        let manager = WineManager()
+        manager.cleanExeAdjacentD3DMetalConflicts(gameExecutable: executable.path)
+
+        for dll in injectedTranslators {
+            XCTAssertFalse(FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(dll).path
+            ))
+        }
+        XCTAssertEqual(try Data(contentsOf: packagedCore), packagedCoreContents)
+
+        // REGRESSION: el primer lanzamiento de C-Engine funcionaba, pero su limpieza borraba el
+        // runtime oficial y el segundo ya no se detectaba como D3D12. Repetir debe ser inocuo.
+        manager.cleanExeAdjacentD3DMetalConflicts(gameExecutable: executable.path)
+        XCTAssertEqual(try Data(contentsOf: packagedCore), packagedCoreContents)
+    }
+
     func testCryEngineGameModuleRoutesMinimalLauncherToD3D12() throws {
         let executable = try makePE64(
             named: "CustomLauncher.exe",

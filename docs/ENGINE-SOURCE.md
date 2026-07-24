@@ -57,10 +57,11 @@ descarga/empaqueta, y detalla los **parches** que aplicamos.
   oficial y un ciclo de foco Vessel→juego con OpenGL aislado, escala 1×, entrada alineada y cierre
   limpio. La detección estructural y la validación reproducible se documentan en
   [`FALLING-EVERYTHING-OPENGL.md`](FALLING-EVERYTHING-OPENGL.md).
-  Ese mismo día, *Dying Light: The Beast* completó instalación y primer arranque desde la app
-  oficial con el C-Engine de Techland, D3D12→D3DMetal, escala completa y una sesión jugable fluida
-  confirmada por el usuario. Su contrato de carga gráfica dinámica y la prueba de caracterización se
-  documentan en
+  Ese mismo día, *Dying Light: The Beast* completó instalación y dos arranques consecutivos desde la
+  app oficial con el C-Engine de Techland, D3D12→D3DMetal, escala completa y una sesión jugable
+  fluida confirmada por el usuario. La limpieza D3DMetal quedó además blindada para conservar el
+  `D3D12Core.dll` oficial entre ejecuciones. Su contrato de carga gráfica dinámica, la regresión de
+  segundo arranque y sus pruebas de caracterización se documentan en
   [`TECHLAND-C-ENGINE-D3D12.md`](TECHLAND-C-ENGINE-D3D12.md).
 
 ---

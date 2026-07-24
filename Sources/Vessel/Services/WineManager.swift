@@ -6433,7 +6433,6 @@ final class WineManager {
         forceGPTK: Bool = false
     ) async throws -> Process {
         let gameDir = (executable as NSString).deletingLastPathComponent
-        let fm = FileManager.default
         // La ruta D3D12 se resolvía antes del preflight común de runtimes. Eso dejaba activo el
         // `mscoree=d` preventivo de GPTK incluso cuando una DLL mixta adyacente lo importaba (4A
         // Enhanced carga BugTrap.dll, que a su vez necesita mscoree), y el loader devolvía 126 antes
@@ -6529,15 +6528,12 @@ final class WineManager {
             d3d12Wine = gptkWine
         }
 
-        // 2) Limpiar el game dir de DLLs gráficas que un lanzamiento previo dejara
-        //    (DXMT/vkd3d junto al exe), para que mande el d3d12/dxgi builtin de
-        //    D3DMetal. NO se toca la subcarpeta `D3D12/` del Agility SDK: D3DMetal
-        //    la ignora por sí mismo.
-        for dll in ["d3d11.dll", "d3d12.dll", "d3d12core.dll", "dxgi.dll",
-                    "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "winemetal.dll"] {
-            let p = "\(gameDir)/\(dll)"
-            if fm.fileExists(atPath: p) { try? fm.removeItem(atPath: p) }
-        }
+        // 2) Limpiar el game dir de traductores que un lanzamiento previo de Vessel dejara junto
+        //    al exe, para que manden los builtins de D3DMetal. Un `D3D12Core.dll` adyacente también
+        //    puede ser parte oficial del Agility SDK del juego (Techland C-Engine lo distribuye así,
+        //    no necesariamente dentro de `D3D12/`). D3DMetal ya ignora ese runtime cuando procede:
+        //    borrarlo dañaría la instalación y convertiría el segundo arranque en una ruta distinta.
+        cleanExeAdjacentD3DMetalConflicts(gameExecutable: executable)
 
         // 3) Steamworks: la política ya se resolvió antes de entrar aquí. Los juegos sin protección
         //    adicional conservan Goldberg; Denuvo/VMProtect/Themida/Enigma se desvían previamente al
@@ -9406,6 +9402,21 @@ final class WineManager {
         let restoredOriginalD3D9 = dxvkManager.removeGameLocalD3D9(forExecutable: gameExecutable)
         for dll in ["d3d9.dll", "wined3d.dll", "d3d11.dll", "dxgi.dll", "d3d10core.dll", "d3d10.dll", "d3d10_1.dll", "winemetal.dll"] {
             if dll == "d3d9.dll", restoredOriginalD3D9 { continue }
+            try? fm.removeItem(atPath: "\(gameDir)/\(dll)")
+        }
+    }
+
+    /// Retira únicamente los traductores gráficos que Vessel puede haber copiado junto al exe antes
+    /// de cambiar a D3DMetal. `D3D12Core.dll` se conserva deliberadamente: muchos juegos lo incluyen
+    /// como parte de DirectX 12 Agility SDK y no es un artefacto generado por Vessel. La operación es
+    /// idempotente para que reiniciar o reparar un juego no altere su paquete oficial.
+    func cleanExeAdjacentD3DMetalConflicts(gameExecutable: String) {
+        let gameDir = (gameExecutable as NSString).deletingLastPathComponent
+        let fm = FileManager.default
+        for dll in [
+            "d3d11.dll", "d3d12.dll", "dxgi.dll",
+            "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "winemetal.dll"
+        ] {
             try? fm.removeItem(atPath: "\(gameDir)/\(dll)")
         }
     }
