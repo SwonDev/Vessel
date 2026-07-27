@@ -4,9 +4,10 @@ import CoreGraphics
 /// Repara estados de pantalla conocidos que el propio juego o una sincronización antigua pueden
 /// restaurar y que, bajo Wine + Retina, dejan la ventana fuera de escala.
 ///
-/// Las reglas son deliberadamente estrechas: las reparaciones persistentes exigen un AppID y una
-/// combinación comprobada en vivo; las decisiones de escala por motor exigen varias huellas
-/// estructurales independientes. No cambia una preferencia de ventana válida del usuario.
+/// Las reglas son deliberadamente estrechas: las reparaciones persistentes exigen una combinación
+/// comprobada en vivo o una huella estructural inequívoca del motor; las decisiones de escala por
+/// motor exigen varias señales independientes. No cambia una preferencia de ventana válida del
+/// usuario.
 enum GameDisplayStateRepair {
     struct DisplayMetrics: Equatable, Sendable {
         let logicalWidth: Int
@@ -160,10 +161,18 @@ enum GameDisplayStateRepair {
         prefix: String,
         fileManager: FileManager = .default,
         displayMetrics: DisplayMetrics? = nil,
-        isFourAEnhanced: Bool = false
+        isFourAEnhanced: Bool = false,
+        isFallingEverything: Bool = false
     ) -> Report {
         if isFourAEnhanced {
             return repairFourAEnhancedProfiles(
+                prefix: prefix,
+                fileManager: fileManager,
+                displayMetrics: displayMetrics ?? currentDisplayMetrics()
+            )
+        }
+        if isFallingEverything {
+            return repairFallingEverythingProfiles(
                 prefix: prefix,
                 fileManager: fileManager,
                 displayMetrics: displayMetrics ?? currentDisplayMetrics()
@@ -187,6 +196,132 @@ enum GameDisplayStateRepair {
             )
         }
         return Report()
+    }
+
+    /// Falling Everything conserva el tamaño de ventana y backbuffer dentro del perfil compartido.
+    /// Si una ejecución anterior vio la pantalla Retina en píxeles físicos, puede guardar
+    /// 3024×1964 y reutilizarlo después como puntos sobre un escritorio de 1512×982. Solo se corrige
+    /// el modo ventana (`fullscreen=0`) que exceda el escritorio lógico; un tamaño válido y los dos
+    /// modos fullscreen explícitos se respetan. La resolución interna del propio juego es la mejor
+    /// referencia recuperable (normalmente 1280×720) y se ajusta proporcionalmente únicamente si no
+    /// cabe en el área visible actual.
+    nonisolated static func repairedFallingEverythingConfig(
+        _ original: String,
+        displayMetrics: DisplayMetrics
+    ) -> String? {
+        let rootPattern = #"<Config\b[^>]*>"#
+        guard let rootRange = original.range(of: rootPattern, options: .regularExpression) else {
+            return nil
+        }
+        let root = String(original[rootRange])
+        let requiredKeys = [
+            "config_format_version", "display_id", "application_pause_when_unfocused",
+            "internal_size_w", "internal_size_h", "window_w", "window_h",
+            "backbuffer_width", "backbuffer_height", "fullscreen"
+        ]
+        guard requiredKeys.allSatisfy({ xmlIntegerAttribute($0, in: root) != nil }),
+              xmlIntegerAttribute("fullscreen", in: root) == 0,
+              let internalWidth = xmlIntegerAttribute("internal_size_w", in: root),
+              let internalHeight = xmlIntegerAttribute("internal_size_h", in: root),
+              let windowWidth = xmlIntegerAttribute("window_w", in: root),
+              let windowHeight = xmlIntegerAttribute("window_h", in: root),
+              let backbufferWidth = xmlIntegerAttribute("backbuffer_width", in: root),
+              let backbufferHeight = xmlIntegerAttribute("backbuffer_height", in: root),
+              internalWidth > 0,
+              internalHeight > 0,
+              windowWidth > 0,
+              windowHeight > 0,
+              backbufferWidth > 0,
+              backbufferHeight > 0
+        else { return nil }
+
+        let logicalWidth = max(1, displayMetrics.logicalWidth)
+        let logicalHeight = max(1, displayMetrics.logicalHeight)
+        guard windowWidth > logicalWidth
+                || windowHeight > logicalHeight
+                || backbufferWidth > logicalWidth
+                || backbufferHeight > logicalHeight
+        else { return nil }
+
+        let availableWidth = max(1, min(logicalWidth, displayMetrics.visibleWidth ?? logicalWidth))
+        let availableHeight = max(1, min(logicalHeight, displayMetrics.visibleHeight ?? logicalHeight))
+        let scale = min(
+            1,
+            Double(availableWidth) / Double(internalWidth),
+            Double(availableHeight) / Double(internalHeight)
+        )
+        let targetWidth = max(1, Int((Double(internalWidth) * scale).rounded(.down)))
+        let targetHeight = max(1, Int((Double(internalHeight) * scale).rounded(.down)))
+
+        var repairedRoot = root
+        for key in ["window_w", "backbuffer_width"] {
+            repairedRoot = replacingXMLIntegerAttribute(
+                key,
+                value: targetWidth,
+                in: repairedRoot
+            )
+        }
+        for key in ["window_h", "backbuffer_height"] {
+            repairedRoot = replacingXMLIntegerAttribute(
+                key,
+                value: targetHeight,
+                in: repairedRoot
+            )
+        }
+        guard repairedRoot != root else { return nil }
+
+        var repaired = original
+        repaired.replaceSubrange(rootRange, with: repairedRoot)
+        return repaired
+    }
+
+    private nonisolated static func repairFallingEverythingProfiles(
+        prefix: String,
+        fileManager: FileManager,
+        displayMetrics: DisplayMetrics
+    ) -> Report {
+        let usersDirectory = "\(prefix)/drive_c/users"
+        guard let users = try? fileManager.contentsOfDirectory(atPath: usersDirectory) else {
+            return Report()
+        }
+
+        var report = Report()
+        for user in users.sorted() {
+            let localLow = "\(usersDirectory)/\(user)/AppData/LocalLow"
+            guard let applicationDirectories = try? fileManager.contentsOfDirectory(atPath: localLow)
+            else { continue }
+
+            for applicationDirectory in applicationDirectories.sorted() {
+                let path = "\(localLow)/\(applicationDirectory)/save_shared/config.xml"
+                guard PathSafety.isContained(path, in: usersDirectory),
+                      let original = try? String(contentsOfFile: path, encoding: .utf8),
+                      let repaired = repairedFallingEverythingConfig(
+                        original,
+                        displayMetrics: displayMetrics
+                      ) else { continue }
+
+                let backupPath = path + displayBackupSuffix
+                if !fileManager.fileExists(atPath: backupPath) {
+                    do {
+                        try fileManager.copyItem(atPath: path, toPath: backupPath)
+                        report.backupFiles.append(backupPath)
+                    } catch {
+                        continue
+                    }
+                }
+
+                do {
+                    try Data(repaired.utf8).write(
+                        to: URL(fileURLWithPath: path),
+                        options: .atomic
+                    )
+                    report.repairedFiles.append(path)
+                } catch {
+                    continue
+                }
+            }
+        }
+        return report
     }
 
     /// 4A Enhanced conserva la resolución del framebuffer en `user.cfg`. Tras pasar Wine a
@@ -813,6 +948,36 @@ enum GameDisplayStateRepair {
         return regex.stringByReplacingMatches(
             in: text,
             range: NSRange(text.startIndex..., in: text),
+            withTemplate: "$1\(value)$2"
+        )
+    }
+
+    private nonisolated static func xmlIntegerAttribute(
+        _ key: String,
+        in element: String
+    ) -> Int? {
+        let escapedKey = NSRegularExpression.escapedPattern(for: key)
+        let pattern = "(?:^|[\\s])\(escapedKey)[ \\t\\r\\n]*=[ \\t\\r\\n]*\"(-?[0-9]+)\""
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(
+                in: element,
+                range: NSRange(element.startIndex..., in: element)
+              ),
+              let valueRange = Range(match.range(at: 1), in: element) else { return nil }
+        return Int(element[valueRange])
+    }
+
+    private nonisolated static func replacingXMLIntegerAttribute(
+        _ key: String,
+        value: Int,
+        in element: String
+    ) -> String {
+        let escapedKey = NSRegularExpression.escapedPattern(for: key)
+        let pattern = "([\\s]\(escapedKey)[ \\t\\r\\n]*=[ \\t\\r\\n]*\")-?[0-9]+(\")"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return element }
+        return regex.stringByReplacingMatches(
+            in: element,
+            range: NSRange(element.startIndex..., in: element),
             withTemplate: "$1\(value)$2"
         )
     }

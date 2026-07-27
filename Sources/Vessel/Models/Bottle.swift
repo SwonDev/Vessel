@@ -27,7 +27,7 @@ struct Bottle: Identifiable, Codable, Hashable, Sendable {
         dxvkEnabled: Bool = true,
         dxmtEnabled: Bool = false,
         gptkEnabled: Bool = true,
-        winePath: String = "/opt/homebrew/bin/wine64",
+        winePath: String = WineEngineLocator.defaultManagedWinePath(),
         notes: String = "",
         managedStore: String? = nil,
         managedGameID: String? = nil
@@ -128,10 +128,24 @@ final class BottleStore {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             bottles = try decoder.decode([Bottle].self, from: data)
+            repairExternalWinePaths()
             deduplicateGames()   // auto-reparación: limpia juegos duplicados de datos antiguos
         } catch {
             bottles = []
         }
+    }
+
+    /// Migra referencias antiguas a Wine global/CrossOver sin tocar el prefijo ni los juegos.
+    /// El motor concreto seguirá resolviéndose automáticamente al lanzar según la firma del juego.
+    private func repairExternalWinePaths() {
+        var changed = false
+        for index in bottles.indices {
+            let repaired = WineEngineLocator.repairedStoredWinePath(bottles[index].winePath)
+            guard repaired != bottles[index].winePath else { continue }
+            bottles[index].winePath = repaired
+            changed = true
+        }
+        if changed { save() }
     }
 
     /// Elimina juegos DUPLICADOS dentro de cada bottle (misma identidad: `steamAppId`, o si no,

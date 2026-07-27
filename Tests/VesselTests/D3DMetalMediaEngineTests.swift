@@ -102,6 +102,14 @@ final class D3DMetalMediaEngineTests: XCTestCase {
             to: fiberFix.appendingPathComponent("x86_64-windows/ntdll.dll")
         )
         try write(
+            "ntdll-unix-original",
+            to: engine.appendingPathComponent("lib/wine/x86_64-unix/ntdll.so")
+        )
+        try write(
+            "ntdll-unix-fibras-gs-runtime",
+            to: fiberFix.appendingPathComponent("x86_64-unix/ntdll.so")
+        )
+        try write(
             "framework",
             to: gptk.appendingPathComponent("lib/external/D3DMetal.framework/D3DMetal")
         )
@@ -187,6 +195,12 @@ final class D3DMetalMediaEngineTests: XCTestCase {
             ), encoding: .utf8),
             "ntdll-fibras-gs"
         )
+        XCTAssertEqual(
+            try String(contentsOf: engine.appendingPathComponent(
+                "lib/wine/x86_64-unix/ntdll.so"
+            ), encoding: .utf8),
+            "ntdll-unix-fibras-gs-runtime"
+        )
 
         let identity = try D3DMetalMediaEngineProvisioner.sourceIdentity(
             baseEngine: engine,
@@ -206,6 +220,26 @@ final class D3DMetalMediaEngineTests: XCTestCase {
         try JSONEncoder().encode(manifest).write(
             to: engine.appendingPathComponent(D3DMetalMediaEngineProvisioner.manifestName),
             options: .atomic
+        )
+        XCTAssertTrue(D3DMetalMediaEngineProvisioner.isInstallationValid(
+            at: engine,
+            expectedSource: identity
+        ))
+
+        try write(
+            "ntdll-unix-alterado",
+            to: engine.appendingPathComponent("lib/wine/x86_64-unix/ntdll.so")
+        )
+        XCTAssertFalse(
+            D3DMetalMediaEngineProvisioner.isInstallationValid(
+                at: engine,
+                expectedSource: identity
+            ),
+            "El motor debe autorrepararse si el manejador Unix de fibras queda corrupto."
+        )
+        try write(
+            "ntdll-unix-fibras-gs-runtime",
+            to: engine.appendingPathComponent("lib/wine/x86_64-unix/ntdll.so")
         )
         XCTAssertTrue(D3DMetalMediaEngineProvisioner.isInstallationValid(
             at: engine,
@@ -270,9 +304,63 @@ final class D3DMetalMediaEngineTests: XCTestCase {
         XCTAssertTrue(environment["DYLD_FALLBACK_LIBRARY_PATH", default: ""].contains(
             "wine-d3dmetal-media/lib64/apple_gptk/external"
         ))
+        let libraryDirectories = environment["DYLD_FALLBACK_LIBRARY_PATH", default: ""]
+            .split(separator: ":")
+            .map(String.init)
+        let runtimeLibrary = libraryDirectories.firstIndex(where: {
+            $0.contains("gstreamer-1.28.2/GStreamer.framework/Versions/1.0/lib")
+        })
+        let engineLibrary = libraryDirectories.firstIndex(where: {
+            $0.hasSuffix("wine-d3dmetal-media/lib")
+        })
+        XCTAssertNotNil(runtimeLibrary)
+        XCTAssertNotNil(engineLibrary)
+        if let runtimeLibrary, let engineLibrary {
+            XCTAssertLessThan(
+                runtimeLibrary,
+                engineLibrary,
+                "GStreamer debe proporcionar la única MoltenVK antes que el lib del motor."
+            )
+        }
         if #available(macOS 15, *) {
             XCTAssertEqual(environment["ROSETTA_ADVERTISE_AVX"], "1")
         }
+    }
+
+    func testGraphicsOnlyEnvironmentDoesNotInjectManagedMediaRuntime() throws {
+        let engines = temporaryDirectory(named: "graphics-only-environment")
+        defer { try? fileManager.removeItem(at: engines) }
+        let wine = engines.appendingPathComponent(
+            "\(WineEngineLocator.d3dmetalMediaEngineName)/bin/wine"
+        )
+        try writeExecutable("#!/bin/sh\nexit 0\n", to: wine)
+
+        let environment = D3DMetalMediaEngineProvisioner.mediaEnvironment(
+            winePath: wine.path,
+            prefix: "/tmp/Vessel/GraphicsOnlyPrefix",
+            enginesDirectory: engines.path,
+            includeManagedMedia: false
+        )
+
+        XCTAssertNil(environment["GST_PLUGIN_SYSTEM_PATH"])
+        XCTAssertNil(environment["GST_PLUGIN_PATH"])
+        XCTAssertNil(environment["GST_PLUGIN_SCANNER"])
+        XCTAssertNil(environment["GST_REGISTRY"])
+        XCTAssertNil(environment["GIO_EXTRA_MODULES"])
+        XCTAssertTrue(environment["WINEDLLOVERRIDES", default: ""].contains("winegstreamer=d"))
+        XCTAssertTrue(environment["WINEDLLOVERRIDES", default: ""].contains("mfplat=d"))
+        XCTAssertFalse(environment["DYLD_FALLBACK_LIBRARY_PATH", default: ""].contains(
+            "gstreamer-1.28.2"
+        ))
+        XCTAssertTrue(environment["DYLD_FALLBACK_LIBRARY_PATH", default: ""].contains(
+            "wine-d3dmetal-media/lib64/apple_gptk/external"
+        ))
+        XCTAssertTrue(environment["DYLD_FALLBACK_LIBRARY_PATH", default: ""].contains(
+            "wine-d3dmetal-media/lib64"
+        ))
+        XCTAssertTrue(environment["DYLD_FALLBACK_LIBRARY_PATH", default: ""].contains(
+            "wine-d3dmetal-media/lib"
+        ))
     }
 
     func testMediaEngineLocatorDoesNotBroadenOtherEngineRoles() throws {

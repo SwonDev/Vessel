@@ -24,6 +24,11 @@ Vessel-*.zip
 *.tar.gz
 *.tar.xz
 
+# Copias portátiles generadas al archivar el proyecto. Se guardan junto a la
+# carpeta para el disco externo, pero no se versionan dentro de su propio Git.
+Backups/*.bundle
+Backups/*.sha256
+
 # Claves privadas / secretos (la privada de Sparkle vive en el llavero, nunca en el repo)
 *.p12
 *.pem

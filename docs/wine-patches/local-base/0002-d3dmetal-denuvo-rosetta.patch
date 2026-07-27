@@ -1,0 +1,771 @@
+From 9211fbd7f5319bdce57a52a6b13bb8dcb40b74ba Mon Sep 17 00:00:00 2001
+From: Swon <aperdel.esi@gmail.com>
+Date: Sat, 4 Jul 2026 17:31:42 +0100
+Subject: [PATCH] feat(vessel): motor D3DMetal + Denuvo funcional en Wine 11.10
+ (Rosetta)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Motor wine-d3dmetal (unificado WineHQ 11.10 + D3DMetal de Apple) que corre
+D3D12 + Steam CEF + DXMT, y ARRANCA/JUEGA hasta el menú FFT: The Ivalice
+Chronicles (Denuvo + CodeFusion) en Apple Silicon libre, sin CrossOver.
+
+Fixes de Denuvo (macOS/Rosetta):
+- PEB en %gs:0x60 (init_syscall_frame): Denuvo lee el PEB por %gs:0x60 directo.
+- localtime()->localtime_r() (system.c): el slot 12 es localtime; con el PEB
+  ahi, localtime() corrompia el PEB.
+- Limites de pila en RtlVirtualUnwind2 (unwind.c): evita el stack-overflow del
+  desenrollador con la pila-VM de Denuvo (como CrossOver; Wine 11.10 lo ignoraba).
+- set_thread_context finge exito de debug registers bajo Rosetta.
+
+Base D3DMetal/gsbase: modelo CrossOver (%gs:0x30 indireccion), export
+__wine_unix_call, tabla macdrv_functions en winemac.drv/window.c, helper
+macdrv_dxmt_get_client_view.
+
+Pendiente: deadlock de DirectStorage (GDeflate GPU) en la carga in-game.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ dlls/ntdll/loader.c             |  18 +++
+ dlls/ntdll/ntdll.spec           |   1 +
+ dlls/ntdll/signal_x86_64.c      |   9 +-
+ dlls/ntdll/unix/signal_x86_64.c |  90 ++++++++------
+ dlls/ntdll/unix/system.c        |  18 +--
+ dlls/ntdll/unwind.c             |  47 +++++++-
+ dlls/winemac.drv/cocoa_window.m |   1 +
+ dlls/winemac.drv/macdrv.h       |   1 +
+ dlls/winemac.drv/vulkan.c       |  11 +-
+ dlls/winemac.drv/window.c       | 201 ++++++++++++++++++++++++++++++--
+ 10 files changed, 337 insertions(+), 60 deletions(-)
+
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index b19bf78a..6c317b83 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -72,6 +72,16 @@ static void __fastcall default_thread_init_func( DWORD unknown, LPTHREAD_START_R
+ void (FASTCALL *pBaseThreadInitThunk)(DWORD,LPTHREAD_START_ROUTINE,void *) = default_thread_init_func;
+ NTSTATUS (WINAPI *__wine_unix_call_dispatcher)( unixlib_handle_t, unsigned int, void * ) = NULL;
+ 
++/* Compat: el export directo __wine_unix_call se eliminó tras Wine 9.0 (ahora es un
++ * `static inline` en wine/unixlib.h), pero los builtins D3DMetal de Apple (GPTK,
++ * compilados contra Wine 9.0) lo importan por nombre de ntdll. Restauramos el
++ * export como envoltorio del dispatcher (aliaseado a __wine_unix_call en el .spec)
++ * para poder cargar d3d12/dxgi de D3DMetal en este motor (Wine 11.10). */
++NTSTATUS WINAPI wine_export_unix_call( unixlib_handle_t handle, unsigned int code, void *args )
++{
++    return __wine_unix_call_dispatcher( handle, code, args );
++}
++
+ static DWORD (WINAPI *pCtrlRoutine)(void *);
+ 
+ SYSTEM_DLL_INIT_BLOCK LdrSystemDllInitBlock = { 0xf0 };
+@@ -1392,6 +1402,11 @@ static BOOL alloc_tls_slot( LDR_DATA_TABLE_ENTRY *mod )
+             if (!new) return FALSE;
+             if (old) memcpy( new, old, old_module_count * sizeof(*new) );
+             teb->ThreadLocalStoragePointer = new;
++            /* Modelo CrossOver (macOS): el %gs es la base pthread y el código PE lee el TLS por
++             * %gs:0x58 directo. Actualizamos el slot TSD del hilo destino (su gsbase está en
++             * Instrumentation[0]). En el resto de plataformas Instrumentation[0]=0 → no-op. */
++            if (teb->Instrumentation[0])
++                *(void **)((char *)teb->Instrumentation[0] + 0x58) = new;
+             TRACE( "thread %04lx tls block %p -> %p\n", HandleToULong(teb->ClientId.UniqueThread), old, new );
+             /* FIXME: can't free old block here, should be freed at thread exit */
+         }
+@@ -1637,6 +1652,9 @@ static NTSTATUS alloc_thread_tls(void)
+         TRACE( "slot %u: %u/%lu bytes at %p\n", i, size, dir->SizeOfZeroFill, pointers[i] );
+     }
+     NtCurrentTeb()->ThreadLocalStoragePointer = pointers;
++    /* Modelo CrossOver (macOS): sincronizar el slot %gs:0x58 del hilo actual. */
++    if (NtCurrentTeb()->Instrumentation[0])
++        __asm__ volatile( "movq %0,%%gs:0x58" :: "r" (pointers) );
+     return STATUS_SUCCESS;
+ }
+ 
+diff --git a/dlls/ntdll/ntdll.spec b/dlls/ntdll/ntdll.spec
+index 0b6d9b2c..1013b3c6 100644
+--- a/dlls/ntdll/ntdll.spec
++++ b/dlls/ntdll/ntdll.spec
+@@ -1762,6 +1762,7 @@
+ @ cdecl wine_server_handle_to_fd(long long ptr ptr)
+ 
+ # Unix interface
++@ stdcall __wine_unix_call(int64 long ptr) wine_export_unix_call
+ @ stdcall __wine_unix_spawnvp(long ptr)
+ @ stdcall __wine_ctrl_routine(ptr)
+ @ extern -private __wine_syscall_dispatcher
+diff --git a/dlls/ntdll/signal_x86_64.c b/dlls/ntdll/signal_x86_64.c
+index 29fadc72..7b33bc18 100644
+--- a/dlls/ntdll/signal_x86_64.c
++++ b/dlls/ntdll/signal_x86_64.c
+@@ -429,7 +429,8 @@ __ASM_GLOBAL_FUNC( KiUserCallbackDispatcher,
+                    "movl 0x28(%rsp),%edx\n\t"  /* len */
+                    "movl 0x2c(%rsp),%r8d\n\t"  /* id */
+ #ifdef __WINE_PE_BUILD
+-                   "movq %gs:0x60,%rax\n\t"     /* peb */
++                   "movq %gs:0x30,%rax\n\t"     /* NtCurrentTeb() (slot 6 reservado Win64, estable) */
++                   "movq 0x60(%rax),%rax\n\t"   /* peb (indirección: %gs:0x60/slot 12 lo pisa localtime) */
+                    "movq 0x58(%rax),%rax\n\t"   /* peb->KernelCallbackTable */
+                    "call *(%rax,%r8,8)\n\t"     /* KernelCallbackTable[id] */
+                    ".seh_handler " __ASM_NAME("user_callback_handler") ", @except\n\t"
+@@ -838,7 +839,8 @@ __ASM_GLOBAL_FUNC( RtlRaiseException,
+                    "movq %rax,0xf8(%rdx)\n\t"   /* context->Rip */
+                    "movq %rax,0x10(%rcx)\n\t"   /* rec->ExceptionAddress */
+                    "movl $1,%r8d\n\t"
+-                   "movq %gs:0x60,%rax\n\t"     /* Peb */
++                   "movq %gs:0x30,%rax\n\t"     /* NtCurrentTeb() (slot 6 reservado, estable) */
++                   "movq 0x60(%rax),%rax\n\t"   /* Peb (indirección; %gs:0x60/slot 12 = localtime) */
+                    "cmpb $0,0x02(%rax)\n\t"     /* BeingDebugged */
+                    "jne 1f\n\t"
+                    "call " __ASM_NAME("dispatch_exception") "\n"
+@@ -1082,7 +1084,8 @@ __ASM_GLOBAL_FUNC( DbgUiRemoteBreakin,
+                    ".seh_stackalloc 0x28\n\t"
+                    ".seh_endprologue\n\t"
+                    ".seh_handler DbgUiRemoteBreakin_handler, @except\n\t"
+-                   "mov %gs:0x60,%rax\n\t"
++                   "mov %gs:0x30,%rax\n\t"      /* NtCurrentTeb() (slot 6 estable) */
++                   "mov 0x60(%rax),%rax\n\t"    /* Peb (indirección) */
+                    "cmpb $0,2(%rax)\n\t"
+                    "je 1f\n\t"
+                    "call " __ASM_NAME("DbgBreakPoint") "\n"
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index a42be942..e457ff24 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -793,7 +793,9 @@ static inline struct thread_data *init_handler( void *sigcontext )
+     amd64_data->syscall_dispatch = 0; /* SYSCALL_DISPATCH_FILTER_ALLOW */
+     if (fs32_sel) arch_prctl( ARCH_SET_FS, amd64_data->pthread_teb );
+ #elif defined __APPLE__
+-    _thread_set_tsd_base( (uint64_t)amd64_data->pthread_teb );
++    /* Modelo CrossOver: el GSBASE ya es la base pthread (nunca lo movemos), así que el
++     * handler NO lo toca. Antes, poner el gsbase con un valor derivado de rsp&~mask
++     * corrompía los hilos nativos de D3DMetal. */
+ 
+     /* When in a syscall, CS will be the kernel's selector (0x07, SYSCALL_CS in xnu source)
+      * instead of the user selector (cs64_sel: 0x2b, USER64_CS).
+@@ -824,9 +826,11 @@ static inline void leave_handler( struct thread_data *data, ucontext_t *sigconte
+         if (fs32_sel) __asm__ volatile( "movw %0,%%fs" :: "r" (fs32_sel) );
+     }
+ #elif defined __APPLE__
+-    if (!is_inside_signal_stack( data, (void *)RSP_sig(sigcontext )) &&
+-        !is_inside_syscall( data, RSP_sig(sigcontext )))
+-        _thread_set_tsd_base( (uint64_t)data->teb );
++    /* Modelo CrossOver: el GSBASE es siempre la base pthread; NO lo reponemos a TEB al salir
++     * del handler (el código PE alcanza el TEB por %gs:0x30). Reponerlo con data->teb
++     * (derivado de rsp&~mask) corrompía el gsbase de los hilos nativos de D3DMetal.
++     * El código PE lee Peb/TLS por indirección desde %gs:0x30 (slot 6 reservado), así que
++     * NO tocamos %gs:0x58/0x60 (slot 12 = localtime de la libc; escribirlo lo corrompe). */
+ #endif
+     if (is_16bit( sigcontext )) return;
+ #ifdef DS_sig
+@@ -1043,8 +1047,23 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
+     {
+         ret = set_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_AMD64 );
+ #ifdef __APPLE__
++        /* Bajo Rosetta los debug registers de HW (DR0-DR7) no se pueden fijar y el server call
++         * falla con STATUS_UNSUCCESSFUL. Los anti-tamper como Denuvo los fijan y COMPRUEBAN el
++         * resultado: si ven el error, deducen que el entorno no es Windows nativo y toman su ruta de
++         * faults deliberados (que en nuestro Wine descarrila y cuelga/crashea el juego). Igual que
++         * hace CrossOver ("faking success"), FINGIMOS ÉXITO y guardamos los valores en el thread_data
++         * para que NtGetContextThread los devuelva coherentes (Denuvo también los relee). */
+         if ((flags & CONTEXT_DEBUG_REGISTERS) && (ret == STATUS_UNSUCCESSFUL))
+-            WARN_(seh)( "Setting debug registers is not supported under Rosetta\n" );
++        {
++            WARN_(seh)( "Setting debug registers is not supported under Rosetta, faking success\n" );
++            amd64_data->dr0 = context->Dr0;
++            amd64_data->dr1 = context->Dr1;
++            amd64_data->dr2 = context->Dr2;
++            amd64_data->dr3 = context->Dr3;
++            amd64_data->dr6 = context->Dr6;
++            amd64_data->dr7 = context->Dr7;
++            return STATUS_SUCCESS;
++        }
+ #endif
+         if (ret || !self) return ret;
+         if (flags & CONTEXT_DEBUG_REGISTERS)
+@@ -1684,12 +1703,7 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
+                    "movw %ax,%fs\n"
+                    "1:\n\t"
+ #elif defined __APPLE__
+-                   "movq %rcx,%r10\n\t"
+-                   "movq %r13,%rdi\n\t"
+-                   "xorl %esi,%esi\n\t"
+-                   "movl $0x3000003,%eax\n\t"  /* _thread_set_tsd_base */
+-                   "syscall\n\t"
+-                   "movq %r10,%rcx\n\t"
++                   /* Modelo CrossOver: sin switch de gsbase; el TEB ya está en %r13. */
+ #endif
+                    "movq 0x330(%r13),%r10\n\t" /* amd64_thread_data()->instrumentation_callback */
+                    "movq (%r10),%r10\n\t"
+@@ -2873,7 +2887,24 @@ void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, TEB *teb )
+ #elif defined(__NetBSD__)
+     sysarch( X86_64_SET_GSBASE, &teb );
+ #elif defined (__APPLE__)
++    /* Modelo CrossOver: NO movemos el GSBASE (queda = base pthread nativa que ya trae el
++     * hilo). El código PE alcanza el TEB por indirección %gs:0x30, así que guardamos en
++     * slots de la TSD de pthread (a los offsets naturales del TEB) los punteros que el
++     * código traducido lee por %gs directo. Así los hilos NATIVOS de D3DMetal conservan su
++     * %gs válido bajo Rosetta y no se corrompen. */
+     thread_data->pthread_teb = mac_thread_gsbase();
++    teb->Instrumentation[0] = thread_data->pthread_teb;   /* gsbase del hilo (para actualizar su TSD desde el loader) */
++    /* Guardamos Self (slot 6) y TLS (slot 11): Apple los reserva para Win64, son estables y el
++     * código PE los lee por %gs:0x30/0x58. NO guardamos el Peb en %gs:0x60: ese slot es
++     * __PTK_LIBC_LOCALTIME_KEY (lo usa localtime() de la libc), y escribir el puntero PEB ahí
++     * hace que localtime() escriba su resultado DENTRO del PEB → lo corrompe. El Peb se lee
++     * siempre por indirección desde %gs:0x30 (ver dlls/ntdll/signal_x86_64.c). */
++    __asm__ volatile( "movq %0,%%gs:0x30" :: "r" (teb->Tib.Self) );
++    __asm__ volatile( "movq %0,%%gs:0x58" :: "r" (teb->ThreadLocalStoragePointer) );
++    /* VESSEL: TEST — escribir el PEB en %gs:0x60. Código Windows de terceros (anti-tamper como
++     * Denuvo) lee el PEB por %gs:0x60 DIRECTO (en Windows gsbase=TEB → %gs:0x60=TEB.Peb). Sin esto
++     * obtienen el slot localtime (basura) y derivan. Riesgo: localtime() usa ese slot; a evaluar. */
++    __asm__ volatile( "movq %0,%%gs:0x60" :: "r" (teb->Peb) );
+ #else
+ # error Please define setting %gs for your architecture
+ #endif
+@@ -2982,7 +3013,8 @@ __ASM_GLOBAL_FUNC( signal_start_thread,
+  */
+ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+                    __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_gs_load") ":\n\t"
+-                   "movq %gs:0x378,%rcx\n\t"       /* thread_data->syscall_frame */
++                   "movq %gs:0x30,%rcx\n\t"        /* TEB (modelo CrossOver: %gs=base pthread) */
++                   "movq 0x378(%rcx),%rcx\n\t"     /* thread_data->syscall_frame */
+                    "popq 0x70(%rcx)\n\t"           /* frame->rip */
+                    __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
+                    __ASM_CFI_REG_IS_AT2(rip, rcx, 0xf0,0x00)
+@@ -3085,10 +3117,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+                    "leaq -0x98(%rbp),%rcx\n"
+                    "2:\n\t"
+ #elif defined __APPLE__
+-                   "movq 0x320(%r13),%rdi\n\t"     /* amd64_thread_data()->pthread_teb */
+-                   "xorl %esi,%esi\n\t"
+-                   "movl $0x3000003,%eax\n\t"      /* _thread_set_tsd_base */
+-                   "syscall\n\t"
++                   /* Modelo CrossOver: sin switch de gsbase (ya es la base pthread). */
+                    "leaq -0x98(%rbp),%rcx\n"
+ #endif
+                    "ldmxcsr 0x33c(%r13)\n\t"       /* amd64_thread_data()->mxcsr */
+@@ -3138,14 +3167,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+                    "movw %dx,%fs\n"
+                    "1:\n\t"
+ #elif defined __APPLE__
+-                   "movq %rax,%r8\n\t"
+-                   "movq %rcx,%rdx\n\t"
+-                   "movq %r13,%rdi\n\t"            /* teb */
+-                   "xorl %esi,%esi\n\t"
+-                   "movl $0x3000003,%eax\n\t"      /* _thread_set_tsd_base */
+-                   "syscall\n\t"
+-                   "movq %rdx,%rcx\n\t"
+-                   "movq %r8,%rax\n\t"
++                   /* Modelo CrossOver: sin switch de gsbase a la salida (queda base pthread). */
+ #endif
+                    "movl 0xb4(%rcx),%edx\n\t"      /* frame->restore_flags */
+                    "testl $0x48,%edx\n\t"          /* CONTEXT_FLOATING_POINT | CONTEXT_XSTATE */
+@@ -3293,7 +3315,8 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher_return,
+                    "jmp " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") )
+ 
+ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher_instrumentation,
+-                   "movq %gs:0x378,%rcx\n\t"       /* thread_data->syscall_frame */
++                   "movq %gs:0x30,%rcx\n\t"        /* TEB (modelo CrossOver) */
++                   "movq 0x378(%rcx),%rcx\n\t"     /* thread_data->syscall_frame */
+                    "popq 0x70(%rcx)\n\t"           /* frame->rip */
+                    __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
+                    __ASM_CFI_REG_IS_AT2(rip, rcx, 0xf0,0x00)
+@@ -3311,7 +3334,8 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher_instrumentation,
+ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
+                    "movq %rcx,%r10\n\t"
+                    __ASM_LOCAL_LABEL("__wine_unix_call_dispatcher_gs_load") ":\n\t"
+-                   "movq %gs:0x378,%rcx\n\t"       /* thread_data->syscall_frame */
++                   "movq %gs:0x30,%rcx\n\t"        /* TEB (modelo CrossOver) */
++                   "movq 0x378(%rcx),%rcx\n\t"     /* thread_data->syscall_frame */
+                    "popq 0x70(%rcx)\n\t"           /* frame->rip */
+                    __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
+                    __ASM_CFI_REG_IS_AT2(rip, rcx, 0xf0,0x00)
+@@ -3375,10 +3399,7 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
+                    "syscall\n\t"
+                    "2:\n\t"
+ #elif defined __APPLE__
+-                   "movq 0x320(%r13),%rdi\n\t"     /* amd64_thread_data()->pthread_teb */
+-                   "xorl %esi,%esi\n\t"
+-                   "movl $0x3000003,%eax\n\t"      /* _thread_set_tsd_base */
+-                   "syscall\n\t"
++                   /* Modelo CrossOver: sin switch de gsbase (ya es la base pthread). */
+ #endif
+                    "ldmxcsr 0x33c(%r13)\n\t"       /* amd64_thread_data()->mxcsr */
+                    "movq %r8,%rdi\n\t"             /* args */
+@@ -3408,14 +3429,7 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
+                    "movw %dx,%fs\n"
+                    "1:\n\t"
+ #elif defined __APPLE__
+-                   "movq %rax,%rdx\n\t"
+-                   "movq %rcx,%r14\n\t"
+-                   "movq %r13,%rdi\n\t"            /* teb */
+-                   "xorl %esi,%esi\n\t"
+-                   "movl $0x3000003,%eax\n\t"      /* _thread_set_tsd_base */
+-                   "syscall\n\t"
+-                   "movq %r14,%rcx\n\t"
+-                   "movq %rdx,%rax\n\t"
++                   /* Modelo CrossOver: sin switch de gsbase a la salida (queda base pthread). */
+                    "movq 0x60(%rcx),%r14\n\t"
+ #endif
+                    "movq 0x58(%rcx),%r13\n\t"
+diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
+index bcfb3306..6e2547d5 100644
+--- a/dlls/ntdll/unix/system.c
++++ b/dlls/ntdll/unix/system.c
+@@ -2694,12 +2694,12 @@ static int weekday_to_mday(int year, int day, int mon, int day_of_week)
+     wday = 1; /* 1 - 1st, ...., 5 - last */
+     while (wday < day)
+     {
+-        struct tm *tm;
++        struct tm *tm, ltbuf;
+ 
+         date.tm_mday += 7;
+         date.tm_isdst = -1;
+         tmp = mktime(&date);
+-        tm = localtime(&tmp);
++        tm = localtime_r(&tmp, &ltbuf);   /* VESSEL: _r no usa el slot 12 (%gs:0x60=PEB, ver signal_x86_64.c) */
+         if (tm->tm_mon != mon)
+             break;
+         mday = tm->tm_mday;
+@@ -2879,18 +2879,18 @@ static void find_reg_tz_info(RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi, int year)
+ 
+ static time_t find_dst_change(time_t start, time_t end, int *is_dst)
+ {
+-    struct tm *tm;
++    struct tm *tm, ltbuf;
+     ULONGLONG min = (sizeof(time_t) == sizeof(int)) ? (ULONG)start : start;
+     ULONGLONG max = (sizeof(time_t) == sizeof(int)) ? (ULONG)end : end;
+     time_t pos;
+ 
+-    tm = localtime(&start);
++    tm = localtime_r(&start, &ltbuf);   /* VESSEL: _r no toca el slot 12 (%gs:0x60=PEB) */
+     *is_dst = !tm->tm_isdst;
+     TRACE("starting date isdst %d, %s", !*is_dst, ctime(&start));
+ 
+     for (pos = min; pos <= max; pos += 30 * 24 * 3600)
+     {
+-        tm = localtime(&pos);
++        tm = localtime_r(&pos, &ltbuf);
+         if (tm->tm_isdst == *is_dst)
+         {
+             max = pos;
+@@ -2901,7 +2901,7 @@ static time_t find_dst_change(time_t start, time_t end, int *is_dst)
+     while (min <= max)
+     {
+         pos = (min + max) / 2;
+-        tm = localtime(&pos);
++        tm = localtime_r(&pos, &ltbuf);
+ 
+         if (tm->tm_isdst != *is_dst)
+             min = pos + 1;
+@@ -3000,7 +3000,7 @@ static void get_timezone_info( RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi )
+     static RTL_DYNAMIC_TIME_ZONE_INFORMATION cached_tzi;
+     static int current_year = -1, current_bias = 65535;
+     RTL_DYNAMIC_TIME_ZONE_INFORMATION reg_tzi;
+-    struct tm *tm, tm1, tm2;
++    struct tm *tm, tm1, tm2, ltbuf, gmbuf;
+     time_t year_start, year_end, tmp, dlt = 0, std = 0;
+     int is_dst, bias;
+     BOOL inverted_dst;
+@@ -3008,10 +3008,10 @@ static void get_timezone_info( RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi )
+     mutex_lock( &timezone_mutex );
+ 
+     year_start = time(NULL);
+-    tm = gmtime(&year_start);
++    tm = gmtime_r(&year_start, &gmbuf);   /* VESSEL: _r evita cualquier slot TSD reservado */
+     bias = (LONG)(mktime(tm) - year_start) / 60;
+ 
+-    tm = localtime(&year_start);
++    tm = localtime_r(&year_start, &ltbuf);   /* VESSEL: _r no toca el slot 12 (%gs:0x60=PEB) */
+     if (current_year == tm->tm_year && current_bias == bias)
+     {
+         *tzi = cached_tzi;
+diff --git a/dlls/ntdll/unwind.c b/dlls/ntdll/unwind.c
+index 5b79e48a..39502830 100644
+--- a/dlls/ntdll/unwind.c
++++ b/dlls/ntdll/unwind.c
+@@ -2050,6 +2050,24 @@ static RUNTIME_FUNCTION *find_function_info( ULONG_PTR pc, ULONG_PTR base,
+ }
+ 
+ 
++/* Validación de límites de pila durante el desenrollado (lo que RtlVirtualUnwind2 hace en Windows
++ * vía sus parámetros LowLimit/HighLimit → STATUS_BAD_STACK; ver MSDN y el bugcheck 0x1AB
++ * UNWIND_ON_INVALID_STACK). Wine tenía esos límites como FIXME e IGNORABA la validación, así que un
++ * frame SIN unwind info (leaf) con un `Rsp` basura hacía un deref salvaje. Los anti-tamper tipo
++ * Denuvo provocan faults DELIBERADOS en código descifrado sin `.pdata` (leaf) y, bajo x86/Rosetta,
++ * el `Rsp` que ve el desenrollador puede quedar incoherente al procesar un PUSH_MACHFRAME "falso"
++ * (un valor de pila que coincide con una dirección de código de ntdll) → deref de basura →
++ * excepción anidada → recursión → STACK OVERFLOW. Con la validación, el unwind falla LIMPIO y la
++ * excepción llega no-manejada al handler de último recurso del juego, exactamente como en
++ * Windows/Proton (x86 nativo, donde el `Rsp` es coherente y este caso no se dispara). */
++static inline BOOL unwind_rsp_valid( ULONG_PTR ptr, ULONG_PTR low, ULONG_PTR high )
++{
++    if (!low || !high) return TRUE;                 /* límites desconocidos → no validar (comportamiento previo) */
++    if (ptr & (sizeof(ULONG64) - 1)) return FALSE;  /* debe estar alineado a 8 */
++    return ptr >= low && ptr <= high - sizeof(ULONG64);
++}
++
++
+ /**********************************************************************
+  *              RtlVirtualUnwind2   (NTDLL.@)
+  */
+@@ -2064,6 +2082,7 @@ NTSTATUS WINAPI RtlVirtualUnwind2( ULONG type, ULONG_PTR base, ULONG_PTR pc,
+     ULONG64 frame, off;
+     struct UNWIND_INFO *info;
+     unsigned int i, prolog_offset;
++    ULONG_PTR stack_low = 0, stack_high = 0;
+     BOOL mach_frame = FALSE, chained = FALSE;
+ 
+ #ifdef __arm64ec__
+@@ -2084,12 +2103,23 @@ NTSTATUS WINAPI RtlVirtualUnwind2( ULONG type, ULONG_PTR base, ULONG_PTR pc,
+ #endif
+ 
+     TRACE( "type %lx base %I64x rip %I64x rva %I64x rsp %I64x\n", type, base, pc, pc - base, context->Rsp );
+-    if (limit_low || limit_high) FIXME( "limits not supported\n" );
++
++    /* Límites de pila para validar cada deref de Rsp durante el unwind (antes ignorados: FIXME).
++     * Se usan los pasados por el llamante si los da; si no, los del hilo actual (NtCurrentTeb),
++     * que es el caso del despacho de excepciones. */
++    if (limit_low && limit_high) { stack_low = *limit_low; stack_high = *limit_high; }
++    else
++    {
++        NT_TIB *tib = &NtCurrentTeb()->Tib;
++        stack_low  = (ULONG_PTR)tib->StackLimit;
++        stack_high = (ULONG_PTR)tib->StackBase;
++    }
+ 
+     frame = *frame_ret = context->Rsp;
+ 
+     if (!function)  /* leaf function */
+     {
++        if (!unwind_rsp_valid( context->Rsp, stack_low, stack_high )) return STATUS_BAD_STACK;
+         context->Rip = *(ULONG64 *)context->Rsp;
+         context->Rsp += sizeof(ULONG64);
+         if (type) *data = NULL;
+@@ -2140,6 +2170,7 @@ NTSTATUS WINAPI RtlVirtualUnwind2( ULONG type, ULONG_PTR base, ULONG_PTR pc,
+             switch (info->opcodes[i].code)
+             {
+             case UWOP_PUSH_NONVOL:  /* pushq %reg */
++                if (!unwind_rsp_valid( context->Rsp, stack_low, stack_high )) return STATUS_BAD_STACK;
+                 set_int_reg( context, ctx_ptr, info->opcodes[i].info, (ULONG64 *)context->Rsp );
+                 context->Rsp += sizeof(ULONG64);
+                 break;
+@@ -2155,18 +2186,24 @@ NTSTATUS WINAPI RtlVirtualUnwind2( ULONG type, ULONG_PTR base, ULONG_PTR pc,
+                 break;
+             case UWOP_SAVE_NONVOL:  /* movq %reg,n(%rsp) */
+                 off = frame + *(USHORT *)&info->opcodes[i+1] * 8;
++                if (!unwind_rsp_valid( off, stack_low, stack_high )) return STATUS_BAD_STACK;
+                 set_int_reg( context, ctx_ptr, info->opcodes[i].info, (ULONG64 *)off );
+                 break;
+             case UWOP_SAVE_NONVOL_FAR:  /* movq %reg,nn(%rsp) */
+                 off = frame + *(DWORD *)&info->opcodes[i+1];
++                if (!unwind_rsp_valid( off, stack_low, stack_high )) return STATUS_BAD_STACK;
+                 set_int_reg( context, ctx_ptr, info->opcodes[i].info, (ULONG64 *)off );
+                 break;
+             case UWOP_SAVE_XMM128:  /* movaps %xmmreg,n(%rsp) */
+                 off = frame + *(USHORT *)&info->opcodes[i+1] * 16;
++                if (!unwind_rsp_valid( off, stack_low, stack_high ) ||
++                    !unwind_rsp_valid( off + 8, stack_low, stack_high )) return STATUS_BAD_STACK;
+                 set_float_reg( context, ctx_ptr, info->opcodes[i].info, (M128A *)off );
+                 break;
+             case UWOP_SAVE_XMM128_FAR:  /* movaps %xmmreg,nn(%rsp) */
+                 off = frame + *(DWORD *)&info->opcodes[i+1];
++                if (!unwind_rsp_valid( off, stack_low, stack_high ) ||
++                    !unwind_rsp_valid( off + 8, stack_low, stack_high )) return STATUS_BAD_STACK;
+                 set_float_reg( context, ctx_ptr, info->opcodes[i].info, (M128A *)off );
+                 break;
+             case UWOP_PUSH_MACHFRAME:
+@@ -2184,6 +2221,13 @@ NTSTATUS WINAPI RtlVirtualUnwind2( ULONG type, ULONG_PTR base, ULONG_PTR pc,
+                 if (info->opcodes[i].info)
+                     context->Rsp += 0x8;
+ 
++                /* El machine frame es [rip,cs,eflags,rsp,ss] (5 qwords). Validar Rsp y Rsp+24
++                 * antes de leer: aquí es donde descarrilaba el unwind de Denuvo (un valor de pila
++                 * que coincidía con KiUserExceptionDispatcher se procesaba como PUSH_MACHFRAME y se
++                 * leía un machine frame basura → Rip/Rsp basura → deref salvaje en la iteración
++                 * siguiente → recursión → stack overflow). */
++                if (!unwind_rsp_valid( context->Rsp, stack_low, stack_high ) ||
++                    !unwind_rsp_valid( context->Rsp + 24, stack_low, stack_high )) return STATUS_BAD_STACK;
+                 context->Rip = *(ULONG64 *)context->Rsp;
+                 context->Rsp = *(ULONG64 *)(context->Rsp + 24);
+                 mach_frame = TRUE;
+@@ -2205,6 +2249,7 @@ NTSTATUS WINAPI RtlVirtualUnwind2( ULONG type, ULONG_PTR base, ULONG_PTR pc,
+     if (!mach_frame)
+     {
+         /* now pop return address */
++        if (!unwind_rsp_valid( context->Rsp, stack_low, stack_high )) return STATUS_BAD_STACK;
+         context->Rip = *(ULONG64 *)context->Rsp;
+         context->Rsp += sizeof(ULONG64);
+     }
+diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
+index 4c1ac935..c9c54a36 100644
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -692,6 +692,7 @@ - (WineMetalView*) newMetalViewWithDevice:(id<MTLDevice>)device
+         [view setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+         [self setAutoresizesSubviews:YES];
+         [self addSubview:view positioned:NSWindowBelow relativeTo:nil];
++// (instrumentación retirada)
+         _metalView = view;
+ 
+         [(WineWindow*)self.window windowDidDrawContent];
+diff --git a/dlls/winemac.drv/macdrv.h b/dlls/winemac.drv/macdrv.h
+index 814db010..ed39420b 100644
+--- a/dlls/winemac.drv/macdrv.h
++++ b/dlls/winemac.drv/macdrv.h
+@@ -205,6 +205,7 @@ extern BOOL macdrv_SystemParametersInfo(UINT action, UINT int_param, void *ptr_p
+ }
+ 
+ extern __attribute__((visibility("default"))) struct macdrv_client_surface *macdrv_client_surface_create(HWND hwnd);
++extern macdrv_view macdrv_dxmt_get_client_view(HWND hwnd);
+ 
+ extern struct macdrv_win_data *get_win_data(HWND hwnd);
+ extern void release_win_data(struct macdrv_win_data *data);
+diff --git a/dlls/winemac.drv/vulkan.c b/dlls/winemac.drv/vulkan.c
+index b9b042bd..d4eff261 100644
+--- a/dlls/winemac.drv/vulkan.c
++++ b/dlls/winemac.drv/vulkan.c
+@@ -52,7 +52,16 @@ static VkResult macdrv_vulkan_surface_create(HWND hwnd, const struct vulkan_inst
+ 
+     if (!(surface = macdrv_client_surface_create(hwnd))) return VK_ERROR_OUT_OF_HOST_MEMORY;
+     if (!(surface->metal_device = macdrv_create_metal_device())) goto err;
+-    if (!(surface->metal_view = macdrv_view_create_metal_view(surface->cocoa_view, surface->metal_device))) goto err;
++    /* VESSEL: crear el CAMetalLayer sobre el client_view REAL de la ventana (visible y
++     * enganchado en la jerarqu\u00eda), EXACTAMENTE como los juegos v\u00eda
++     * macdrv_dxmt_get_client_view. La `surface->cocoa_view` reci\u00e9n creada por
++     * client_surface_create NO se compone (pantalla NEGRA con MoltenVK, verificado);
++     * el client_view real S\u00cd. Fallback a cocoa_view si el helper no resolviese. */
++    {
++        macdrv_view real_view = macdrv_dxmt_get_client_view(hwnd);
++        if (!real_view) real_view = surface->cocoa_view;
++        if (!(surface->metal_view = macdrv_view_create_metal_view(real_view, surface->metal_device))) goto err;
++    }
+ 
+     if (instance->p_vkCreateMetalSurfaceEXT)
+     {
+diff --git a/dlls/winemac.drv/window.c b/dlls/winemac.drv/window.c
+index 4f560f97..cd76a7dd 100644
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -1158,14 +1158,11 @@ struct macdrv_client_surface *macdrv_client_surface_create(HWND hwnd)
+     surface->cocoa_view = macdrv_create_view(cgrect_from_rect(rect));
+     macdrv_set_view_hidden(surface->cocoa_view, TRUE);
+ 
+-    /* NO presentar aquí: el flujo NORMAL (GL/Vulkan y el CEF de Steam vía SwiftShader) crea la
+-     * surface OCULTA y la presenta el compositor de Wine cuando toca. Forzar present aquí
+-     * alteraba la jerarquía de vistas y le ROBABA el foco de teclado a la ventana (el login del
+-     * CEF renderizaba pero no aceptaba input). El present para DXMT se hace explícito en
+-     * macdrv_dxmt_get_client_view (que sí necesita la vista visible ya).
+-     * NOTA 2026-07-02: el negro del CEF tras macOS 26.5.1 NO depende de este bloque
+-     * (probado con y sin él); se mantiene quitado porque el foco de teclado del login
+-     * se validó así in-vivo. */
++    /* NO presentar aquí: hacerlo (update+present) en el flujo NORMAL de ventanas ROBA el foco
++     * de teclado a la ventana del CEF de Steam (el login renderizaba pero no aceptaba texto).
++     * Fix VERIFICADO in-vivo (el usuario logró escribir usuario/contraseña). Con el cliente por
++     * software (--single-process --disable-gpu) el contenido se pinta por GDI, sin necesitar
++     * este present. La vía DXMT de juegos presenta EXPL\u00edcitamente en macdrv_dxmt_get_client_view. */
+     return surface;
+ }
+ 
+@@ -1701,6 +1698,22 @@ void macdrv_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UINT
+         data->fullscreen = fullscreen;
+     }
+ 
++    /* DXMT/Vessel: reescalar la vista cliente (data->client_view) al área cliente ACTUAL.
++     * Esa vista aloja el CAMetalLayer de DXMT, se crea con NSViewNotSizable (macdrv_create_view)
++     * y NO crece con la ventana. Los juegos GameMaker crean su swapchain con la ventana aún
++     * diminuta (frame inicial ~113x100) y luego la agrandan a fullscreen; como la vía DXMT no
++     * pasa por el flujo normal de client_surface (que ya reescala en macdrv_client_surface_update),
++     * sin esto la vista Metal se queda pequeña y el juego renderiza en un cuadradito arriba-izq.
++     * Solo se ejecuta cuando hay client_view (Vulkan/OpenGL/DXMT); para esos es el tamaño correcto
++     * (idempotente para Vulkan/OpenGL, que ya lo reciben por su update). VERIFICADO: Neophyte
++     * (GameMaker) pasa de cuadradito a pantalla completa; Unity y el CEF de Steam intactos. */
++    if (data->client_view)
++    {
++        RECT client = data->rects.client;
++        OffsetRect(&client, -data->rects.visible.left, -data->rects.visible.top);
++        macdrv_set_view_frame(data->client_view, cgrect_from_rect(client));
++    }
++
+ done:
+     release_win_data(data);
+ }
+@@ -2221,3 +2234,175 @@ void init_win_context(void)
+     pthread_mutex_init(&win_data_mutex, &attr);
+     pthread_mutexattr_destroy(&attr);
+ }
++
++
++/**********************************************************************
++ *   Tabla macdrv_functions para D3DMetal (Apple Game Porting Toolkit)
++ *
++ * D3DMetal (libd3dshared.dylib, x86_64 bajo Rosetta) hace dlsym("macdrv_functions")
++ * sobre winemac.so y espera una tabla de 24 punteros a función (192 bytes) para crear la
++ * vista Metal de una ventana y presentar. WineHQ no la exporta; Apple/CrossOver sí. La
++ * replicamos traduciendo el macdrv_win_data de 11.10 al layout de 120 bytes que D3DMetal
++ * lee por offset. Basado en dlls/winemac.drv/d3dmetal.c de CrossOver (winecx).
++ */
++#if defined(__x86_64__)
++
++#include <dispatch/dispatch.h>
++
++extern void OnMainThread(dispatch_block_t block);
++
++struct d3dmetal_macdrv_win_data
++{
++    HWND          hwnd;                 /* +0  */
++    macdrv_window cocoa_window;         /* +8  */
++    macdrv_view   cocoa_view;           /* +16 */
++    macdrv_view   client_cocoa_view;    /* +24 */
++    RECT          window_rect;          /* +32 */
++    RECT          whole_rect;           /* +48 */
++    RECT          client_rect;          /* +64 */
++    int           pixel_format;         /* +80 */
++    COLORREF      color_key;            /* +84 */
++    HANDLE        drag_event;           /* +88 */
++    unsigned int  on_screen : 1;        /* +96 */
++    unsigned int  shaped : 1;
++    unsigned int  layered : 1;
++    unsigned int  ulw_layered : 1;
++    unsigned int  per_pixel_alpha : 1;
++    unsigned int  minimized : 1;
++    unsigned int  swap_interval : 1;
++    void         *padding[2];           /* +104: padding[0] = macdrv_win_data real */
++};
++C_ASSERT(sizeof(struct d3dmetal_macdrv_win_data) == 120);
++
++static void d3dm_init_display_devices(BOOL force) { }
++
++static struct d3dmetal_macdrv_win_data *d3dm_get_win_data(HWND hwnd)
++{
++    struct macdrv_win_data *data;
++    struct d3dmetal_macdrv_win_data *d;
++    macdrv_view client_view;
++
++    /* client_view es perezoso (NULL hasta que Wine compone); D3DMetal lo pide antes.
++     * Lo forzamos con nuestro helper (crea+presenta la client_surface, visible, no libera). */
++    client_view = macdrv_dxmt_get_client_view(hwnd);
++
++    if (!(data = get_win_data(hwnd))) return NULL;
++    if (!(d = calloc(1, sizeof(*d)))) { release_win_data(data); return NULL; }
++
++    d->hwnd              = data->hwnd;
++    d->cocoa_window      = data->cocoa_window;
++    d->cocoa_view        = client_view ? client_view : data->client_view;
++    d->client_cocoa_view = client_view ? client_view : data->client_view;
++    d->window_rect       = data->rects.window;
++    d->whole_rect        = data->rects.visible;
++    d->client_rect       = data->rects.client;
++    d->pixel_format      = data->pixel_format;
++    d->drag_event        = data->drag_event;
++    d->on_screen         = data->on_screen;
++    d->shaped            = data->shaped;
++    d->layered           = data->layered;
++    d->ulw_layered       = data->ulw_layered;
++    d->per_pixel_alpha   = data->per_pixel_alpha;
++    d->minimized         = data->minimized;
++    d->padding[0]        = data;
++    return d;
++}
++
++static void d3dm_release_win_data(struct d3dmetal_macdrv_win_data *data)
++{
++    if (!data) return;
++    if (data->padding[0]) release_win_data(data->padding[0]);
++    free(data);
++}
++
++static macdrv_window d3dm_get_cocoa_window(HWND hwnd, BOOL on_screen)
++{   return macdrv_get_cocoa_window(hwnd, on_screen); }
++static macdrv_metal_device d3dm_create_metal_device(void)
++{   return macdrv_create_metal_device(); }
++static void d3dm_release_metal_device(macdrv_metal_device d)
++{   macdrv_release_metal_device(d); }
++static macdrv_metal_view d3dm_view_create_metal_view(macdrv_view v, macdrv_metal_device d)
++{   return macdrv_view_create_metal_view(v, d); }
++static macdrv_metal_layer d3dm_view_get_metal_layer(macdrv_metal_view v)
++{   return macdrv_view_get_metal_layer(v); }
++static void d3dm_view_release_metal_view(macdrv_metal_view v)
++{   macdrv_view_release_metal_view(v); }
++static void d3dm_on_main_thread(dispatch_block_t b)
++{   OnMainThread(b); }
++
++static LONG WINAPI d3dm_RegQueryValueExA(HKEY k, LPCSTR n, LPDWORD r, LPDWORD t, BYTE *d, LPDWORD c)
++{   return ERROR_FILE_NOT_FOUND; }
++static LONG WINAPI d3dm_RegSetValueExA(HKEY k, LPCSTR n, DWORD r, DWORD t, const BYTE *d, DWORD c)
++{   return ERROR_SUCCESS; }
++static LONG WINAPI d3dm_RegOpenKeyExA(HKEY k, LPCSTR n, DWORD o, DWORD s, HKEY *res)
++{   if (res) *res = 0; return ERROR_FILE_NOT_FOUND; }
++static LONG WINAPI d3dm_RegCreateKeyExA(HKEY k, LPCSTR n, DWORD r, LPSTR cl, DWORD o, DWORD s,
++                                           void *sa, HKEY *res, LPDWORD disp)
++{   if (res) *res = 0; return ERROR_FILE_NOT_FOUND; }
++static LONG WINAPI d3dm_RegCloseKey(HKEY k)
++{   return ERROR_SUCCESS; }
++
++static BOOL WINAPI d3dm_EnumDisplayMonitors(HDC hdc, LPRECT clip, MONITORENUMPROC proc, LPARAM lp)
++{   return NtUserEnumDisplayMonitors(hdc, clip, proc, lp); }
++static BOOL WINAPI d3dm_GetMonitorInfoA(HMONITOR m, LPMONITORINFO mi)
++{   return NtUserGetMonitorInfo(m, mi); }
++static BOOL WINAPI d3dm_AdjustWindowRectEx(LPRECT r, DWORD style, BOOL menu, DWORD ex)
++{   return NtUserAdjustWindowRect(r, style, menu, ex, NtUserGetSystemDpiForProcess(NULL)); }
++static LONG_PTR WINAPI d3dm_GetWindowLongPtrW(HWND h, int off)
++{   return NtUserGetWindowLongPtrW(h, off); }
++static BOOL WINAPI d3dm_GetWindowRect(HWND h, LPRECT r)
++{   return NtUserGetWindowRect(h, r, NtUserGetWinMonitorDpi(h, MDT_DEFAULT)); }
++static BOOL WINAPI d3dm_MoveWindow(HWND h, int x, int y, int w, int ht, BOOL rp)
++{   return NtUserMoveWindow(h, x, y, w, ht, rp); }
++static BOOL WINAPI d3dm_SetWindowPos(HWND h, HWND after, int x, int y, int w, int ht, UINT f)
++{   return NtUserSetWindowPos(h, after, x, y, w, ht, f); }
++static INT WINAPI d3dm_GetSystemMetrics(INT idx)
++{   return NtUserGetSystemMetrics(idx); }
++static LONG_PTR WINAPI d3dm_SetWindowLongPtrW(HWND h, INT off, LONG_PTR val)
++{   return NtUserSetWindowLongPtr(h, off, val, FALSE); }
++
++struct macdrv_functions_t
++{
++    void                (*init_display_devices)(BOOL);
++    struct d3dmetal_macdrv_win_data* (*get_win_data)(HWND);
++    void                (*release_win_data)(struct d3dmetal_macdrv_win_data *);
++    macdrv_window       (*get_cocoa_window)(HWND, BOOL);
++    macdrv_metal_device (*create_metal_device)(void);
++    void                (*release_metal_device)(macdrv_metal_device);
++    macdrv_metal_view   (*view_create_metal_view)(macdrv_view, macdrv_metal_device);
++    macdrv_metal_layer  (*view_get_metal_layer)(macdrv_metal_view);
++    void                (*view_release_metal_view)(macdrv_metal_view);
++    void                (*on_main_thread)(dispatch_block_t);
++    LONG (WINAPI *RegQueryValueExA)(HKEY, LPCSTR, LPDWORD, LPDWORD, BYTE*, LPDWORD);
++    LONG (WINAPI *RegSetValueExA)(HKEY, LPCSTR, DWORD, DWORD, const BYTE*, DWORD);
++    LONG (WINAPI *RegOpenKeyExA)(HKEY, LPCSTR, DWORD, DWORD, HKEY*);
++    LONG (WINAPI *RegCreateKeyExA)(HKEY, LPCSTR, DWORD, LPSTR, DWORD, DWORD, void*, HKEY*, LPDWORD);
++    LONG (WINAPI *RegCloseKey)(HKEY);
++    BOOL     (WINAPI *EnumDisplayMonitors)(HDC, LPRECT, MONITORENUMPROC, LPARAM);
++    BOOL     (WINAPI *GetMonitorInfoA)(HMONITOR, LPMONITORINFO);
++    BOOL     (WINAPI *AdjustWindowRectEx)(LPRECT, DWORD, BOOL, DWORD);
++    LONG_PTR (WINAPI *GetWindowLongPtrW)(HWND, int);
++    BOOL     (WINAPI *GetWindowRect)(HWND, LPRECT);
++    BOOL     (WINAPI *MoveWindow)(HWND, int, int, int, int, BOOL);
++    BOOL     (WINAPI *SetWindowPos)(HWND, HWND, int, int, int, int, UINT);
++    INT      (WINAPI *GetSystemMetrics)(INT);
++    LONG_PTR (WINAPI *SetWindowLongPtrW)(HWND, INT, LONG_PTR);
++};
++
++/* Símbolo de datos global que D3DMetal busca con dlsym. visibility=default + used. */
++__attribute__((visibility("default"), used))
++struct macdrv_functions_t macdrv_functions =
++{
++    d3dm_init_display_devices, d3dm_get_win_data, d3dm_release_win_data,
++    d3dm_get_cocoa_window,
++    d3dm_create_metal_device, d3dm_release_metal_device,
++    d3dm_view_create_metal_view, d3dm_view_get_metal_layer, d3dm_view_release_metal_view,
++    d3dm_on_main_thread,
++    d3dm_RegQueryValueExA, d3dm_RegSetValueExA, d3dm_RegOpenKeyExA, d3dm_RegCreateKeyExA, d3dm_RegCloseKey,
++    d3dm_EnumDisplayMonitors, d3dm_GetMonitorInfoA, d3dm_AdjustWindowRectEx,
++    d3dm_GetWindowLongPtrW, d3dm_GetWindowRect, d3dm_MoveWindow, d3dm_SetWindowPos,
++    d3dm_GetSystemMetrics, d3dm_SetWindowLongPtrW,
++};
++C_ASSERT(sizeof(macdrv_functions) == 192);
++
++#endif /* __x86_64__ */
+-- 
+2.54.0
+

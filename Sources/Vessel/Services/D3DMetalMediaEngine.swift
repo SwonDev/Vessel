@@ -340,6 +340,7 @@ enum D3DMetalMediaEngineProvisioner {
         let d3dMetalWindowsSHA256: [String: String]
         let fiberKernelbaseSHA256: [String: String]
         let fiberNTDLLSHA256: String
+        let fiberUnixNTDLLSHA256: String
         let wineGStreamerUnixSHA256: String
         let wineGStreamerWindowsSHA256: String
         let gstreamerPackageSHA256: String
@@ -357,7 +358,7 @@ enum D3DMetalMediaEngineProvisioner {
         fiberFixRoot: URL
     ) throws -> SourceIdentity {
         SourceIdentity(
-            schemaVersion: 4,
+            schemaVersion: 5,
             baseWineSHA256: try ManagedGStreamerRuntime.sha256Hex(
                 of: baseEngine.appendingPathComponent("bin/wine")
             ),
@@ -389,6 +390,9 @@ enum D3DMetalMediaEngineProvisioner {
             }),
             fiberNTDLLSHA256: try ManagedGStreamerRuntime.sha256Hex(
                 of: fiberFixRoot.appendingPathComponent("x86_64-windows/ntdll.dll")
+            ),
+            fiberUnixNTDLLSHA256: try ManagedGStreamerRuntime.sha256Hex(
+                of: fiberFixRoot.appendingPathComponent("x86_64-unix/ntdll.so")
             ),
             wineGStreamerUnixSHA256: try ManagedGStreamerRuntime.sha256Hex(
                 of: gcenxEngine.appendingPathComponent("lib/wine/x86_64-unix/winegstreamer.so")
@@ -426,6 +430,9 @@ enum D3DMetalMediaEngineProvisioner {
         let installedFiberNTDLL = engine.appendingPathComponent(
             "lib/wine/x86_64-windows/ntdll.dll"
         )
+        let installedFiberUnixNTDLL = engine.appendingPathComponent(
+            "lib/wine/x86_64-unix/ntdll.so"
+        )
         guard let installedHash = try? ManagedGStreamerRuntime.sha256Hex(of: unixWineGStreamer),
               installedHash == manifest.installedWineGStreamerSHA256,
               fm.isExecutableFile(atPath: installedWine.path),
@@ -439,6 +446,8 @@ enum D3DMetalMediaEngineProvisioner {
                 == expectedSource.wineGStreamerWindowsSHA256,
               (try? ManagedGStreamerRuntime.sha256Hex(of: installedFiberNTDLL))
                 == expectedSource.fiberNTDLLSHA256,
+              (try? ManagedGStreamerRuntime.sha256Hex(of: installedFiberUnixNTDLL))
+                == expectedSource.fiberUnixNTDLLSHA256,
               fiberFixArchitectures.allSatisfy({ architecture in
                   guard let expectedHash = expectedSource.fiberKernelbaseSHA256[architecture] else {
                       return false
@@ -499,7 +508,7 @@ enum D3DMetalMediaEngineProvisioner {
         let staging = finalEngine.deletingLastPathComponent()
             .appendingPathComponent(".wine-d3dmetal-media-installing-\(UUID().uuidString)")
         defer { try? fm.removeItem(at: staging) }
-        progress("Creando motor D3D12 multimedia aislado…", 0.72)
+        progress("Creando motor D3DMetal aislado…", 0.72)
         try await Task.detached(priority: .utility) {
             try FileManager.default.copyItem(at: baseEngine, to: staging)
             try applyOverlayFiles(
@@ -529,10 +538,10 @@ enum D3DMetalMediaEngineProvisioner {
             options: .atomic
         )
         guard isInstallationValid(at: staging, expectedSource: identity) else {
-            throw error(102, "El motor D3D12 multimedia quedó incompleto durante su preparación.")
+            throw error(102, "El motor D3DMetal aislado quedó incompleto durante su preparación.")
         }
 
-        progress("Activando motor D3D12 multimedia…", 0.96)
+        progress("Activando motor D3DMetal aislado…", 0.96)
         try await Task.detached(priority: .utility) {
             try AtomicDirectoryReplacement.replace(
                 staging: staging,
@@ -541,9 +550,9 @@ enum D3DMetalMediaEngineProvisioner {
             )
         }.value
         guard isInstallationValid(at: finalEngine, expectedSource: identity) else {
-            throw error(103, "El motor D3D12 multimedia no superó su verificación final.")
+            throw error(103, "El motor D3DMetal aislado no superó su verificación final.")
         }
-        progress("Motor D3D12 multimedia listo", 1.0)
+        progress("Motor D3DMetal aislado listo", 1.0)
         return preferredWineBinary(in: finalEngine)
     }
 
@@ -579,7 +588,8 @@ enum D3DMetalMediaEngineProvisioner {
         ] + fiberFixArchitectures.map {
             fiberFixRoot.appendingPathComponent("\($0)/kernelbase.dll").path
         } + [
-            fiberFixRoot.appendingPathComponent("x86_64-windows/ntdll.dll").path
+            fiberFixRoot.appendingPathComponent("x86_64-windows/ntdll.dll").path,
+            fiberFixRoot.appendingPathComponent("x86_64-unix/ntdll.so").path
         ] + d3dMetalLibraries.map {
             gptkWindows.appendingPathComponent("\($0).dll").path
         }
@@ -604,8 +614,9 @@ enum D3DMetalMediaEngineProvisioner {
         // bit `TEB.HasFiberData` para responder correctamente a `IsThreadAFiber`. Además, macOS
         // reserva GS para pthread y `GS:0x20` contiene QoS, mientras MSVC lo usa para FiberData; el
         // ntdll aislado reescribe esas lecturas directas del PE principal hacia el TEB de Wine en
-        // memoria. Ambas piezas se instalan SOLO aquí: `wine-full` y los motores ya validados
-        // permanecen byte a byte.
+        // memoria. El ntdll Unix añade además un fallback para ejecutables protegidos que
+        // restauran esa secuencia después del loader. Las tres piezas se instalan SOLO aquí:
+        // `wine-full` y los motores ya validados permanecen byte a byte.
         for architecture in fiberFixArchitectures {
             try copyReplacing(
                 fiberFixRoot.appendingPathComponent("\(architecture)/kernelbase.dll"),
@@ -617,6 +628,10 @@ enum D3DMetalMediaEngineProvisioner {
         try copyReplacing(
             fiberFixRoot.appendingPathComponent("x86_64-windows/ntdll.dll"),
             to: targetWindows.appendingPathComponent("ntdll.dll")
+        )
+        try copyReplacing(
+            fiberFixRoot.appendingPathComponent("x86_64-unix/ntdll.so"),
+            to: targetUnix.appendingPathComponent("ntdll.so")
         )
 
         for library in d3dMetalLibraries {
@@ -662,7 +677,8 @@ enum D3DMetalMediaEngineProvisioner {
     nonisolated static func mediaEnvironment(
         winePath: String,
         prefix: String,
-        enginesDirectory: String = VesselPaths.enginesDirectory
+        enginesDirectory: String = VesselPaths.enginesDirectory,
+        includeManagedMedia: Bool = true
     ) -> [String: String] {
         let wineURL = URL(fileURLWithPath: winePath)
         let engine = WineEngineLocator.engineRoot(forWineExecutable: wineURL)
@@ -673,32 +689,46 @@ enum D3DMetalMediaEngineProvisioner {
         let runtimeLibrary = runtime.appendingPathComponent("lib").path
         let plugins = runtime.appendingPathComponent("lib/gstreamer-1.0").path
         let external = engine.appendingPathComponent("lib64/apple_gptk/external").path
-        let libraryPath = [
+        var libraryDirectories = [
             external,
-            engine.appendingPathComponent("lib64").path,
-            engine.appendingPathComponent("lib").path,
-            runtimeLibrary
-        ].joined(separator: ":")
+            engine.appendingPathComponent("lib64").path
+        ]
+        if includeManagedMedia {
+            // GStreamer enlaza su propia MoltenVK mediante @rpath. Debe preceder al `lib` del
+            // motor para que los dlopen de Wine resuelvan exactamente la misma imagen y AppKit no
+            // cargue dos clases MVKBlockObserver incompatibles en un único proceso.
+            libraryDirectories.append(runtimeLibrary)
+        }
+        libraryDirectories.append(engine.appendingPathComponent("lib").path)
+        let dllOverrides = includeManagedMedia
+            ? "mscoree,mshtml=d"
+            : "mscoree,mshtml=d;winegstreamer=d;mfplat=d;mf=d;mfreadwrite=d;mfmp4srcsnk=d;winedmo=d"
         var environment = [
             "WINEPREFIX": prefix,
             "WINEDEBUG": "-all",
             "WINEMSYNC": "1",
             "WINEESYNC": "1",
             "WINEFSYNC": "1",
+            // Marcador explícito para los procesos que sí heredan el entorno. El ntdll de este
+            // motor aislado también activa la reparación por defecto porque Steam puede omitir
+            // variables Unix al crear hijos protegidos; `0` sigue siendo el kill switch diagnóstico.
             "VESSEL_WINE_FIBER_GS_REWRITE": "1",
             "MVK_CONFIG_LOG_LEVEL": "0",
             "MTL_HUD_ENABLED": "0",
-            "WINEDLLOVERRIDES": "mscoree,mshtml=d",
-            "DYLD_FALLBACK_LIBRARY_PATH": libraryPath,
-            "GST_PLUGIN_SYSTEM_PATH": plugins,
-            "GST_PLUGIN_PATH": plugins,
-            "GST_PLUGIN_SCANNER": runtime
-                .appendingPathComponent("libexec/gstreamer-1.0/gst-plugin-scanner").path,
-            "GST_REGISTRY": URL(fileURLWithPath: prefix, isDirectory: true)
-                .appendingPathComponent(".vessel-gstreamer-\(ManagedGStreamerRuntime.version).bin")
-                .path,
-            "GIO_EXTRA_MODULES": runtime.appendingPathComponent("lib/gio/modules").path
+            "WINEDLLOVERRIDES": dllOverrides,
+            "DYLD_FALLBACK_LIBRARY_PATH": libraryDirectories.joined(separator: ":")
         ]
+        if includeManagedMedia {
+            environment["GST_PLUGIN_SYSTEM_PATH"] = plugins
+            environment["GST_PLUGIN_PATH"] = plugins
+            environment["GST_PLUGIN_SCANNER"] = runtime
+                .appendingPathComponent("libexec/gstreamer-1.0/gst-plugin-scanner").path
+            environment["GST_REGISTRY"] = URL(fileURLWithPath: prefix, isDirectory: true)
+                .appendingPathComponent(".vessel-gstreamer-\(ManagedGStreamerRuntime.version).bin")
+                .path
+            environment["GIO_EXTRA_MODULES"] = runtime
+                .appendingPathComponent("lib/gio/modules").path
+        }
         // Este perfil se usa también como motor DRM de Steam: el cliente crea el wineserver y los
         // juegos que lanza heredan su contexto nativo. Sin anunciar AVX en ese primer proceso,
         // Rosetta puede ejecutar las instrucciones pero CPUID/IsProcessorFeaturePresent las oculta;

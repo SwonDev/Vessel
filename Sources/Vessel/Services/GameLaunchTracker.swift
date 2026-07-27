@@ -13,6 +13,7 @@ final class GameLaunchTracker {
 
     private let markPlayed: @MainActor (String) -> Void
     private let addSession: @MainActor (String, Int) -> Void
+    private let recordProcessTermination: @MainActor (String) -> Void
 
     init(
         markPlayed: @escaping @MainActor (String) -> Void = {
@@ -20,10 +21,14 @@ final class GameLaunchTracker {
         },
         addSession: @escaping @MainActor (String, Int) -> Void = {
             PlayStatsStore.shared.addSession($0, seconds: $1)
+        },
+        recordProcessTermination: @escaping @MainActor (String) -> Void = {
+            LogStore.shared.log($0, level: .info)
         }
     ) {
         self.markPlayed = markPlayed
         self.addSession = addSession
+        self.recordProcessTermination = recordProcessTermination
     }
 
     enum State: Equatable { case idle, launching, running }
@@ -95,9 +100,14 @@ final class GameLaunchTracker {
                 }
             }
             if let onExit { onExits[id] = onExit }
-            proc.terminationHandler = { [weak self] _ in
+            proc.terminationHandler = { [weak self] terminatedProcess in
+                let status = terminatedProcess.terminationStatus
+                let reason = terminatedProcess.terminationReason
                 Task { @MainActor [weak self] in
                     guard let self else { return }
+                    self.recordProcessTermination(
+                        Self.processTerminationSummary(reason: reason, status: status)
+                    )
                     if self.processFamilyProbes[id] != nil {
                         self.watchDetachedProcessFamily(id)
                     } else {
@@ -109,6 +119,23 @@ final class GameLaunchTracker {
             states[id] = .idle
             lastErrors[id] = error.localizedDescription
             LogStore.shared.log("No se pudo iniciar el juego: \(error.localizedDescription)", level: .error)
+        }
+    }
+
+    /// Conserva una evidencia mínima y no sensible del fin del proceso raíz. Muchos juegos Wine
+    /// delegan su ventana a otro proceso, por lo que esto no decide por sí solo si la sesión acabó;
+    /// sí permite distinguir una salida normal de una señal nativa cuando toda la familia desaparece.
+    nonisolated static func processTerminationSummary(
+        reason: Process.TerminationReason,
+        status: Int32
+    ) -> String {
+        switch reason {
+        case .exit:
+            return "Proceso de lanzamiento terminado con código \(status)."
+        case .uncaughtSignal:
+            return "Proceso de lanzamiento terminado por señal \(status)."
+        @unknown default:
+            return "Proceso de lanzamiento terminado por una causa desconocida (estado \(status))."
         }
     }
 

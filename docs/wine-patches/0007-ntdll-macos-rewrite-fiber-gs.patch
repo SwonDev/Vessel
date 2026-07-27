@@ -8,7 +8,7 @@
  #endif
  
  /*************************************************************************
-@@ -2884,9 +2885,198 @@
+@@ -2884,9 +2885,205 @@
      {
          if (after[i] != wildcard_byte)
              ((char *)addr)[i] = after[i];
@@ -21,10 +21,14 @@
 + * host QoS slot. Native Windows binaries generated with GetCurrentFiber() may
 + * therefore read the host priority value instead of the fiber pointer.
 + *
-+ * When explicitly enabled by the embedding engine, rewrite the canonical
-+ * nine-byte MSVC sequence in the main PE image to call a nearby helper. The
-+ * helper reads the mirrored TEB self pointer at gs:[0x30] and then FiberData
-+ * from the real TEB. The executable on disk is never modified.
++ * This ntdll build is distributed only with Vessel's isolated D3DMetal engine,
++ * so enable the repair by default. An exact value of "0" remains available as
++ * a diagnostic kill switch. This cannot rely on a Unix environment variable
++ * being present: Steam may omit it when it creates a protected child process.
++ * Rewrite the canonical nine-byte MSVC sequence in the main PE image to call a
++ * nearby helper. The helper reads the mirrored TEB self pointer at gs:[0x30]
++ * and then FiberData from the real TEB. The executable on disk is never
++ * modified.
 + */
 +static BOOL macos_fiber_gs_patch_enabled(void)
 +{
@@ -32,8 +36,11 @@
 +    WCHAR value[2];
 +
 +    if (enabled == -1)
-+        enabled = get_env( L"VESSEL_WINE_FIBER_GS_REWRITE", value, sizeof(value) )
-+                  && value[0] == L'1';
++    {
++        if (get_env( L"VESSEL_WINE_FIBER_GS_REWRITE", value, sizeof(value) ))
++            enabled = value[0] != L'0';
++        else enabled = TRUE;
++    }
 +    return enabled;
 +}
 +
@@ -207,7 +214,7 @@
  static void apply_fuzzy_binary_patches( WINE_MODREF *wm )
  {
      static const char before_cohtml_v1[] =
-@@ -5134,6 +5324,9 @@
+@@ -5134,6 +5331,9 @@
  
          wm = build_main_module();
          build_ntdll_module();

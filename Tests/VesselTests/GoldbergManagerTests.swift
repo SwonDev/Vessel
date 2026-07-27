@@ -4,6 +4,34 @@ import XCTest
 
 @MainActor
 final class GoldbergManagerTests: XCTestCase {
+    func testPrefersStableProfileAndReplacesSameSizedDifferentDLL() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory
+            .appendingPathComponent("Vessel-GoldbergStableTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: root) }
+
+        let gameDir = root.appendingPathComponent("game", isDirectory: true)
+        let cache = root.appendingPathComponent("goldberg", isDirectory: true)
+        try fm.createDirectory(at: gameDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: cache, withIntermediateDirectories: true)
+
+        let executable = gameDir.appendingPathComponent("TestGame.exe")
+        let steamAPI = gameDir.appendingPathComponent("steam_api.dll")
+        let original = Data("ORIGINAL".utf8)
+        let stable = Data("REGULAR!".utf8) // mismo tamaño que el original
+        let experimental = Data("EXPERIMENTAL".utf8)
+        try Data("MZ".utf8).write(to: executable)
+        try original.write(to: steamAPI)
+        try stable.write(to: cache.appendingPathComponent("steam_api.regular.dll"))
+        try experimental.write(to: cache.appendingPathComponent("steam_api.experimental.dll"))
+
+        let manager = GoldbergManager(cacheDirectoryOverride: cache.path)
+        XCTAssertTrue(manager.applyToGame(gameExecutable: executable.path, appId: "123456"))
+        XCTAssertEqual(try Data(contentsOf: steamAPI), stable)
+        XCTAssertEqual(try Data(contentsOf: gameDir.appendingPathComponent("steam_api.dll.vessel-orig")), original)
+        XCTAssertNotEqual(try Data(contentsOf: steamAPI), experimental)
+    }
+
     func testWritesInstalledBuildIDFromStandardSteamManifest() throws {
         let fm = FileManager.default
         let root = fm.temporaryDirectory

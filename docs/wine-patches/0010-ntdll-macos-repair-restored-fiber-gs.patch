@@ -1,0 +1,135 @@
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -87,6 +87,9 @@
+ 
+ /* CW Hack 23427 */
+ static BOOL sequoia_or_later = FALSE;
++
++/* Vessel: enabled only for the isolated D3DMetal media runtime. */
++static BOOL vessel_macos_fiber_gs_rewrite;
+ #endif
+ 
+ static USHORT cs32_sel;  /* selector for %cs in 32-bit mode */
+@@ -2486,8 +2489,79 @@
+ #elif defined(__APPLE__)
+     /* leave_handler() will set GSBASE to the TEB */
+ #endif
++    return TRUE;
++}
++
++
++#ifdef __APPLE__
++static __uint64_t *macos_x64_context_register( ucontext_t *ucontext, unsigned int index )
++{
++    switch (index)
++    {
++    case 0:  return &RAX_sig(ucontext);
++    case 1:  return &RCX_sig(ucontext);
++    case 2:  return &RDX_sig(ucontext);
++    case 3:  return &RBX_sig(ucontext);
++    case 5:  return &RBP_sig(ucontext);
++    case 6:  return &RSI_sig(ucontext);
++    case 7:  return &RDI_sig(ucontext);
++    case 8:  return &R8_sig(ucontext);
++    case 9:  return &R9_sig(ucontext);
++    case 10: return &R10_sig(ucontext);
++    case 11: return &R11_sig(ucontext);
++    case 13: return &R13_sig(ucontext);
++    case 14: return &R14_sig(ucontext);
++    case 15: return &R15_sig(ucontext);
++    default: return NULL;
++    }
++}
++
++/*
++ * Some protected executables restore their original code after loader-time
++ * patching. If the immediately preceding instruction is the canonical MSVC
++ * GetCurrentFiber() read from gs:[0x20], macOS has put its pthread QoS value
++ * in the destination register instead of the Windows FiberData pointer. The
++ * following dereference then faults. Repair only that register and retry the
++ * faulting instruction; no executable code or on-disk file is modified.
++ */
++static BOOL repair_macos_restored_fiber_gs_read( ucontext_t *ucontext,
++                                                 const EXCEPTION_RECORD *rec )
++{
++    BYTE instruction[9];
++    const BYTE *rip = (const BYTE *)RIP_sig(ucontext);
++    __uint64_t *value;
++    void *fiber_data;
++    unsigned int index;
++
++    if (!vessel_macos_fiber_gs_rewrite || CS_sig(ucontext) != cs64_sel
++        || rec->ExceptionCode != EXCEPTION_ACCESS_VIOLATION
++        || rec->NumberParameters < 2
++        || rec->ExceptionInformation[0] != EXCEPTION_READ_FAULT
++        || (ULONG_PTR)rip < sizeof(instruction))
++        return FALSE;
++    if (virtual_uninterrupted_read_memory( rip - sizeof(instruction), instruction,
++                                           sizeof(instruction) ) != sizeof(instruction))
++        return FALSE;
++    if (instruction[0] != 0x65
++        || (instruction[1] != 0x48 && instruction[1] != 0x4c)
++        || instruction[2] != 0x8b || (instruction[3] & 0xc7) != 0x04
++        || instruction[4] != 0x25 || instruction[5] != 0x20
++        || instruction[6] || instruction[7] || instruction[8])
++        return FALSE;
++
++    index = ((instruction[1] & 0x04) ? 8 : 0) + ((instruction[3] >> 3) & 7);
++    if (!(value = macos_x64_context_register( ucontext, index ))) return FALSE;
++    if (*value != rec->ExceptionInformation[1]) return FALSE;
++    if (!(fiber_data = NtCurrentTeb()->Tib.FiberData)
++        || (ULONG_PTR)fiber_data == *value)
++        return FALSE;
++
++    TRACE_(seh)( "repairing restored gs:[0x20] fiber read at %p: r%u %p -> %p\n",
++                 rip - sizeof(instruction), index, (void *)*value, fiber_data );
++    *value = (ULONG_PTR)fiber_data;
+     return TRUE;
+ }
++#endif
+ 
+ 
+ /**********************************************************************
+@@ -2542,11 +2616,23 @@
+         rec.NumberParameters = 2;
+         rec.ExceptionInformation[0] = (ERROR_sig(ucontext) >> 1) & 0x09;
+         rec.ExceptionInformation[1] = (ULONG_PTR)siginfo->si_addr;
+-        if (!virtual_handle_fault( &rec, (void *)RSP_sig(ucontext) ) || check_invalid_gsbase( ucontext ))
++        if (!virtual_handle_fault( &rec, (void *)RSP_sig(ucontext) ))
++        {
++            leave_handler( ucontext );
++            return;
++        }
++        if (check_invalid_gsbase( ucontext ))
+         {
+             leave_handler( ucontext );
+             return;
+         }
++#ifdef __APPLE__
++        if (repair_macos_restored_fiber_gs_read( ucontext, &rec ))
++        {
++            leave_handler( ucontext );
++            return;
++        }
++#endif
+         if (rec.ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+             rec.ExceptionInformation[0] == EXCEPTION_EXECUTE_FAULT)
+         {
+@@ -3014,6 +3100,17 @@
+     /* CW Hack 23427: __builtin_available presumably isn't signal-safe. */
+     if (__builtin_available( macOS 15.0, * ))
+         sequoia_or_later = TRUE;
++
++    /*
++     * This patched ntdll is installed only in Vessel's isolated D3DMetal
++     * engine. Steam-created children do not reliably retain Unix-only
++     * variables, so default to enabled and keep an exact "0" as a diagnostic
++     * kill switch. getenv() is cached here, outside the signal handler.
++     */
++    {
++        const char *value = getenv( "VESSEL_WINE_FIBER_GS_REWRITE" );
++        vessel_macos_fiber_gs_rewrite = !(value && value[0] == '0' && !value[1]);
++    }
+ #endif
+ 
+     sig_act.sa_mask = server_block_set;

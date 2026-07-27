@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// Instala y mantiene el wrapper de `steamwebhelper.exe` en un bottle.
 ///
@@ -36,15 +37,17 @@ import Foundation
 @Observable
 final class SteamWebHelperWrapperInstaller {
     enum WrapperError: LocalizedError {
-        case mingwNotInstalled
-        case compilationFailed(String)
+        case wrapperBinaryNotFound
+        case wrapperIntegrityFailed
         case steamCEFDirectoryNotFound
         case installationFailed(String)
 
         var errorDescription: String? {
             switch self {
-            case .mingwNotInstalled: return "mingw-w64 no está instalado. Instálalo con: brew install mingw-w64"
-            case .compilationFailed(let msg): return "Compilación del wrapper falló: \(msg)"
+            case .wrapperBinaryNotFound:
+                return "La instalación de Vessel no contiene el reparador gráfico verificado de Steam. Reinstala Vessel."
+            case .wrapperIntegrityFailed:
+                return "El reparador gráfico de Steam no supera la verificación de integridad. Reinstala Vessel."
             case .steamCEFDirectoryNotFound: return "No se encontró el directorio CEF de Steam en el bottle."
             case .installationFailed(let msg): return "Instalación del wrapper falló: \(msg)"
             }
@@ -53,93 +56,37 @@ final class SteamWebHelperWrapperInstaller {
 
     /// Umbral para distinguir el wrapper (<500KB) del binario de Valve (>5MB).
     private static let wrapperSizeCeiling: UInt64 = 500_000
+    /// SHA-256 del PE64 reproducible que distribuye Vessel. Actualizar únicamente al recompilar
+    /// `Resources/wrapper/steamwebhelper-wrapper.c` y validar de nuevo Steam CEF.
+    private nonisolated static let expectedWrapperSHA256 = "dcb623bd8db4ffdffffc0e1686bdfb3f9595ddaa2474f0d62d1c451957026bf5"
 
-    /// Resuelve la ruta al wrapper precompilado bundle en la app.
-    /// Busca en Bundle.main/Contents/Resources/steamwebhelper-wrapper.exe
-    /// y fallback al path del repo en desarrollo.
-    private static var bundledWrapperPath: String {
-        if let url = Bundle.main.url(forResource: "steamwebhelper-wrapper", withExtension: "exe") {
-            return url.path
-        }
-        // Fallback para desarrollo: path del repo (relativo a #filePath, sin usuario hardcodeado)
-        return VesselPaths.devRepoRoot.appendingPathComponent("Resources/steamwebhelper-wrapper.exe").path
+    /// Resuelve el wrapper precompilado únicamente dentro del bundle en ejecución. No se permite
+    /// caer al checkout del repositorio: eso podría ocultar un paquete distribuido incompleto en el
+    /// Mac de desarrollo y fallar después en un equipo limpio.
+    private static var bundledWrapperPath: String? {
+        Bundle.main.url(forResource: "steamwebhelper-wrapper", withExtension: "exe")?.path
     }
-
-    /// Ruta al código fuente del wrapper (solo para recompilación si el bundle falta).
-    private static var sourcePath: String {
-        VesselPaths.devRepoRoot.appendingPathComponent("Resources/wrapper/steamwebhelper-wrapper.c").path
-    }
-
-    /// Ruta donde se cachea el wrapper compilado en runtime.
-    private var wrapperBinaryPath: String {
-        "\(VesselPaths.cacheDirectory)/steamwebhelper-wrapper/steamwebhelper.exe"
-    }
-
-    /// Ruta al compilador mingw-w64 (opcional, solo para recompilación).
-    private static let mingwPath = "/opt/homebrew/bin/x86_64-w64-mingw32-gcc"
 
     // MARK: - Obtención del wrapper
 
-    /// Devuelve la ruta al wrapper, prefiriendo el bundle en Resources.
-    /// Si el bundle no existe (app distribuida sin Resources), intenta compilar
-    /// con mingw-w64. Si tampoco hay mingw, usa el cache si existe.
+    /// Devuelve exclusivamente el wrapper verificado que distribuye Vessel. Una app de producción
+    /// nunca compila ejecutables descargables en el Mac del usuario ni depende de Homebrew.
     func ensureWrapperCompiled() async throws -> String {
-        let fm = FileManager.default
-
-        // 1. Preferir el wrapper bundle en Resources (siempre disponible en el .app)
-        let bundled = Self.bundledWrapperPath
-        if fm.fileExists(atPath: bundled) {
-            return bundled
+        guard let bundled = Self.bundledWrapperPath,
+              FileManager.default.fileExists(atPath: bundled) else {
+            throw WrapperError.wrapperBinaryNotFound
         }
-
-        // 2. Si no está bundle, intentar el cache
-        if fm.fileExists(atPath: wrapperBinaryPath) {
-            return wrapperBinaryPath
+        guard Self.isTrustedWrapper(atPath: bundled) else {
+            throw WrapperError.wrapperIntegrityFailed
         }
-
-        // 3. Intentar compilar con mingw-w64 (fallback para desarrollo)
-        return try await compileWrapper()
+        return bundled
     }
 
-    /// Compila el wrapper con mingw-w64.
-    private func compileWrapper() async throws -> String {
-        guard FileManager.default.isExecutableFile(atPath: Self.mingwPath) else {
-            throw WrapperError.mingwNotInstalled
-        }
-
-        guard FileManager.default.fileExists(atPath: Self.sourcePath) else {
-            throw WrapperError.compilationFailed("Código fuente del wrapper no encontrado en \(Self.sourcePath)")
-        }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: Self.mingwPath)
-        process.arguments = [
-            "-municode", "-O2", "-Wall", "-Wextra",
-            "-static", "-lshell32", "-mwindows",
-            "-o", wrapperBinaryPath,
-            Self.sourcePath
-        ]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            throw WrapperError.compilationFailed(error.localizedDescription)
-        }
-
-        guard process.terminationStatus == 0 else {
-            let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            throw WrapperError.compilationFailed(output.isEmpty ? "gcc terminó con código \(process.terminationStatus)" : output)
-        }
-
-        guard FileManager.default.fileExists(atPath: wrapperBinaryPath) else {
-            throw WrapperError.compilationFailed("El compilador no produjo el binario")
-        }
-
-        return wrapperBinaryPath
+    nonisolated static func isTrustedWrapper(atPath path: String) -> Bool {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe)
+        else { return false }
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        return digest == expectedWrapperSHA256
     }
 
     // MARK: - Instalación en bottle

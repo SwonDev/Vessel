@@ -1,0 +1,53 @@
+From 4947032e43b359801fd1fdf2cc818e966faed1ee Mon Sep 17 00:00:00 2001
+From: Swon <aperdel.esi@gmail.com>
+Date: Wed, 8 Jul 2026 10:46:18 +0100
+Subject: [PATCH] =?UTF-8?q?fix(fullscreen):=20fingir=20=C3=A9xito=20del=20?=
+ =?UTF-8?q?cambio=20de=20modo=20en=20macOS=20(borderless=20a=20resoluci?=
+ =?UTF-8?q?=C3=B3n=20nativa)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+En macOS Retina, ChangeDisplaySettingsExW a un modo escalado (p.ej. 1512x982)
+siempre falla → setMonitorDisplayMode devolvía false → EnterFullscreenMode daba
+DXGI_ERROR_NOT_CURRENTLY_AVAILABLE → los juegos Unity abortaban con 'Couldn't
+switch to requested monitor resolution' (fs=1). D3DMetal (CrossOver) nunca cambia
+el modo físico: presenta el fullscreen exclusivo como borderless a resolución
+nativa y escala el backbuffer. Replicado: si el cambio de modo físico no es
+posible, se da por exitoso y enterFullscreenMode mueve la ventana a cubrir el
+monitor. AK-xolotl (Unity D3D11) verificado arrancando desde Steam.
+---
+ src/util/wsi_window_win32.cpp | 17 ++++++++++++++++-
+ 1 file changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/src/util/wsi_window_win32.cpp b/src/util/wsi_window_win32.cpp
+index 295a99b..aadcc09 100644
+--- a/src/util/wsi_window_win32.cpp
++++ b/src/util/wsi_window_win32.cpp
+@@ -68,7 +68,22 @@ static bool setMonitorDisplayMode(HMONITOR hMonitor, DEVMODEW *pMode) {
+                                         CDS_FULLSCREEN, nullptr);
+   }
+ 
+-  return status == DISP_CHANGE_SUCCESSFUL;
++  // macOS Retina: la resolución del monitor NO se puede cambiar a un modo escalado
++  // arbitrario (p.ej. 1512x982) — ChangeDisplaySettingsExW devuelve BADMODE/FAILED y el
++  // juego aborta con "Couldn't switch to requested monitor resolution" (fs=1). D3DMetal
++  // (CrossOver) NUNCA cambia el modo físico del monitor: presenta el fullscreen exclusivo
++  // como BORDERLESS a la resolución nativa y escala el backbuffer al presentar. Replicamos
++  // ese comportamiento: si el cambio de modo físico no es posible, lo damos por exitoso
++  // igualmente (el swapchain renderiza a su tamaño y `enterFullscreenMode` mueve la ventana
++  // a cubrir el monitor → borderless). Así el fullscreen exclusivo D3D11 funciona en macOS
++  // sin tocar la resolución del monitor (juegos Unity: AK-xolotl, etc.).
++  if (status != DISP_CHANGE_SUCCESSFUL) {
++    Logger::warn("Win32 WSI: setMonitorDisplayMode: physical mode switch unsupported on macOS; "
++                 "treating as borderless fullscreen (no monitor resolution change)");
++    return true;
++  }
++
++  return true;
+ }
+ 
+ void getWindowSize(HWND hWindow, uint32_t *pWidth, uint32_t *pHeight) {
+-- 
+2.54.0
+

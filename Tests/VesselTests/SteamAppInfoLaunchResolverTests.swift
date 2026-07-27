@@ -9,6 +9,13 @@ final class SteamAppInfoLaunchResolverTests: XCTestCase {
         let osList: String?
     }
 
+    private struct EULAEntry {
+        let index: Int
+        let id: String
+        let name: String
+        let version: String
+    }
+
     private func appendUInt32(_ value: UInt32, to data: inout Data) {
         data.append(UInt8(value & 0xff))
         data.append(UInt8((value >> 8) & 0xff))
@@ -35,9 +42,19 @@ final class SteamAppInfoLaunchResolverTests: XCTestCase {
         data.append(0)
     }
 
-    private func makeVersion41AppInfo(appID: UInt32, entries: [LaunchEntry]) -> Data {
-        let keys = ["appinfo", "config", "launch", "executable", "oslist"]
-            + entries.map { String($0.index) }
+    private func makeVersion41AppInfo(
+        appID: UInt32,
+        entries: [LaunchEntry],
+        eulas: [EULAEntry] = []
+    ) -> Data {
+        var keys = [
+            "appinfo", "common", "eulas", "id", "name", "version",
+            "config", "launch", "executable", "oslist"
+        ]
+        for key in entries.map({ String($0.index) }) + eulas.map({ String($0.index) })
+        where !keys.contains(key) {
+            keys.append(key)
+        }
         let keyIndexes = Dictionary(uniqueKeysWithValues: keys.enumerated().map { ($0.element, $0.offset) })
 
         func appendKey(_ type: UInt8, _ key: String, to data: inout Data) {
@@ -47,6 +64,22 @@ final class SteamAppInfoLaunchResolverTests: XCTestCase {
 
         var keyValues = Data()
         appendKey(0, "appinfo", to: &keyValues)
+        if !eulas.isEmpty {
+            appendKey(0, "common", to: &keyValues)
+            appendKey(0, "eulas", to: &keyValues)
+            for eula in eulas.sorted(by: { $0.index < $1.index }) {
+                appendKey(0, String(eula.index), to: &keyValues)
+                appendKey(1, "id", to: &keyValues)
+                appendCString(eula.id, to: &keyValues)
+                appendKey(1, "name", to: &keyValues)
+                appendCString(eula.name, to: &keyValues)
+                appendKey(1, "version", to: &keyValues)
+                appendCString(eula.version, to: &keyValues)
+                keyValues.append(8)
+            }
+            keyValues.append(8)
+            keyValues.append(8)
+        }
         appendKey(0, "config", to: &keyValues)
         appendKey(0, "launch", to: &keyValues)
         for entry in entries.sorted(by: { $0.index < $1.index }) {
@@ -112,6 +145,170 @@ final class SteamAppInfoLaunchResolverTests: XCTestCase {
             ),
             "FFT_enhanced.exe"
         )
+    }
+
+    func testReadsOrderedSteamEULAMetadataAlongsideLaunchData() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let appInfo = directory.appendingPathComponent("appinfo.vdf")
+        try makeVersion41AppInfo(
+            appID: 1_687_950,
+            entries: [LaunchEntry(index: 0, executable: "P5R.exe", osList: "windows")],
+            eulas: [
+                EULAEntry(index: 1, id: "1687950_eula_1", name: "Online Terms", version: "3"),
+                EULAEntry(index: 0, id: "1687950_eula_0", name: "Persona 5 Royal EULA", version: "1")
+            ]
+        ).write(to: appInfo)
+
+        XCTAssertEqual(
+            SteamAppInfoLaunchResolver.eulas(appID: "1687950", appInfoPath: appInfo.path),
+            [
+                .init(id: "1687950_eula_0", name: "Persona 5 Royal EULA", version: "1"),
+                .init(id: "1687950_eula_1", name: "Online Terms", version: "3")
+            ]
+        )
+        XCTAssertEqual(
+            SteamAppInfoLaunchResolver.defaultWindowsExecutable(
+                appID: "1687950",
+                appInfoPath: appInfo.path
+            ),
+            "P5R.exe"
+        )
+    }
+
+    func testReturnsEmptyEULACollectionForAValidAppWithoutLicenses() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let appInfo = directory.appendingPathComponent("appinfo.vdf")
+        try makeVersion41AppInfo(
+            appID: 42,
+            entries: [LaunchEntry(index: 0, executable: "Game.exe", osList: "windows")]
+        ).write(to: appInfo)
+
+        XCTAssertEqual(
+            SteamAppInfoLaunchResolver.eulas(appID: "42", appInfoPath: appInfo.path),
+            []
+        )
+    }
+
+    func testEULAPreflightFindsPendingLicenseBeforeStartingSilentSteam() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let steam = directory.appendingPathComponent("Steam", isDirectory: true)
+        let appCache = steam.appendingPathComponent("appcache", isDirectory: true)
+        let accountConfig = steam
+            .appendingPathComponent("userdata/121123806/config", isDirectory: true)
+        try FileManager.default.createDirectory(at: appCache, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: accountConfig, withIntermediateDirectories: true)
+        let appInfo = appCache.appendingPathComponent("appinfo.vdf")
+        try makeVersion41AppInfo(
+            appID: 1_687_950,
+            entries: [LaunchEntry(index: 0, executable: "P5R.exe", osList: "windows")],
+            eulas: [
+                EULAEntry(
+                    index: 0,
+                    id: "1687950_eula_0",
+                    name: "Persona 5 Royal EULA",
+                    version: "1"
+                )
+            ]
+        ).write(to: appInfo)
+        try Data(localConfig(appID: "1687950", eulaID: nil, version: nil).utf8)
+            .write(to: accountConfig.appendingPathComponent("localconfig.vdf"))
+
+        XCTAssertEqual(
+            SteamEULAPreflight.pendingEULAs(
+                appID: "1687950",
+                appInfoPath: appInfo.path,
+                steamDirectory: steam.path
+            ),
+            [.init(id: "1687950_eula_0", name: "Persona 5 Royal EULA", version: "1")]
+        )
+    }
+
+    func testEULAPreflightRecognizesAcceptedOrNewerVersionAcrossAccounts() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let steam = directory.appendingPathComponent("Steam", isDirectory: true)
+        let appCache = steam.appendingPathComponent("appcache", isDirectory: true)
+        let firstAccount = steam.appendingPathComponent("userdata/1/config", isDirectory: true)
+        let secondAccount = steam.appendingPathComponent("userdata/2/config", isDirectory: true)
+        try FileManager.default.createDirectory(at: appCache, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: firstAccount, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondAccount, withIntermediateDirectories: true)
+        let appInfo = appCache.appendingPathComponent("appinfo.vdf")
+        try makeVersion41AppInfo(
+            appID: 1_687_950,
+            entries: [LaunchEntry(index: 0, executable: "P5R.exe", osList: "windows")],
+            eulas: [
+                EULAEntry(index: 0, id: "1687950_eula_0", name: "EULA", version: "2")
+            ]
+        ).write(to: appInfo)
+        try Data(localConfig(appID: "1687950", eulaID: "1687950_eula_0", version: "1").utf8)
+            .write(to: firstAccount.appendingPathComponent("localconfig.vdf"))
+        try Data(localConfig(appID: "1687950", eulaID: "1687950_eula_0", version: "3").utf8)
+            .write(to: secondAccount.appendingPathComponent("localconfig.vdf"))
+
+        XCTAssertEqual(
+            SteamEULAPreflight.pendingEULAs(
+                appID: "1687950",
+                appInfoPath: appInfo.path,
+                steamDirectory: steam.path
+            ),
+            []
+        )
+    }
+
+    func testEULAPreflightDoesNotAcceptAnUnrelatedAppBlock() {
+        let data = Data(localConfig(
+            appID: "42",
+            eulaID: "1687950_eula_0",
+            version: "1"
+        ).utf8)
+
+        XCTAssertNil(SteamEULAPreflight.acceptedVersion(
+            appID: "1687950",
+            eulaID: "1687950_eula_0",
+            in: data
+        ))
+        XCTAssertTrue(SteamEULAPreflight.satisfies(
+            requiredVersion: "2",
+            acceptedVersion: "3"
+        ))
+        XCTAssertFalse(SteamEULAPreflight.satisfies(
+            requiredVersion: "3",
+            acceptedVersion: "2"
+        ))
+    }
+
+    private func localConfig(appID: String, eulaID: String?, version: String?) -> String {
+        let eulaLine: String
+        if let eulaID, let version {
+            eulaLine = "\t\t\t\t\t\t\"\(eulaID)\"\t\t\"\(version)\""
+        } else {
+            eulaLine = ""
+        }
+        return """
+        "UserLocalConfigStore"
+        {
+        \t"Software"
+        \t{
+        \t\t"Valve"
+        \t\t{
+        \t\t\t"Steam"
+        \t\t\t{
+        \t\t\t\t"apps"
+        \t\t\t\t{
+        \t\t\t\t\t"\(appID)"
+        \t\t\t\t\t{
+        \(eulaLine)
+        \t\t\t\t\t}
+        \t\t\t\t}
+        \t\t\t}
+        \t\t}
+        \t}
+        }
+        """
     }
 
     func testSkipsNonWindowsLaunchEntry() throws {

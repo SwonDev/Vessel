@@ -1,0 +1,37 @@
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index a2ea5244..dab6758b 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -4613,6 +4613,32 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec,
+         WARN( "treating read fault in a readable page as a write fault, addr %p\n", addr );
+         err = EXCEPTION_WRITE_FAULT;
+     }
++
++    /* VESSEL (replica de CrossOver CW Hack 24945): Rosetta reporta mal los write-faults sobre
++       páginas W^X (writable+executable) del JIT — típicas de Mono/IL2CPP de Unity y del CLR de
++       .NET. En vez de crashear con una access violation real, hacemos un toggle de la protección
++       EXEC de la página (quitar y reponer) para que Rosetta re-evalúe/re-JITee y el hilo continúe.
++       Sin esto, MUCHOS juegos Unity/.NET no arrancan en Apple Silicon (c0000135/crash engañoso). */
++    if (err == EXCEPTION_WRITE_FAULT &&
++        ((get_unix_prot( vprot ) & (PROT_WRITE | PROT_EXEC)) == (PROT_WRITE | PROT_EXEC)))
++    {
++        FIXME( "HACK: write fault on a w|x page, addr %p\n", addr );
++        mprotect_range( page, page_size, 0, VPROT_EXEC );
++        mprotect_range( page, page_size, VPROT_EXEC, 0 );
++        mutex_unlock( &virtual_mutex );
++        return STATUS_SUCCESS;
++    }
++
++    /* VESSEL (replica de CrossOver CW Hack 25719): exec-fault sobre una página que YA es
++       ejecutable (otro misreporte de Rosetta). Mismo toggle de protección para reanudar. */
++    if (err == EXCEPTION_EXECUTE_FAULT && (get_unix_prot( vprot ) & PROT_EXEC))
++    {
++        FIXME( "HACK: exec fault on executable page, addr %p\n", addr );
++        mprotect_range( page, page_size, 0, VPROT_EXEC );
++        mprotect_range( page, page_size, VPROT_EXEC, 0 );
++        mutex_unlock( &virtual_mutex );
++        return STATUS_SUCCESS;
++    }
+ #endif
+ 
+     if (!is_inside_signal_stack( data, stack ) && (vprot & VPROT_GUARD))

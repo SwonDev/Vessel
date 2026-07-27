@@ -1,0 +1,105 @@
+diff --git a/dlls/winemac.drv/macdrv.h b/dlls/winemac.drv/macdrv.h
+index ed39420b..1a5f5b67 100644
+--- a/dlls/winemac.drv/macdrv.h
++++ b/dlls/winemac.drv/macdrv.h
+@@ -189,6 +189,13 @@ extern BOOL macdrv_SystemParametersInfo(UINT action, UINT int_param, void *ptr_p
+     unsigned int        per_pixel_alpha : 1;    /* is window using per-pixel alpha? */
+     unsigned int        minimized : 1;          /* is window minimized? */
+     unsigned int        fullscreen : 1;         /* is the window visible rect fullscreen? (unrelated to native AppKit/Cocoa fullscreen) */
++
++    /* CW HACK 22435 (Vessel): retiene TODAS las client surfaces de la ventana — una por cada
++     * swapchain del compositor del CEF de Steam (cliente, biblioteca y TIENDA). Cada surface tiene
++     * su propio cocoa_view + CAMetalLayer, todas anidadas y visibles a la vez, para que la tienda
++     * (que renderiza en un swapchain aparte) NO quede negra. Sin este array los swapchains
++     * compartían un único `client_view` y se pisaban. Se libera en macdrv_DestroyWindow. */
++    CFMutableArrayRef   d3dmetal_client_surfaces;
+ };
+ 
+ struct macdrv_client_surface
+diff --git a/dlls/winemac.drv/window.c b/dlls/winemac.drv/window.c
+index cd76a7dd..518c18d2 100644
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -1190,34 +1190,48 @@ void macdrv_client_surface_dxmt_free(struct macdrv_client_surface *surface)
+     if (surface) client_surface_release(&surface->client);
+ }
+ 
+-/* DXMT/Vessel: devuelve el `client_view` REAL de la ventana (el área cliente visible y
+- * enganchada en la jerarquía de vistas). Es donde DXMT debe poner el CAMetalLayer para que
+- * se VEA — el `client_surface` es una vista separada que no siempre presenta al frente y
+- * dejaba la pantalla negra. Equivale al `client_cocoa_view` que usaba DXMT en Wine 9.9. */
++/* CW HACK 22435 (Vessel): callback de release del array `d3dmetal_client_surfaces`. El array POSEE
++ * cada client_surface que retiene; al soltar el array (macdrv_DestroyWindow) se libera cada una. */
++static void cf_client_surface_release(CFAllocatorRef allocator, const void *value)
++{
++    client_surface_release((struct client_surface *)((void *)value));
++}
++
++/* DXMT/Vessel — CW HACK 22435: crea una client_surface NUEVA por swapchain y devuelve su cocoa_view.
++ * DXMT llama aquí UNA vez por swapchain (winemetal_unix.c `_CreateMetalViewFromHWND`). El compositor
++ * del CEF de Steam crea VARIOS swapchains (cliente, biblioteca y TIENDA, cada uno un render-widget);
++ * antes se REUTILIZABA un único `client_view` para todos → sus CAMetalLayer se pisaban y la tienda
++ * salía NEGRA. Ahora cada swapchain obtiene su propio cocoa_view + CAMetalLayer, se ANIDA bajo el área
++ * cliente y se hace VISIBLE (SIN ocultar los demás), y se RETIENE en el array de la ventana para que
++ * persista mientras DXMT dibuja. Así todas las superficies se componen a la vez, como en CrossOver.
++ * (macdrv_client_surface_create crea la vista OCULTA y NO presenta, así que NO roba el foco de teclado
++ * del login: aquí solo la anidamos y la desocultamos.) */
+ __attribute__((visibility("default")))
+ macdrv_view macdrv_dxmt_get_client_view(HWND hwnd)
+ {
+-    struct macdrv_win_data *data = get_win_data(hwnd);
+-    macdrv_view view = data ? data->client_view : NULL;
+-    if (data) release_win_data(data);
+-    if (view) return view;
+-
+-    /* No existe aún (DXMT crea el swapchain ANTES de que Wine componga el área cliente, así que
+-     * `client_view` es NULL). Creamos una client_surface y la presentamos AQUÍ EXPLÍCITAMENTE
+-     * (update + present) para engancharla a la ventana, hacerla VISIBLE y asignarla a
+-     * data->client_view — SOLO para DXMT, sin tocar el flujo normal de otras APIs (que rompía el
+-     * foco de teclado del CEF). NO la liberamos: debe persistir mientras DXMT dibuja el
+-     * CAMetalLayer sobre esa vista (liberarla dispararía `destroy` → dispone la vista → negra). */
+-    {
+-        struct macdrv_client_surface *surface = macdrv_client_surface_create(hwnd);
+-        if (surface)
++    struct macdrv_client_surface *surface = macdrv_client_surface_create(hwnd);
++    struct macdrv_win_data *data;
++    macdrv_view view;
++
++    if (!surface) return NULL;
++    view = surface->cocoa_view;
++
++    /* Anidar bajo el área cliente y hacer VISIBLE, sin tocar/ocultar las demás surfaces. */
++    macdrv_client_surface_update(&surface->client);
++    macdrv_set_view_hidden(view, FALSE);
++
++    if ((data = get_win_data(hwnd)))
++    {
++        /* La primera es la "principal" (compatibilidad con el resto del código que usa client_view). */
++        if (!data->client_view) data->client_view = view;
++        if (!data->d3dmetal_client_surfaces)
+         {
+-            macdrv_client_surface_update(&surface->client);
+-            macdrv_client_surface_present(&surface->client, 0);
+-            data = get_win_data(hwnd);
+-            view = data ? data->client_view : NULL;
+-            if (data) release_win_data(data);
++            static const CFArrayCallBacks callbacks = { 0, NULL, cf_client_surface_release, NULL, NULL };
++            data->d3dmetal_client_surfaces = CFArrayCreateMutable(NULL, 0, &callbacks);
+         }
++        if (data->d3dmetal_client_surfaces)
++            CFArrayAppendValue(data->d3dmetal_client_surfaces, surface);  /* el array adopta la referencia */
++        release_win_data(data);
+     }
+     return view;
+ }
+@@ -1305,6 +1319,10 @@ void macdrv_DestroyWindow(HWND hwnd)
+ 
+     destroy_cocoa_window(data);
+ 
++    /* CW HACK 22435 (Vessel): soltar el array de client surfaces del CEF (libera cada surface
++     * retenida vía cf_client_surface_release). */
++    if (data->d3dmetal_client_surfaces) CFRelease(data->d3dmetal_client_surfaces);
++
+     CFDictionaryRemoveValue(win_datas, hwnd);
+     release_win_data(data);
+     free(data);

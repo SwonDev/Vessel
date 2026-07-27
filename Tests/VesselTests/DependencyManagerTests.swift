@@ -140,6 +140,229 @@ final class DependencyManagerTests: XCTestCase {
         )
     }
 
+    func testFullEngineRejectsExternalRuntimeMarker() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VesselExternalEngineTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let engine = tempRoot.appendingPathComponent(WineEngineLocator.fullEngineName)
+        let bin = engine.appendingPathComponent("bin")
+        let windows = engine.appendingPathComponent("lib/wine/x86_64-windows")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: windows, withIntermediateDirectories: true)
+
+        let wine = bin.appendingPathComponent("wine")
+        try "#!/bin/sh\nexit 0\n".write(to: wine, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: wine.path)
+        try Data([0x4d, 0x5a]).write(to: windows.appendingPathComponent("winewrapper.exe"))
+
+        XCTAssertTrue(WineEngineLocator.containsExternalFullEngineRuntime(enginesDirectory: tempRoot.path))
+        XCTAssertNil(WineEngineLocator.fullWineBinary(enginesDirectory: tempRoot.path))
+        XCTAssertFalse(WineEngineLocator.isFullEngineInstalled(enginesDirectory: tempRoot.path))
+    }
+
+    func testWineDiscoveryOnlyIncludesVesselManagedEngine() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VesselEngineDiscoveryTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let externalWine = tempRoot
+            .appendingPathComponent("Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine64")
+        try FileManager.default.createDirectory(
+            at: externalWine.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "#!/bin/sh\nexit 0\n".write(to: externalWine, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: externalWine.path)
+
+        let engines = tempRoot.appendingPathComponent("Engines")
+        let managedWine = engines
+            .appendingPathComponent(WineEngineLocator.portableEngineName)
+            .appendingPathComponent("bin/wine")
+        try FileManager.default.createDirectory(
+            at: managedWine.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "#!/bin/sh\nexit 0\n".write(to: managedWine, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: managedWine.path)
+
+        let detected = WineEngineLocator.detectWineInstallations(
+            enginesDirectory: engines.path,
+            homeDirectory: tempRoot.path
+        )
+
+        XCTAssertEqual(detected.count, 1)
+        XCTAssertEqual(detected.first?.name, "Wine (Vessel portable)")
+        XCTAssertEqual(detected.first?.path, managedWine.path)
+    }
+
+    func testWineDiscoveryFallsBackToAnotherManagedEngine() throws {
+        let engines = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VesselManagedDiscoveryTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: engines) }
+
+        let unifiedWine = engines
+            .appendingPathComponent(WineEngineLocator.unifiedEngineName)
+            .appendingPathComponent("bin/wine")
+        try FileManager.default.createDirectory(
+            at: unifiedWine.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "#!/bin/sh\nexit 0\n".write(
+            to: unifiedWine,
+            atomically: true,
+            encoding: .utf8
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: unifiedWine.path
+        )
+
+        let detected = WineEngineLocator.detectWineInstallations(
+            enginesDirectory: engines.path
+        )
+        XCTAssertEqual(detected.map(\.path), [unifiedWine.path])
+        XCTAssertEqual(detected.first?.name, "Wine unificado de Vessel")
+    }
+
+    func testManagedWinePathRejectsSymbolicLinkEscapingEngines() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VesselManagedSymlinkTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let engines = tempRoot.appendingPathComponent("Engines")
+        let externalWine = tempRoot.appendingPathComponent("External/bin/wine")
+        let apparentWine = engines
+            .appendingPathComponent(WineEngineLocator.unifiedEngineName)
+            .appendingPathComponent("bin/wine")
+        try FileManager.default.createDirectory(
+            at: externalWine.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: apparentWine.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "#!/bin/sh\nexit 0\n".write(
+            to: externalWine,
+            atomically: true,
+            encoding: .utf8
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: externalWine.path
+        )
+        try FileManager.default.createSymbolicLink(
+            at: apparentWine,
+            withDestinationURL: externalWine
+        )
+
+        XCTAssertFalse(WineEngineLocator.isManagedRuntimePath(
+            apparentWine.path,
+            enginesDirectory: engines.path
+        ))
+        XCTAssertNil(WineEngineLocator.wineBinary(
+            in: WineEngineLocator.unifiedEngineName,
+            enginesDirectory: engines.path
+        ))
+    }
+
+    func testStoredExternalWinePathMigratesToManagedEngine() throws {
+        let engines = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VesselStoredWineTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: engines) }
+
+        let managed = engines
+            .appendingPathComponent(WineEngineLocator.unifiedEngineName)
+            .appendingPathComponent("bin/wine")
+        try FileManager.default.createDirectory(
+            at: managed.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "#!/bin/sh\nexit 0\n".write(to: managed, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: managed.path)
+
+        XCTAssertEqual(
+            WineEngineLocator.repairedStoredWinePath(
+                "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine",
+                enginesDirectory: engines.path
+            ),
+            managed.path
+        )
+        XCTAssertEqual(
+            WineEngineLocator.repairedStoredWinePath(managed.path, enginesDirectory: engines.path),
+            managed.path
+        )
+
+        let quarantined = engines
+            .appendingPathComponent("ExternalRuntimeQuarantine")
+            .appendingPathComponent("wine-full-copy/bin/wine")
+        XCTAssertEqual(
+            WineEngineLocator.repairedStoredWinePath(
+                quarantined.path,
+                enginesDirectory: engines.path
+            ),
+            managed.path
+        )
+    }
+
+    func testManagedDXMTDetectionIgnoresGlobalTools() throws {
+        let engines = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VesselManagedDXMTTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: engines) }
+
+        XCTAssertNil(DependencyManager.findManagedDXMT(enginesDirectory: engines.path))
+
+        let builtins = engines
+            .appendingPathComponent(WineEngineLocator.unifiedEngineName)
+            .appendingPathComponent("lib/wine/x86_64-windows")
+        try FileManager.default.createDirectory(at: builtins, withIntermediateDirectories: true)
+        try Data(repeating: 0x01, count: 1_100_000)
+            .write(to: builtins.appendingPathComponent("d3d11.dll"))
+        try Data([0x01]).write(to: builtins.appendingPathComponent("winemetal.dll"))
+
+        XCTAssertEqual(
+            DependencyManager.findManagedDXMT(enginesDirectory: engines.path),
+            builtins.appendingPathComponent("d3d11.dll").path
+        )
+    }
+
+    func testQuarantinesExternalRuntimeResidueWithoutTouchingManagedEngine() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VesselRuntimeQuarantineTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let activeEngine = tempRoot.appendingPathComponent(WineEngineLocator.fullEngineName)
+        let managedWine = activeEngine.appendingPathComponent("bin/wine")
+        let compatibilityDB = activeEngine
+            .appendingPathComponent("cxcompatdb-home")
+            .appendingPathComponent("compatdb-26.dat")
+        let externalBackup = tempRoot
+            .appendingPathComponent("wine-full-crossover-bak")
+            .appendingPathComponent("lib/wine/x86_64-windows/winewrapper.exe")
+
+        for file in [managedWine, compatibilityDB, externalBackup] {
+            try FileManager.default.createDirectory(
+                at: file.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data([0x01]).write(to: file)
+        }
+
+        let quarantined = try DependencyManager.quarantineExternalRuntimeResidue(
+            enginesDirectory: tempRoot.path
+        )
+
+        XCTAssertEqual(quarantined.count, 2)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: managedWine.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: compatibilityDB.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: externalBackup.path))
+        XCTAssertTrue(quarantined.allSatisfy {
+            $0.hasPrefix(tempRoot.appendingPathComponent("ExternalRuntimeQuarantine").path)
+                && FileManager.default.fileExists(atPath: $0)
+        })
+    }
+
     func testDetectsRecoverableSteamServiceCrash() {
         let output = """
         wine: Unhandled page fault on read access to 00000000 at address 00461342
@@ -184,10 +407,76 @@ final class DependencyManagerTests: XCTestCase {
         )
 
         XCTAssertTrue(source.contains("--disable-gpu --single-process"))
-        XCTAssertTrue(FileManager.default.fileExists(
-            atPath: VesselPaths.devRepoRoot
-                .appendingPathComponent("Resources/steamwebhelper-wrapper.exe").path
+        let wrapper = VesselPaths.devRepoRoot
+            .appendingPathComponent("Resources/steamwebhelper-wrapper.exe").path
+        XCTAssertTrue(FileManager.default.fileExists(atPath: wrapper))
+        XCTAssertTrue(SteamWebHelperWrapperInstaller.isTrustedWrapper(atPath: wrapper))
+    }
+
+    func testManagedCabextractNeverUsesGlobalInstallation() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VesselCabextractTests-\(UUID().uuidString)")
+        let engines = tempRoot.appendingPathComponent("Engines")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let selectedWine = engines
+            .appendingPathComponent(WineEngineLocator.unifiedEngineName)
+            .appendingPathComponent("bin/wine")
+        XCTAssertNil(WineManager.managedCabextractPath(
+            for: selectedWine.path,
+            enginesDirectory: engines.path
         ))
+
+        let externalWine = tempRoot.appendingPathComponent("ExternalWine/bin/wine")
+        let externalCabextract = externalWine.deletingLastPathComponent()
+            .appendingPathComponent("cabextract")
+        try FileManager.default.createDirectory(
+            at: externalCabextract.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        for executable in [externalWine, externalCabextract] {
+            try "#!/bin/sh\nexit 0\n".write(
+                to: executable,
+                atomically: true,
+                encoding: .utf8
+            )
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: executable.path
+            )
+        }
+        XCTAssertNil(WineManager.managedCabextractPath(
+            for: externalWine.path,
+            enginesDirectory: engines.path
+        ))
+
+        let cabextract = engines
+            .appendingPathComponent(WineEngineLocator.fullEngineName)
+            .appendingPathComponent("bin/cabextract")
+        let fullWine = cabextract.deletingLastPathComponent().appendingPathComponent("wine")
+        try FileManager.default.createDirectory(
+            at: cabextract.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        for executable in [fullWine, cabextract] {
+            try "#!/bin/sh\nexit 0\n".write(
+                to: executable,
+                atomically: true,
+                encoding: .utf8
+            )
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: executable.path
+            )
+        }
+
+        XCTAssertEqual(
+            WineManager.managedCabextractPath(
+                for: selectedWine.path,
+                enginesDirectory: engines.path
+            ),
+            cabextract.path
+        )
     }
 
     @MainActor

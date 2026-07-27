@@ -46,3 +46,30 @@ El 24 de julio de 2026 se validó *Noita* desde el botón «Jugar» de la Vessel
 
 Las pruebas unitarias cubren tanto la firma positiva completa como una huella incompleta que no
 puede alterar el enrutamiento.
+
+## Estado de regresión abierto
+
+Una ejecución posterior del mismo 24 de julio invalidó la consolidación definitiva: Noita entró en
+pantalla completa con una superficie mayor que el área visible y, tras comenzar una partida, se
+cerró espontáneamente. La firma y el aislamiento del motor siguen siendo válidos, pero el contrato
+de pantalla/foco y la estabilidad durante juego real vuelven a estar pendientes. No debe marcarse
+como hito cerrado ni usarse como prueba de no regresión hasta completar varios ciclos de arranque,
+cambio de foco y sesión jugable sin desbordamiento ni cierre.
+
+### Diagnóstico de la transición menú → partida
+
+El intento de las 23:12 del mismo día distinguió un segundo fallo que visualmente parecía el mismo
+cierre: después de pulsar «New Game», `noita.exe` y su `wineserver` continuaron vivos durante más de
+cuarenta minutos, la ventana Cocoa 1280×752 siguió perteneciendo al proceso y una captura directa de
+esa ventana conservó el menú renderizado. No hubo `c0000005`, error fatal ni informe de crash. macOS
+había devuelto el primer plano a Vessel durante la transición de superficie, dejando el juego detrás.
+
+Vessel observa ahora durante un intervalo acotado la firma de presentación de la ventana del juego
+(PID, número, posición y tamaño). Si una superficie desaparece o se recrea mientras el juego tenía
+el foco y el primer plano vuelve involuntariamente a Vessel, activa la nueva superficie. Un cambio
+voluntario del usuario hacia cualquier otra aplicación se respeta y un lanzamiento posterior
+invalida el observador anterior. Esta reparación es general para transiciones de superficie Wine;
+no depende del título, AppID ni de parámetros manuales.
+
+La consolidación permanece abierta hasta validar en la aplicación oficial que «New Game» crea un
+mundo, mantiene el proceso y el foco, y permite una sesión real sin desbordamiento ni cierre.

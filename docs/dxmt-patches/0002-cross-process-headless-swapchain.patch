@@ -1,0 +1,248 @@
+diff --git a/src/d3d11/d3d11_swapchain.cpp b/src/d3d11/d3d11_swapchain.cpp
+index 5e9404d..04be7c3 100644
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -119,9 +119,11 @@ public:
+   MTLD3D11SwapChain(
+       IDXGIFactory1 *pFactory, MTLD3D11Device *pDevice, IMTLDXGIDevice *pDXGIDevice,
+        HWND hWnd, const DXGI_SWAP_CHAIN_DESC1 *pDesc,
+-      const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc
++      const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc,
++      bool headless = false
+   ) :
+       MTLDXGISubObject(pDevice),
++      headless_(headless),
+       factory_(pFactory),
+       dxgi_device_(pDXGIDevice),
+       presentation_count_(0),
+@@ -131,20 +133,29 @@ public:
+       monitor_(wsi::getWindowMonitor(hWnd)),
+       hud(WMT::DeveloperHUDProperties::instance()) {
+ 
+-    native_view_ = WMT::CreateMetalViewFromHWND((intptr_t)hWnd, pDevice->GetMTLDevice(), layer_weak_);
++    if (!headless_) {
++      native_view_ = WMT::CreateMetalViewFromHWND((intptr_t)hWnd, pDevice->GetMTLDevice(), layer_weak_);
+ 
+-    if (!native_view_) {
+-      ERR("Failed to create metal view, it seems like your Wine has no exported symbols needed by DXMT.");
+-      abort();
++      if (!native_view_) {
++        ERR("Failed to create metal view, it seems like your Wine has no exported symbols needed by DXMT.");
++        abort();
++      }
++    } else {
++      WARN("MTLD3D11SwapChain: headless swapchain — skipping metal view creation (cross-process hWnd=", (void*)hWnd, ")");
+     }
+ 
+     if constexpr (EnableMetalFX) {
+       scale_factor = std::max(Config::getInstance().getOption<float>("d3d11.metalSpatialUpscaleFactor", 2), 1.0f);
+     }
+ 
+-    presenter = Rc(new Presenter(pDevice->GetMTLDevice(), layer_weak_,
+-                                 pDevice->GetDXMTDevice().queue().cmd_library,
+-                                 scale_factor, desc_.SampleDesc.Count));
++    // In headless mode we own no Metal layer, so there is no presenter. The
++    // backbuffer (a normal Metal texture) is still created below so the game
++    // can render into it; Present just executes GPU work without compositing.
++    if (!headless_) {
++      presenter = Rc(new Presenter(pDevice->GetMTLDevice(), layer_weak_,
++                                   pDevice->GetDXMTDevice().queue().cmd_library,
++                                   scale_factor, desc_.SampleDesc.Count));
++    }
+ 
+     frame_latency = kSwapchainLatency;
+     present_semaphore_ = CreateSemaphore(nullptr, frame_latency,
+@@ -200,14 +211,16 @@ public:
+ 
+     // FIXME: check HRESULT!
+     ResizeBuffers(0, desc_.Width, desc_.Height, DXGI_FORMAT_UNKNOWN, desc_.Flags);
+-    if (!fullscreen_desc_.Windowed)
++    if (!headless_ && !fullscreen_desc_.Windowed)
+       EnterFullscreenMode(nullptr);
+   };
+ 
+   ~MTLD3D11SwapChain() {
+     device_context_->WaitUntilGPUIdle();
+-    WMT::ReleaseMetalView(native_view_);
+-    native_view_ = {};
++    if (!headless_) {
++      WMT::ReleaseMetalView(native_view_);
++      native_view_ = {};
++    }
+     CloseHandle(present_semaphore_);
+   };
+ 
+@@ -362,8 +375,9 @@ public:
+       ERR("DXGI: LeaveFullscreenMode: Failed to exit fullscreen mode");
+       return DXGI_ERROR_NOT_CURRENTLY_AVAILABLE;
+     }
+-    
+-    presenter->changeGammaRamp(nullptr);
++
++    if (!headless_)
++      presenter->changeGammaRamp(nullptr);
+ 
+     return S_OK;
+   }
+@@ -574,6 +588,9 @@ public:
+   };
+ 
+   void ApplyLayerProps() {
++    // Headless swapchain has no Metal layer / presenter; nothing to apply.
++    if (headless_)
++      return;
+     auto target_color_space =
+         ConvertColorSpace(desc_.Format == DXGI_FORMAT_R16G16B16A16_FLOAT
+                               ? DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709
+@@ -759,6 +776,26 @@ public:
+       return hr;
+     }
+ 
++    if (headless_) {
++      // Headless (cross-process) swapchain: run the game's pending GPU work but
++      // do NOT composite to a Metal layer we don't own. Still release the
++      // frame-latency semaphore so waitable swapchains don't stall, and honour
++      // the present boundary so frame pacing stays consistent.
++      auto &cmd_queue = device_->GetDXMTDevice().queue();
++      auto chunk = cmd_queue.CurrentChunk();
++      chunk->signal_frame_latency_fence_ = cmd_queue.CurrentFrameSeq();
++      chunk->emitcc([
++        this, sync_state = SyncFrame(++presentation_count_)
++      ](ArgumentEncodingContext &ctx) mutable {
++        ReleaseSemaphore(present_semaphore_, 1, nullptr);
++        this->UpdateStatistics(ctx.queue().statistics, ctx.currentFrameId());
++      });
++      device_context_->Commit();
++      lock.unlock();
++      cmd_queue.PresentBoundary();
++      return hr;
++    }
++
+     double vsync_duration =
+         std::max(SyncInterval * 1.0 /
+                      (preferred_max_frame_rate ? preferred_max_frame_rate
+@@ -1053,6 +1090,10 @@ private:
+     return edr_value.maximum_potential_edr_color_component_value > 1.0f;
+   };
+ 
++  // When true, this swapchain has no Metal layer/presenter (its window belongs
++  // to another process — e.g. Wine's desktop window). The backbuffer still
++  // exists so the game renders normally, but Present does not composite.
++  bool headless_;
+   Com<IDXGIFactory1> factory_;
+   Com<IMTLDXGIDevice> dxgi_device_;
+   WMT::Object native_view_;
+@@ -1096,11 +1137,16 @@ CreateSwapChain(
+     return DXGI_ERROR_INVALID_CALL;
+   InitReturnPtr(ppSwapChain);
+ 
++  bool headless = false;
+   DWORD window_process_id;
+   GetWindowThreadProcessId(hWnd, &window_process_id);
+   if (GetProcessId(GetCurrentProcess()) != window_process_id) {
+-    ERR("CreateSwapChain: cross-process swapchain not supported yet");
+-    return E_FAIL;
++    // The target window belongs to another process (typically Wine's desktop
++    // window, which has no owning thread → a different PID). We cannot create a
++    // Metal view for it, so build a headless swapchain: the game still gets a
++    // valid backbuffer and Present succeeds, it just isn't composited.
++    WARN("CreateSwapChain: cross-process swapchain → headless mode (hWnd=", (void*)hWnd, ")");
++    headless = true;
+   }
+ 
+   Com<IMTLDXGIDevice> layer_factory;
+@@ -1116,7 +1162,7 @@ CreateSwapChain(
+   if (env::getEnvVar("DXMT_METALFX_SPATIAL_SWAPCHAIN") == "1") {
+     if (pDevice->GetMTLDevice().supportsFXSpatialScaler()) {
+       *ppSwapChain = new MTLD3D11SwapChain<true>(
+-          pFactory, pDevice, layer_factory.ptr(), hWnd, pDesc, pFullscreenDesc
++          pFactory, pDevice, layer_factory.ptr(), hWnd, pDesc, pFullscreenDesc, headless
+       );
+       return S_OK;
+     } else {
+@@ -1124,7 +1170,7 @@ CreateSwapChain(
+     }
+   }
+   *ppSwapChain = new MTLD3D11SwapChain<false>(
+-      pFactory, pDevice, layer_factory.ptr(), hWnd, pDesc, pFullscreenDesc
++      pFactory, pDevice, layer_factory.ptr(), hWnd, pDesc, pFullscreenDesc, headless
+   );
+   return S_OK;
+ };
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index 126041c..af79d1e 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -1597,22 +1597,65 @@ static NTSTATUS
+ _CreateMetalViewFromHWND(void *obj) {
+   struct unixcall_create_metal_view_from_hwnd *params = obj;
+ 
++  macdrv_metal_view (*pfn_macdrv_view_create_metal_view)(macdrv_view v, macdrv_metal_device d) =
++      dlsym(RTLD_DEFAULT, "macdrv_view_create_metal_view");
++  macdrv_metal_layer (*pfn_macdrv_view_get_metal_layer)(macdrv_metal_view v) =
++      dlsym(RTLD_DEFAULT, "macdrv_view_get_metal_layer");
++
++  /* WineHQ 11.x refactorizó el acceso al cocoa_view a `client_surface`. Vessel parchea el
++   * winemac.drv para exportar `macdrv_client_surface_create` + dos helpers estables
++   * (`..._get_cocoa_view` / `..._dxmt_free`), evitando depender del layout interno (que es lo
++   * que rompía a DXMT entre versiones). Se prueba PRIMERO esta vía; si no está, cae a la de 9.9. */
++  /* Vessel: vía PREFERIDA en Wine 11.x — el `client_view` REAL de la ventana (visible y
++   * enganchado), donde el CAMetalLayer se VE. Evita la pantalla negra del client_surface. */
++  macdrv_view (*pfn_get_client_view)(HWND) =
++      dlsym(RTLD_DEFAULT, "macdrv_dxmt_get_client_view");
++  if (pfn_get_client_view && pfn_macdrv_view_create_metal_view && pfn_macdrv_view_get_metal_layer) {
++    macdrv_view client_view = pfn_get_client_view((HWND)params->hwnd);
++    if (client_view) {
++      macdrv_metal_view view = pfn_macdrv_view_create_metal_view(client_view, (macdrv_metal_device)params->device);
++      params->ret_view = (obj_handle_t)view;
++      if (view)
++        params->ret_layer = (obj_handle_t)pfn_macdrv_view_get_metal_layer(view);
++      return STATUS_SUCCESS;
++    }
++  }
++
++  struct macdrv_client_surface *(*pfn_cs_create)(HWND) =
++      dlsym(RTLD_DEFAULT, "macdrv_client_surface_create");
++  macdrv_view (*pfn_cs_get_view)(struct macdrv_client_surface *) =
++      dlsym(RTLD_DEFAULT, "macdrv_client_surface_get_cocoa_view");
++  void (*pfn_cs_free)(struct macdrv_client_surface *) =
++      dlsym(RTLD_DEFAULT, "macdrv_client_surface_dxmt_free");
++
++  if (pfn_cs_create && pfn_cs_get_view && pfn_cs_free &&
++      pfn_macdrv_view_create_metal_view && pfn_macdrv_view_get_metal_layer) {
++    struct macdrv_client_surface *surface = pfn_cs_create((HWND)params->hwnd);
++    if (surface) {
++      macdrv_metal_view view = pfn_macdrv_view_create_metal_view(pfn_cs_get_view(surface),
++                                                                 (macdrv_metal_device)params->device);
++      params->ret_view = (obj_handle_t)view;
++      if (view)
++        params->ret_layer = (obj_handle_t)pfn_macdrv_view_get_metal_layer(view);
++      pfn_cs_free(surface);
++    }
++    return STATUS_SUCCESS;
++  }
++
++  /* Fallback: 3Shain wine 9.9 (get_win_data -> client_cocoa_view). */
+   struct macdrv_win_data *(*pfn_get_win_data)(HWND hwnd) = NULL;
+   void (*pfn_release_win_data)(struct macdrv_win_data *data) = NULL;
+-  macdrv_metal_view (*pfn_macdrv_view_create_metal_view)(macdrv_view v, macdrv_metal_device d) = NULL;
+-  macdrv_metal_layer (*pfn_macdrv_view_get_metal_layer)(macdrv_metal_view v) = NULL;
+-
+   struct macdrv_functions_t *macdrv_functions;
+   if ((macdrv_functions = dlsym(RTLD_DEFAULT, "macdrv_functions"))) {
+     pfn_get_win_data = macdrv_functions->get_win_data;
+     pfn_release_win_data = macdrv_functions->release_win_data;
+-    pfn_macdrv_view_create_metal_view = macdrv_functions->macdrv_view_create_metal_view;
+-    pfn_macdrv_view_get_metal_layer = macdrv_functions->macdrv_view_get_metal_layer;
++    if (!pfn_macdrv_view_create_metal_view)
++      pfn_macdrv_view_create_metal_view = macdrv_functions->macdrv_view_create_metal_view;
++    if (!pfn_macdrv_view_get_metal_layer)
++      pfn_macdrv_view_get_metal_layer = macdrv_functions->macdrv_view_get_metal_layer;
+   } else {
+     pfn_get_win_data = dlsym(RTLD_DEFAULT, "get_win_data");
+     pfn_release_win_data = dlsym(RTLD_DEFAULT, "release_win_data");
+-    pfn_macdrv_view_create_metal_view = dlsym(RTLD_DEFAULT, "macdrv_view_create_metal_view");
+-    pfn_macdrv_view_get_metal_layer = dlsym(RTLD_DEFAULT, "macdrv_view_get_metal_layer");
+   }
+ 
+   if (pfn_get_win_data && pfn_release_win_data && pfn_macdrv_view_create_metal_view &&

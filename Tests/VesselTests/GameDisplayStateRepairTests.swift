@@ -53,6 +53,135 @@ final class GameDisplayStateRepairTests: XCTestCase {
         XCTAssertNil(GameDisplayStateRepair.repairedTinkerlandsOptions("not-json"))
     }
 
+    func testFallingEverythingRepairsRetinaPhysicalWindowWithoutChangingTheMode() throws {
+        let original = [
+            #"<Config "#,
+            #"  application_pause_when_unfocused="1" "#,
+            #"  backbuffer_height="1964" "#,
+            #"  backbuffer_width="3024" "#,
+            #"  config_format_version="14" "#,
+            #"  display_id="0" "#,
+            #"  fullscreen="0" "#,
+            #"  internal_size_h="720" "#,
+            #"  internal_size_w="1280" "#,
+            #"  window_h="1964" "#,
+            #"  window_w="3024" >"#,
+            #"  <Binding name="mouse_left" />"#,
+            #"</Config>"#,
+            ""
+        ].joined(separator: "\r\n")
+
+        let repaired = try XCTUnwrap(GameDisplayStateRepair.repairedFallingEverythingConfig(
+            original,
+            displayMetrics: retinaDisplay
+        ))
+
+        for field in [
+            #"window_w="1280""#,
+            #"window_h="720""#,
+            #"backbuffer_width="1280""#,
+            #"backbuffer_height="720""#,
+            #"fullscreen="0""#,
+            #"application_pause_when_unfocused="1""#,
+            #"<Binding name="mouse_left" />"#
+        ] {
+            XCTAssertTrue(repaired.contains(field), "Falta \(field)")
+        }
+        XCTAssertFalse(repaired.replacingOccurrences(of: "\r\n", with: "").contains("\n"))
+    }
+
+    func testFallingEverythingRespectsValidWindowAndExplicitFullscreenModes() {
+        let validWindow = """
+        <Config application_pause_when_unfocused="1" backbuffer_height="720" backbuffer_width="1280" config_format_version="14" display_id="0" fullscreen="0" internal_size_h="720" internal_size_w="1280" window_h="720" window_w="1280" />
+        """
+        XCTAssertNil(GameDisplayStateRepair.repairedFallingEverythingConfig(
+            validWindow,
+            displayMetrics: retinaDisplay
+        ))
+
+        for mode in [1, 2] {
+            let explicitFullscreen = validWindow
+                .replacingOccurrences(of: #"fullscreen="0""#, with: "fullscreen=\"\(mode)\"")
+                .replacingOccurrences(of: #"window_w="1280""#, with: #"window_w="3024""#)
+                .replacingOccurrences(of: #"window_h="720""#, with: #"window_h="1964""#)
+            XCTAssertNil(GameDisplayStateRepair.repairedFallingEverythingConfig(
+                explicitFullscreen,
+                displayMetrics: retinaDisplay
+            ))
+        }
+
+        XCTAssertNil(GameDisplayStateRepair.repairedFallingEverythingConfig(
+            #"<Config fullscreen="0" window_w="3024" window_h="1964" />"#,
+            displayMetrics: retinaDisplay
+        ))
+    }
+
+    func testFallingEverythingFitsLargeInternalResolutionInsideVisibleFrame() throws {
+        let original = #"<Config application_pause_when_unfocused="1" backbuffer_height="1964" backbuffer_width="3024" config_format_version="14" display_id="0" fullscreen="0" internal_size_h="1080" internal_size_w="1920" window_h="1964" window_w="3024" />"#
+        let repaired = try XCTUnwrap(GameDisplayStateRepair.repairedFallingEverythingConfig(
+            original,
+            displayMetrics: retinaDisplay
+        ))
+
+        XCTAssertTrue(repaired.contains(#"window_w="1512""#))
+        XCTAssertTrue(repaired.contains(#"window_h="850""#))
+        XCTAssertTrue(repaired.contains(#"backbuffer_width="1512""#))
+        XCTAssertTrue(repaired.contains(#"backbuffer_height="850""#))
+    }
+
+    func testFallingEverythingRepairIsStructuralBackedUpAndIdempotent() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "vessel-falling-everything-display-repair-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let configDirectory = root.appendingPathComponent(
+            "drive_c/users/player/AppData/LocalLow/Nolla_Games_Noita/save_shared",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: configDirectory,
+            withIntermediateDirectories: true
+        )
+        let config = configDirectory.appendingPathComponent("config.xml")
+        let original = #"<Config application_pause_when_unfocused="1" backbuffer_height="1964" backbuffer_width="3024" config_format_version="14" display_id="0" fullscreen="0" internal_size_h="720" internal_size_w="1280" window_h="1964" window_w="3024" />"#
+        try original.write(to: config, atomically: true, encoding: .utf8)
+
+        let unrelated = GameDisplayStateRepair.repairBeforeLaunch(
+            appId: nil,
+            executable: root.appendingPathComponent("game.exe").path,
+            prefix: root.path,
+            displayMetrics: retinaDisplay
+        )
+        XCTAssertFalse(unrelated.didRepair)
+        XCTAssertEqual(try String(contentsOf: config, encoding: .utf8), original)
+
+        let first = GameDisplayStateRepair.repairBeforeLaunch(
+            appId: nil,
+            executable: root.appendingPathComponent("game.exe").path,
+            prefix: root.path,
+            displayMetrics: retinaDisplay,
+            isFallingEverything: true
+        )
+        XCTAssertEqual(first.repairedFiles, [config.path])
+        XCTAssertEqual(first.backupFiles, [config.path + ".vessel-display-backup"])
+        XCTAssertTrue(try String(contentsOf: config, encoding: .utf8).contains(#"window_w="1280""#))
+        XCTAssertEqual(
+            try String(contentsOfFile: config.path + ".vessel-display-backup", encoding: .utf8),
+            original
+        )
+
+        let second = GameDisplayStateRepair.repairBeforeLaunch(
+            appId: nil,
+            executable: root.appendingPathComponent("game.exe").path,
+            prefix: root.path,
+            displayMetrics: retinaDisplay,
+            isFallingEverything: true
+        )
+        XCTAssertFalse(second.didRepair)
+        XCTAssertTrue(second.backupFiles.isEmpty)
+    }
+
     func testRepairsEveryWineUserAndCreatesOneTimeBackups() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("vessel-tinkerlands-repair-\(UUID().uuidString)", isDirectory: true)

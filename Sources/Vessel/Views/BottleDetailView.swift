@@ -891,6 +891,37 @@ struct BottleDetailView: View {
             || UserDefaults.standard.bool(forKey: "vessel.steamRealGlobal")
             || wineManager.requiresSteamAppLaunch(exePath)
             || wineManager.officialSteamClientProtection(exePath) != nil
+        // La UI silenciosa del cliente DRM no está diseñada para pedir consentimiento: si Steam
+        // descubre el EULA después de `-applaunch`, CEF materializa una ventana negra antes de que
+        // Vessel pueda cambiar al cliente interactivo. Comparar `appinfo.vdf` con el estado local
+        // permite saltar directamente a la interfaz legible, sin aceptar ni modificar nada por el
+        // usuario. El diagnóstico posterior se conserva como respaldo ante metadatos aún no cacheados.
+        if usesRealSteamLaunch, let appId = game.steamAppId {
+            let appInfoPath = (localBottle.steamDirectory as NSString)
+                .appendingPathComponent("appcache/appinfo.vdf")
+            if let pendingEULAs = SteamEULAPreflight.pendingEULAs(
+                appID: appId,
+                appInfoPath: appInfoPath,
+                steamDirectory: localBottle.steamDirectory
+            ), !pendingEULAs.isEmpty {
+                let licenseNames = pendingEULAs.map(\.name).joined(separator: ", ")
+                log.log(
+                    "Licencia pendiente detectada antes del arranque de Steam: \(licenseNames).",
+                    level: .info
+                )
+                NotificationService.shared.alert(
+                    title: "\(game.name): licencia pendiente",
+                    body: "Steam necesita que revises y aceptes \(licenseNames). Se abrirá directamente su cliente interactivo y Vessel reanudará el juego al terminar.",
+                    actionTitle: "Abrir Steam",
+                    action: .showSteamClient,
+                    steamAppId: appId,
+                    resumeAfterSteamAuthorization: {
+                        await launchGame(game, attempt: attempt + 1)
+                    }
+                )
+                return
+            }
+        }
         // El diagnóstico debe ignorar decisiones antiguas del mismo console_log.txt. Capturar antes
         // de `launch` permite atribuir un ShowEula únicamente a este intento y a este AppID.
         let steamConsoleBaseline = usesRealSteamLaunch

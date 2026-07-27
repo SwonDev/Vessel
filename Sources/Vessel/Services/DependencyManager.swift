@@ -62,8 +62,14 @@ final class DependencyManager {
         case .rosetta:
             return await checkRosetta()
         case .dxmt:
-            let path = await findDXMT()
-            return CheckResult(dependency: dep, installed: path != nil, path: path, version: path != nil ? "0.80" : nil, note: nil)
+            let path = Self.findManagedDXMT(enginesDirectory: enginesDirectory)
+            return CheckResult(
+                dependency: dep,
+                installed: path != nil,
+                path: path,
+                version: path != nil ? "Integrado" : nil,
+                note: path != nil ? "Integrado en un motor gestionado por Vessel" : nil
+            )
         case .dxvk:
             return CheckResult(dependency: dep, installed: true, path: "Bundled con Wine", version: nil, note: nil)
         }
@@ -632,20 +638,92 @@ final class DependencyManager {
     /// Asegura el motor COMPLETO (`wine-full`) para las rutas de juegos que lo necesitan
     /// (UE4, FNA/XNA, Source, Godot-Vulkan, D3D9 32-bit, Unity 32-bit, DirectDraw clásico).
     ///
-    /// **Tarea #47**: desde la 0.0.4 `wine-full` es una **build propia de Vessel de las fuentes
-    /// FOSS de CrossOver 26.2.0** (wine-11.0 + CW HACKs: msync, winemac, wined3d; LGPL) publicada
-    /// en `SwonDev/Vessel-Engines` — redistribuible y autónoma. Antes era una copia manual del
-    /// CrossOver instalado localmente (licencia), que los usuarios sin CrossOver no tenían y por
-    /// tanto esas rutas les fallaban. **NUNCA pisa un wine-full existente**: si el usuario tiene
-    /// el CrossOver real copiado a mano, manda ese (es la referencia; además es el único que
-    /// corre el CEF del cliente Steam — ver `WineEngineLocator.isRealCrossOverFullEngine`).
-    /// Idempotente: si ya hay motor, retorna al instante.
+    /// `wine-full` es una build propia, redistribuible y autónoma publicada en
+    /// `SwonDev/Vessel-Engines`. Una carpeta heredada que contenga un lanzador propietario externo
+    /// se considera inválida y se sustituye por el motor gestionado por Vessel. Idempotente: si ya
+    /// existe una instalación autocontenida y válida, retorna al instante.
     func ensureFullEngine(progress: @escaping @Sendable (String, Double) -> Void = { _, _ in }) async throws {
+        do {
+            let quarantined = try Self.quarantineExternalRuntimeResidue(
+                enginesDirectory: enginesDirectory
+            )
+            if !quarantined.isEmpty {
+                LogStore.shared.log(
+                    "Restos históricos de runtimes externos aislados de forma recuperable (\(quarantined.count)).",
+                    level: .warn
+                )
+            }
+        } catch {
+            // No convierte una carpeta de datos inerte en un bloqueo de lanzamiento. `CX_HOME` no
+            // se exporta y el motor nunca la consulta; el siguiente preflight reintentará aislarla.
+            LogStore.shared.log(
+                "No se pudieron aislar todos los restos históricos del motor: \(error.localizedDescription)",
+                level: .warn
+            )
+        }
         guard !WineEngineLocator.isFullEngineInstalled(enginesDirectory: enginesDirectory) else { return }
         try await installWineFull(progress: progress)
     }
 
-    /// Asegura el perfil aislado para juegos D3D12 que reproducen vídeo mediante Media Foundation.
+    /// Aparta datos y copias heredadas que antiguas versiones podían haber importado desde un
+    /// runtime instalado en el Mac. La operación es deliberadamente recuperable: nunca borra, no
+    /// toca prefijos/juegos y solo reconoce nombres exactos que Vessel ya no consume.
+    ///
+    /// La cuarentena vive fuera de cualquier raíz seleccionable por `WineEngineLocator`, de modo
+    /// que estos archivos no pueden volver a participar en un lanzamiento aunque permanezcan en
+    /// disco para diagnóstico o restauración manual.
+    @discardableResult
+    nonisolated static func quarantineExternalRuntimeResidue(
+        enginesDirectory: String
+    ) throws -> [String] {
+        let fileManager = FileManager.default
+        let engines = URL(fileURLWithPath: enginesDirectory, isDirectory: true)
+        let quarantine = engines.appendingPathComponent(
+            "ExternalRuntimeQuarantine",
+            isDirectory: true
+        )
+
+        let managedEngineNames = [
+            WineEngineLocator.fullEngineName,
+            WineEngineLocator.d3dmetalEngineName,
+            WineEngineLocator.d3dmetalMediaEngineName,
+            WineEngineLocator.unifiedEngineName,
+            WineEngineLocator.steamEngineName
+        ]
+        var candidates = managedEngineNames.map { engineName in
+            (
+                source: engines
+                    .appendingPathComponent(engineName, isDirectory: true)
+                    .appendingPathComponent("cxcompatdb-home", isDirectory: true),
+                label: "\(engineName)-cxcompatdb-home"
+            )
+        }
+        candidates.append((
+            source: engines.appendingPathComponent(
+                "wine-full-crossover-bak",
+                isDirectory: true
+            ),
+            label: "wine-full-external-backup"
+        ))
+
+        var destinations: [String] = []
+        for candidate in candidates where fileManager.fileExists(atPath: candidate.source.path) {
+            try fileManager.createDirectory(
+                at: quarantine,
+                withIntermediateDirectories: true
+            )
+            let destination = quarantine.appendingPathComponent(
+                "\(candidate.label)-\(UUID().uuidString)",
+                isDirectory: true
+            )
+            try fileManager.moveItem(at: candidate.source, to: destination)
+            destinations.append(destination.path)
+        }
+        return destinations
+    }
+
+    /// Asegura el perfil D3DMetal aislado y coherente. Además de los juegos D3D12 con Media
+    /// Foundation, lo usan renderers D3D11 que necesitan el flip-model nativo de Apple.
     ///
     /// La combinación se construye solo con dependencias ya gestionadas por Vessel: núcleo FOSS de
     /// `wine-full`, D3DMetal del motor GPTK, winegstreamer de Gcenx y GStreamer oficial con SHA-256.
@@ -663,7 +741,7 @@ final class DependencyManager {
             throw NSError(
                 domain: "Vessel",
                 code: 104,
-                userInfo: [NSLocalizedDescriptionKey: "No se pudo localizar el núcleo Wine FOSS para el motor multimedia."]
+                userInfo: [NSLocalizedDescriptionKey: "No se pudo localizar el núcleo Wine FOSS para el motor D3DMetal aislado."]
             )
         }
         guard let fiberFixRoot = Bundle.main.resourceURL?.appendingPathComponent(
@@ -679,11 +757,15 @@ final class DependencyManager {
             atPath: fiberFixRoot.appendingPathComponent(
                 "x86_64-windows/ntdll.dll"
             ).path
+        ), FileManager.default.fileExists(
+            atPath: fiberFixRoot.appendingPathComponent(
+                "x86_64-unix/ntdll.so"
+            ).path
         ) else {
             throw NSError(
                 domain: "Vessel",
                 code: 106,
-                userInfo: [NSLocalizedDescriptionKey: "La reparación de fibras del motor multimedia no está incluida o está incompleta."]
+                userInfo: [NSLocalizedDescriptionKey: "La reparación de fibras del motor D3DMetal aislado no está incluida o está incompleta."]
             )
         }
 
@@ -719,9 +801,9 @@ final class DependencyManager {
         )
     }
 
-    /// Descarga la build propia de `wine-full` (fuentes CrossOver 26.2.0) de Vessel-Engines.
+    /// Descarga la build propia y autocontenida de `wine-full` desde Vessel-Engines.
     private func installWineFull(progress: @escaping @Sendable (String, Double) -> Void) async throws {
-        progress("Descargando motor completo (wine-full, fuentes CrossOver 26.2.0)…", 0.05)
+        progress("Descargando motor completo de Vessel (wine-full)…", 0.05)
         let downloadURL = URL(string: "https://github.com/SwonDev/Vessel-Engines/releases/download/engine-full-v2/wine-full.tar.zst")!
         let (tempURL, response) = try await URLSession.shared.download(from: downloadURL)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
@@ -745,8 +827,22 @@ final class DependencyManager {
         let extractedRoot = "\(stagingDir)/\(WineEngineLocator.fullEngineName)"
         let sourceDir = FileManager.default.isExecutableFile(atPath: "\(extractedRoot)/bin/wine")
             ? extractedRoot : stagingDir
-        // Por si una instalación previa dejó algo a medias (el guard de arriba ya cubre el caso sano).
-        try? FileManager.default.removeItem(atPath: finalEngineDir)
+        // Una instalación previa incompleta o un runtime externo nunca se ejecutan. Se conservan
+        // de forma recuperable para diagnóstico en lugar de borrarlos antes de instalar el motor
+        // autocontenido de Vessel.
+        if FileManager.default.fileExists(atPath: finalEngineDir) {
+            let quarantineRoot = "\(enginesDirectory)/ExternalRuntimeQuarantine"
+            try FileManager.default.createDirectory(
+                atPath: quarantineRoot,
+                withIntermediateDirectories: true
+            )
+            let quarantinePath = "\(quarantineRoot)/wine-full-\(UUID().uuidString)"
+            try FileManager.default.moveItem(atPath: finalEngineDir, toPath: quarantinePath)
+            LogStore.shared.log(
+                "Motor completo anterior aislado de forma recuperable antes de instalar la build autónoma de Vessel.",
+                level: .warn
+            )
+        }
         try FileManager.default.moveItem(atPath: sourceDir, toPath: finalEngineDir)
 
         await stripQuarantineRecursive(at: finalEngineDir)
@@ -838,84 +934,27 @@ final class DependencyManager {
         }
     }
 
-    /// **Repara el lanzador (`bin/wine`) del motor completo** para que winetricks pueda usarlo.
-    ///
-    /// El `bin/wine` de `wine-full` es un shim: traduce `wine <args>` →
-    /// `wineloader winewrapper.exe --run -- <args>`. Le faltaban dos cosas que winetricks da por
-    /// hechas, y sin ellas **no instalaba NADA** en este motor — que es justo el de los juegos de
-    /// 32-bit, D3D9, DirectDraw y Unity. O sea: la auto-reparación de runtimes (VC++/.NET) estaba
-    /// muerta ahí, en silencio.
-    ///
-    ///  1. **`wine --version`**: el shim se lo pasaba al winewrapper, que no es quien responde eso.
-    ///     winetricks no obtenía versión ("Your version of wine  is no longer supported") y se
-    ///     rendía. Ahora se responde con el formato real (`wine-11.0`), vía el wineserver del motor.
-    ///  2. **Rutas relativas**: el winewrapper NO resuelve un `.exe` relativo contra el directorio
-    ///     actual (`cannot execute`). winetricks hace `cd` a su caché y llama al instalador por su
-    ///     nombre, así que fallaba siempre. Con la ruta absoluta, el MISMO instalador arranca.
-    ///  3. **`bin/wine64`**: en un prefijo de 64 bits winetricks usa `<dir>/wine64`, que no existía
-    ///     → comando vacío → abortaba. En el WoW64 moderno `wine` y `wine64` son el mismo loader,
-    ///     así que basta un enlace.
-    ///
-    /// Verificado end-to-end: con esto `winetricks dotnet48` instala el .NET Framework 4.8 REAL
-    /// (mscorlib de 5,4 MB, no los 752 KB de wine-mono) y FEZ renderiza.
+    /// Prepara el motor completo autocontenido para herramientas que buscan `bin/wine64`.
+    /// El loader nativo de Vessel ya resuelve `--version` y rutas relativas; nunca debe sustituirse
+    /// por un shim que invoque un lanzador perteneciente a otra aplicación.
     func repairFullEngineShim() async {
         let fm = FileManager.default
         let engineDir = "\(enginesDirectory)/\(WineEngineLocator.fullEngineName)"
-        let shim = "\(engineDir)/bin/wine"
-        guard fm.fileExists(atPath: "\(engineDir)/bin/wineloader"), fm.fileExists(atPath: shim) else { return }
+        guard WineEngineLocator.isFullEngineInstalled(enginesDirectory: enginesDirectory) else {
+            LogStore.shared.log(
+                "Motor completo externo o incompleto rechazado; Vessel instalará su build autocontenida.",
+                level: .warn
+            )
+            return
+        }
+        let wine = "\(engineDir)/bin/wine"
+        guard fm.isExecutableFile(atPath: wine) else { return }
 
-        let marker = "\(engineDir)/.vessel-shim-version"
-        let version = "v2-version-y-rutas-relativas"
-        if (try? String(contentsOfFile: marker, encoding: .utf8))?
-            .trimmingCharacters(in: .whitespacesAndNewlines) == version { return }
-
-        let script = """
-        #!/bin/sh
-        # Lanzador del motor Wine COMPLETO de Vessel. Traduce `wine <args>` →
-        # `wineloader winewrapper.exe --run -- <args>` y fija el entorno del motor. La raíz se deriva
-        # de $0 con expansión de parámetros (builtin), SIN `dirname`: cuando Vessel lanza con `env -i`
-        # no hay PATH y `dirname` no se encontraría.
-        SELF="$0"
-        BIN_DIR="${SELF%/*}"
-        HERE="${BIN_DIR%/*}"
-        export WINELOADER="$HERE/bin/wineloader"
-        export WINESERVER="$HERE/bin/wineserver"
-        export WINEDLLPATH="$HERE/lib/wine/x86_64-windows:$HERE/lib/wine/i386-windows:$HERE/lib/wine"
-
-        # `--version` es una pregunta al motor, no un programa: no puede ir al winewrapper. winetricks
-        # arranca preguntándola y, sin respuesta, se rinde sin instalar nada.
-        case "$1" in
-            --version|-v)
-                v=$("$HERE/bin/wineserver" --version 2>/dev/null | sed 's/^Wine /wine-/')
-                echo "${v:-wine-11.0}"
-                exit 0
-                ;;
-        esac
-
-        # El winewrapper no resuelve rutas relativas contra el directorio actual (`cannot execute`).
-        # Solo se toca el primer argumento, y solo si de verdad es un archivo de este directorio:
-        # `wine cmd.exe /c …` y `wine C:\\ruta\\x.exe` siguen intactos (los resuelve el wrapper).
-        prog="$1"
-        case "$prog" in
-            -*|"") ;;
-            /*)    ;;
-            *)     if [ -f "$PWD/$prog" ]; then shift; set -- "$PWD/$prog" "$@"; fi ;;
-        esac
-
-        exec "$HERE/bin/wineloader" "$HERE/lib/wine/x86_64-windows/winewrapper.exe" --run -- "$@"
-        """
-        // El original se guarda una vez, por si hubiera que volver atrás sin re-descargar el motor.
-        let backup = "\(shim).vessel-orig"
-        if !fm.fileExists(atPath: backup) { try? fm.copyItem(atPath: shim, toPath: backup) }
-        guard (try? script.write(toFile: shim, atomically: true, encoding: .utf8)) != nil else { return }
-        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: shim)
         // `wine64`: mismo loader (WoW64 moderno). winetricks lo exige en prefijos de 64 bits.
         let wine64 = "\(engineDir)/bin/wine64"
         if !fm.fileExists(atPath: wine64) {
             try? fm.createSymbolicLink(atPath: wine64, withDestinationPath: "wine")
         }
-        try? version.write(toFile: marker, atomically: true, encoding: .utf8)
-        LogStore.shared.log("Motor completo: lanzador reparado (winetricks ya puede instalar runtimes en él).", level: .info)
     }
 
     /// **Motor v3** — actualiza en caliente la cadena crypto + fuentes del motor unificado a la
@@ -1204,8 +1243,11 @@ final class DependencyManager {
 
     /// Descarga e instala **Goldberg / gbe_fork** (emulador de la Steamworks API)
     /// en `Cache/goldberg`. El asset es un `.7z` que `tar` (libarchive) extrae.
-    /// Copia los `steam_api(64).dll` de la build *experimental* (autodetecta
-    /// interfaces, sin necesitar `steam_interfaces.txt`).
+    /// Conserva por separado las builds `regular` y `experimental`. La regular
+    /// es el núcleo estable que Vessel aplica por defecto; la experimental añade
+    /// hooks de red/overlay/carga de DLL y queda disponible únicamente para una
+    /// futura selección basada en evidencia. `GoldbergManager` genera siempre el
+    /// `steam_interfaces.txt` exacto a partir del DLL original del juego.
     func installGoldberg(
         from downloadURL: URL,
         progress: @escaping @Sendable (String, Double) -> Void
@@ -1231,19 +1273,32 @@ final class DependencyManager {
         progress("Extrayendo Goldberg…", 0.5)
         try await extractTar(at: tempURL, to: URL(fileURLWithPath: stagingDir))
 
-        let base = "\(stagingDir)/release/experimental"
         let pairs = [
-            ("\(base)/x64/steam_api64.dll", "\(cacheDir)/steam_api64.dll"),
-            ("\(base)/x86/steam_api.dll", "\(cacheDir)/steam_api.dll")
+            ("\(stagingDir)/release/regular/x64/steam_api64.dll", "\(cacheDir)/steam_api64.regular.dll"),
+            ("\(stagingDir)/release/regular/x86/steam_api.dll", "\(cacheDir)/steam_api.regular.dll"),
+            ("\(stagingDir)/release/experimental/x64/steam_api64.dll", "\(cacheDir)/steam_api64.experimental.dll"),
+            ("\(stagingDir)/release/experimental/x86/steam_api.dll", "\(cacheDir)/steam_api.experimental.dll"),
         ]
         for (src, dst) in pairs where FileManager.default.fileExists(atPath: src) {
             try? FileManager.default.removeItem(atPath: dst)
             try FileManager.default.copyItem(atPath: src, toPath: dst)
         }
 
-        guard FileManager.default.fileExists(atPath: "\(cacheDir)/steam_api64.dll") else {
+        let stable64 = "\(cacheDir)/steam_api64.regular.dll"
+        let stable32 = "\(cacheDir)/steam_api.regular.dll"
+        guard FileManager.default.fileExists(atPath: stable64),
+              FileManager.default.fileExists(atPath: stable32) else {
             throw NSError(domain: "Vessel", code: 31,
-                          userInfo: [NSLocalizedDescriptionKey: "Goldberg se descargó pero no se encontró steam_api64.dll en el paquete."])
+                          userInfo: [NSLocalizedDescriptionKey: "Goldberg se descargó pero no se encontraron sus librerías estables en el paquete."])
+        }
+        // Alias de compatibilidad para herramientas auxiliares antiguas. Nunca se
+        // enlaza a la variante experimental bajo estos nombres ambiguos.
+        for (src, dst) in [
+            (stable64, "\(cacheDir)/steam_api64.dll"),
+            (stable32, "\(cacheDir)/steam_api.dll"),
+        ] {
+            try? FileManager.default.removeItem(atPath: dst)
+            try FileManager.default.copyItem(atPath: src, toPath: dst)
         }
         progress("✓ Goldberg listo", 1.0)
     }
@@ -1410,14 +1465,26 @@ final class DependencyManager {
 
     // MARK: - DXMT (D3D→Metal nativo ARM)
 
-    private func findDXMT() async -> String? {
-        let candidates = [
-            "\(enginesDirectory)/dxmt/dxmt64",
-            "/usr/local/bin/dxmt64",
-            "/opt/homebrew/bin/dxmt64",
+    nonisolated static func findManagedDXMT(enginesDirectory: String) -> String? {
+        let fileManager = FileManager.default
+        let engineNames = [
+            WineEngineLocator.unifiedEngineName,
+            WineEngineLocator.mousefixEngineName,
+            WineEngineLocator.dxmtEngineName,
+            WineEngineLocator.d3dmetalEngineName,
+            WineEngineLocator.d3dmetalMediaEngineName
         ]
-        for c in candidates {
-            if FileManager.default.isExecutableFile(atPath: c) { return c }
+        for engineName in engineNames {
+            let builtins = URL(fileURLWithPath: enginesDirectory, isDirectory: true)
+                .appendingPathComponent(engineName, isDirectory: true)
+                .appendingPathComponent("lib/wine/x86_64-windows", isDirectory: true)
+            let d3d11 = builtins.appendingPathComponent("d3d11.dll")
+            let winemetal = builtins.appendingPathComponent("winemetal.dll")
+            guard fileManager.fileExists(atPath: winemetal.path),
+                  let size = (try? fileManager.attributesOfItem(atPath: d3d11.path)[.size]
+                    as? NSNumber)?.uint64Value,
+                  size > 1_000_000 else { continue }
+            return d3d11.path
         }
         return nil
     }

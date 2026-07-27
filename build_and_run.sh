@@ -6,6 +6,8 @@ BUNDLE_ID="com.swondev.vessel"
 BUILD_DIR="build"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
 ICON_PATH="Resources/icon.icns"
+STEAM_WRAPPER_PATH="Resources/steamwebhelper-wrapper.exe"
+STEAM_WRAPPER_SHA256="dcb623bd8db4ffdffffc0e1686bdfb3f9595ddaa2474f0d62d1c451957026bf5"
 
 # Versión: ÚNICA fuente de verdad en VERSION.txt ("X.Y.Z<TAB>N" → versión visible + build incremental).
 # La usa el Info.plist de abajo y `release.sh` al publicar. Súbela con: ./release.sh <X.Y.Z>
@@ -40,7 +42,16 @@ if [ -d "$SPARKLE_FW" ]; then
     cp -R "$SPARKLE_FW" "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
 fi
 [ -f "$ICON_PATH" ] && cp "$ICON_PATH" "$APP_BUNDLE/Contents/Resources/icon.icns"
-[ -f "Resources/steamwebhelper-wrapper.exe" ] && cp "Resources/steamwebhelper-wrapper.exe" "$APP_BUNDLE/Contents/Resources/steamwebhelper-wrapper.exe"
+if [ ! -f "$STEAM_WRAPPER_PATH" ]; then
+    echo "ERROR: falta el wrapper gráfico verificado de Steam: $STEAM_WRAPPER_PATH" >&2
+    exit 1
+fi
+ACTUAL_STEAM_WRAPPER_SHA256=$(shasum -a 256 "$STEAM_WRAPPER_PATH" | awk '{print $1}')
+if [ "$ACTUAL_STEAM_WRAPPER_SHA256" != "$STEAM_WRAPPER_SHA256" ]; then
+    echo "ERROR: el wrapper gráfico de Steam no supera la verificación SHA-256." >&2
+    exit 1
+fi
+cp "$STEAM_WRAPPER_PATH" "$APP_BUNDLE/Contents/Resources/steamwebhelper-wrapper.exe"
 # Helper vessel-spawn: desacopla los procesos Wine de la identidad de la app (responsible process),
 # imprescindible para que el CEF de Steam del motor completo cree su ventana desde la .app.
 [ -f "Resources/vessel-spawn" ] && cp "Resources/vessel-spawn" "$APP_BUNDLE/Contents/Resources/vessel-spawn" && chmod +x "$APP_BUNDLE/Contents/Resources/vessel-spawn" && codesign --force --sign - "$APP_BUNDLE/Contents/Resources/vessel-spawn" 2>/dev/null
@@ -51,7 +62,7 @@ fi
 [ -f "Resources/dpapi-seal.exe" ] && cp "Resources/dpapi-seal.exe" "$APP_BUNDLE/Contents/Resources/dpapi-seal.exe"
 # Certificados raíz DigiCert (validación TLS del login/CM de Steam — cadena EV ECDSA)
 [ -f "Resources/steam-certs.reg" ] && cp "Resources/steam-certs.reg" "$APP_BUNDLE/Contents/Resources/steam-certs.reg"
-[ -f "Resources/crossover-compat-overrides.reg" ] && cp "Resources/crossover-compat-overrides.reg" "$APP_BUNDLE/Contents/Resources/crossover-compat-overrides.reg"
+[ -f "Resources/vessel-compat-overrides.reg" ] && cp "Resources/vessel-compat-overrides.reg" "$APP_BUNDLE/Contents/Resources/vessel-compat-overrides.reg"
 # Logos oficiales de las tiendas (sidebar)
 [ -d "Resources/StoreLogos" ] && cp Resources/StoreLogos/*.png "$APP_BUNDLE/Contents/Resources/" 2>/dev/null || true
 # Logo de marca de Vessel (cabecera del sidebar)

@@ -16,7 +16,7 @@ import CoreGraphics
 @MainActor
 enum LaunchDiagnostics {
     /// Categoría del fallo detectado.
-    enum Category {
+    enum Category: Equatable {
         case graphics, missingLibrary, dotNet, crash, vulkan, mouse, steam
         /// ¿Se puede intentar arreglar reintentando con OTRO motor/capa gráfica?
         var isEngineRetryable: Bool {
@@ -82,11 +82,12 @@ enum LaunchDiagnostics {
             title: "No se pudieron iniciar los gráficos",
             body: "El juego no logró inicializar Direct3D 11 (Metal). Lo reintentamos con otra capa gráfica automáticamente; si persiste, prueba «Verificar / reparar»."),
         Signature(
-            markers: ["c0000135", "could not load kernel32", "was not found", "The program can't start",
-                      "api-ms-win", "VCRUNTIME140", "MSVCP140", "vcruntime"],
-            category: .missingLibrary,
-            title: "Falta una librería del sistema",
-            body: "El juego pide una dependencia que no está en el entorno (normalmente Visual C++ o .NET). Prueba a «Verificar / reparar»."),
+            markers: ["EXCEPTION_ACCESS_VIOLATION", "Unhandled page fault", "Crash!!!", "Crash: SIGSEGV",
+                      "Obtained 0 stack frames", "========== OUTPUTTING STACK TRACE",
+                      "Exception frame is not in stack limits", "unable to dispatch exception"],
+            category: .crash,
+            title: "El juego crasheó al cargar",
+            body: "El juego se cerró nada más arrancar. Probamos con otra capa gráfica; si persiste, «Verificar / reparar»."),
         Signature(
             // OJO: NO usar "Mono path" ni "il2cpp" como marcadores — TODOS los juegos Unity los
             // imprimen normalmente (no son errores) y daban un falso positivo de ".NET/Mono missing"
@@ -104,10 +105,15 @@ enum LaunchDiagnostics {
             title: "Falta el runtime .NET/Mono",
             body: "El juego necesita .NET o Mono y no está disponible. «Verificar / reparar» puede ayudar."),
         Signature(
-            markers: ["Crash!!!", "Crash: SIGSEGV", "Obtained 0 stack frames", "========== OUTPUTTING STACK TRACE"],
-            category: .crash,
-            title: "El juego crasheó al cargar",
-            body: "El juego se cerró nada más arrancar. Probamos con otra capa gráfica; si persiste, «Verificar / reparar»."),
+            // Un `c0000135` aislado NO demuestra que al juego le falte un runtime: Wine lo emite
+            // también cuando su servicio auxiliar `wineusb` no está disponible. `failure(in:)`
+            // exige además una línea de error que identifique una DLL concreta antes de devolver
+            // esta categoría, evitando instalaciones especulativas que alteren un prefijo sano.
+            markers: ["c0000135", "could not load kernel32", "not found", "The program can't start",
+                      "api-ms-win", "VCRUNTIME140", "MSVCP140", "vcruntime"],
+            category: .missingLibrary,
+            title: "Falta una librería del sistema",
+            body: "El juego pide una dependencia que no está en el entorno (normalmente Visual C++ o .NET). Prueba a «Verificar / reparar»."),
         Signature(
             markers: ["VK_ERROR", "Failed to create device", "DxvkAdapter", "VK_ERROR_FEATURE_NOT_PRESENT",
                       "vkCreateDevice"],
@@ -124,13 +130,26 @@ enum LaunchDiagnostics {
     /// Revisa los logs recientes y devuelve el fallo detectado (o `nil` si el juego arrancó bien).
     static func detect(prefix: String) -> Failure? {
         let haystack = recentLogText(prefix: prefix)
+        return failure(in: haystack)
+    }
+
+    /// Clasifica una generación de log ya acotada. Se separa de la lectura de disco para probar
+    /// regresiones con trazas reales y, sobre todo, para que un fallo auxiliar de Wine nunca se
+    /// convierta en una reparación destructiva del runtime del juego.
+    static func failure(in haystack: String) -> Failure? {
         guard !haystack.isEmpty else { return nil }
         for sig in signatures where sig.markers.contains(where: { haystack.contains($0) }) {
+            let missingLibrary = sig.category == .missingLibrary
+                ? missingLibraryName(in: haystack)
+                : nil
+            if sig.category == .missingLibrary, missingLibrary == nil {
+                continue
+            }
             return Failure(
                 category: sig.category,
                 title: sig.title,
                 body: sig.body,
-                missingLibrary: sig.category == .missingLibrary ? missingLibraryName(in: haystack) : nil
+                missingLibrary: missingLibrary
             )
         }
         return nil
@@ -185,6 +204,20 @@ enum LaunchDiagnostics {
     /// de DLL o del motor produciría un falso positivo persistente y ocultaría la causa verdadera.
     static func shouldRetryWithRealSteam(_ failure: Failure?) -> Bool {
         failure?.category == .steam
+    }
+
+    /// Una reparación automática de runtimes necesita evidencia concreta. Los fallos .NET llevan
+    /// firmas explícitas; una librería nativa solo se repara cuando el parser extrajo su nombre.
+    static func shouldAttemptRuntimeRepair(_ failure: Failure?) -> Bool {
+        guard let failure else { return false }
+        switch failure.category {
+        case .dotNet:
+            return true
+        case .missingLibrary:
+            return failure.missingLibrary != nil
+        default:
+            return false
+        }
     }
 
     /// Monitoriza el arranque y, si detecta un fallo recuperable, **relanza con la otra capa
@@ -352,7 +385,7 @@ enum LaunchDiagnostics {
             // Cambiar de capa gráfica no lo arregla → se identifica el componente exacto, se instala
             // de forma desatendida y solo se relanza si la reparación terminó correctamente.
             if failed, attempt < 1, let retryRuntime = retryWithRuntimeFix,
-               failure?.category == .missingLibrary || failure?.category == .dotNet {
+               shouldAttemptRuntimeRepair(failure) {
                 LogStore.shared.log("\(gameTitle): falta un runtime de Windows → identificándolo, instalándolo y relanzando…", level: .info)
                 NotificationService.shared.notify(title: "Reparando automáticamente: \(gameTitle)",
                                                   body: "Instalando el componente de Windows que necesita el juego…")
@@ -380,7 +413,7 @@ enum LaunchDiagnostics {
             // siempre arranca con otro (Metal/DXMT ↔ D3DMetal ↔ wined3d). Excepción: `.steam` y
             // `.mouse` tienen su propia reparación (Goldberg / relanzar), no ciclo de motores.
             let dedicatedRepair = failure?.category == .steam || failure?.category == .mouse
-                || failure?.category == .missingLibrary || failure?.category == .dotNet
+                || shouldAttemptRuntimeRepair(failure)
             let maxAttempts = max(3, fallbackLayers.count)
             if !alive, !dedicatedRepair, attempt < maxAttempts,
                let next = nextSensibleLayer(after: currentLayer, in: fallbackLayers) {

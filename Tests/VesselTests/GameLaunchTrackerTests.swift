@@ -65,6 +65,27 @@ final class GameLaunchTrackerTests: XCTestCase {
         XCTAssertEqual(tracker.state(id), .idle)
     }
 
+    func testRecordsTheRootProcessExitStatusWithoutChangingTracking() async throws {
+        let id = "tracker-exit-diagnostics-\(UUID().uuidString)"
+        var records: [String] = []
+        let tracker = GameLaunchTracker(
+            recordProcessTermination: { records.append($0) }
+        )
+
+        await tracker.track(id) {
+            let launcher = Process()
+            launcher.executableURL = URL(fileURLWithPath: "/bin/sh")
+            launcher.arguments = ["-c", "exit 7"]
+            try launcher.run()
+            return launcher
+        }
+
+        await waitUntilIdle(id, tracker: tracker)
+
+        XCTAssertEqual(records, ["Proceso de lanzamiento terminado con código 7."])
+        XCTAssertEqual(tracker.state(id), .idle)
+    }
+
     func testDetachedProcessFamilyKeepsRunningStateUntilTheRealGameCloses() async throws {
         let id = "tracker-detached-\(UUID().uuidString)"
         let probe = ProbeState()

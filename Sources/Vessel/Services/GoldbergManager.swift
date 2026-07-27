@@ -20,6 +20,18 @@ final class GoldbergManager {
     private let dependencyManager = DependencyManager()
     private let cacheDirectoryOverride: String?
 
+    /// La distribución de gbe_fork incluye dos familias distintas. La build
+    /// `regular` es el núcleo estable de Steamworks; la `experimental` añade
+    /// hooks de sockets, carga de DLL y overlay. Esas extensiones no son
+    /// necesarias para los juegos legítimos de la biblioteca y pueden introducir
+    /// hilos/hooks adicionales en procesos WoW64. Vessel conserva ambas para
+    /// diagnóstico y compatibilidad futura, pero nunca usa la experimental como
+    /// opción general.
+    enum LibraryVariant: String {
+        case regular
+        case experimental
+    }
+
     init(cacheDirectoryOverride: String? = nil) {
         self.cacheDirectoryOverride = cacheDirectoryOverride
     }
@@ -37,10 +49,26 @@ final class GoldbergManager {
     ]
 
     var cacheDir: String { cacheDirectoryOverride ?? "\(VesselPaths.cacheDirectory)/goldberg" }
-    var steamApi64Path: String { "\(cacheDir)/steam_api64.dll" }
-    var steamApi32Path: String { "\(cacheDir)/steam_api.dll" }
+    var regularSteamApi64Path: String { "\(cacheDir)/steam_api64.regular.dll" }
+    var regularSteamApi32Path: String { "\(cacheDir)/steam_api.regular.dll" }
+    var experimentalSteamApi64Path: String { "\(cacheDir)/steam_api64.experimental.dll" }
+    var experimentalSteamApi32Path: String { "\(cacheDir)/steam_api.experimental.dll" }
 
-    var isInstalled: Bool { FileManager.default.fileExists(atPath: steamApi64Path) }
+    /// Compatibilidad con cachés de pruebas/instalaciones antiguas. En producción,
+    /// `ensureInstalled` exige los artefactos versionados y migra el antiguo caché
+    /// (que contenía la build experimental bajo un nombre ambiguo).
+    var steamApi64Path: String { libraryPath(is64Bit: true, variant: .regular) }
+    var steamApi32Path: String { libraryPath(is64Bit: false, variant: .regular) }
+
+    var isInstalled: Bool {
+        let fm = FileManager.default
+        let hasStablePair = fm.fileExists(atPath: regularSteamApi64Path)
+            && fm.fileExists(atPath: regularSteamApi32Path)
+        if cacheDirectoryOverride == nil { return hasStablePair }
+        return hasStablePair
+            || (fm.fileExists(atPath: "\(cacheDir)/steam_api64.dll")
+                && fm.fileExists(atPath: "\(cacheDir)/steam_api.dll"))
+    }
 
     func ensureInstalled(progress: @escaping @Sendable (String, Double) -> Void) async throws {
         if isInstalled { return }
@@ -50,6 +78,20 @@ final class GoldbergManager {
                 NSLocalizedDescriptionKey: "Goldberg se instaló pero no se pudo autodetectar."
             ])
         }
+    }
+
+    private func libraryPath(is64Bit: Bool, variant: LibraryVariant) -> String {
+        let profiled: String
+        switch (is64Bit, variant) {
+        case (true, .regular): profiled = regularSteamApi64Path
+        case (false, .regular): profiled = regularSteamApi32Path
+        case (true, .experimental): profiled = experimentalSteamApi64Path
+        case (false, .experimental): profiled = experimentalSteamApi32Path
+        }
+        if FileManager.default.fileExists(atPath: profiled) { return profiled }
+        // Solo para fixtures antiguos y durante la migración del caché. La ruta
+        // productiva vuelve a descargar antes de llegar aquí.
+        return "\(cacheDir)/\(is64Bit ? "steam_api64.dll" : "steam_api.dll")"
     }
 
     // MARK: - Aplicar/restaurar en el juego
@@ -499,13 +541,11 @@ final class GoldbergManager {
     }
 
     /// Reemplaza un DLL del juego por el de Goldberg. Respalda el original una sola
-    /// vez. Si el DLL del juego ya coincide en tamaño con el de Goldberg, asume que
-    /// ya está aplicado y no hace nada.
+    /// vez. La igualdad se comprueba por contenido: dos DLL distintos pueden tener
+    /// exactamente el mismo tamaño y nunca deben confundirse.
     private func replaceDLL(at gamePath: String, with goldbergPath: String, fm: FileManager) -> Bool {
         guard fm.fileExists(atPath: goldbergPath), fm.fileExists(atPath: gamePath) else { return false }
-        let goldbergSize = (try? fm.attributesOfItem(atPath: goldbergPath)[.size] as? UInt64) ?? 0
-        let gameSize = (try? fm.attributesOfItem(atPath: gamePath)[.size] as? UInt64) ?? 0
-        if gameSize == goldbergSize { return true } // ya es Goldberg
+        if fm.contentsEqual(atPath: gamePath, andPath: goldbergPath) { return true }
         let backup = "\(gamePath).vessel-orig"
         if !fm.fileExists(atPath: backup) {
             try? fm.copyItem(atPath: gamePath, toPath: backup)

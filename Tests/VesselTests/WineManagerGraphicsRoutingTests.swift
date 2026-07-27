@@ -5,6 +5,70 @@ import XCTest
 
 @MainActor
 final class WineManagerGraphicsRoutingTests: XCTestCase {
+    func testD3DMetalPrefixBuiltinRepairReplacesStaleEngineDLLsAtomically() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vessel-d3dmetal-prefix-repair-\(UUID().uuidString)", isDirectory: true)
+        let engine = root.appendingPathComponent("wine-d3dmetal", isDirectory: true)
+        let wine = engine.appendingPathComponent("bin/wine")
+        let engineBuiltins = engine.appendingPathComponent(
+            "lib/wine/x86_64-windows",
+            isDirectory: true
+        )
+        let system32 = root.appendingPathComponent(
+            "prefix/drive_c/windows/system32",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: wine.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(at: engineBuiltins, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: system32, withIntermediateDirectories: true)
+        try Data("wine".utf8).write(to: wine)
+
+        let engineD3D11 = Data("D3DMetal D3D11 builtin".utf8)
+        let engineDXGI = Data("D3DMetal DXGI builtin".utf8)
+        try engineD3D11.write(to: engineBuiltins.appendingPathComponent("d3d11.dll"))
+        try engineDXGI.write(to: engineBuiltins.appendingPathComponent("dxgi.dll"))
+        try Data("stale WineD3D builtin".utf8).write(
+            to: system32.appendingPathComponent("d3d11.dll")
+        )
+        try engineDXGI.write(to: system32.appendingPathComponent("dxgi.dll"))
+        let unrelated = system32.appendingPathComponent("user32.dll")
+        try Data("must remain untouched".utf8).write(to: unrelated)
+
+        let repaired = WineManager.synchronizeD3DMetalD3D11PrefixBuiltins(
+            prefixPath: root.appendingPathComponent("prefix").path,
+            engineWine: wine.path
+        )
+
+        XCTAssertEqual(repaired, ["d3d11.dll"])
+        XCTAssertEqual(
+            try Data(contentsOf: system32.appendingPathComponent("d3d11.dll")),
+            engineD3D11
+        )
+        XCTAssertEqual(try Data(contentsOf: unrelated), Data("must remain untouched".utf8))
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: system32.appendingPathComponent("d3d10.dll").path
+            )
+        )
+
+        XCTAssertTrue(
+            WineManager.synchronizeD3DMetalD3D11PrefixBuiltins(
+                prefixPath: root.appendingPathComponent("prefix").path,
+                engineWine: wine.path
+            ).isEmpty,
+            "La segunda pasada debe detectar que el prefijo ya refleja el motor."
+        )
+        XCTAssertTrue(
+            (try FileManager.default.contentsOfDirectory(atPath: system32.path))
+                .allSatisfy { !$0.hasPrefix(".vessel-") },
+            "No deben quedar temporales tras la sustitución atómica."
+        )
+    }
+
     func testProtectedSteamSupervisorOutlivesLargeFirstCloudSync() {
         XCTAssertGreaterThanOrEqual(
             WineManager.protectedSteamExecutableAppearanceTimeoutSeconds,
@@ -1382,6 +1446,10 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [.dxmt])
         XCTAssertTrue(manager.usesLegacySDL2OpenGLScaling(executable.path))
         XCTAssertTrue(manager.structuralRuntimeInvalidatesLearnedGraphicsOverride(executable.path))
+        XCTAssertEqual(
+            WineManager.fallingEverythingDiagnosticWineDebug,
+            "err+all,+seh,+loaddll,+timestamp"
+        )
     }
 
     func testIncompleteFallingEverythingFingerprintCannotChangeRoutingOrScale() throws {
@@ -2648,6 +2716,98 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         ))
     }
 
+    func testGameFocusIsRestoredOnlyAfterPresentationTransitionBackToVessel() {
+        let previous = WineManager.WindowPresentationSignature(
+            pid: 202,
+            windowNumber: 10,
+            originX: 0,
+            originY: 0,
+            width: 1512,
+            height: 982
+        )
+        let recreated = WineManager.WindowPresentationSignature(
+            pid: 202,
+            windowNumber: 11,
+            originX: 116,
+            originY: 99,
+            width: 1280,
+            height: 752
+        )
+
+        XCTAssertTrue(WineManager.shouldRestoreFocusAfterGameWindowTransition(
+            previousPresentation: previous,
+            currentPresentation: recreated,
+            previousWasGameActive: true,
+            currentIsGameActive: false,
+            windowWasMissing: false,
+            recentPresentationChange: false,
+            currentFrontmostPID: 404,
+            vesselPID: 404
+        ))
+        XCTAssertFalse(WineManager.shouldRestoreFocusAfterGameWindowTransition(
+            previousPresentation: previous,
+            currentPresentation: previous,
+            previousWasGameActive: true,
+            currentIsGameActive: false,
+            windowWasMissing: false,
+            recentPresentationChange: false,
+            currentFrontmostPID: 404,
+            vesselPID: 404
+        ))
+        XCTAssertFalse(WineManager.shouldRestoreFocusAfterGameWindowTransition(
+            previousPresentation: previous,
+            currentPresentation: recreated,
+            previousWasGameActive: true,
+            currentIsGameActive: false,
+            windowWasMissing: false,
+            recentPresentationChange: false,
+            currentFrontmostPID: 505,
+            vesselPID: 404
+        ))
+        XCTAssertFalse(WineManager.shouldRestoreFocusAfterGameWindowTransition(
+            previousPresentation: previous,
+            currentPresentation: recreated,
+            previousWasGameActive: false,
+            currentIsGameActive: false,
+            windowWasMissing: false,
+            recentPresentationChange: false,
+            currentFrontmostPID: 404,
+            vesselPID: 404
+        ))
+    }
+
+    func testGameFocusRestoresAfterBriefWindowDisappearance() {
+        let presentation = WineManager.WindowPresentationSignature(
+            pid: 202,
+            windowNumber: 10,
+            originX: 0,
+            originY: 0,
+            width: 1280,
+            height: 752
+        )
+
+        XCTAssertTrue(WineManager.shouldRestoreFocusAfterGameWindowTransition(
+            previousPresentation: presentation,
+            currentPresentation: presentation,
+            previousWasGameActive: true,
+            currentIsGameActive: false,
+            windowWasMissing: true,
+            recentPresentationChange: false,
+            currentFrontmostPID: nil,
+            vesselPID: 404
+        ))
+        XCTAssertFalse(WineManager.shouldRestoreFocusAfterGameWindowTransition(
+            previousPresentation: presentation,
+            currentPresentation: presentation,
+            previousWasGameActive: true,
+            currentIsGameActive: true,
+            windowWasMissing: true,
+            recentPresentationChange: false,
+            currentFrontmostPID: 202,
+            vesselPID: 404
+        ))
+    }
+
     func testForcedDXMTIsReportedAsDXMTForDynamic64BitGame() throws {
         let executable = try makePE64(named: "dynamic.exe")
         defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
@@ -3774,6 +3934,62 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         )
     }
 
+    func testGFDTripleBufferedD3D11ContractRequiresD3DMetalStructurally() throws {
+        XCTAssertTrue(WineManager.requiresD3DMetalFlipModelPresentation(
+            importedLibraries: ["D3D11.dll", "DXGI.dll", "steam_api64.dll"],
+            containsGFDHighShaderRuntime: true,
+            containsGFDAsyncShaderCache: true,
+            containsGFDScenePass: true,
+            is64Bit: true
+        ))
+        XCTAssertFalse(WineManager.requiresD3DMetalFlipModelPresentation(
+            importedLibraries: ["D3D11.dll", "steam_api64.dll"],
+            containsGFDHighShaderRuntime: true,
+            containsGFDAsyncShaderCache: true,
+            containsGFDScenePass: true,
+            is64Bit: true
+        ))
+        XCTAssertFalse(WineManager.requiresD3DMetalFlipModelPresentation(
+            importedLibraries: ["D3D11.dll", "DXGI.dll"],
+            containsGFDHighShaderRuntime: true,
+            containsGFDAsyncShaderCache: false,
+            containsGFDScenePass: true,
+            is64Bit: true
+        ))
+        XCTAssertFalse(WineManager.requiresD3DMetalFlipModelPresentation(
+            importedLibraries: ["D3D11.dll", "DXGI.dll"],
+            containsGFDHighShaderRuntime: true,
+            containsGFDAsyncShaderCache: true,
+            containsGFDScenePass: true,
+            is64Bit: false
+        ))
+
+        let executable = try makePE64(
+            named: "CustomGFDGame.exe",
+            marker: "GFDDX11HH.GSC gfdShaderCacheLoadBgThread GFDRP_SCENE0_3D_OPAQUE",
+            imports: ["d3d11.dll", "dxgi.dll", "steam_api64.dll"]
+        )
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+        let manager = WineManager()
+        XCTAssertTrue(manager.requiresD3DMetalFlipModelPresentation(executable.path))
+        XCTAssertEqual(manager.detectGraphicsAPI(forExecutable: executable.path), .d3d11)
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .gptk)
+        XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [.gptk])
+    }
+
+    func testGenericD3D11DoesNotInheritTheGFDFlipModelRoute() throws {
+        let executable = try makePE64(
+            named: "GenericD3D11Game.exe",
+            marker: "gfdShaderCacheLoadBgThread",
+            imports: ["d3d11.dll", "dxgi.dll"]
+        )
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+        let manager = WineManager()
+        XCTAssertFalse(manager.requiresD3DMetalFlipModelPresentation(executable.path))
+        XCTAssertEqual(manager.resolvedGraphicsLayer(forExecutable: executable.path), .dxmt)
+        XCTAssertEqual(manager.fallbackLayers(forExecutable: executable.path), [.dxmt, .gptk])
+    }
+
     func testVoidEngineD3D12AMDDriverGateIsDetectedStructurally() {
         XCTAssertTrue(WineManager.requiresVoidEngineD3DMetalDriverCompatibility(
             importedLibraries: ["D3D12.dll", "DXGI.dll", "amd_ags_x64.dll", "EOSSDK-Win64-Shipping.dll"],
@@ -4271,11 +4487,21 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         ))
     }
 
+    func testD3D11FlipModelSelectsIsolatedD3DMetalRuntime() {
+        XCTAssertTrue(WineManager.requiresIsolatedD3DMetalRuntime(
+            managedMedia: false,
+            coherentGPUProbe: false,
+            stableMacFullscreen: false,
+            d3d11FlipModel: true
+        ))
+    }
+
     func testGenericD3D12KeepsItsExistingRuntimeSelection() {
         XCTAssertFalse(WineManager.requiresIsolatedD3DMetalRuntime(
             managedMedia: false,
             coherentGPUProbe: false,
-            stableMacFullscreen: false
+            stableMacFullscreen: false,
+            d3d11FlipModel: false
         ))
         XCTAssertTrue(WineManager.requiresIsolatedD3DMetalRuntime(
             managedMedia: true,
@@ -4354,6 +4580,33 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
         XCTAssertFalse(LaunchDiagnostics.shouldRetryWithRealSteam(nil))
         XCTAssertFalse(LaunchDiagnostics.shouldRetryWithRealSteam(genericFailure))
         XCTAssertTrue(LaunchDiagnostics.shouldRetryWithRealSteam(steamFailure))
+    }
+
+    func testWineUSBFailureDoesNotMasqueradeAsMissingGameRuntime() {
+        let output = """
+        1748048.039:00a4:err:wineusb:DriverEntry Failed to initialize Unix library, status 0xc0000135.
+        1748061.964:01d4:trace:seh:dispatch_exception code=c0000005 (EXCEPTION_ACCESS_VIOLATION)
+        1748061.964:01d4:err:seh:call_seh_handlers invalid frame 00000000086DFD78
+        1748061.964:01d4:err:seh:NtRaiseException Exception frame is not in stack limits => unable to dispatch exception.
+        """
+
+        let failure = LaunchDiagnostics.failure(in: output)
+
+        XCTAssertEqual(failure?.category, .crash)
+        XCTAssertNil(failure?.missingLibrary)
+        XCTAssertFalse(LaunchDiagnostics.shouldAttemptRuntimeRepair(failure))
+    }
+
+    func testConcreteMissingDLLAllowsTargetedRuntimeRepair() {
+        let output = """
+        0024:err:module:import_dll Library MSVCP100.dll (which is needed by L"game.exe") not found
+        """
+
+        let failure = LaunchDiagnostics.failure(in: output)
+
+        XCTAssertEqual(failure?.category, .missingLibrary)
+        XCTAssertEqual(failure?.missingLibrary, "MSVCP100.dll")
+        XCTAssertTrue(LaunchDiagnostics.shouldAttemptRuntimeRepair(failure))
     }
 
     func testSteamEULADetectionUsesAttemptBaselineAndExactAppID() {
@@ -4488,6 +4741,42 @@ final class WineManagerGraphicsRoutingTests: XCTestCase {
             wrapperInstalled: false,
             currentRuntimeProfileID: "native-vulkan:1.4.1-vessel.1",
             targetRuntimeProfileID: "standard"
+        ))
+    }
+
+    func testD3DMetalMediaSteamProfileSeparatesGraphicsOnlyAndMediaSessions() {
+        let wine = "/tmp/Vessel/Engines/wine-d3dmetal-media/bin/wine"
+        let graphicsOnly = WineManager.steamRuntimeProfileID(
+            .standard,
+            wine: wine,
+            includeManagedMediaRuntime: false
+        )
+        let media = WineManager.steamRuntimeProfileID(
+            .standard,
+            wine: wine,
+            includeManagedMediaRuntime: true
+        )
+
+        XCTAssertEqual(graphicsOnly, "standard:dock-identity-v2:managed-media-off-v1")
+        XCTAssertEqual(media, "standard:dock-identity-v2:managed-media-on-v1")
+        XCTAssertNotEqual(graphicsOnly, media)
+        XCTAssertTrue(WineManager.shouldRestartSteamClient(
+            steamRunning: true,
+            currentEngineID: "wine-d3dmetal-media",
+            targetEngineID: "wine-d3dmetal-media",
+            role: .backgroundDRM,
+            wrapperInstalled: false,
+            currentRuntimeProfileID: media,
+            targetRuntimeProfileID: graphicsOnly
+        ))
+        XCTAssertTrue(WineManager.shouldRestartSteamClient(
+            steamRunning: true,
+            currentEngineID: "wine-d3dmetal-media",
+            targetEngineID: "wine-d3dmetal-media",
+            role: .backgroundDRM,
+            wrapperInstalled: false,
+            currentRuntimeProfileID: graphicsOnly,
+            targetRuntimeProfileID: media
         ))
     }
 

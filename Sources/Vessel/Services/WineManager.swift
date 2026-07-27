@@ -117,6 +117,11 @@ final class WineManager {
     /// lanza Steam y el otro lo tumba al "limpiar procesos previos", en bucle.
     private static var steamFlowActive = false
 
+    /// Invalida el sondeo de foco de un lanzamiento anterior en cuanto comienza otro. Los sondeos
+    /// son acotados, pero sin esta generación una ejecución que ya terminó podría confundir una
+    /// ventana nueva del mismo juego con una transición tardía.
+    private static var gameWindowFocusObservationGeneration: UInt = 0
+
     /// Supervisa un único diálogo legal del Steam interno. Un nuevo intento cancela el anterior;
     /// así dos vistas no pueden reemitir simultáneamente el mismo `-applaunch`.
     private static var steamAuthorizationMonitor: Task<Void, Never>?
@@ -173,8 +178,7 @@ final class WineManager {
         return true
     }
 
-    /// Resuelve el binario de Wine: prefiere el portable descargado por Vessel,
-    /// si no está usa GPTK de Apple. Nunca toca /Applications.
+    /// Resuelve un binario exclusivamente desde el inventario administrado por Vessel.
     func resolveWineBinary() -> String? {
         detectWineInstallations().first?.path
     }
@@ -186,9 +190,10 @@ final class WineManager {
     /// completo (login+teclado+QR) con el wrapper SwiftShader y `WINEMSYNC=0`, y además
     /// los juegos por DXMT/Metal en el MISMO wineserver. Si no está: Gcenx wine-osx64
     /// (solo tienda; su webhelper es estable pero sus juegos van por wined3d).
-    /// Fallback final: `bottle.winePath`.
+    /// El fallback persistido se valida de nuevo para impedir referencias externas heredadas.
     func resolveClientWine(for bottle: Bottle) -> String {
-        WineEngineLocator.clientWineBinary() ?? bottle.winePath
+        WineEngineLocator.clientWineBinary()
+            ?? WineEngineLocator.repairedStoredWinePath(bottle.winePath)
     }
 
     /// Motor para JUEGOS D3D11: wine-dxmt (DXMT builtin → Metal nativo, FL 11_0).
@@ -215,7 +220,7 @@ final class WineManager {
         }
         return WineEngineLocator.gameWineBinary()
             ?? WineEngineLocator.clientWineBinary()
-            ?? bottle.winePath
+            ?? WineEngineLocator.repairedStoredWinePath(bottle.winePath)
     }
 
     /// `true` si el juego integra **Epic Online Services (EOS)**: trae `EOSSDK-Win64-Shipping.dll`
@@ -265,28 +270,24 @@ final class WineManager {
         try? FileManager.default.removeItem(atPath: dest)
     }
 
-    /// Aplica al prefijo el bloque GLOBAL de `DllOverrides` que CrossOver pone de base en TODO bottle de
-    /// Steam (extraído de `~/Library/Application Support/CrossOver/Bottles/Steam/user.reg` →
-    /// `Resources/crossover-compat-overrides.reg`, ~58 entradas: quartz/devenum/amstream/mscoree/… en
-    /// `native,builtin`). Es la MITAD estática del "clon de CrossOver": la otra mitad (los hacks por-juego)
-    /// la aporta el motor `cxcompatdb` en tiempo de ejecución vía `CX_ROOT`. Juntas hacen que los juegos
-    /// lanzados DESDE el cliente Steam en Wine funcionen igual que en CrossOver, sin ir juego a juego.
-    /// El `.reg` es v5 en UTF-8 y se importa con `regedit /S` (verificado: aplica las 58 entradas). Es
-    /// idempotente (marcador `.vessel-cx-overrides`) y debe correr con Steam parado (antes de lanzarlo).
-    func ensureCrossOverCompatOverrides(prefix: String, wine: String) async {
-        let marker = "\(prefix)/.vessel-cx-overrides"
+    /// Aplica al prefijo la base global de `DllOverrides` validada por Vessel para Steam y runtimes
+    /// clásicos (`quartz`, `devenum`, `amstream`, `mscoree`, etc.). El recurso forma parte de Vessel;
+    /// no se lee ninguna botella ni instalación externa. Es idempotente y debe ejecutarse con Steam
+    /// parado, antes de lanzar el cliente.
+    func ensureVesselCompatibilityOverrides(prefix: String, wine: String) async {
+        let marker = "\(prefix)/.vessel-compat-overrides-v2"
         if FileManager.default.fileExists(atPath: marker) { return }
-        guard let regURL = Bundle.main.url(forResource: "crossover-compat-overrides", withExtension: "reg")
-            ?? VesselPaths.bundledResource("crossover-compat-overrides.reg") else { return }
+        guard let regURL = Bundle.main.url(forResource: "vessel-compat-overrides", withExtension: "reg")
+            ?? VesselPaths.bundledResource("vessel-compat-overrides.reg") else { return }
         guard FileManager.default.fileExists(atPath: regURL.path) else { return }
-        let dest = "\(prefix)/drive_c/vessel-cx-overrides.reg"
+        let dest = "\(prefix)/drive_c/vessel-compat-overrides.reg"
         do { try? FileManager.default.removeItem(atPath: dest)
              try FileManager.default.copyItem(atPath: regURL.path, toPath: dest) }
-        catch { log.log("No se pudo copiar el .reg de overrides de CrossOver: \(error.localizedDescription)", level: .warn); return }
-        log.log("Aplicando overrides de compatibilidad de CrossOver (base de todos los juegos desde Steam)…", level: .info)
+        catch { log.log("No se pudo copiar la base de compatibilidad de Vessel: \(error.localizedDescription)", level: .warn); return }
+        log.log("Aplicando la base de compatibilidad de Vessel para juegos de Steam…", level: .info)
         _ = try? await runWine(
             winePath: wine,
-            arguments: ["regedit", "/S", #"C:\vessel-cx-overrides.reg"#],
+            arguments: ["regedit", "/S", #"C:\vessel-compat-overrides.reg"#],
             prefix: prefix,
             environment: ["WINEPREFIX": prefix, "WINEDEBUG": "-all", "WINEDLLOVERRIDES": "winedbg.exe=d"],
             allowNonZeroExit: true
@@ -443,7 +444,8 @@ final class WineManager {
     }
 
     func createBottle(at path: String, winePath: String) async throws {
-        guard FileManager.default.isExecutableFile(atPath: winePath) else {
+        guard WineEngineLocator.isManagedRuntimePath(winePath),
+              FileManager.default.isExecutableFile(atPath: winePath) else {
             throw WineError.noEngine
         }
 
@@ -813,6 +815,43 @@ final class WineManager {
     /// API gráfica detectada de un juego, para enrutar a la capa correcta.
     enum GameGraphicsAPI { case d3d9, d3d11, d3d12, opengl, other }
 
+    /// Firma del renderer GFD D3D11 que solicita una swapchain flip-model de triple búfer.
+    ///
+    /// DXMT 0.80 y su rama actual rechazan `DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL` cuando hay más de un
+    /// backbuffer; el dispositivo D3D11 llega a crearse, pero la superficie permanece negra. El
+    /// backend D3DMetal sí implementa ese contrato. Se exige el conjunto completo de imports PE y
+    /// marcadores internos de GFD para no alterar otros juegos D3D11 ni depender de títulos/AppIDs.
+    nonisolated static func requiresD3DMetalFlipModelPresentation(
+        importedLibraries: Set<String>,
+        containsGFDHighShaderRuntime: Bool,
+        containsGFDAsyncShaderCache: Bool,
+        containsGFDScenePass: Bool,
+        is64Bit: Bool
+    ) -> Bool {
+        guard is64Bit else { return false }
+        let imports = Set(importedLibraries.map { $0.lowercased() })
+        return imports.isSuperset(of: ["d3d11.dll", "dxgi.dll"])
+            && containsGFDHighShaderRuntime
+            && containsGFDAsyncShaderCache
+            && containsGFDScenePass
+    }
+
+    func requiresD3DMetalFlipModelPresentation(_ executable: String) -> Bool {
+        let markers = [
+            "GFDDX11HH.GSC",
+            "gfdShaderCacheLoadBgThread",
+            "GFDRP_SCENE0_3D_OPAQUE"
+        ]
+        let containsAllMarkers = exeContainsUTF8OrUTF16LE(executable, allOf: markers)
+        return Self.requiresD3DMetalFlipModelPresentation(
+            importedLibraries: peImportedLibraries(forExecutable: executable),
+            containsGFDHighShaderRuntime: containsAllMarkers,
+            containsGFDAsyncShaderCache: containsAllMarkers,
+            containsGFDScenePass: containsAllMarkers,
+            is64Bit: PEImportScanner.is64BitImage(atPath: executable)
+        )
+    }
+
     /// Firma estructural del perfil D3D12 + Media Foundation. No usa títulos ni AppID: combina la
     /// API gráfica detectada con imports PE reales o con el contrato dinámico completo del backend
     /// CRI Movie. `mfplat` aporta el pipeline y `mfreadwrite`/`mf` la lectura/decodificación;
@@ -909,19 +948,23 @@ final class WineManager {
             && imports.isSuperset(of: ["d3d11.dll", "d3d12.dll", "dxgi.dll"])
     }
 
-    /// Determina cuándo un juego D3D12 necesita el runtime D3DMetal moderno y aislado.
+    /// Determina cuándo un juego necesita el runtime D3DMetal moderno y aislado.
     ///
     /// Además de los contratos de Media Foundation y del sondeo mixto de GPU, 4A Enhanced
     /// necesita el compositor de ventanas de Wine 11. El `winemac` de GPTK/Wine 9 vuelve a
     /// interpretar el fullscreen al recuperar el foco y puede convertir una superficie lógica
     /// de 1512×982 en una ventana 2× o dejar visible sólo un cuadrante. Mantener esta decisión
     /// como entrada explícita permite probar que un D3D12 genérico conserva su ruta anterior.
+    /// Los renderers D3D11 con flip-model también necesitan este perfil: `wine-d3dmetal`
+    /// combina el `d3d11` de DXMT con el `dxgi` de Apple, mientras el perfil aislado instala
+    /// el conjunto D3D11/D3D12/DXGI procedente íntegramente de D3DMetal.
     nonisolated static func requiresIsolatedD3DMetalRuntime(
         managedMedia: Bool,
         coherentGPUProbe: Bool,
-        stableMacFullscreen: Bool
+        stableMacFullscreen: Bool,
+        d3d11FlipModel: Bool = false
     ) -> Bool {
-        managedMedia || coherentGPUProbe || stableMacFullscreen
+        managedMedia || coherentGPUProbe || stableMacFullscreen || d3d11FlipModel
     }
 
     func requiresCoherentD3DMetalGPUProbeEngine(_ executable: String) -> Bool {
@@ -1149,12 +1192,38 @@ final class WineManager {
         })
     }
 
+    struct WindowPresentationSignature: Equatable, Sendable {
+        let pid: pid_t
+        let windowNumber: Int
+        let originX: Int
+        let originY: Int
+        let width: Int
+        let height: Int
+    }
+
     struct WindowFocusCandidate: Equatable, Sendable {
         let pid: pid_t
         let area: Double
         let ownerName: String
         let windowName: String
         let applicationName: String
+        let presentation: WindowPresentationSignature?
+
+        init(
+            pid: pid_t,
+            area: Double,
+            ownerName: String,
+            windowName: String,
+            applicationName: String,
+            presentation: WindowPresentationSignature? = nil
+        ) {
+            self.pid = pid
+            self.area = area
+            self.ownerName = ownerName
+            self.windowName = windowName
+            self.applicationName = applicationName
+            self.presentation = presentation
+        }
     }
 
     /// Resuelve la ventana Cocoa que pertenece al payload de juego aunque Wine publique su proceso
@@ -1163,11 +1232,11 @@ final class WineManager {
     /// normalizadas. Si el título no está disponible por permisos, el snapshot previo permite usar
     /// únicamente una ventana Wine nueva, sin activar por accidente cualquier aplicación macOS que
     /// haya aparecido mientras arrancaba el juego.
-    nonisolated static func preferredGameWindowPID(
+    nonisolated static func preferredGameWindowCandidate(
         executableName: String,
         candidates: [WindowFocusCandidate],
         excludingWindowOwnerPIDs baselineWindowOwnerPIDs: Set<pid_t>? = nil
-    ) -> pid_t? {
+    ) -> WindowFocusCandidate? {
         func normalized(_ value: String) -> String {
             String(value.lowercased().filter { $0.isLetter || $0.isNumber })
         }
@@ -1186,7 +1255,7 @@ final class WineManager {
                 .contains(where: acceptedIdentities.contains)
         }
         if let exact = identified.max(by: { $0.area < $1.area }) {
-            return exact.pid
+            return exact
         }
 
         guard let baselineWindowOwnerPIDs else { return nil }
@@ -1197,55 +1266,113 @@ final class WineManager {
                 let application = normalized(candidate.applicationName)
                 return owner.contains("wine") || application.contains("wine")
             }
-            .max(by: { $0.area < $1.area })?
-            .pid
+            .max(by: { $0.area < $1.area })
+    }
+
+    nonisolated static func preferredGameWindowPID(
+        executableName: String,
+        candidates: [WindowFocusCandidate],
+        excludingWindowOwnerPIDs baselineWindowOwnerPIDs: Set<pid_t>? = nil
+    ) -> pid_t? {
+        preferredGameWindowCandidate(
+            executableName: executableName,
+            candidates: candidates,
+            excludingWindowOwnerPIDs: baselineWindowOwnerPIDs
+        )?.pid
+    }
+
+    /// Una transición de escena puede destruir/recrear la superficie Cocoa de Wine o cambiar sus
+    /// límites. Si el juego tenía el foco justo antes y macOS devuelve involuntariamente el primer
+    /// plano a Vessel, se reactiva la nueva superficie. Un cambio normal del usuario hacia otra app
+    /// queda intacto porque no existe transición o porque la app frontal no es Vessel.
+    nonisolated static func shouldRestoreFocusAfterGameWindowTransition(
+        previousPresentation: WindowPresentationSignature?,
+        currentPresentation: WindowPresentationSignature,
+        previousWasGameActive: Bool,
+        currentIsGameActive: Bool,
+        windowWasMissing: Bool,
+        recentPresentationChange: Bool,
+        currentFrontmostPID: pid_t?,
+        vesselPID: pid_t
+    ) -> Bool {
+        let presentationChanged = windowWasMissing
+            || recentPresentationChange
+            || previousPresentation != currentPresentation
+        guard presentationChanged,
+              previousWasGameActive,
+              !currentIsGameActive else { return false }
+        return currentFrontmostPID == nil || currentFrontmostPID == vesselPID
+    }
+
+    private static func windowFocusCandidates() -> [WindowFocusCandidate] {
+        let apps = NSWorkspace.shared.runningApplications
+        let windows = (CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]]) ?? []
+        return windows.compactMap { info in
+            guard let number = info[kCGWindowOwnerPID as String] as? NSNumber,
+                  let bounds = info[kCGWindowBounds as String] as? [String: Any],
+                  let widthNumber = bounds["Width"] as? NSNumber,
+                  let heightNumber = bounds["Height"] as? NSNumber,
+                  widthNumber.doubleValue > 200,
+                  heightNumber.doubleValue > 150,
+                  (info[kCGWindowLayer as String] as? Int ?? 0) == 0,
+                  (info[kCGWindowAlpha as String] as? Double ?? 1) > 0.05 else {
+                return nil
+            }
+            let pid = pid_t(number.int32Value)
+            let width = widthNumber.doubleValue
+            let height = heightNumber.doubleValue
+            let originX = (bounds["X"] as? NSNumber)?.doubleValue ?? 0
+            let originY = (bounds["Y"] as? NSNumber)?.doubleValue ?? 0
+            let windowNumber = (info[kCGWindowNumber as String] as? NSNumber)?.intValue ?? 0
+            return WindowFocusCandidate(
+                pid: pid,
+                area: width * height,
+                ownerName: info[kCGWindowOwnerName as String] as? String ?? "",
+                windowName: info[kCGWindowName as String] as? String ?? "",
+                applicationName: apps.first(where: {
+                    $0.processIdentifier == pid
+                })?.localizedName ?? "",
+                presentation: WindowPresentationSignature(
+                    pid: pid,
+                    windowNumber: windowNumber,
+                    originX: Int(originX.rounded()),
+                    originY: Int(originY.rounded()),
+                    width: Int(width.rounded()),
+                    height: Int(height.rounded())
+                )
+            )
+        }
     }
 
     private func nudgeGameWindowFocus(
         exeName: String,
         excludingWindowOwnerPIDs baselineWindowOwnerPIDs: Set<pid_t>? = nil
     ) {
+        Self.gameWindowFocusObservationGeneration &+= 1
+        let observationGeneration = Self.gameWindowFocusObservationGeneration
         Task { @MainActor in
             let deadline = Date().addingTimeInterval(90)
             while Date() < deadline {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
-                let apps = NSWorkspace.shared.runningApplications
-                let windows = (CGWindowListCopyWindowInfo(
-                    [.optionOnScreenOnly, .excludeDesktopElements],
-                    kCGNullWindowID
-                ) as? [[String: Any]]) ?? []
-                let candidates: [WineManager.WindowFocusCandidate] = windows.compactMap { info in
-                    guard let number = info[kCGWindowOwnerPID as String] as? NSNumber,
-                          let bounds = info[kCGWindowBounds as String] as? [String: Any],
-                          let width = bounds["Width"] as? Double,
-                          let height = bounds["Height"] as? Double,
-                          width > 200,
-                          height > 150,
-                          (info[kCGWindowLayer as String] as? Int ?? 0) == 0,
-                          (info[kCGWindowAlpha as String] as? Double ?? 1) > 0.05 else {
-                        return nil
-                    }
-                    let pid = pid_t(number.int32Value)
-                    return Self.WindowFocusCandidate(
-                        pid: pid,
-                        area: width * height,
-                        ownerName: info[kCGWindowOwnerName as String] as? String ?? "",
-                        windowName: info[kCGWindowName as String] as? String ?? "",
-                        applicationName: apps.first(where: {
-                            $0.processIdentifier == pid
-                        })?.localizedName ?? ""
-                    )
+                guard observationGeneration == Self.gameWindowFocusObservationGeneration else {
+                    return
                 }
+                let candidates = Self.windowFocusCandidates()
                 let eligibleCandidates = candidates.filter {
                     $0.pid != ProcessInfo.processInfo.processIdentifier
                 }
-                guard let pid = Self.preferredGameWindowPID(
+                guard let candidate = Self.preferredGameWindowCandidate(
                     executableName: exeName,
                     candidates: eligibleCandidates,
                     excludingWindowOwnerPIDs: baselineWindowOwnerPIDs
                 ),
-                      let game = NSRunningApplication(processIdentifier: pid),
+                      let presentation = candidate.presentation,
+                      let game = NSRunningApplication(processIdentifier: candidate.pid),
                       !game.isTerminated else { continue }
+                let pid = candidate.pid
                 NSApp.activate(ignoringOtherApps: true)
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 game.activate(options: [.activateAllWindows])
@@ -1253,6 +1380,71 @@ final class WineManager {
                     "Ventana del juego reactivada para ajustar escala y foco (pid=\(pid)).",
                     level: .debug
                 )
+
+                // Algunos motores recrean la superficie al pasar del menú a la partida. Durante
+                // una ventana acotada se observa únicamente esa identidad de juego. Así se evita
+                // que la nueva superficie quede detrás de Vessel sin convertir este sondeo en un
+                // gestor permanente de foco.
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                let transitionDeadline = Date().addingTimeInterval(180)
+                var previousPresentation: WindowPresentationSignature? = presentation
+                var previousWasGameActive = game.isActive
+                    || NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+                var windowWasMissing = false
+                var recentTransitionUntil: Date?
+                while Date() < transitionDeadline {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    guard observationGeneration == Self.gameWindowFocusObservationGeneration else {
+                        return
+                    }
+                    let transitionCandidates = Self.windowFocusCandidates().filter {
+                        $0.pid != ProcessInfo.processInfo.processIdentifier
+                    }
+                    guard let currentCandidate = Self.preferredGameWindowCandidate(
+                        executableName: exeName,
+                        candidates: transitionCandidates,
+                        excludingWindowOwnerPIDs: baselineWindowOwnerPIDs
+                    ), let currentPresentation = currentCandidate.presentation else {
+                        windowWasMissing = windowWasMissing || previousWasGameActive
+                        continue
+                    }
+
+                    let now = Date()
+                    if windowWasMissing || previousPresentation != currentPresentation {
+                        recentTransitionUntil = now.addingTimeInterval(3)
+                    }
+                    let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+                    guard let currentGame = NSRunningApplication(
+                        processIdentifier: currentCandidate.pid
+                    ), !currentGame.isTerminated else {
+                        windowWasMissing = windowWasMissing || previousWasGameActive
+                        continue
+                    }
+                    var currentIsGameActive = currentGame.isActive
+                        || frontmostPID == currentCandidate.pid
+                    let recentPresentationChange = recentTransitionUntil.map { now <= $0 } ?? false
+                    if Self.shouldRestoreFocusAfterGameWindowTransition(
+                        previousPresentation: previousPresentation,
+                        currentPresentation: currentPresentation,
+                        previousWasGameActive: previousWasGameActive,
+                        currentIsGameActive: currentIsGameActive,
+                        windowWasMissing: windowWasMissing,
+                        recentPresentationChange: recentPresentationChange,
+                        currentFrontmostPID: frontmostPID,
+                        vesselPID: ProcessInfo.processInfo.processIdentifier
+                    ) {
+                        currentGame.activate(options: [.activateAllWindows])
+                        currentIsGameActive = true
+                        recentTransitionUntil = nil
+                        log.log(
+                            "Superficie del juego recreada; foco restaurado automáticamente (pid=\(currentCandidate.pid)).",
+                            level: .debug
+                        )
+                    }
+                    previousPresentation = currentPresentation
+                    previousWasGameActive = currentIsGameActive
+                    windowWasMissing = false
+                }
                 return
             }
         }
@@ -3962,7 +4154,7 @@ final class WineManager {
     /// Busca la variante PE32 oficial de un runtime ANGLE 1 PE64 cuando ambas arquitecturas vienen
     /// en carpetas hermanas del mismo juego (`bin64`/`bin`, `x64`/`x86`, etc.). El ANGLE heredado
     /// exige D3D9 y DXVK necesita geometría Vulkan, una capacidad que MoltenVK no puede ofrecer de
-    /// forma válida; la build PE32, en cambio, usa el wined3d de CrossOver ya validado para esta
+    /// forma válida; la build PE32, en cambio, usa el wined3d del motor completo ya validado para esta
     /// familia. La selección es estructural y automática: misma firma de motor y mismo nombre base.
     func preferredLegacyANGLE1Executable(for executable: String) -> String? {
         guard usesIsolatedDXVKForLegacyANGLE64(executable) else { return nil }
@@ -4033,6 +4225,10 @@ final class WineManager {
         // Chromium necesita el swapchain de DXMT en el mismo proceso; otras rutas producen una
         // ventana negra aunque el proceso sobreviva. Es una restricción del motor, no una preferencia.
         if isNWJSGame(executable) { return .dxmt }
+        // GFD D3D11 crea una swapchain FLIP_SEQUENTIAL de triple búfer que DXMT rechaza. La ruta
+        // `.gptk` representa aquí D3DMetal; es un requisito del renderer y prevalece sobre overrides
+        // aprendidos de intentos antiguos que sólo vieron el proceso vivo pero no una superficie útil.
+        if requiresD3DMetalFlipModelPresentation(executable) { return .gptk }
         // El enum aún no tiene una categoría «Wine completo»; `.gcenx` representa aquí la familia
         // wined3d/compatibilidad y evita que el diagnóstico crea que se lanzó por DXMT.
         if isLegacyMoaiOpenGLGame(executable) { return .gcenx }
@@ -4065,6 +4261,7 @@ final class WineManager {
     ///  - Carga dinámica (`.other`) → Gcenx primero, DXMT de respaldo (el gate ya existente para M-series nuevos).
     func fallbackLayers(forExecutable executable: String, effective eff: EffectiveLaunchConfig = EffectiveLaunchConfig()) -> [GameConfig.GraphicsLayer] {
         if isNWJSGame(executable) { return [.dxmt] }
+        if requiresD3DMetalFlipModelPresentation(executable) { return [.gptk] }
         // Moai/AKUSDL no tiene «capas Direct3D» que probar: el adaptador Wine completo es su ruta.
         if isLegacyMoaiOpenGLGame(executable) { return [] }
         // El Proton SDK de RTsoft usa OpenGL nativo de Wine y necesita su modo ventana automático;
@@ -4251,7 +4448,9 @@ final class WineManager {
             appId: steamAppId,
             executable: executable,
             prefix: bottle.prefixPath,
-            isFourAEnhanced: isFourAEnhancedD3D12Engine(executable)
+            displayMetrics: currentGameDisplayMetrics(),
+            isFourAEnhanced: isFourAEnhancedD3D12Engine(executable),
+            isFallingEverything: isFallingEverythingOpenGLEngine(executable)
         )
         if displayRepair.didRepair {
             log.log(
@@ -4626,7 +4825,7 @@ final class WineManager {
         // Framework de verdad, no wine-mono. Por eso va antes de detectar la API: con mono se
         // quedan en negro por muchas capas que se prueben. Verificado con FEZ.
         if isFNAOrXNAGame(executable), let fullEngineWine = await fullEngineWineEnsured() {
-            return try await launchFNAGameWithCrossOver(executable: executable, in: bottle,
+            return try await launchFNAGameWithFullEngine(executable: executable, in: bottle,
                                                         arguments: allArgs, effective: eff,
                                                         wine: fullEngineWine)
         }
@@ -4636,7 +4835,7 @@ final class WineManager {
         // con ASTRONEER. (UE5 con d3d12 —Palworld— NO entra aquí: sigue por GPTK/D3DMetal.)
         if go == .auto, isUnrealEngine4Game(executable),
            let fullEngineWine = await fullEngineWineEnsured() {
-            return try await launchUnreal4WithCrossOver(executable: executable, in: bottle,
+            return try await launchUnreal4WithFullEngine(executable: executable, in: bottle,
                                                         arguments: allArgs, steamAppId: steamAppId,
                                                         effective: eff, wine: fullEngineWine)
         }
@@ -4898,6 +5097,13 @@ final class WineManager {
         // Steamworks API arranque en modo standalone (sin el cliente Steam abierto,
         // que además correría en otro motor). Sin esto algunos juegos no arrancan.
         var env = gameLaunchEnvironment(prefix: bottle.prefixPath)
+        if legacySDL2Scale {
+            // SDL2 2.x minimiza por defecto una ventana fullscreen al perder el foco. En motores
+            // OpenGL anteriores a HiDPI esa transición destruye y recrea una superficie cuyo tamaño
+            // se expresa unas veces en píxeles Retina y otras en puntos. Mantener la ventana
+            // compuesta evita el desbordamiento al volver a Vessel sin cambiar preferencias del juego.
+            env["SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS"] = "0"
+        }
         // Motor UNIFICADO (WineHQ 11.10): (a) desactivar SOLO `winegstreamer` — el motor no trae backend
         // GStreamer, así que `winegstreamer.dll` (el backend de Media Foundation) CRASHEA al decodificar
         // vídeo por MF y tira el proceso (validado con Cross Blitz: crashea en el vídeo de intro tras
@@ -4926,6 +5132,12 @@ final class WineManager {
         }
         if graphicsAPI == .opengl {
             env["CX_FWD_COMPAT_GL_CTX"] = "1"
+        }
+        if isFallingEverythingOpenGLEngine(executable) {
+            // Diagnóstico acotado a esta familia mientras se valida la transición menú → mundo.
+            // `err+all,+seh` registra excepciones reales sin el coste prohibitivo de relay ni
+            // exponer argumentos. Se retira al cerrar la causa raíz; ningún otro juego hereda esto.
+            env["WINEDEBUG"] = Self.fallingEverythingDiagnosticWineDebug
         }
         // Cualquier import administrado real necesita `mscoree` disponible. Incluye .NET Core y
         // DLLs mixtas C++/CLI usadas por motores nativos (p. ej. el reporter de Hades). La evidencia
@@ -4991,7 +5203,7 @@ final class WineManager {
         // Los D3D9 modernos de 64 bits se quedan en Gcenx, que es donde están validados.
         if usesFullCompatibilityEngineForD3D9(executable),
            let fullWine = await fullEngineWineEnsured() {
-            return try await launchD3D9GameWithCrossOver(executable: executable, in: bottle,
+            return try await launchD3D9GameWithFullEngine(executable: executable, in: bottle,
                                                          arguments: arguments, effective: effective,
                                                          wine: fullWine)
         }
@@ -5128,15 +5340,15 @@ final class WineManager {
         )
     }
 
-    /// Lanza un **D3D9 de compatibilidad con el Wine de CrossOver** (`wine-full`).
+    /// Lanza un **D3D9 de compatibilidad con el motor completo de Vessel** (`wine-full`).
     ///
     /// Es el único que crea el dispositivo D3D9 de un binario de 32-bit en Apple Silicon: el
     /// new-WoW64 de Gcenx falla con "d3d creation failed" con TODAS las combinaciones de renderer
-    /// (gl/vulkan) y de d3d9 (builtin/native). `wine-full` no necesita capa de traducción extra —
-    /// trae su propio wined3d y su `cxcompatdb` — así que se lanza tal cual, con el contexto LIMPIO
-    /// (`env -i` vía `launchWineProcess`, que ya trata este motor). Validado: 20XX renderiza.
-    private func launchD3D9GameWithCrossOver(executable: String, in bottle: Bottle, arguments: [String],
-                                             effective: EffectiveLaunchConfig, wine: String) async throws -> Process {
+    /// (gl/vulkan) y de d3d9 (builtin/native). `wine-full` trae su propio wined3d, así que se lanza
+    /// con el contexto LIMPIO (`env -i` vía `launchWineProcess`) y sin consultar ningún runtime
+    /// instalado fuera de Vessel. Validado: 20XX renderiza.
+    private func launchD3D9GameWithFullEngine(executable: String, in bottle: Bottle, arguments: [String],
+                                              effective: EffectiveLaunchConfig, wine: String) async throws -> Process {
         let legacyANGLE = isLegacyANGLE1D3D9Game(executable)
         let legacyANGLEIsolatedDXVK = usesIsolatedDXVKForLegacyANGLE64(executable)
         let chowdrenIsolatedDXVK = isChowdrenSDL2D3D9Engine(executable)
@@ -5147,8 +5359,8 @@ final class WineManager {
                 : legacyANGLEIsolatedDXVK
                 ? "Capa gráfica: DXVK D3D9 aislado sobre MoltenVK (ANGLE 1.x PE64)."
                 : legacyANGLE
-                ? "Capa gráfica: wined3d de CrossOver (ANGLE 1.x sobre D3D9) — contexto EGL compatible."
-                : "Capa gráfica: wined3d de CrossOver (juego D3D9 de 32-bit) — el único que crea el device",
+                ? "Capa gráfica: wined3d del motor completo de Vessel (ANGLE 1.x sobre D3D9) — contexto EGL compatible."
+                : "Capa gráfica: wined3d del motor completo de Vessel (juego D3D9 de 32-bit).",
             level: .info
         )
         let legacyOgre = isLegacyOgreD3D9Game(executable)
@@ -5340,8 +5552,7 @@ final class WineManager {
     /// rutas (UE4, FNA/XNA, Source, Godot-Vulkan, D3D9 32-bit…) simplemente no iban. Devuelve
     /// `nil` si no está y no se pudo descargar → la ruta cae al enrutado normal, como antes.
     private func fullEngineWineEnsured() async -> String? {
-        let path = "\(WineEngineLocator.fullEngineDir())/bin/wine"
-        if FileManager.default.isExecutableFile(atPath: path) { return path }
+        if let wine = WineEngineLocator.fullWineBinary() { return wine }
         do {
             try await dependencyManager.ensureFullEngine { msg, pct in
                 Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
@@ -5349,7 +5560,7 @@ final class WineManager {
         } catch {
             log.log("No se pudo descargar el motor completo (wine-full): \(error.localizedDescription)", level: .warn)
         }
-        return FileManager.default.isExecutableFile(atPath: path) ? path : nil
+        return WineEngineLocator.fullWineBinary()
     }
 
     /// Lanza un juego **FNA/XNA** con el .NET Framework de verdad.
@@ -5361,9 +5572,9 @@ final class WineManager {
     /// wine-mono** (lo hace el propio winetricks), así que hacerlo en el prefijo compartido le
     /// cambiaría el runtime por debajo a todos los demás juegos. Misma regla que el resto de
     /// motores/fixes: reparar una cosa no puede romper las otras.
-    private func launchFNAGameWithCrossOver(executable rawExecutable: String, in bottle: Bottle,
-                                            arguments: [String], effective: EffectiveLaunchConfig,
-                                            wine: String) async throws -> Process {
+    private func launchFNAGameWithFullEngine(executable rawExecutable: String, in bottle: Bottle,
+                                             arguments: [String], effective: EffectiveLaunchConfig,
+                                             wine: String) async throws -> Process {
         log.log("Juego FNA/XNA: necesita el .NET Framework real (wine-mono no le vale).", level: .info)
         // El lanzador del motor tiene que estar sano o winetricks no instalará nada (ver
         // `repairFullEngineShim`). Idempotente y con marcador: solo hace algo la primera vez.
@@ -5454,15 +5665,15 @@ final class WineManager {
         }
     }
 
-    /// Lanza un **Unreal Engine 4** con el Wine COMPLETO de CrossOver (`wine-full`).
+    /// Lanza un **Unreal Engine 4** con el motor completo autónomo de Vessel (`wine-full`).
     ///
     /// UE4 no arranca por DXMT ni por GPTK: se queda a medias, sin ventana y sin dejar ni su log.
     /// Con `wine-full` abre. Es la misma razón que en los Unity 32-bit y los D3D9: es el motor que
     /// da un contexto gráfico de verdad. Se queda en el prefijo base (64-bit, comparte con Steam).
-    private func launchUnreal4WithCrossOver(executable rawExecutable: String, in bottle: Bottle,
-                                            arguments: [String], steamAppId: String?,
-                                            effective: EffectiveLaunchConfig, wine: String) async throws -> Process {
-        log.log("Capa gráfica: Wine completo de CrossOver (Unreal Engine 4) — el único que le da contexto gráfico", level: .info)
+    private func launchUnreal4WithFullEngine(executable rawExecutable: String, in bottle: Bottle,
+                                             arguments: [String], steamAppId: String?,
+                                             effective: EffectiveLaunchConfig, wine: String) async throws -> Process {
+        log.log("Capa gráfica: motor completo de Vessel (Unreal Engine 4).", level: .info)
         cleanExeAdjacentDXMTDLLs(gameExecutable: rawExecutable)
         cleanGameFolderGraphicsDLLs(forExecutable: rawExecutable)
         try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
@@ -5487,17 +5698,17 @@ final class WineManager {
         )
     }
 
-    /// Lanza un **Unity de 32-bit** con el Wine COMPLETO de CrossOver (`wine-full`).
+    /// Lanza un **Unity de 32-bit** con el motor completo autónomo de Vessel (`wine-full`).
     ///
-    /// Es el mismo motor que ya resuelve los D3D9 de 32-bit (ver `launchD3D9GameWithCrossOver`), y por
+    /// Es el mismo motor que ya resuelve los D3D9 de 32-bit (ver `launchD3D9GameWithFullEngine`), y por
     /// el mismo motivo: es el único que le da a un proceso de 32-bit un contexto gráfico de verdad.
     ///
     /// Nada de `-force-glcore`: con él Unity se salta Direct3D y pide OpenGL directo, que es justo lo
     /// que falla. Sin él, Unity usa su ruta normal y renderiza. Sí se conserva `-force-gfx-direct`
     /// (render monohilo): el multihilo bajo Wine corrompe memoria. Verificado con A Short Hike.
-    private func launchUnity32BitWithCrossOver(executable: String, in bottle: Bottle, arguments: [String],
-                                               effective: EffectiveLaunchConfig, wine: String) async throws -> Process {
-        log.log("Capa gráfica: Wine completo de CrossOver (Unity de 32-bit) — el único que le da contexto gráfico", level: .info)
+    private func launchUnity32BitWithFullEngine(executable: String, in bottle: Bottle, arguments: [String],
+                                                effective: EffectiveLaunchConfig, wine: String) async throws -> Process {
+        log.log("Capa gráfica: motor completo de Vessel (Unity de 32-bit).", level: .info)
         // DLLs de traducción de OTROS motores junto al `.exe`: pisan el builtin y se llevan el
         // arranque por delante (una `d3d10_1` de DXMT arrastra `winemetal` a un motor que no lo es).
         cleanExeAdjacentDXMTDLLs(gameExecutable: executable)
@@ -5740,16 +5951,16 @@ final class WineManager {
     }
 
     private func launch32BitGame(executable rawExecutable: String, in bottle: Bottle, arguments: [String], steamAppId: String?, effective: EffectiveLaunchConfig = EffectiveLaunchConfig()) async throws -> Process {
-        // **Unity de 32-bit → Wine COMPLETO de CrossOver (`wine-full`)**, no gptk-mythic.
+        // **Unity de 32-bit → motor COMPLETO de Vessel (`wine-full`)**, no gptk-mythic.
         // Bajo gptk, Unity no consigue contexto gráfico por NINGUNA vía: ni D3D11 ni OpenGL
         // (`OPENGL ERROR: failed to choose pixel format`). Ese error ni se veía, porque Unity lo
         // anuncia en un MessageBox y Wine se mata dibujando ese texto (bug de Uniscribe: en
         // `ScriptString_pSize` lee `glyphs[0].sc->tm.tmHeight` sin comprobar que `sc` exista).
         // `wine-full` sí le da contexto y el juego renderiza. Verificado en vivo: A Short Hike.
         if isUnityGame(rawExecutable), let fullWine = await fullEngineWineEnsured() {
-            return try await launchUnity32BitWithCrossOver(executable: rawExecutable, in: bottle,
-                                                           arguments: arguments, effective: effective,
-                                                           wine: fullWine)
+            return try await launchUnity32BitWithFullEngine(executable: rawExecutable, in: bottle,
+                                                            arguments: arguments, effective: effective,
+                                                            wine: fullWine)
         }
         // **Resto de juegos de 32-bit (GameMaker y similares) → `wine-full` primero.**
         // El gptk-mythic los deja COLGADOS en el init de display con una ventana de 3×41 píxeles
@@ -5780,7 +5991,7 @@ final class WineManager {
                 log.log(reason, level: .info)
             }
             // Algunos motores D3D9 cargan Direct3D dinámicamente, por lo que llegan por esta ruta
-            // genérica PE32 en vez de `launchD3D9GameWithCrossOver`. Almost Human necesita el mismo
+            // genérica PE32 en vez de `launchD3D9GameWithFullEngine`. Almost Human necesita el mismo
             // override OpenGL aislado: el backend Vulkan devuelve D3DERR_INVALIDCALL al crear su
             // superficie depth/stencil. Se decide después de resincronizar para inspeccionar el
             // ejecutable definitivo ya reparado por Steamworks.
@@ -5817,7 +6028,7 @@ final class WineManager {
             Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
         }
         guard let gptkWine = gptkManager.wineBinaryPath else {
-            throw WineError.launchFailed("No se encontró el motor CrossOver (gptk-mythic) para juegos de 32-bit.")
+            throw WineError.launchFailed("No se encontró el motor de compatibilidad 32-bit gestionado por Vessel (gptk-mythic).")
         }
         // Prefijo AISLADO de gptk: nunca toca el prefijo unificado (Wine 11) de Steam/Grim Dawn.
         let prefix = await engineScopedPrefix(base: bottle.prefixPath, engineTag: "gptk", engineWine: gptkWine)
@@ -5829,8 +6040,8 @@ final class WineManager {
         //    en sus texel buffers. Validado: CaveBlazers renderiza con `gl` y muere con `vulkan`.
         let renderer = isUnity ? "vulkan" : "gl"
         log.log(isUnity
-            ? "Capa gráfica: wined3d → Vulkan/MoltenVK → Metal (Unity 32-bit, render monohilo) con CrossOver"
-            : "Capa gráfica: wined3d → OpenGL de Apple (GLD→Metal) (juego 32-bit) con CrossOver", level: .info)
+            ? "Capa gráfica: wined3d → Vulkan/MoltenVK → Metal (Unity 32-bit, motor gestionado por Vessel)."
+            : "Capa gráfica: wined3d → OpenGL de Apple (GLD→Metal) (juego 32-bit, motor gestionado por Vessel).", level: .info)
         log.log("Preparando prefijo para el juego…", level: .info)
         try? await terminateWineProcesses(winePath: gptkWine, prefix: prefix)
         try? await killOrphanWineProcesses(prefix: prefix, gameWine: gptkWine)
@@ -5872,7 +6083,7 @@ final class WineManager {
         // Juegos Unity de 32-bit: forzar render MONOHILO en OpenGL (el multihilo sobre
         // el GL legacy de Apple bajo Wine corrompe memoria → crash). Ver `unity32BitGLArguments`.
         let extraArgs = unity32BitGLArguments(forExecutable: executable)
-        log.log("Lanzando juego de 32-bit con CrossOver: \((executable as NSString).lastPathComponent)", level: .info)
+        log.log("Lanzando juego de 32-bit con el motor de compatibilidad de Vessel: \((executable as NSString).lastPathComponent)", level: .info)
         return try await launchWineProcess(
             winePath: gptkWine,
             prefix: prefix,
@@ -5884,7 +6095,7 @@ final class WineManager {
     }
 
     /// `true` si el `.exe` es un PE de **32-bit** (campo machine = `0x14c`, IMAGE_FILE_MACHINE_I386).
-    /// Los juegos de 32-bit van por `launch32BitGame` (CrossOver), no por DXMT/GPTK (64-bit).
+    /// Los juegos de 32-bit van por `launch32BitGame` (motor gestionado por Vessel), no por DXMT/GPTK (64-bit).
     func isExecutable32Bit(_ executable: String) -> Bool {
         guard let fh = FileHandle(forReadingAtPath: executable) else { return false }
         defer { try? fh.close() }
@@ -6612,7 +6823,8 @@ final class WineManager {
         if needsIsolatedD3DMetalEngine {
             env = D3DMetalMediaEngineProvisioner.mediaEnvironment(
                 winePath: d3d12Wine,
-                prefix: bottle.prefixPath
+                prefix: bottle.prefixPath,
+                includeManagedMedia: needsManagedMedia
             )
         } else if useD3DMetalEngine {
             env = d3dMetalUnifiedEnvironment(prefix: bottle.prefixPath)
@@ -6829,9 +7041,29 @@ final class WineManager {
         return stored?.isEmpty == false ? stored! : SteamRuntimeProfile.standard.markerID
     }
 
-    private func persistSteamRuntimeProfile(_ profile: SteamRuntimeProfile, prefix: String) {
+    nonisolated static func steamRuntimeProfileID(
+        _ profile: SteamRuntimeProfile,
+        wine: String,
+        includeManagedMediaRuntime: Bool
+    ) -> String {
+        guard WineEngineLocator.isD3DMetalMediaEngine(wine) else { return profile.markerID }
+        let mediaRole = includeManagedMediaRuntime ? "managed-media-on-v1" : "managed-media-off-v1"
+        return "\(profile.markerID):\(mediaRole)"
+    }
+
+    private func persistSteamRuntimeProfile(
+        _ profile: SteamRuntimeProfile,
+        prefix: String,
+        wine: String,
+        includeManagedMediaRuntime: Bool
+    ) {
         let marker = "\(prefix)/.vessel-steam-runtime-profile"
-        try? profile.markerID.write(toFile: marker, atomically: true, encoding: .utf8)
+        let identifier = Self.steamRuntimeProfileID(
+            profile,
+            wine: wine,
+            includeManagedMediaRuntime: includeManagedMediaRuntime
+        )
+        try? identifier.write(toFile: marker, atomically: true, encoding: .utf8)
     }
 
     /// Cambia de forma explícita entre los dos roles de Steam. Nunca permite que la idempotencia
@@ -6842,12 +7074,18 @@ final class WineManager {
         in bottle: Bottle,
         to wine: String,
         role: SteamClientRole,
-        runtimeProfile: SteamRuntimeProfile = .standard
+        runtimeProfile: SteamRuntimeProfile = .standard,
+        includeManagedMediaRuntime: Bool = false
     ) async -> Bool {
         let running = isWineProcessRunning(matching: "steam.exe", prefix: bottle.prefixPath)
         let targetEngineID = engineID(forWine: wine)
         let currentEngineID = await currentSteamEngineID(prefix: bottle.prefixPath)
         let currentRuntimeProfileID = currentSteamRuntimeProfileID(prefix: bottle.prefixPath)
+        let targetRuntimeProfileID = Self.steamRuntimeProfileID(
+            runtimeProfile,
+            wine: wine,
+            includeManagedMediaRuntime: includeManagedMediaRuntime
+        )
         let wrapperInstalled = wrapperInstaller.isInstalled(in: bottle)
         guard Self.shouldRestartSteamClient(
             steamRunning: running,
@@ -6856,14 +7094,14 @@ final class WineManager {
             role: role,
             wrapperInstalled: wrapperInstalled,
             currentRuntimeProfileID: currentRuntimeProfileID,
-            targetRuntimeProfileID: runtimeProfile.markerID
+            targetRuntimeProfileID: targetRuntimeProfileID
         ) else { return true }
 
         let reason: String
         if currentEngineID != targetEngineID {
             reason = "cambio de motor \(currentEngineID ?? "desconocido") → \(targetEngineID)"
-        } else if currentRuntimeProfileID != runtimeProfile.markerID {
-            reason = "cambio de runtime \(currentRuntimeProfileID) → \(runtimeProfile.markerID)"
+        } else if currentRuntimeProfileID != targetRuntimeProfileID {
+            reason = "cambio de runtime \(currentRuntimeProfileID) → \(targetRuntimeProfileID)"
         } else {
             reason = "cambio de cliente DRM a interfaz interactiva"
         }
@@ -6897,14 +7135,16 @@ final class WineManager {
         clientWine: String,
         timeoutSeconds: Int = 90,
         background: Bool = false,
-        runtimeProfile: SteamRuntimeProfile = .standard
+        runtimeProfile: SteamRuntimeProfile = .standard,
+        includeManagedMediaRuntime: Bool = false
     ) async -> Bool {
         let role: SteamClientRole = background ? .backgroundDRM : .interactive
         guard await transitionSteamClientIfNeeded(
             in: bottle,
             to: clientWine,
             role: role,
-            runtimeProfile: runtimeProfile
+            runtimeProfile: runtimeProfile,
+            includeManagedMediaRuntime: includeManagedMediaRuntime
         ) else {
             NotificationService.shared.status(nil)
             return false
@@ -6952,7 +7192,8 @@ final class WineManager {
                 in: bottle,
                 using: clientWine,
                 background: background,
-                runtimeProfile: runtimeProfile
+                runtimeProfile: runtimeProfile,
+                includeManagedMediaRuntime: includeManagedMediaRuntime
             )
         }
         catch { log.log("No se pudo arrancar el cliente Steam: \(error.localizedDescription)", level: .error) }
@@ -7012,7 +7253,8 @@ final class WineManager {
                         in: bottle,
                         using: clientWine,
                         background: background,
-                        runtimeProfile: runtimeProfile
+                        runtimeProfile: runtimeProfile,
+                        includeManagedMediaRuntime: includeManagedMediaRuntime
                     )
                 } catch {
                     log.log("No se pudo reconectar Steam: \(error.localizedDescription)", level: .error)
@@ -7064,7 +7306,8 @@ final class WineManager {
                     _ = try await launchSteam(
                         in: bottle,
                         using: clientWine,
-                        runtimeProfile: runtimeProfile
+                        runtimeProfile: runtimeProfile,
+                        includeManagedMediaRuntime: includeManagedMediaRuntime
                     )
                 }
                 catch { log.log("No se pudo relanzar el cliente Steam: \(error.localizedDescription)", level: .error) }
@@ -7617,7 +7860,11 @@ final class WineManager {
             )
         }
         let isD3D12 = graphicsAPI == .d3d12
-        if !isD3D12 {
+        let needsD3D11FlipModelPresentation = requiresD3DMetalFlipModelPresentation(
+            graphicsRuntimeExecutable
+        )
+        let needsD3DMetalPresentation = isD3D12 || needsD3D11FlipModelPresentation
+        if !needsD3DMetalPresentation {
         let isOpenGL = graphicsAPI == .opengl
         if isOpenGL {
             // El motor OpenGL es un clon COW del unificado: en una instalación nueva hay que asegurar
@@ -7699,6 +7946,9 @@ final class WineManager {
                 return process
             }
             var env = steamClientEnvironment(prefix: bottle.prefixPath, wine: unifiedWine)
+            if legacySDL2Scale {
+                env["SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS"] = "0"
+            }
             env["SteamAppId"] = appId
             env["SteamGameId"] = appId
             let baseOverrides = env["WINEDLLOVERRIDES"]
@@ -7733,11 +7983,13 @@ final class WineManager {
             NotificationService.shared.status(nil)
             return proc
         }
-        }   // fin de `if !isD3D12` (rama motor unificado)
+        }   // fin de la rama que puede usar el motor unificado/DXMT
 
-        // ── D3D12 + DRM real: PREFERIR el motor D3DMetal apropiado ──
-        // Es el UNIFICADO + D3DMetal de Apple: corre el CEF de Steam (login por JWT) Y el juego
-        // D3D12 por D3DMetal en el MISMO wineserver — exactamente lo que hace CrossOver. GPTK
+        // ── D3DMetal + DRM real: D3D12 y D3D11 con flip-model no compatible con DXMT ──
+        // El perfil elegido corre el CEF de Steam (login por JWT) Y el juego por D3DMetal en el
+        // MISMO wineserver — exactamente lo que hace CrossOver. Los renderers D3D11 con
+        // flip-model usan siempre el perfil aislado: el motor D3DMetal base conserva el d3d11 de
+        // DXMT y no forma una pila válida con el DXGI de Apple. GPTK
         // (abajo) NO corre el CEF moderno (loopback 0x3008/0x3009), así que con él el DRM no podía
         // conectar; por eso este motor es EL correcto para D3D12+Steam. Validado a mano: FFT
         // (AppID 1004640) supera el DRM, carga D3DMetal y renderiza (solo lo frena su anti-tamper
@@ -7753,7 +8005,7 @@ final class WineManager {
         let d3d12RuntimeProfile: SteamRuntimeProfile = needsD3DMetalDriverIdentity
             ? .d3dMetalDriverIdentity
             : .standard
-        let d3d12LaunchArguments = Self.directStorageCompatibilityArguments(
+        let d3dMetalLaunchArguments = Self.directStorageCompatibilityArguments(
             required: needsDirectStorageFallback,
             resolvedArguments: launchArguments
         ) + launchArguments
@@ -7763,7 +8015,12 @@ final class WineManager {
                 level: .info
             )
         }
-        let needsIsolatedD3DMetalEngine = needsManagedMedia || needsCoherentGPUProbe
+        let needsIsolatedD3DMetalEngine = Self.requiresIsolatedD3DMetalRuntime(
+            managedMedia: needsManagedMedia,
+            coherentGPUProbe: needsCoherentGPUProbe,
+            stableMacFullscreen: false,
+            d3d11FlipModel: needsD3D11FlipModelPresentation
+        )
         let selectedD3DMetalWine: String?
         if needsIsolatedD3DMetalEngine {
             selectedD3DMetalWine = try await dependencyManager.ensureD3DMetalMediaEngine { msg, pct in
@@ -7774,7 +8031,7 @@ final class WineManager {
         } else {
             selectedD3DMetalWine = WineEngineLocator.d3dmetalWineBinary()
         }
-        if isD3D12, let d3dmWine = selectedD3DMetalWine {
+        if needsD3DMetalPresentation, let d3dmWine = selectedD3DMetalWine {
             try await prepareRealSteamClient(in: bottle, wine: d3dmWine, gameExecutable: executable)
             ensureSteamConfig(in: bottle)
             let requiresOneXWindowCoordinates = GameDisplayStateRepair
@@ -7795,6 +8052,8 @@ final class WineManager {
                 steamPreparationMessage = "Modo Steam real (D3DMetal + multimedia): preparando el cliente Steam conectado…"
             } else if needsCoherentGPUProbe {
                 steamPreparationMessage = "Modo Steam real (D3DMetal coherente D3D11+D3D12): preparando el cliente Steam conectado…"
+            } else if needsD3D11FlipModelPresentation {
+                steamPreparationMessage = "Modo Steam real (D3DMetal flip-model D3D11): preparando el cliente Steam conectado…"
             } else {
                 steamPreparationMessage = "Modo Steam real (motor D3DMetal): preparando el cliente Steam conectado…"
             }
@@ -7806,7 +8065,8 @@ final class WineManager {
                 clientWine: d3dmWine,
                 timeoutSeconds: 120,
                 background: true,
-                runtimeProfile: d3d12RuntimeProfile
+                runtimeProfile: d3d12RuntimeProfile,
+                includeManagedMediaRuntime: needsManagedMedia
             )
             if !connected {
                 if SteamAuthService.storedSessionNeedsReauthentication {
@@ -7827,7 +8087,12 @@ final class WineManager {
                     level: .info
                 )
             }
-            log.log("Cliente Steam conectado; lanzando el juego D3D12 con DRM real (D3DMetal).", level: .info)
+            log.log(
+                needsD3D11FlipModelPresentation
+                    ? "Cliente Steam conectado; lanzando el renderer GFD D3D11 con flip-model nativo de D3DMetal."
+                    : "Cliente Steam conectado; lanzando el juego D3D12 con DRM real (D3DMetal).",
+                level: .info
+            )
             // Que mande el d3d12/dxgi builtin de D3DMetal: quitar del game dir las DLLs de DXMT que
             // un intento previo dejara junto al exe (chocan). NO se toca la subcarpeta D3D12/ (Agility SDK).
             cleanExeAdjacentDXMTDLLs(gameExecutable: graphicsRuntimeExecutable)
@@ -7873,7 +8138,8 @@ final class WineManager {
             var env = needsIsolatedD3DMetalEngine
                 ? D3DMetalMediaEngineProvisioner.mediaEnvironment(
                     winePath: d3dmWine,
-                    prefix: bottle.prefixPath
+                    prefix: bottle.prefixPath,
+                    includeManagedMedia: needsManagedMedia
                 )
                 : d3dMetalUnifiedEnvironment(prefix: bottle.prefixPath)
             env["SteamAppId"] = appId
@@ -7884,25 +8150,32 @@ final class WineManager {
             )
             for (k, v) in effective.extraEnv { env[k] = v }
             if steamAppLaunchRequired {
-                log.log("Protección Steam D3D12: delegando el arranque al cliente por AppID.", level: .info)
+                log.log(
+                    "Protección Steam \(isD3D12 ? "D3D12" : "D3D11 flip-model"): delegando el arranque al cliente por AppID.",
+                    level: .info
+                )
                 NotificationService.shared.status("Steam conectado. Autorizando y lanzando el juego…")
                 let process = try await launchThroughConnectedSteamClient(
                     executable: executable,
                     appId: appId,
-                    launchArguments: d3d12LaunchArguments,
+                    launchArguments: d3dMetalLaunchArguments,
                     bottle: bottle,
                     wine: d3dmWine,
-                    runtimeProfile: d3d12RuntimeProfile
+                    runtimeProfile: d3d12RuntimeProfile,
+                    includeManagedMediaRuntime: needsManagedMedia
                 )
                 NotificationService.shared.status(nil)
                 return process
             }
-            log.log("Lanzando \((executable as NSString).lastPathComponent) vía Steam real (motor D3DMetal, D3D12→Metal).", level: .info)
+            log.log(
+                "Lanzando \((executable as NSString).lastPathComponent) vía Steam real (motor D3DMetal, \(isD3D12 ? "D3D12" : "D3D11 flip-model")→Metal).",
+                level: .info
+            )
             NotificationService.shared.status("Steam conectado. Lanzando el juego…")
             let proc = try await launchWineProcess(
                 winePath: d3dmWine,
                 prefix: bottle.prefixPath,
-                arguments: [executable] + d3d12LaunchArguments,
+                arguments: [executable] + d3dMetalLaunchArguments,
                 environment: env,
                 workingDirectory: gameWorkingDirectory(forExecutable: executable),
                 effective: effective,    // ACTIVA el env -i (contexto LIMPIO): sin `__CFBundleIdentifier` y
@@ -7918,7 +8191,8 @@ final class WineManager {
         }
 
         // GPTK/D3DMetal para cliente + juego (mismo wineserver): fallback si no está el motor
-        // D3DMetal propio (o para D3D12 en equipos sin él). GPTK no corre el CEF moderno, así que
+        // D3DMetal propio (o para presentadores D3DMetal en equipos sin él). GPTK no corre el CEF
+        // moderno, así que
         // el DRM real solo conecta de forma fiable con el motor D3DMetal de arriba.
         try await gptkManager.ensureInstalled { msg, pct in
             Task { @MainActor in LogStore.shared.log("\(msg) (\(Int(pct * 100))%)", level: .info) }
@@ -7947,10 +8221,10 @@ final class WineManager {
         }
         log.log("Cliente Steam conectado; lanzando el juego con DRM real.", level: .info)
 
-        // 4) D3D12: que mande el `d3d12`/`dxgi` builtin de D3DMetal — quitar del game dir las DLLs
-        //    de DXMT que un intento previo dejara junto al exe (chocan con D3DMetal). NO se toca la
-        //    subcarpeta `D3D12/` del Agility SDK (D3DMetal la ignora por diseño).
-        if isD3D12 {
+        // 4) Que manden los builtins de D3DMetal: quitar del game dir las DLLs de DXMT que un
+        //    intento previo dejara junto al exe (chocan con D3DMetal). NO se toca la subcarpeta
+        //    `D3D12/` del Agility SDK (D3DMetal la ignora por diseño).
+        if needsD3DMetalPresentation {
             cleanExeAdjacentDXMTDLLs(gameExecutable: graphicsRuntimeExecutable)
         }
 
@@ -7976,7 +8250,7 @@ final class WineManager {
             let process = try await launchThroughConnectedSteamClient(
                 executable: executable,
                 appId: appId,
-                launchArguments: d3d12LaunchArguments,
+                launchArguments: d3dMetalLaunchArguments,
                 bottle: bottle,
                 wine: gptkWine,
                 runtimeProfile: d3d12RuntimeProfile
@@ -7989,7 +8263,7 @@ final class WineManager {
         let proc = try await launchWineProcess(
             winePath: gptkWine,
             prefix: bottle.prefixPath,
-            arguments: [executable] + d3d12LaunchArguments,
+            arguments: [executable] + d3dMetalLaunchArguments,
             environment: env,
             workingDirectory: gameWorkingDirectory(forExecutable: executable),
             effective: effective,
@@ -8129,7 +8403,8 @@ final class WineManager {
         launchArguments: [String],
         bottle: Bottle,
         wine: String,
-        runtimeProfile: SteamRuntimeProfile = .standard
+        runtimeProfile: SteamRuntimeProfile = .standard,
+        includeManagedMediaRuntime: Bool = false
     ) async throws -> Process {
         guard !appId.isEmpty, appId.allSatisfy(\.isNumber) else {
             throw WineError.launchFailed("Steam devolvió un AppID inválido para el juego protegido.")
@@ -8150,7 +8425,8 @@ final class WineManager {
         var environment = steamClientEnvironment(
             prefix: bottle.prefixPath,
             wine: wine,
-            runtimeProfile: runtimeProfile
+            runtimeProfile: runtimeProfile,
+            includeManagedMediaRuntime: includeManagedMediaRuntime
         )
         environment["HOME"] = NSHomeDirectory()
         environment["USER"] = NSUserName()
@@ -8307,7 +8583,9 @@ final class WineManager {
                 in: bottle,
                 clientWine: wine,
                 timeoutSeconds: 120,
-                background: true
+                background: true,
+                runtimeProfile: runtimeProfile,
+                includeManagedMediaRuntime: includeManagedMediaRuntime
             )
             guard connected else {
                 throw WineError.launchFailed(
@@ -8377,7 +8655,9 @@ final class WineManager {
             in: bottle,
             clientWine: wine,
             timeoutSeconds: 120,
-            background: true
+            background: true,
+            runtimeProfile: runtimeProfile,
+            includeManagedMediaRuntime: includeManagedMediaRuntime
         )
         guard connected else {
             throw WineError.launchFailed(
@@ -8420,8 +8700,7 @@ final class WineManager {
     /// SIEMPRE la red de seguridad. Se llama antes de jugar (baja lo último) y al salir (sube la sesión).
     func syncSteamCloud(appId: String, in bottle: Bottle) async {
         guard !appId.isEmpty else { return }
-        let clientWine = WineEngineLocator.fullWineBinaryForSteamClient()
-            ?? WineEngineLocator.steamDedicatedWineBinary()
+        let clientWine = WineEngineLocator.steamDedicatedWineBinary()
             ?? resolveClientWine(for: bottle)
         let ok = await ensureSteamConnected(in: bottle, clientWine: clientWine, timeoutSeconds: 90, background: true)
         if ok || isWineProcessRunning(matching: "steam.exe") {
@@ -8492,7 +8771,7 @@ final class WineManager {
             }
         }
 
-        // 3) Deps del prefijo para el cliente moderno (lo que instala CrossOver):
+        // 3) Deps del prefijo para el cliente moderno (aprovisionadas por Vessel):
         //    corefonts + VC++ v14. Idempotente (marker en el prefijo); se aplican con
         //    TODO el prefijo parado (incluidos zombis de otros motores, que colgarían
         //    winetricks/wineboot con "version mismatch") para evitar cuelgues.
@@ -8509,16 +8788,16 @@ final class WineManager {
             await applySteamGameRegistry(in: bottle, wine: wine)
         }
 
-        // 3.7) CLON de CrossOver — overrides GLOBALES de compatibilidad. Junto con `cxcompatdb`
-        //       (CX_ROOT, hacks por-juego en runtime) es lo que hace que los juegos lanzados DESDE el
-        //       cliente Steam en Wine vayan como en CrossOver, sin ir juego a juego. Idempotente; con
-        //       Steam parado (antes de lanzarlo). Solo en motores modernos (wine-full / unificado).
+        // 3.7) Overrides GLOBALES de compatibilidad mantenidos por Vessel. Reproducen ajustes de
+        //       Windows/CEF validados sin depender de bases de datos ni runtimes instalados fuera
+        //       de la aplicación. Idempotente; con Steam parado (antes de lanzarlo). Solo en motores
+        //       modernos (`wine-full` / unificado).
         if WineEngineLocator.isModernSteamEngine(wine) {
             if !WineEngineLocator.isFullEngine(wine) {
                 try? await terminateWineProcesses(winePath: wine, prefix: bottle.prefixPath)
                 try? await killOrphanWineProcesses(prefix: bottle.prefixPath, gameWine: wine)
             }
-            await ensureCrossOverCompatOverrides(prefix: bottle.prefixPath, wine: wine)
+            await ensureVesselCompatibilityOverrides(prefix: bottle.prefixPath, wine: wine)
         }
 
         // 4) Cliente antiguo (era Gcenx, sin cef.win64) → dejar que Steam se actualice
@@ -9261,7 +9540,7 @@ final class WineManager {
     ///
     /// La diferencia importa para el motor. Un UE5 va por GPTK/D3DMetal (Palworld), pero un UE4 no
     /// arranca ni por DXMT ni por GPTK — se queda a medias sin dejar ni el log. Con el Wine COMPLETO
-    /// de CrossOver sí abre. Verificado con ASTRONEER: pasó de no abrir a su menú completo. El
+    /// completo de Vessel sí abre. Verificado con ASTRONEER: pasó de no abrir a su menú completo. El
     /// `-nohmd` (ver `unrealEngineArguments`) es aparte y hace falta igual: apaga la VR que lo cuelga.
     ///
     /// La versión se lee de las CADENAS del binario (`UE4` / `UE5`), no de la tabla de imports: UE4
@@ -9298,9 +9577,9 @@ final class WineManager {
         return [renderMode, "-screen-fullscreen", "1", "-window-mode", "borderless"]
     }
 
-    /// Flags de motor Unity para el path **OpenGL de 32-bit** (CrossOver). En Apple
+    /// Flags de motor Unity para el path **OpenGL de 32-bit** del motor gestionado por Vessel. En Apple
     /// Silicon NO hay D3D11 para procesos de 32-bit: DXMT/D3DMetal son de 64-bit y los
-    /// builtins d3d11/dxgi de CrossOver no cargan en 32-bit (`c000007b`); wined3d-vulkan
+    /// builtins d3d11/dxgi de esa pila no cargan en 32-bit (`c000007b`); wined3d-vulkan
     /// choca con el MoltenVK sin `geometryShader`. Por eso Unity cae a SU renderer
     /// OpenGL (Apple GLD→Metal), que SÍ renderiza. El problema: el render **MULTIHILO**
     /// de Unity (`GfxDevice … threaded=1`) sobre ese GL legacy bajo Wine corrompe
@@ -9524,6 +9803,11 @@ final class WineManager {
         ]
     }
 
+    /// Traza temporal, estrecha y estructural para el motor Falling Everything/poro. Se mantiene
+    /// como constante comprobable para impedir que un diagnóstico de I+D se extienda por accidente
+    /// a todos los procesos Wine.
+    nonisolated static let fallingEverythingDiagnosticWineDebug = "err+all,+seh,+loaddll,+timestamp"
+
     /// Entorno para juegos **D3D9 de 32-bit** en Gcenx (ver `ensureD3D9Support`):
     /// `d3d9`/`d3d8`/`wined3d` se cargan como archivos nativos (el builtin del motor,
     /// copiado al prefix) y renderizan por **Vulkan→MoltenVK→Metal** (renderer forzado en
@@ -9732,7 +10016,8 @@ final class WineManager {
     private func steamClientEnvironment(
         prefix: String,
         wine: String,
-        runtimeProfile: SteamRuntimeProfile = .standard
+        runtimeProfile: SteamRuntimeProfile = .standard,
+        includeManagedMediaRuntime: Bool = false
     ) -> [String: String] {
         func finalized(_ environment: [String: String]) -> [String: String] {
             environmentByApplyingDynamicSteamDockIdentity(
@@ -9786,7 +10071,8 @@ final class WineManager {
             var env = WineEngineLocator.isD3DMetalMediaEngine(wine)
                 ? D3DMetalMediaEngineProvisioner.mediaEnvironment(
                     winePath: wine,
-                    prefix: prefix
+                    prefix: prefix,
+                    includeManagedMedia: includeManagedMediaRuntime
                 )
                 : steamClientEnvironment(prefix: prefix)
             env["WINEMSYNC"] = "1"
@@ -9859,7 +10145,8 @@ final class WineManager {
         in bottle: Bottle,
         using winePath: String? = nil,
         background: Bool = false,
-        runtimeProfile: SteamRuntimeProfile = .standard
+        runtimeProfile: SteamRuntimeProfile = .standard,
+        includeManagedMediaRuntime: Bool = false
     ) async throws -> Process {
         guard FileManager.default.fileExists(atPath: bottle.steamPath) else {
             throw WineError.launchFailed("Steam no está instalado en este bottle.")
@@ -9876,7 +10163,8 @@ final class WineManager {
             in: bottle,
             to: clientWine,
             role: role,
-            runtimeProfile: runtimeProfile
+            runtimeProfile: runtimeProfile,
+            includeManagedMediaRuntime: includeManagedMediaRuntime
         ) else {
             throw WineError.launchFailed(
                 "Steam está terminando una operación y aún no puede cambiar al cliente \(background ? "de DRM" : "visible")."
@@ -9995,11 +10283,17 @@ final class WineManager {
             environment: steamClientEnvironment(
                 prefix: bottle.prefixPath,
                 wine: clientWine,
-                runtimeProfile: runtimeProfile
+                runtimeProfile: runtimeProfile,
+                includeManagedMediaRuntime: includeManagedMediaRuntime
             ),
             workingDirectory: (bottle.steamPath as NSString).deletingLastPathComponent
         )
-        persistSteamRuntimeProfile(runtimeProfile, prefix: bottle.prefixPath)
+        persistSteamRuntimeProfile(
+            runtimeProfile,
+            prefix: bottle.prefixPath,
+            wine: clientWine,
+            includeManagedMediaRuntime: includeManagedMediaRuntime
+        )
         return process
     }
 
@@ -10274,6 +10568,105 @@ final class WineManager {
             .lastPathComponent ?? (wine as NSString).lastPathComponent
     }
 
+    /// Builtins D3D10/11 que deben reflejar exactamente el motor D3DMetal seleccionado.
+    /// `wineboot -u` puede actualizar una parte y conservar otra de un motor anterior. La familia
+    /// se sincroniza incluso cuando el marker coincide; la elección de una pila gráfica coherente
+    /// corresponde al enrutador y no se intenta fabricar mezclando DLLs de motores distintos.
+    nonisolated static let d3dMetalD3D11PrefixBuiltins = [
+        "d3d11.dll", "dxgi.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll",
+        "winemetal.dll"
+    ]
+
+    /// Sincroniza únicamente la familia D3D10/11 del motor D3DMetal con `system32`. La sustitución
+    /// usa `rename(2)` dentro del mismo directorio para que cada DLL cambie atómicamente; no toca
+    /// D3D12, Agility SDK ni archivos del juego. Devuelve los nombres reparados para diagnóstico y
+    /// pruebas. La función es síncrona, aislada del MainActor por su wrapper asíncrono.
+    @discardableResult
+    nonisolated static func synchronizeD3DMetalD3D11PrefixBuiltins(
+        prefixPath: String,
+        engineWine: String
+    ) -> [String] {
+        guard WineEngineLocator.isD3DMetalEngine(engineWine),
+              let engineRoot = WineEngineLocator.engineRoot(
+                  forWineExecutable: URL(fileURLWithPath: engineWine)
+              ) else { return [] }
+
+        let fileManager = FileManager.default
+        let sourceDirectory = engineRoot.appendingPathComponent(
+            "lib/wine/x86_64-windows",
+            isDirectory: true
+        )
+        let targetDirectory = URL(fileURLWithPath: prefixPath, isDirectory: true)
+            .appendingPathComponent("drive_c/windows/system32", isDirectory: true)
+        guard fileManager.fileExists(atPath: sourceDirectory.path) else { return [] }
+        do {
+            try fileManager.createDirectory(
+                at: targetDirectory,
+                withIntermediateDirectories: true
+            )
+        } catch {
+            return []
+        }
+
+        func matches(_ source: URL, _ target: URL) -> Bool {
+            guard let sourceAttributes = try? fileManager.attributesOfItem(atPath: source.path),
+                  let targetAttributes = try? fileManager.attributesOfItem(atPath: target.path),
+                  let sourceSize = (sourceAttributes[.size] as? NSNumber)?.uint64Value,
+                  let targetSize = (targetAttributes[.size] as? NSNumber)?.uint64Value,
+                  sourceSize == targetSize else { return false }
+
+            if let sourceDate = sourceAttributes[.modificationDate] as? Date,
+               let targetDate = targetAttributes[.modificationDate] as? Date,
+               sourceDate == targetDate {
+                return true
+            }
+            guard let sourceData = try? Data(contentsOf: source, options: .mappedIfSafe),
+                  let targetData = try? Data(contentsOf: target, options: .mappedIfSafe) else {
+                return false
+            }
+            return SHA256.hash(data: sourceData).elementsEqual(SHA256.hash(data: targetData))
+        }
+
+        var repaired: [String] = []
+        for name in d3dMetalD3D11PrefixBuiltins {
+            let source = sourceDirectory.appendingPathComponent(name)
+            let target = targetDirectory.appendingPathComponent(name)
+            guard fileManager.fileExists(atPath: source.path), !matches(source, target) else {
+                continue
+            }
+
+            let temporary = targetDirectory.appendingPathComponent(
+                ".vessel-\(name)-\(UUID().uuidString).tmp"
+            )
+            do {
+                try fileManager.copyItem(at: source, to: temporary)
+                guard rename(temporary.path, target.path) == 0 else {
+                    try? fileManager.removeItem(at: temporary)
+                    continue
+                }
+                repaired.append(name)
+            } catch {
+                try? fileManager.removeItem(at: temporary)
+            }
+        }
+        return repaired
+    }
+
+    private func ensureD3DMetalD3D11PrefixBuiltins(prefix: String, wine: String) async {
+        let repaired = await Task.detached(priority: .utility) {
+            Self.synchronizeD3DMetalD3D11PrefixBuiltins(
+                prefixPath: prefix,
+                engineWine: wine
+            )
+        }.value
+        guard !repaired.isEmpty else { return }
+        log.log(
+            "D3DMetal: builtins D3D11 sincronizados con el motor seleccionado: "
+                + repaired.joined(separator: ", "),
+            level: .info
+        )
+    }
+
     /// Re-sincroniza el prefijo al motor ACTUAL si el último que lo tocó era OTRO
     /// (marker `.vessel-prefix-engine`). Un prefijo creado/sincronizado por Gcenx y
     /// corriendo bajo el motor unificado queda con fake-DLLs/registro desalineados →
@@ -10287,6 +10680,10 @@ final class WineManager {
         let isFullEngine = WineEngineLocator.isFullEngine(wine)
         if (try? String(contentsOfFile: marker, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) == id {
+            // El marker solo identifica el motor. Una actualización parcial de `wineboot` puede
+            // dejar todavía una familia D3D11 mezclada, así que esta reparación sigue siendo
+            // obligatoria en el camino rápido y no depende de una regla por juego.
+            await ensureD3DMetalD3D11PrefixBuiltins(prefix: prefix, wine: wine)
             // La política de crash tiene su propia versión: un prefijo puede estar sincronizado con
             // el motor y conservar todavía la configuración antigua `Auto=0`, que precisamente
             // muestra el diálogo «Exception raised». La migración solo ejecuta `reg` una vez.
@@ -10408,6 +10805,9 @@ final class WineManager {
         // wineboot, DXMT no engancha y falla con "InitializeEngineGraphics failed".
         try? await terminateWineProcesses(winePath: gameWine, prefix: prefix)
         try? await killOrphanWineProcesses(prefix: prefix, gameWine: gameWine)
+        // `wineboot -u` no siempre reemplaza todos los builtins a la vez. Con el prefijo ya frío,
+        // restaurar la familia D3D11 completa evita combinar WineD3D con DXGI/D3DMetal.
+        await ensureD3DMetalD3D11PrefixBuiltins(prefix: prefix, wine: gameWine)
         // Registrar el motor con el que quedó sincronizado el prefijo (lo consume
         // `ensurePrefixSyncedToEngine` para el camino del cliente de Steam).
         try? engineID(forWine: gameWine)
@@ -11383,10 +11783,8 @@ final class WineManager {
         /// ventana abre y se queda NEGRA. Lo usan los envoltorios retro (DOSBox/ScummVM).
         forceCleanEnv: Bool = false
     ) async throws -> Process {
-        // Motor COMPLETO (wine-full): su `bin/wine` es un shim que traduce `wine <exe>` →
-        // `wineloader winewrapper.exe --run -- <exe>` y fija WINELOADER/WINESERVER/WINEDLLPATH, así
-        // que aquí se lanza como cualquier otro motor (sin casos especiales). El wineloader resuelve
-        // sus libs por rpath (@loader_path/@rpath).
+        // Todos los motores gestionados por Vessel exponen un loader Wine ejecutable y
+        // autocontenido; se lanzan de la misma forma, sin delegar en aplicaciones externas.
         let process = Process()
         process.executableURL = URL(fileURLWithPath: winePath)
         process.arguments = arguments
@@ -11738,28 +12136,28 @@ final class WineManager {
             // DRM). El shim `bin/wine` (sh) solo usa builtins + rutas absolutas, así que corre sin PATH.
             log.log("Motor completo: lanzando con entorno LIMPIO (env -i) para evitar el contexto GUI que rompe el CEF/DXMT.", level: .info)
             var clean = Self.fullEngineCleanEnvironment(from: fullEnv)
-            // ⭐ CrossOver cxcompatdb — LA clave de que los juegos vayan PERFECTOS desde el Steam de
-            // wine (como CrossOver; NO era D3DMetal, como se creyó al principio). `CX_ROOT` activa el
-            // módulo `cxcompatdb.so`, que aplica los "hacks" de compatibilidad POR JUEGO (dll_overrides,
-            // env_vars, cmdline…). Los juegos que el cliente Steam lanza HEREDAN estas vars → cxcompatdb
-            // activo → render correcto SIN ir juego a juego. Validado in-vivo: Palworld (UE5/D3D12)
-            // renderiza perfecto y el CEF del cliente NO se rompe (el webhelper va por CPU, ajeno a
-            // CX_GRAPHICS_BACKEND). `WINEMSYNC=1` (ya en la whitelist) DEBE coincidir con el cliente.
+            // `CX_ROOT` es el nombre heredado que consumen algunos parches FOSS de esta familia de
+            // Wine, pero SIEMPRE apunta al propio motor de Vessel. No es una ruta a CrossOver ni
+            // autoriza a buscarlo. `CX_HOME` se elimina expresamente para impedir que una base de
+            // compatibilidad presente en el Mac cambie el resultado. `WINEMSYNC=1` (ya en la
+            // whitelist) debe coincidir entre el cliente y el juego que comparten wineserver.
             let isManagedMediaEngine = WineEngineLocator.isD3DMetalMediaEngine(winePath)
             let cxRoot = WineEngineLocator.fullEngineDir()
-            // ⚠️ NO forzar CX_GRAPHICS_BACKEND: CrossOver NO lo setea (su bottle Steam va sin él) y usa
-            // su AUTO-DETECCIÓN por juego (D3D9→wined3d, D3D11/12→D3DMetal/vkd3d…). Forzarlo a "d3dmetal"
+            // ⚠️ NO forzar CX_GRAPHICS_BACKEND: el motor selecciona la pila por las capacidades del
+            // ejecutable (D3D9→wined3d, D3D11/12→D3DMetal/vkd3d…). Forzarlo a "d3dmetal"
             // rompía los juegos que NO son D3D11/12 — p.ej. Cube World (D3D9) daba "Could not initialize
-            // Direct3D". Sin forzarlo, cada juego usa su backend correcto, exactamente como CrossOver.
-            // `CX_APPLEGPTK_LIBD3DSHARED_PATH` sí se exporta siempre (CrossOver hace igual): deja D3DMetal
-            // DISPONIBLE para cuando la auto-detección lo elija (D3D11/12), sin imponerlo.
+            // Direct3D". Sin forzarlo, cada juego conserva su backend estructural correcto.
+            // `CX_APPLEGPTK_LIBD3DSHARED_PATH` solo se exporta si la biblioteca existe DENTRO del
+            // motor gestionado por Vessel: deja D3DMetal disponible sin imponerlo.
             if !isManagedMediaEngine {
                 clean["CX_ROOT"] = cxRoot
                 let cxLibd3d = "\(cxRoot)/lib64/apple_gptk/external/libd3dshared.dylib"
                 if FileManager.default.fileExists(atPath: cxLibd3d) {
                     clean["CX_APPLEGPTK_LIBD3DSHARED_PATH"] = cxLibd3d
                 }
-                if let cxHome = ensureCXCompatDB() { clean["CX_HOME"] = cxHome }
+                // El módulo FOSS usa únicamente su base incluida en el motor de Vessel. No se
+                // importa ni se consulta la instalación de ninguna aplicación externa.
+                clean["CX_HOME"] = nil
             } else {
                 // Este perfil se validó sin la base propietaria: ni siquiera debe heredarse por
                 // accidente al cruzar el LaunchAgent del cliente DRM.
@@ -11924,33 +12322,6 @@ final class WineManager {
         }
     }
 
-    /// Asegura la base de datos de compatibilidad de CrossOver (`compatdb-<N>.dat`) que consume el
-    /// módulo `cxcompatdb.so` del motor completo y devuelve el directorio que la contiene (para
-    /// `CX_HOME`), o `nil` si no hay ninguna (entonces el cxcompatdb usa su base por defecto embebida,
-    /// de menor cobertura). La EMPAQUETA en el motor la primera vez: si el motor no la trae y CrossOver
-    /// está instalado en el sistema, copia su `compatdb-<N>.dat` (un dato firmado por CodeWeavers que
-    /// se verifica con el `tie.pub` que el motor ya trae en `share/crossover/data`). Tras esa primera
-    /// copia el equipo queda AUTÓNOMO (no vuelve a necesitar CrossOver). Es idempotente.
-    private func ensureCXCompatDB() -> String? {
-        let fm = FileManager.default
-        let engineHome = "\(WineEngineLocator.fullEngineDir())/cxcompatdb-home"
-        func firstDB(in dir: String) -> String? {
-            (try? fm.contentsOfDirectory(atPath: dir))?
-                .first { $0.hasPrefix("compatdb-") && $0.hasSuffix(".dat") }
-        }
-        if firstDB(in: engineHome) != nil { return engineHome }          // ya empaquetada
-        let sysHome = "\(NSHomeDirectory())/Library/Application Support/CrossOver"
-        if let dat = firstDB(in: sysHome) {                              // copiar del sistema (1 vez)
-            try? fm.createDirectory(atPath: engineHome, withIntermediateDirectories: true)
-            try? fm.copyItem(atPath: "\(sysHome)/\(dat)", toPath: "\(engineHome)/\(dat)")
-            if firstDB(in: engineHome) != nil {
-                log.log("cxcompatdb: base de compatibilidad empaquetada en el motor (\(dat)).", level: .info)
-                return engineHome
-            }
-        }
-        return nil                                                       // sin db → default embebida
-    }
-
     /// Fija la versión de Windows del prefijo (`HKCU\Software\Wine\Version`) que pide el perfil
     /// de compatibilidad — lo mismo que hace `winecfg`. Es un `reg add` puro (no necesita
     /// winetricks), idempotente (`/f`) e inocuo si ya estaba puesto. Valores Wine: win11,
@@ -12003,10 +12374,9 @@ final class WineManager {
         return await applyWinetricksVerbs(verbs, prefix: bottle.prefixPath, wine: wine, force: true)
     }
 
-    /// Resuelve `winetricks`: si no está en el sistema, DESCARGA el script oficial (un único fichero
-    /// shell, sin compilar) a la caché de Vessel y lo hace ejecutable. Así la auto-reparación de
-    /// runtimes funciona sin depender de `brew install winetricks` (coherente con "todo
-    /// auto-descargable"). Idempotente. Devuelve `nil` si no hay red.
+    /// Aprovisiona `winetricks` dentro de la caché administrada por Vessel: descarga el script
+    /// oficial fijado a una versión inmutable, verifica su SHA-256 y lo hace ejecutable. Nunca usa
+    /// una instalación global. Es idempotente y devuelve `nil` si no hay red.
     private func ensureWinetricks() async -> String? {
         let dir = "\(VesselPaths.cacheDirectory)/winetricks"
         let path = "\(dir)/winetricks"
@@ -12080,16 +12450,18 @@ final class WineManager {
             }
         }
 
-        // winetricks: del sistema o AUTO-DESCARGADO (es un único script shell público, sin compilar),
-        // para que la auto-reparación de runtimes NO dependa de `brew install winetricks`.
-        let candidates = ["/opt/homebrew/bin/winetricks", "/usr/local/bin/winetricks"]
-        let winetricks: String
-        if let sys = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
-            winetricks = sys
-        } else if let dl = await ensureWinetricks() {
-            winetricks = dl
-        } else {
+        // Ejecutar siempre la versión oficial fijada y verificada por Vessel. Usar una copia global
+        // haría que dos Macs con la misma versión de la app preparasen prefijos diferentes.
+        guard let winetricks = await ensureWinetricks() else {
             log.log("Falta winetricks para instalar [\(pending.joined(separator: ", "))] y no se pudo descargar (¿sin red?); el juego podría faltarle ese runtime.", level: .warn)
+            return false
+        }
+
+        guard let cabextract = await ensureManagedCabextract(for: wine) else {
+            log.log(
+                "Vessel no pudo preparar su extractor CAB autocontenido; se cancela la instalación de runtimes para no depender de herramientas globales.",
+                level: .warn
+            )
             return false
         }
 
@@ -12101,14 +12473,19 @@ final class WineManager {
         env["WINE"] = wine
         env["WINEPREFIX"] = prefix
         env["WINEDEBUG"] = "-all"
-        // winetricks necesita `cabextract` (y a veces `7z`) en PATH para extraer los redistribuibles.
-        // El motor (wine-full) trae cabextract en su `bin`; brew también. Los ponemos en PATH (el
-        // entorno de una .app puede venir con un PATH mínimo sin /opt/homebrew/bin).
-        var pathParts = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+        // `cabextract` procede de un motor verificado de Vessel. 7-Zip, cuando un verbo lo requiere,
+        // lo aprovisiona el propio Winetricks dentro del prefijo. Solo se conservan utilidades base
+        // de macOS en PATH; Homebrew y otros gestores globales quedan fuera deliberadamente.
+        var pathParts = [
+            URL(fileURLWithPath: cabextract).deletingLastPathComponent().path,
+            "/usr/bin",
+            "/bin"
+        ]
         if let root = WineEngineLocator.engineRoot(forWineExecutable: URL(fileURLWithPath: wine)) {
             pathParts.insert(root.appendingPathComponent("bin").path, at: 0)
         }
-        env["PATH"] = pathParts.joined(separator: ":")
+        env["PATH"] = Array(NSOrderedSet(array: pathParts)).compactMap { $0 as? String }
+            .joined(separator: ":")
         // Motor unificado: sus libs externas (freetype/gnutls) viven en `lib/` del motor
         // y se cargan por dlopen (SONAME sin ruta) → winetricks necesita el mismo
         // `DYLD_FALLBACK_LIBRARY_PATH` que usa `launchWineProcess`, y su `wineserver`.
@@ -12159,6 +12536,56 @@ final class WineManager {
             guard released else { return false }
         }
         return succeeded
+    }
+
+    /// Localiza `cabextract` únicamente en motores gestionados por Vessel. Si el motor seleccionado
+    /// no lo incluye, aprovisiona `wine-full` y reutiliza su herramienta redistribuible; nunca busca
+    /// Homebrew, CrossOver ni rutas globales.
+    private func ensureManagedCabextract(for wine: String) async -> String? {
+        if let existing = Self.managedCabextractPath(
+            for: wine,
+            enginesDirectory: VesselPaths.enginesDirectory
+        ) {
+            return existing
+        }
+        do {
+            try await dependencyManager.ensureFullEngine()
+        } catch {
+            log.log(
+                "No se pudo aprovisionar el extractor CAB de Vessel: \(error.localizedDescription)",
+                level: .warn
+            )
+            return nil
+        }
+        return Self.managedCabextractPath(
+            for: wine,
+            enginesDirectory: VesselPaths.enginesDirectory
+        )
+    }
+
+    nonisolated static func managedCabextractPath(
+        for wine: String,
+        enginesDirectory: String
+    ) -> String? {
+        var candidates: [URL] = []
+        if let selectedRoot = WineEngineLocator.engineRoot(
+            forWineExecutable: URL(fileURLWithPath: wine)
+        ), WineEngineLocator.isManagedRuntimePath(
+            selectedRoot.path,
+            enginesDirectory: enginesDirectory
+        ) {
+            candidates.append(selectedRoot.appendingPathComponent("bin/cabextract"))
+        }
+        if WineEngineLocator.isFullEngineInstalled(enginesDirectory: enginesDirectory) {
+            candidates.append(
+                URL(fileURLWithPath: WineEngineLocator.fullEngineDir(
+                    enginesDirectory: enginesDirectory
+                )).appendingPathComponent("bin/cabextract")
+            )
+        }
+        return candidates.first(where: {
+            FileManager.default.isExecutableFile(atPath: $0.path)
+        })?.path
     }
 
     /// Detiene cualquier cliente/servidor Wine del prefijo antes de ejecutar Winetricks con un

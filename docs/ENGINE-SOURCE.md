@@ -36,16 +36,23 @@ descarga/empaqueta, y detalla los **parches** que aplicamos.
 - **Reparación aislada de fibras para Cobra/D3D12:** el perfil `wine-d3dmetal-media` clona el motor
   anterior y superpone únicamente los binarios construidos desde
   `0006-kernelbase-fibers-use-HasFiberData.patch` y
-  `0007-ntdll-macos-rewrite-fiber-gs.patch`. El primero usa `TEB.HasFiberData` como estado real de
-  las fibras. El segundo, habilitado solo por `VESSEL_WINE_FIBER_GS_REWRITE=1`, reescribe en memoria
-  las lecturas MSVC `GS:0x20` del PE principal para obtener `FiberData` desde el TEB que Wine refleja
-  en `GS:0x30`; el ejecutable del juego no se modifica. Los objetos reproducibles están en
-  `Resources/engine-fiberfix/`, se validan por SHA-256 y cualquier alteración fuerza la reconstrucción
-  atómica del perfil. `wine-full` y los demás motores permanecen sin cambios.
+  `0007-ntdll-macos-rewrite-fiber-gs.patch` y
+  `0010-ntdll-macos-repair-restored-fiber-gs.patch`. El primero usa `TEB.HasFiberData` como estado
+  real de las fibras. Los dos parches de `ntdll` corrigen las lecturas MSVC `GS:0x20`: el loader
+  reescribe la secuencia del PE principal para obtener `FiberData` desde el TEB que Wine refleja en
+  `GS:0x30`, y el manejador Unix repara la misma secuencia si un protector restaura el código después
+  de cargarlo. La reparación está activa por defecto dentro de este motor aislado porque Steam puede
+  omitir variables Unix al crear un proceso protegido; el valor exacto
+  `VESSEL_WINE_FIBER_GS_REWRITE=0` queda como interruptor de diagnóstico. El ejecutable del juego no
+  se modifica. Los objetos reproducibles están en `Resources/engine-fiberfix/`, se validan por
+  SHA-256 y cualquier alteración fuerza la reconstrucción atómica del perfil. `wine-full` y los demás
+  motores permanecen sin cambios.
 - **Excluido a propósito** (propietario, NO está en las fuentes públicas): `winewrapper.exe`,
   `cxcompatdb.so`/su `.dat`, `apple_gptk`/D3DMetal, las herramientas `cx*`. Sin ellas el motor
-  es 100 % FOSS. Consecuencia: el **cliente de Steam** (CEF) no se enruta a esta build (va a
-  `wine-steam`/unificado, que sí lo renderizan — ver `WineEngineLocator.isRealCrossOverFullEngine`).
+  es 100 % FOSS. Una carpeta que contenga `winewrapper.exe` se rechaza por completo mediante
+  `WineEngineLocator.containsExternalFullEngineRuntime`; Vessel no busca ni ejecuta runtimes de
+  otras aplicaciones. El cliente de Steam interactivo usa `wine-steam`/unificado, mientras los
+  flujos DRM que necesitan `wine-full` se ejecutan con su loader nativo y entorno limpio.
 - **Dependencias empaquetadas:** las mismas dylibs x86_64 de la §2 (freetype/gnutls/nettle,
   MoltenVK, wine-mono 11.2.0) y `cabextract` 1.9.1 (GPL, compilado de las mismas fuentes).
 - **Validación** (2026-07-17, lanzando desde el botón de la app): FEZ (FNA), Terraria (XNA),
@@ -55,7 +62,12 @@ descarga/empaqueta, y detalla los **parches** que aplicamos.
   D3DMetal, vídeo y ventana ajustada a 1512×982, sin el fallo previo al desreferenciar `0x8ff`.
   El 2026-07-24, *Noita* (Falling Everything/poro) superó dos arranques consecutivos desde la app
   oficial y un ciclo de foco Vessel→juego con OpenGL aislado, escala 1×, entrada alineada y cierre
-  limpio. La detección estructural y la validación reproducible se documentan en
+  limpio. La validación quedó **reabierta** ese mismo día: un arranque salió desbordado y terminó al
+  comenzar una partida; en otro, el proceso y la ventana siguieron vivos, pero la transición de
+  superficie dejó el juego detrás de Vessel y pareció un cierre. Vessel incorpora un observador
+  acotado de recreación de superficies que no roba el foco cuando el usuario cambia de aplicación.
+  Noita no debe considerarse consolidado hasta validar «New Game» y una sesión real con la build
+  oficial. La detección estructural y el historial se documentan en
   [`FALLING-EVERYTHING-OPENGL.md`](FALLING-EVERYTHING-OPENGL.md).
   Ese mismo día, *Dying Light: The Beast* completó instalación y dos arranques consecutivos desde la
   app oficial con el C-Engine de Techland, D3D12→D3DMetal, escala completa y una sesión jugable
@@ -83,14 +95,16 @@ parches) está disponible bajo la oferta escrita de la §4.
 
 | Parche | Qué hace | Artefacto en este repo |
 |---|---|---|
-| `macdrv_dxmt_get_client_view` (client_view *lazy*) | Arregla la pantalla negra de DXMT en Wine 11 (crea la vista de cliente Metal bajo demanda). | build del motor (`win32u`/`winemac`) |
-| `winemac` fullscreen (reescala client_view) | Fullscreen exclusivo D3D11 desde Steam: reescala la `CAMetalLayer` al pasar a pantalla completa. | `Resources/engine-steamfix/winemac.so`, `Resources/steam-engine/winemac.so` |
+| `macdrv_dxmt_get_client_view` (client_view *lazy*) | Arregla la pantalla negra de DXMT en Wine 11 (crea la vista de cliente Metal bajo demanda). | `docs/wine-patches/local-base/0001-winemac-dxmt-client-view.patch` |
+| `winemac` fullscreen (reescala client_view) | Fullscreen exclusivo D3D11 desde Steam: reescala la `CAMetalLayer` al pasar a pantalla completa. | `docs/wine-patches/local-base/0001-winemac-dxmt-client-view.patch`, `Resources/engine-steamfix/winemac.so`, `Resources/steam-engine/winemac.so` |
+| D3DMetal/Denuvo bajo Rosetta | Conserva los cambios locales del loader, señales y winemac usados por el motor experimental. | `docs/wine-patches/local-base/0002-d3dmetal-denuvo-rosetta.patch` |
+| Superficies múltiples D3DMetal | Mantiene una superficie por swapchain del CEF para evitar que la tienda de Steam quede negra. | `docs/wine-patches/0012-winemac-d3dmetal-multi-surface.patch` |
 | `win32u` wow64 (render CEF por DXMT) | El proceso GPU del CEF de Steam (Chrome 126+) renderiza por **DXMT→Metal** en lugar de `dlopen` directo de MoltenVK (que crasheaba). | `Resources/engine-steamfix/win32u.so` |
 | `bcrypt`/`secur32` con GnuTLS | Verificación de firmas **ECDSA** del login TLS de Steam (sin ellas el login se cuelga en "Iniciando sesión"). | `Resources/engine-steamfix/{bcrypt,secur32}.so` |
 | `win32u` `EnableMouseInPointer` | Fix del ratón en juegos Unity (6.x y anteriores). | `docs/unity6-mouse-fix/EnableMouseInPointer-9.x.patch`, `Resources/mousefix{,-gptk}/win32u.so` |
-| OpenGL *forward-compat* (motor `wine-unified-opengl`) | Aísla el fix OpenGL de *Hero of the Kingdom II* para no tocar el motor base. | `Resources/opengl-engine/winemac.so` |
+| OpenGL *forward-compat* (motor `wine-unified-opengl`) | Aísla el fix OpenGL de *Hero of the Kingdom II* para no tocar el motor base. | `docs/wine-patches/0013-winemac-forward-compatible-opengl.patch`, `Resources/opengl-engine/winemac.so` |
 | OpenGL 4.1 core con compatibilidad HPL3 | Promueve únicamente contextos implícitos detectados, adapta extensiones GLEW, bindings GLSL, VAO 0, `GL_QUADS` y texturas ALPHA/LUMINANCE. Se distribuye como motor y prefijo aislados. | `docs/wine-patches/0005-opengl4-legacy-core-compat.patch`, `Resources/legacy-opengl-engine/{winemac,opengl32}.so` |
-| Fix **W^X / JIT** para Rosetta | Permite el JIT de Wine bajo el modelo W^X de Apple Silicon/Rosetta. | integrado en la build del motor |
+| Fix **W^X / JIT** para Rosetta | Permite el JIT de Wine bajo el modelo W^X de Apple Silicon/Rosetta. | `docs/wine-patches/0011-ntdll-macos-rosetta-wx-fault-recovery.patch` |
 | `ddraw` `SetDisplayMode` no pierde superficies | Los juegos de DirectDraw de los 90 que cambian de modo de pantalla y nunca llaman a `Restore()` dejaban de dibujar para siempre (todo `Flip` → `DDERR_SURFACELOST`). Verificado con *War Wind* (1996). | `docs/wine-patches/0002-ddraw-no-perder-superficies-en-SetDisplayMode-propio.patch`, `Resources/engine-ddrawfix/{i386,x86_64}-windows/ddraw.dll` |
 
 > Los `*.so` publicados en `Resources/` son los **binarios objeto** de estos parches (para
@@ -137,21 +151,24 @@ El motor empaqueta estas librerías en `lib/` (todas `x86_64`, con dependencias 
 
 ## 3. Cómo reconstruir el motor
 
-1. Descarga WineHQ 11.10 del *upstream* (§1) y aplica los parches de la tabla de la §1. Para el
+1. Descarga WineHQ 11.10 del *upstream* (§1) y aplica los parches de la tabla de la §1 siguiendo
+   el orden reproducible de `docs/ENGINE-PATCHES.md`. Para el
    motor `wine-unified-opengl-legacy`, aplica además
    `docs/wine-patches/0005-opengl4-legacy-core-compat.patch`.
 2. Compila para `x86_64` con `--enable-archs=i386,x86_64` e integra **DXMT** en el `d3d11`
-   *builtin* (`lib/wine/x86_64-windows`).
+   *builtin* (`lib/wine/x86_64-windows`). Los parches locales completos de DXMT también están
+   ordenados en `docs/ENGINE-PATCHES.md`.
 3. Compila las librerías de la §2 para `x86_64` (ver notas de build) y colócalas en `lib/` con
    `install_name`/deps a `@loader_path`.
 4. Quita *quarantine* (`xattr -d com.apple.quarantine`) y firma ad-hoc (`codesign --sign -`)
    todos los Mach-O.
 5. Para reproducir el perfil de fibras, parte de las fuentes CrossOver 26.2.0, aplica `0006` a
-   `dlls/kernelbase/thread.c` y `0007` a `dlls/ntdll/loader.c`, compila los destinos PE i386/x86_64
-   indicados por `Resources/engine-fiberfix/` y deja que el aprovisionador verifique sus SHA-256.
-   `fsgsbase-rosetta-probe.c` documenta la limitación de FSGSBASE bajo Rosetta y
-   `windows-fiber-gs-probe.c` comprueba que `GS:0x20` coincide con el puntero devuelto por
-   `ConvertThreadToFiber` cuando la reescritura está activa.
+   `dlls/kernelbase/thread.c`, `0007` a `dlls/ntdll/loader.c` y `0010` a
+   `dlls/ntdll/unix/signal_x86_64.c`. Compila los destinos PE i386/x86_64 indicados por
+   `Resources/engine-fiberfix/` y también `dlls/ntdll/ntdll.so` para `x86_64-unix`; deja que el
+   aprovisionador verifique todos sus SHA-256. `fsgsbase-rosetta-probe.c` documenta la limitación de
+   FSGSBASE bajo Rosetta y `windows-fiber-gs-probe.c` comprueba que `GS:0x20` coincide con el puntero
+   devuelto por `ConvertThreadToFiber` cuando la reescritura está activa.
 
 ---
 

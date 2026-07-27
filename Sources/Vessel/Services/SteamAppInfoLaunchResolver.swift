@@ -11,6 +11,17 @@ enum SteamAppInfoLaunchResolver {
     private static let signature: UInt32 = 0x07_56_44
     private static let supportedVersions: ClosedRange<UInt8> = 39...41
 
+    struct EULA: Equatable, Sendable {
+        let id: String
+        let name: String
+        let version: String
+    }
+
+    private struct AppMetadata {
+        let executable: String?
+        let eulas: [EULA]
+    }
+
     private struct Fingerprint: Equatable {
         let path: String
         let size: UInt64
@@ -18,12 +29,12 @@ enum SteamAppInfoLaunchResolver {
     }
 
     private enum CachedResult {
-        case executable(String)
+        case metadata(AppMetadata)
         case missing
 
-        var value: String? {
+        var value: AppMetadata? {
             switch self {
-            case .executable(let value): value
+            case .metadata(let value): value
             case .missing: nil
             }
         }
@@ -34,7 +45,7 @@ enum SteamAppInfoLaunchResolver {
         private var fingerprint: Fingerprint?
         private var results: [String: CachedResult] = [:]
 
-        func result(for appID: String, fingerprint newFingerprint: Fingerprint) -> (Bool, String?) {
+        func result(for appID: String, fingerprint newFingerprint: Fingerprint) -> (Bool, AppMetadata?) {
             lock.lock()
             defer { lock.unlock() }
             if fingerprint != newFingerprint {
@@ -45,14 +56,14 @@ enum SteamAppInfoLaunchResolver {
             return (true, result.value)
         }
 
-        func store(_ value: String?, for appID: String, fingerprint newFingerprint: Fingerprint) {
+        func store(_ value: AppMetadata?, for appID: String, fingerprint newFingerprint: Fingerprint) {
             lock.lock()
             defer { lock.unlock() }
             if fingerprint != newFingerprint {
                 fingerprint = newFingerprint
                 results.removeAll(keepingCapacity: true)
             }
-            results[appID] = value.map(CachedResult.executable) ?? .missing
+            results[appID] = value.map(CachedResult.metadata) ?? .missing
         }
     }
 
@@ -60,6 +71,16 @@ enum SteamAppInfoLaunchResolver {
 
     /// Ejecutable Windows predeterminado del AppID, expresado como ruta relativa al depot.
     static func defaultWindowsExecutable(appID: String, appInfoPath: String) -> String? {
+        metadata(appID: appID, appInfoPath: appInfoPath)?.executable
+    }
+
+    /// Licencias que Steam declara para el AppID. `nil` indica que `appinfo.vdf` no pudo leerse;
+    /// una colección vacía significa que el registro sí es válido y no contiene EULAs.
+    static func eulas(appID: String, appInfoPath: String) -> [EULA]? {
+        metadata(appID: appID, appInfoPath: appInfoPath)?.eulas
+    }
+
+    private static func metadata(appID: String, appInfoPath: String) -> AppMetadata? {
         guard let numericAppID = UInt32(appID), numericAppID > 0,
               let attributes = try? FileManager.default.attributesOfItem(atPath: appInfoPath),
               let size = (attributes[.size] as? NSNumber)?.uint64Value,
@@ -75,7 +96,7 @@ enum SteamAppInfoLaunchResolver {
         if cached.0 { return cached.1 }
 
         let value = (try? Data(contentsOf: URL(fileURLWithPath: appInfoPath), options: .mappedIfSafe))
-            .flatMap { parseDefaultWindowsExecutable(appID: numericAppID, data: $0) }
+            .flatMap { parseMetadata(appID: numericAppID, data: $0) }
         cache.store(value, for: appID, fingerprint: fingerprint)
         return value
     }
@@ -115,7 +136,7 @@ enum SteamAppInfoLaunchResolver {
         return candidate
     }
 
-    private static func parseDefaultWindowsExecutable(appID: UInt32, data: Data) -> String? {
+    private static func parseMetadata(appID: UInt32, data: Data) -> AppMetadata? {
         var header = Cursor(data: data, offset: 0, limit: data.count)
         guard let magic = header.readUInt32(),
               magic >> 8 == signature,
@@ -166,7 +187,10 @@ enum SteamAppInfoLaunchResolver {
                     depth: 0,
                     nodeCount: &nodeCount
                 ) else { return nil }
-                return selectDefaultWindowsExecutable(from: root)
+                return AppMetadata(
+                    executable: selectDefaultWindowsExecutable(from: root),
+                    eulas: selectEULAs(from: root)
+                )
             }
 
             records.offset = recordEnd
@@ -244,12 +268,7 @@ enum SteamAppInfoLaunchResolver {
     }
 
     private static func selectDefaultWindowsExecutable(from root: [String: Value]) -> String? {
-        let appInfo: [String: Value]
-        if case .object(let wrapped)? = value(named: "appinfo", in: root) {
-            appInfo = wrapped
-        } else {
-            appInfo = root
-        }
+        let appInfo = unwrappedAppInfo(root)
         guard case .object(let config)? = value(named: "config", in: appInfo),
               case .object(let launch)? = value(named: "launch", in: config) else { return nil }
 
@@ -272,6 +291,40 @@ enum SteamAppInfoLaunchResolver {
             return executable
         }
         return nil
+    }
+
+    private static func selectEULAs(from root: [String: Value]) -> [EULA] {
+        let appInfo = unwrappedAppInfo(root)
+        guard case .object(let common)? = value(named: "common", in: appInfo),
+              case .object(let eulas)? = value(named: "eulas", in: common) else { return [] }
+
+        return eulas.compactMap { key, value -> (Int, EULA)? in
+            guard let index = Int(key), case .object(let entry) = value,
+                  case .string(let id)? = self.value(named: "id", in: entry),
+                  case .string(let version)? = self.value(named: "version", in: entry) else {
+                return nil
+            }
+            let normalizedID = id.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalizedVersion = version.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalizedID.isEmpty, !normalizedVersion.isEmpty else { return nil }
+            let name: String
+            if case .string(let rawName)? = self.value(named: "name", in: entry),
+               !rawName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                name = normalizedID
+            }
+            return (index, EULA(id: normalizedID, name: name, version: normalizedVersion))
+        }
+        .sorted { $0.0 < $1.0 }
+        .map(\.1)
+    }
+
+    private static func unwrappedAppInfo(_ root: [String: Value]) -> [String: Value] {
+        if case .object(let wrapped)? = value(named: "appinfo", in: root) {
+            return wrapped
+        }
+        return root
     }
 
     private static func value(named name: String, in object: [String: Value]) -> Value? {

@@ -68,22 +68,32 @@ enum WineEngineLocator {
     /// unificado reinicia `steamwebhelper` con `0x80000003`. No se usa para el DRM de los juegos.
     static let steamEngineName = "wine-steam"
 
-    /// Motor Wine **COMPLETO** de Vessel (`wine-full`): un único Wine moderno "tipo CrossOver"
+    /// Motor Wine **COMPLETO** y autocontenido de Vessel (`wine-full`): un único Wine moderno
     /// (wine-11.0 + CW HACKs: msync, winemac, wined3d) para las rutas que lo necesitan
     /// (UE4, FNA/XNA con .NET real, Source, Godot+Vulkan, D3D9/Unity de 32-bit, DirectDraw).
     ///
-    /// Desde la 0.0.4 (tarea #47) hay DOS procedencias posibles, indistinguibles por la ruta:
-    ///  - **Build propia redistribuible** (la normal): compilada por Vessel de las fuentes FOSS de
-    ///    CrossOver 26.2.0 y descargada de `SwonDev/Vessel-Engines` (`engine-full-v1`) bajo demanda
-    ///    (`DependencyManager.ensureFullEngine`, perezoso desde las rutas). Es la única vía para
-    ///    usuarios sin CrossOver. Su `bin/wine` es el loader Mach-O estándar de Wine 11.
-    ///  - **CrossOver REAL** (opcional, dev): copia del SharedSupport de un CrossOver.app instalado.
-    ///    Manda si existe (es la referencia y el único que corre el CEF del cliente Steam). Se
-    ///    detecta por `winewrapper.exe` (propietario, ausente en la build propia) — ver
-    ///    `isRealCrossOverFullEngine`. NUNCA se sube a ningún sitio (licencia).
-    /// ⚠️ El CrossOver real se lanza vía shim `bin/wine` → `wineloader` + `winewrapper.exe --run --`
-    /// (ver `DependencyManager.repairFullEngineShim`, no-op en la build propia).
+    /// Se descarga exclusivamente desde `SwonDev/Vessel-Engines` y contiene el loader Mach-O
+    /// estándar de Wine. Una copia de un runtime externo no se considera una instalación válida:
+    /// Vessel nunca lo invoca ni depende de que otra aplicación esté instalada en el Mac.
     static let fullEngineName = "wine-full"
+
+    /// Únicas raíces de Wine que una referencia persistida puede seleccionar. Las variantes GPTK
+    /// contienen el loader en un subdirectorio `wine/`, pero siguen estando encapsuladas bajo una
+    /// de estas raíces directas de `Engines/`.
+    private static let managedWineEngineNames: Set<String> = [
+        portableEngineName,
+        dxmtEngineName,
+        mousefixEngineName,
+        unifiedEngineName,
+        unifiedOpenGLEngineName,
+        unifiedLegacyOpenGLEngineName,
+        d3dmetalEngineName,
+        d3dmetalMediaEngineName,
+        steamEngineName,
+        fullEngineName,
+        "gptk-mythic",
+        "gptk-mythic-mousefix"
+    ]
 
     /// True si la ruta pertenece al motor Wine COMPLETO (`wine-full`), que se lanza vía `wineloader`.
     static func isFullEngine(_ winePath: String) -> Bool {
@@ -95,13 +105,14 @@ enum WineEngineLocator {
         URL(fileURLWithPath: enginesDirectory).appendingPathComponent(fullEngineName).path
     }
 
-    /// Binario `wine` (shim) del motor COMPLETO (`wine-full`), o `nil` si no está instalado. El shim
-    /// `bin/wine` traduce `wine <args>` → `wineloader winewrapper.exe --run -- <args>` y fija el
-    /// entorno del motor, así que se invoca como cualquier otro motor.
+    /// Binario `wine` nativo del motor COMPLETO (`wine-full`), o `nil` si no está instalado o si la
+    /// carpeta contiene marcadores de un runtime externo no redistribuible.
     static func fullWineBinary(enginesDirectory: String = VesselPaths.enginesDirectory) -> String? {
+        guard !containsExternalFullEngineRuntime(enginesDirectory: enginesDirectory) else { return nil }
         let p = URL(fileURLWithPath: fullEngineDir(enginesDirectory: enginesDirectory))
             .appendingPathComponent("bin/wine").path
-        return FileManager.default.isExecutableFile(atPath: p) ? p : nil
+        return FileManager.default.isExecutableFile(atPath: p)
+            && isManagedRuntimePath(p, enginesDirectory: enginesDirectory) ? p : nil
     }
 
     /// True si el motor COMPLETO está instalado (tiene el shim `bin/wine`).
@@ -109,29 +120,15 @@ enum WineEngineLocator {
         fullWineBinary(enginesDirectory: enginesDirectory) != nil
     }
 
-    /// True si el `wine-full` instalado es el **CrossOver REAL** (copiado de una instalación
-    /// local de CrossOver.app), NO la build propia redistribuible que Vessel descarga (fuentes
-    /// FOSS de CrossOver 26.2.0, wine-11.0 + CW HACKs, LGPL — tarea #47). El marcador es
-    /// `winewrapper.exe`: el lanzador propietario de CodeWeavers, que NO está en las fuentes
-    /// públicas y por tanto no existe en la build propia.
-    ///
-    /// Solo el CrossOver real corre el **cliente de Steam** (CEF nativo multiproceso): la build
-    /// propia abre la ventana del CEF en NEGRO (verificado in-vivo). En cambio, para los JUEGOS
-    /// de las rutas wine-full (UE4, FNA/XNA, Source, Godot-Vulkan, D3D9 32-bit, DirectDraw)
-    /// la build propia es equivalente (verificado juego a juego). Por eso el Steam-cliente se
-    /// enruta al CrossOver real si existe, y si no a `wine-steam`/unificado.
-    static func isRealCrossOverFullEngine(enginesDirectory: String = VesselPaths.enginesDirectory) -> Bool {
+    /// Detecta una copia heredada de un runtime externo. `winewrapper.exe` no forma parte de las
+    /// fuentes públicas ni del motor de Vessel; su presencia invalida la carpeta completa para
+    /// impedir que una instalación local de terceros se convierta en una dependencia accidental.
+    static func containsExternalFullEngineRuntime(
+        enginesDirectory: String = VesselPaths.enginesDirectory
+    ) -> Bool {
         let wrapper = URL(fileURLWithPath: fullEngineDir(enginesDirectory: enginesDirectory))
             .appendingPathComponent("lib/wine/x86_64-windows/winewrapper.exe").path
         return FileManager.default.fileExists(atPath: wrapper)
-    }
-
-    /// Binario `wine` del motor COMPLETO **apto para el cliente de Steam**: solo el CrossOver
-    /// real (ver `isRealCrossOverFullEngine`); `nil` con la build propia, para que el cliente
-    /// caiga a `wine-steam`/unificado, que sí renderizan el CEF.
-    static func fullWineBinaryForSteamClient(enginesDirectory: String = VesselPaths.enginesDirectory) -> String? {
-        guard isRealCrossOverFullEngine(enginesDirectory: enginesDirectory) else { return nil }
-        return fullWineBinary(enginesDirectory: enginesDirectory)
     }
 
     // MARK: - Roles de motor (arquitectura de doble motor)
@@ -183,13 +180,7 @@ enum WineEngineLocator {
 
     /// True si el motor `name` tiene un binario `wine`/`wine64` ejecutable.
     static func engineHasWineBinary(_ name: String, enginesDirectory: String = VesselPaths.enginesDirectory) -> Bool {
-        let base = URL(fileURLWithPath: enginesDirectory).appendingPathComponent(name)
-        for bin in ["bin/wine", "bin/wine64"] {
-            if FileManager.default.isExecutableFile(atPath: base.appendingPathComponent(bin).path) {
-                return true
-            }
-        }
-        return false
+        wineBinary(in: name, enginesDirectory: enginesDirectory) != nil
     }
 
     /// True si la ruta de Wine pertenece al motor unificado propio (`wine-unified`) o a sus
@@ -300,14 +291,72 @@ enum WineEngineLocator {
         wineBinary(in: resolvedGameEngineName(enginesDirectory: enginesDirectory), enginesDirectory: enginesDirectory)
     }
 
+    /// Ruta por defecto para una botella nueva. Siempre pertenece al inventario privado de Vessel;
+    /// si todavía no hay un motor instalado devuelve el destino canónico que aprovisionará
+    /// `DependencyManager`, nunca una instalación global de Wine.
+    static func defaultManagedWinePath(
+        enginesDirectory: String = VesselPaths.enginesDirectory
+    ) -> String {
+        gameWineBinary(enginesDirectory: enginesDirectory)
+            ?? clientWineBinary(enginesDirectory: enginesDirectory)
+            ?? URL(fileURLWithPath: enginesDirectory, isDirectory: true)
+                .appendingPathComponent(unifiedEngineName, isDirectory: true)
+                .appendingPathComponent("bin/wine")
+                .path
+    }
+
+    /// Normaliza rutas persistidas por versiones antiguas. Cualquier Wine fuera de `Engines/`
+    /// convertiría la disponibilidad de Homebrew, CrossOver u otra app en una dependencia implícita.
+    /// La migración solo cambia la referencia guardada; no borra ni modifica datos externos.
+    static func repairedStoredWinePath(
+        _ storedPath: String,
+        enginesDirectory: String = VesselPaths.enginesDirectory
+    ) -> String {
+        guard isManagedRuntimePath(storedPath, enginesDirectory: enginesDirectory) else {
+            return defaultManagedWinePath(enginesDirectory: enginesDirectory)
+        }
+        return storedPath
+    }
+
+    /// Comprueba pertenencia real al inventario privado de Vessel. Resuelve enlaces simbólicos para
+    /// que una ruta con apariencia de `Engines/wine-*/...` no pueda escapar a otra aplicación, y
+    /// exige que el primer componente sea una familia de motor conocida (nunca una copia de respaldo
+    /// ni `ExternalRuntimeQuarantine`). También acepta destinos canónicos aún no aprovisionados.
+    static func isManagedRuntimePath(
+        _ path: String,
+        enginesDirectory: String = VesselPaths.enginesDirectory
+    ) -> Bool {
+        let enginesRoot = URL(fileURLWithPath: enginesDirectory, isDirectory: true)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        let candidate = URL(fileURLWithPath: path)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        let rootComponents = enginesRoot.pathComponents
+        let candidateComponents = candidate.pathComponents
+        guard candidateComponents.count > rootComponents.count,
+              Array(candidateComponents.prefix(rootComponents.count)) == rootComponents else {
+            return false
+        }
+        return managedWineEngineNames.contains(candidateComponents[rootComponents.count])
+    }
+
     /// Resuelve el binario `wine`/`wine64` dentro de un motor por nombre.
     static func wineBinary(in engineName: String, enginesDirectory: String = VesselPaths.enginesDirectory) -> String? {
+        guard managedWineEngineNames.contains(engineName) else { return nil }
         let base = URL(fileURLWithPath: enginesDirectory).appendingPathComponent(engineName)
         for sub in ["bin/wine64", "bin/wine"] {
             let path = base.appendingPathComponent(sub).path
-            if FileManager.default.isExecutableFile(atPath: path) { return path }
+            if FileManager.default.isExecutableFile(atPath: path),
+               isManagedRuntimePath(path, enginesDirectory: enginesDirectory) {
+                return path
+            }
         }
-        return findExecutable(named: ["wine64", "wine"], under: base)
+        guard let nested = findExecutable(named: ["wine64", "wine"], under: base),
+              isManagedRuntimePath(nested, enginesDirectory: enginesDirectory) else {
+            return nil
+        }
+        return nested
     }
 
     /// True si la ruta de Wine pertenece a un motor de juegos DXMT
@@ -338,40 +387,57 @@ enum WineEngineLocator {
 
     static func findPortableWineBinary(enginesDirectory: String = VesselPaths.enginesDirectory) -> String? {
         for path in knownPortableWinePaths(enginesDirectory: enginesDirectory) {
-            if FileManager.default.isExecutableFile(atPath: path) {
+            if FileManager.default.isExecutableFile(atPath: path),
+               isManagedRuntimePath(path, enginesDirectory: enginesDirectory) {
                 return path
             }
         }
 
-        return findExecutable(named: ["wine64", "wine"], under: portableEngineDirectory(enginesDirectory: enginesDirectory))
+        guard let nested = findExecutable(
+            named: ["wine64", "wine"],
+            under: portableEngineDirectory(enginesDirectory: enginesDirectory)
+        ), isManagedRuntimePath(nested, enginesDirectory: enginesDirectory) else {
+            return nil
+        }
+        return nested
     }
 
     static func detectWineInstallations(
         enginesDirectory: String = VesselPaths.enginesDirectory,
         homeDirectory: String = NSHomeDirectory()
     ) -> [(name: String, path: String, version: String)] {
+        // `homeDirectory` se conserva para mantener estable la API usada por diagnósticos y tests.
+        // El inventario de producción solo expone motores gestionados por Vessel: ni Homebrew, ni
+        // GPTK instalado globalmente, ni runtimes contenidos en otras aplicaciones pueden convertirse
+        // en una dependencia accidental o cambiar el comportamiento entre dos Macs.
+        _ = homeDirectory
         var results: [(name: String, path: String, version: String)] = []
+        var seen: Set<String> = []
 
         if let portable = findPortableWineBinary(enginesDirectory: enginesDirectory) {
             results.append(("Wine (Vessel portable)", portable, "Auto"))
+            seen.insert(portable)
         }
 
-        let candidates: [(String, String)] = [
-            ("Homebrew Wine", "/opt/homebrew/bin/wine64"),
-            ("Homebrew Wine", "/opt/homebrew/bin/wine"),
-            ("Homebrew Wine Intel", "/usr/local/bin/wine64"),
-            ("Homebrew Wine Intel", "/usr/local/bin/wine"),
-            ("Game Porting Toolkit (Apple)", "/Library/Apple/usr/libexec/oah/translation/wine64"),
-            ("CrossOver", "\(homeDirectory)/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine64"),
-            ("CrossOver", "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine64")
+        let managedCandidates: [(String, String)] = [
+            ("Wine unificado de Vessel", unifiedEngineName),
+            ("Wine DXMT de Vessel", mousefixEngineName),
+            ("Wine DXMT de Vessel", dxmtEngineName),
+            ("Wine D3DMetal de Vessel", d3dmetalEngineName),
+            ("Wine D3DMetal multimedia de Vessel", d3dmetalMediaEngineName),
+            ("Wine OpenGL de Vessel", unifiedOpenGLEngineName),
+            ("Wine OpenGL legado de Vessel", unifiedLegacyOpenGLEngineName),
+            ("Wine Steam de Vessel", steamEngineName),
+            ("Wine completo de Vessel", fullEngineName),
+            ("GPTK de Vessel", "gptk-mythic-mousefix"),
+            ("GPTK de Vessel", "gptk-mythic")
         ]
-
-        var seen = Set(results.map(\.path))
-        for (name, path) in candidates where !seen.contains(path) {
-            if FileManager.default.isExecutableFile(atPath: path) {
-                results.append((name, path, "Auto"))
-                seen.insert(path)
-            }
+        for (name, engineName) in managedCandidates {
+            let path = engineName == fullEngineName
+                ? fullWineBinary(enginesDirectory: enginesDirectory)
+                : wineBinary(in: engineName, enginesDirectory: enginesDirectory)
+            guard let path, seen.insert(path).inserted else { continue }
+            results.append((name, path, "Gestionado"))
         }
 
         return results
