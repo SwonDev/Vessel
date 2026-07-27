@@ -18,8 +18,8 @@ descarga/empaqueta, y detalla los **parches** que aplicamos.
 - **Versión:** `wine-11.0` (fuentes **CrossOver 26.2.0**, que son WineHQ 11.0 + los *CW HACKs*
   de CodeWeavers: msync, winemac mejorado, wined3d).
 - **Fuente original:** <https://media.codeweavers.com/pub/crossover/source/crossover-sources-26.2.0.tar.gz>
-  (publicada por el propio CodeWeavers bajo LGPL; copia de trabajo en
-  `docs/CrossOver_SourceCode_NO_SUBIR_a_Github/`).
+  (publicada por el propio CodeWeavers bajo LGPL). El árbol completo no se archiva en este
+  repositorio; se descarga de nuevo y se combina con los parches versionados cuando hace falta.
 - **Por qué:** las rutas de juegos que necesitan el Wine "tipo CrossOver" (Unreal Engine 4,
   FNA/XNA con .NET real, Source, Godot+Vulkan, D3D9/Unity de 32-bit, DirectDraw clásico) se
   validaron con el Wine de un CrossOver instalado localmente, que **no es redistribuible**
