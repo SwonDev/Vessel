@@ -6,6 +6,19 @@
     <description>Actualizaciones de Vessel — la mejor app para jugar a Steam en Mac Silicon.</description>
     <language>es</language>
     <item>
+      <title>Versión 0.0.14</title>
+      <sparkle:version>14</sparkle:version>
+      <sparkle:shortVersionString>0.0.14</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[ Corrige el bloqueo del inicio de sesión en Steam: el cliente ya no se queda a medio instalar ni muere con «Failed to load steamui.dll». Vessel espera a que la descarga del cliente termine de verdad y, si un entorno ya quedó dañado, lo repara solo al abrirlo. Incluye además las mejoras acumuladas de Steam, Epic, id Tech Vulkan, D3D12, OpenGL y nombres de juego en el Dock. ]]></description>
+      <pubDate>Fri, 07 Aug 2026 13:50:57 +0100</pubDate>
+      <enclosure
+        url="https://github.com/SwonDev/Vessel/releases/download/v0.0.14/Vessel-0.0.14.zip"
+        sparkle:edSignature="+Nol4FC5/53Af9PgdfLzL1ES6FP1DScy9hR0LUJlUUFW8gIEyaEkfQM7+G5JlvVaKOQVSADeGFZgZ30zEZR4CQ=="
+        length="28987700"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>Versión 0.0.13</title>
       <sparkle:version>13</sparkle:version>
       <sparkle:shortVersionString>0.0.13</sparkle:shortVersionString>
