@@ -374,9 +374,26 @@ final class WineManager {
     /// `-noverifyfiles` detecta el wrapper como corrupto, intenta actualizar el
     /// cliente, la descarga falla bajo Wine (http error 0) y queda ladrillado
     /// con "Failed to load steamui.dll". Idempotente.
+    ///
+    /// ⚠️ El inhibidor SOLO es válido sobre un cliente **ya descargado por completo**. Si el
+    /// bootstrap se quedó a medias, inhibirlo le quita a Steam la única vía que tiene para
+    /// terminar de instalarse: el cliente incompleto no arranca y el usuario ve "Failed to
+    /// load steamui.dll" en cada intento, sin salida posible. Por eso, con el cliente
+    /// incompleto no solo no se escribe: se RETIRA el `steam.cfg` que hubiera, de modo que un
+    /// bottle ya ladrillado por una versión anterior se repare solo al volver a abrirlo.
     func ensureSteamConfig(in bottle: Bottle) {
         let steamDir = bottle.steamDirectory
         guard FileManager.default.fileExists(atPath: steamDir) else { return }
+        guard Self.isSteamClientFullyBootstrapped(steamDirectory: steamDir) else {
+            if FileManager.default.fileExists(atPath: "\(steamDir)/steam.cfg") {
+                log.log(
+                    "El cliente de Steam está incompleto: se retira steam.cfg para que pueda terminar de instalarse.",
+                    level: .warn
+                )
+            }
+            removeSteamConfig(in: bottle)
+            return
+        }
         let cfg = "\(steamDir)/steam.cfg"
         let contents = "BootStrapperInhibitAll=enable\nBootStrapperForceSelfUpdate=disable\n"
         try? contents.write(toFile: cfg, atomically: true, encoding: .utf8)
@@ -698,8 +715,12 @@ final class WineManager {
 
         if FileManager.default.fileExists(atPath: bottle.steamPath) {
             try await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
+            // Solo se configura el cliente maduro; si el bootstrap quedó a medias, `ensureSteamConfig`
+            // retira el inhibidor para que Steam pueda recomponerse en el siguiente arranque.
             ensureSteamConfig(in: bottle)
-            try await ensureWrapperInstalled(in: bottle)
+            if isSteamBootstrapped(in: bottle) {
+                try await ensureWrapperInstalled(in: bottle)
+            }
             try? await launchOptionsManager.injectLaunchOptions(in: bottle)
             try? await disableSteamAutoStart(winePath: clientWine, prefix: bottle.prefixPath)
             return
@@ -742,9 +763,17 @@ final class WineManager {
         try await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
 
         if FileManager.default.fileExists(atPath: bottle.steamPath) {
-            log.log("Steam instalado; configurando steam.cfg, wrapper y auto-start…", level: .info)
-            ensureSteamConfig(in: bottle)
-            try await ensureWrapperInstalled(in: bottle)
+            // `SteamSetup.exe /S` solo deja el bootstrapper: el cliente de verdad (interfaz, CEF)
+            // lo descarga Steam en su primer arranque. Hasta entonces no hay nada que configurar,
+            // y aplicar la config del cliente maduro le impediría descargarlo (ver
+            // `ensureSteamConfig`).
+            if isSteamBootstrapped(in: bottle) {
+                log.log("Steam instalado; configurando steam.cfg, wrapper y auto-start…", level: .info)
+                ensureSteamConfig(in: bottle)
+                try await ensureWrapperInstalled(in: bottle)
+            } else {
+                log.log("Steam instalado; su cliente se descargará en el primer arranque.", level: .info)
+            }
             try? await launchOptionsManager.injectLaunchOptions(in: bottle)
             // Steam se auto-registra en HKCU\...\Run para arrancar en silencio
             // cada vez que Wine inicia cualquier proceso en el prefix. Lo eliminamos.
@@ -10180,11 +10209,13 @@ final class WineManager {
             return Process()
         }
 
-        // ¿Steam ya descargó su cliente completo (steamui.dll)? En una instalación
-        // FRESH hay que DEJAR el primer bootstrap: sin steam.cfg restrictivo, sin el
-        // flag -skipinitialbootstrap y sin wrapper. Si no, Steam no descarga
-        // steamui.dll y da "Failed to load steamui.dll".
-        let bootstrapped = isSteamBootstrapped(in: bottle)
+        // ¿Steam ya descargó su cliente completo? En una instalación FRESH hay que DEJAR el
+        // primer bootstrap: sin steam.cfg restrictivo, sin el flag -skipinitialbootstrap y sin
+        // wrapper. Si no, Steam no descarga su interfaz y da "Failed to load steamui.dll".
+        // Un cliente que ya quedó ladrillado se trata igual que uno sin bootstrapear: solo
+        // devolviéndole el bootstrapper y la verificación puede recomponerse.
+        let needsBootstrapRepair = repairBrickedSteamClientIfNeeded(in: bottle)
+        let bootstrapped = isSteamBootstrapped(in: bottle) && !needsBootstrapRepair
         // SEMBRAR la sesión del cliente (auto-login por JWT) si es un usuario NUEVO —cliente sin
         // sesión guardada— pero Vessel tiene el refresh_token de su login nativo. Así el cliente
         // auto-loguea SIN pasar por el CEF (que en el M5 no renderiza para meter credenciales), y
@@ -10297,10 +10328,103 @@ final class WineManager {
         return process
     }
 
-    /// True si Steam ya descargó su cliente completo (existe `steamui.dll`). En una
-    /// instalación nueva no existe hasta que Steam hace su primer bootstrap.
+    /// True si Steam ya descargó su cliente completo. En una instalación nueva no lo está
+    /// hasta que el bootstrapper de Valve termina de extraer su paquete.
     func isSteamBootstrapped(in bottle: Bottle) -> Bool {
-        FileManager.default.fileExists(atPath: "\(bottle.steamDirectory)/steamui.dll")
+        Self.isSteamClientFullyBootstrapped(steamDirectory: bottle.steamDirectory)
+    }
+
+    /// Huella que deja en los logs un cliente cuya instalación quedó incompleta.
+    nonisolated static let steamUILoadFailureMarker = "Failed to load steamui.dll"
+
+    /// `true` si los logs del cliente registran el fallo fatal de carga de la interfaz.
+    ///
+    /// Es la señal de que la instalación quedó inservible aunque en disco aparente estar
+    /// completa. Permite recuperar los bottles que ya se ladrillaron con versiones anteriores
+    /// de Vessel, en las que se inhibía el bootstrapper sobre un cliente a medio extraer.
+    nonisolated static func steamClientReportsFatalUILoadFailure(steamDirectory: String) -> Bool {
+        let fm = FileManager.default
+        let logsDirectory = "\(steamDirectory)/logs"
+        guard let entries = try? fm.contentsOfDirectory(atPath: logsDirectory) else { return false }
+        for entry in entries where entry.hasSuffix(".txt") {
+            let path = "\(logsDirectory)/\(entry)"
+            guard let size = try? fm.attributesOfItem(atPath: path)[.size] as? UInt64,
+                  size > 0, size < 8_000_000,
+                  let contents = try? String(contentsOfFile: path, encoding: .utf8)
+            else { continue }
+            if contents.contains(steamUILoadFailureMarker) { return true }
+        }
+        return false
+    }
+
+    /// Retira los logs del cliente que ya se han tenido en cuenta, para que una reparación no se
+    /// repita en bucle por un error antiguo. Solo toca `logs/`; nunca datos del usuario.
+    nonisolated static func clearSteamClientLogs(steamDirectory: String) {
+        let fm = FileManager.default
+        let logsDirectory = "\(steamDirectory)/logs"
+        guard let entries = try? fm.contentsOfDirectory(atPath: logsDirectory) else { return }
+        for entry in entries where entry.hasSuffix(".txt") {
+            try? fm.removeItem(atPath: "\(logsDirectory)/\(entry)")
+        }
+    }
+
+    /// Devuelve `true` si este bottle arrastra un cliente ladrillado y hay que dejar que Steam
+    /// rehaga su instalación en este arranque.
+    ///
+    /// Un cliente que no encuentra su interfaz no se arregla solo mientras se le siga lanzando
+    /// con el bootstrapper inhibido y la verificación desactivada. Aquí se le devuelven las dos
+    /// cosas —se quita `steam.cfg` y se restauran los `steamwebhelper.exe` originales, que la
+    /// verificación de Valve consideraría corruptos— y se limpian los logs ya leídos para que la
+    /// reparación no se repita en el arranque siguiente.
+    @discardableResult
+    private func repairBrickedSteamClientIfNeeded(in bottle: Bottle) -> Bool {
+        let steamDirectory = bottle.steamDirectory
+        guard Self.steamClientReportsFatalUILoadFailure(steamDirectory: steamDirectory) else {
+            return false
+        }
+        log.log(
+            "El cliente de Steam registró «\(Self.steamUILoadFailureMarker)»: se le deja completar y verificar su instalación.",
+            level: .warn
+        )
+        removeSteamConfig(in: bottle)
+        wrapperInstaller.restoreRealWebHelpers(in: bottle)
+        Self.clearSteamClientLogs(steamDirectory: steamDirectory)
+        return true
+    }
+
+    /// True si el directorio contiene un cliente de Steam **entero**, no uno a medio extraer.
+    ///
+    /// La presencia de `steamui.dll` por sí sola NO sirve como señal: el bootstrapper extrae su
+    /// paquete por partes y ese fichero aparece bastante antes de que el cliente esté completo.
+    /// Tomar ese estado intermedio por bueno era lo que ladrillaba la instalación — se aplicaba
+    /// la configuración de cliente maduro (`steam.cfg` con `BootStrapperInhibitAll`, más los
+    /// flags `-skipinitialbootstrap` y `-noverifyfiles`) y con ella Steam ya no podía terminar
+    /// de instalarse ni repararse: "Failed to load steamui.dll" en cada arranque, para siempre.
+    ///
+    /// Se exigen los tres artefactos sin los cuales el cliente no puede funcionar:
+    ///  - `steamui.dll` con contenido (la interfaz; vacío = escritura interrumpida),
+    ///  - `steamclient64.dll` o `steamclient.dll` (el runtime del cliente),
+    ///  - un `bin/cef/cef.win*/steamwebhelper.exe` (el CEF que pinta la interfaz; `cef.win64`
+    ///    en el cliente moderno, `cef.win7x64` en el clásico de la era Gcenx).
+    ///
+    /// El criterio es deliberadamente conservador: un falso negativo solo hace que Vessel deje
+    /// a Steam completar o verificar su instalación —lento, pero sano—, mientras que un falso
+    /// positivo deja al usuario sin cliente y sin manera de recuperarlo.
+    nonisolated static func isSteamClientFullyBootstrapped(steamDirectory: String) -> Bool {
+        let fm = FileManager.default
+        let steamUI = "\(steamDirectory)/steamui.dll"
+        guard let size = try? fm.attributesOfItem(atPath: steamUI)[.size] as? UInt64,
+              size > 0 else { return false }
+        let hasClientRuntime = ["steamclient64.dll", "steamclient.dll"].contains {
+            fm.fileExists(atPath: "\(steamDirectory)/\($0)")
+        }
+        guard hasClientRuntime else { return false }
+        let cefRoot = "\(steamDirectory)/bin/cef"
+        let cefDirs = (try? fm.contentsOfDirectory(atPath: cefRoot)) ?? []
+        return cefDirs.contains { dir in
+            dir.hasPrefix("cef.win")
+                && fm.fileExists(atPath: "\(cefRoot)/\(dir)/steamwebhelper.exe")
+        }
     }
 
     /// Deja Steam LISTO para iniciar sesión (login visible, sin pantalla negra):
@@ -10325,9 +10449,18 @@ final class WineManager {
         if !isSteamBootstrapped(in: bottle) {
             progress("Descargando el cliente de Steam…")
             _ = try await launchSteam(in: bottle, using: clientWine) // bootstrap en crudo
-            for _ in 0..<150 {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                if isSteamBootstrapped(in: bottle) { break }
+            guard await waitForSteamBootstrap(in: bottle, progress: progress) else {
+                // Interrumpirlo aquí es exactamente lo que rompía la instalación: el cliente
+                // quedaba a medio extraer y, como `steamui.dll` ya estaba en disco, el siguiente
+                // arranque lo daba por instalado y le aplicaba el inhibidor del bootstrapper →
+                // "Failed to load steamui.dll" sin salida. Se deja trabajar al bootstrapper: su
+                // propia ventana de actualización es la que el usuario tiene que ver.
+                log.log(
+                    "El cliente de Steam sigue descargándose; se le deja terminar en vez de interrumpirlo.",
+                    level: .warn
+                )
+                progress("Steam está terminando de descargar su cliente; deja que acabe.")
+                return
             }
             // Cerrar el Steam del bootstrap para relanzarlo limpio con el wrapper.
             try? await terminateWineProcesses(winePath: clientWine, prefix: bottle.prefixPath)
@@ -10338,6 +10471,35 @@ final class WineManager {
         // así el login se ve (no pantalla negra).
         progress("Abriendo Steam para iniciar sesión…")
         _ = try await launchSteam(in: bottle, using: clientWine)
+    }
+
+    /// Espera a que el bootstrapper de Valve termine de instalar el cliente.
+    ///
+    /// Misma holgura y mismo criterio de salida que `updateSteamClient`: la descarga ronda los
+    /// 500 MB y la extracción tarda, así que cortar a los dos minutos —como se hacía antes—
+    /// dejaba el cliente a medias en cualquier conexión que no fuera muy rápida.
+    /// Devuelve `true` solo si el cliente quedó completo.
+    private func waitForSteamBootstrap(
+        in bottle: Bottle,
+        progress: @escaping @Sendable (String) -> Void
+    ) async -> Bool {
+        for tick in 1...900 {   // hasta 15 min (descarga ~500 MB + extracción)
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            if isSteamBootstrapped(in: bottle) { return true }
+            // Sin ningún proceso de Steam vivo, el bootstrapper terminó o murió: se da un
+            // margen por si está relanzándose entre fases y se comprueba de nuevo.
+            if !isWineProcessRunning(matching: "steam.exe", prefix: bottle.prefixPath),
+               !isWineProcessRunning(matching: "steamwebhelper") {
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                if !isWineProcessRunning(matching: "steam.exe", prefix: bottle.prefixPath) {
+                    return isSteamBootstrapped(in: bottle)
+                }
+            }
+            if tick % 60 == 0 {
+                progress("Descargando el cliente de Steam… (\(tick / 60) min)")
+            }
+        }
+        return isSteamBootstrapped(in: bottle)
     }
 
     /// Instala un juego de la biblioteca **desde Vessel**: asegura el cliente Steam
